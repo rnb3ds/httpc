@@ -1,3 +1,5 @@
+//go:build examples
+
 package main
 
 import (
@@ -75,7 +77,7 @@ func demonstrateJSON(client httpc.Client) {
 	fmt.Printf("Request Data: %s\n\n", result.Data)
 
 	// Using a map
-	data := map[string]interface{}{
+	data := map[string]any{
 		"title":     "New Article",
 		"content":   "Article content here",
 		"published": true,
@@ -147,18 +149,21 @@ func demonstrateText(client httpc.Client) {
 	fmt.Printf("Text Data: %s\n\n", result.Data)
 }
 
-// demonstrateXML shows XML body handling
+// demonstrateXML shows XML body handling using WithBody and WithContentType
 func demonstrateXML(client httpc.Client) {
 	fmt.Println("--- Example 4: XML Body ---")
 
-	person := types.Person{
-		Name: "Jane Smith",
-		Age:  28,
-		City: "New York",
-	}
+	// Create XML manually since WithXML was removed for simplicity
+	xmlData := `<?xml version="1.0" encoding="UTF-8"?>
+<person>
+    <name>Jane Smith</name>
+    <age>28</age>
+    <city>New York</city>
+</person>`
 
 	resp, err := client.Post("https://echo.hoppscotch.io",
-		httpc.WithXML(person),
+		httpc.WithBody(xmlData),
+		httpc.WithContentType("application/xml"),
 	)
 	if err != nil {
 		log.Printf("Error: %v\n", err)

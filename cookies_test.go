@@ -186,14 +186,9 @@ func TestCookieJar(t *testing.T) {
 		requestCount = 0
 
 		// Create client with cookie jar enabled
-		jar, err := NewCookieJar()
-		if err != nil {
-			t.Fatalf("Failed to create cookie jar: %v", err)
-		}
 
 		config := DefaultConfig()
 		config.EnableCookies = true
-		config.CookieJar = jar
 		config.AllowPrivateIPs = true // Allow localhost for testing
 
 		client, err := New(config)

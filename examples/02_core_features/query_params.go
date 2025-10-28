@@ -1,3 +1,5 @@
+//go:build examples
+
 package main
 
 import (
@@ -64,7 +66,7 @@ func demonstrateSingleParams(client httpc.Client) {
 func demonstrateMapParams(client httpc.Client) {
 	fmt.Println("--- Example 2: Multiple Parameters (Map) ---")
 
-	params := map[string]interface{}{
+	params := map[string]any{
 		"category": "technology",
 		"sort":     "date",
 		"order":    "desc",
@@ -93,7 +95,7 @@ func demonstrateMapParams(client httpc.Client) {
 func demonstrateValueTypes(client httpc.Client) {
 	fmt.Println("--- Example 3: Different Value Types ---")
 
-	params := map[string]interface{}{
+	params := map[string]any{
 		"string_value": "hello",
 		"int_value":    42,
 		"float_value":  3.14,
@@ -128,7 +130,7 @@ func demonstrateRealWorldPatterns(client httpc.Client) {
 
 	// Pattern 1: Pagination
 	fmt.Println("--- Pattern 1: Pagination ---")
-	paginationParams := map[string]interface{}{
+	paginationParams := map[string]any{
 		"page":     1,
 		"per_page": 20,
 	}
@@ -145,7 +147,7 @@ func demonstrateRealWorldPatterns(client httpc.Client) {
 
 	// Pattern 2: Filtering
 	fmt.Println("--- Pattern 2: Filtering ---")
-	filterParams := map[string]interface{}{
+	filterParams := map[string]any{
 		"status":     "active",
 		"role":       "admin",
 		"created_at": "2024-01-01",
@@ -163,7 +165,7 @@ func demonstrateRealWorldPatterns(client httpc.Client) {
 
 	// Pattern 3: Sorting
 	fmt.Println("--- Pattern 3: Sorting ---")
-	sortParams := map[string]interface{}{
+	sortParams := map[string]any{
 		"sort_by":    "created_at",
 		"sort_order": "desc",
 	}
@@ -180,7 +182,7 @@ func demonstrateRealWorldPatterns(client httpc.Client) {
 
 	// Pattern 4: Search
 	fmt.Println("--- Pattern 4: Search ---")
-	searchParams := map[string]interface{}{
+	searchParams := map[string]any{
 		"q":      "golang http client",
 		"fields": "title,content",
 		"limit":  10,
@@ -198,7 +200,7 @@ func demonstrateRealWorldPatterns(client httpc.Client) {
 
 	// Pattern 5: Combined (pagination + filtering + sorting)
 	fmt.Println("--- Pattern 5: Combined Parameters ---")
-	combinedParams := map[string]interface{}{
+	combinedParams := map[string]any{
 		// Pagination
 		"page":     1,
 		"per_page": 20,
@@ -224,7 +226,7 @@ func demonstrateRealWorldPatterns(client httpc.Client) {
 
 	// Pattern 6: Special characters (automatically URL-encoded)
 	fmt.Println("--- Pattern 6: Special Characters (URL Encoding) ---")
-	specialParams := map[string]interface{}{
+	specialParams := map[string]any{
 		"query": "hello world & goodbye",
 		"email": "user@example.com",
 		"url":   "https://example.com/path?param=value",

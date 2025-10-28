@@ -1,3 +1,5 @@
+//go:build examples
+
 package main
 
 import (
@@ -222,7 +224,7 @@ func demonstrateComprehensivePattern() {
 }
 
 // fetchUserData demonstrates a function with comprehensive error handling
-func fetchUserData(userID int) (map[string]interface{}, error) {
+func fetchUserData(userID int) (map[string]any, error) {
 	client, err := httpc.New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
@@ -274,7 +276,7 @@ func fetchUserData(userID int) (map[string]interface{}, error) {
 	}
 
 	// Parse response
-	var result map[string]interface{}
+	var result map[string]any
 	if err := resp.JSON(&result); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}

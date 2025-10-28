@@ -15,11 +15,11 @@ func TestCircuitBreaker_New(t *testing.T) {
 	if cb == nil {
 		t.Fatal("New() returned nil")
 	}
-	
+
 	if cb.name != "test" {
 		t.Errorf("Expected name 'test', got '%s'", cb.name)
 	}
-	
+
 	if cb.State() != StateClosed {
 		t.Errorf("Expected initial state Closed, got %v", cb.State())
 	}
@@ -34,12 +34,12 @@ func TestCircuitBreaker_NewWithConfig(t *testing.T) {
 			return counts.TotalFailures > 5
 		},
 	}
-	
+
 	cb := New("test", config)
 	if cb == nil {
 		t.Fatal("New() returned nil")
 	}
-	
+
 	if cb.config.MaxRequests != config.MaxRequests {
 		t.Errorf("Expected MaxRequests %d, got %d", config.MaxRequests, cb.config.MaxRequests)
 	}
@@ -55,7 +55,7 @@ func TestState_String(t *testing.T) {
 		{StateHalfOpen, "half-open"},
 		{State(999), "unknown"},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
 			if got := tt.state.String(); got != tt.want {
@@ -145,21 +145,21 @@ func TestCircuitBreaker_StateTransition_ClosedToOpen(t *testing.T) {
 			return counts.TotalFailures >= 2
 		},
 	}
-	
+
 	cb := New("test", config)
-	
+
 	// Initial state should be Closed
 	if cb.State() != StateClosed {
 		t.Fatalf("Expected initial state Closed, got %v", cb.State())
 	}
-	
+
 	// Trigger failures
 	for i := 0; i < 2; i++ {
 		cb.Execute(func() error {
 			return errors.New("failure")
 		})
 	}
-	
+
 	// Should transition to Open
 	if cb.State() != StateOpen {
 		t.Errorf("Expected state Open after failures, got %v", cb.State())
@@ -175,9 +175,9 @@ func TestCircuitBreaker_StateTransition_OpenToHalfOpen(t *testing.T) {
 			return counts.TotalFailures >= 2
 		},
 	}
-	
+
 	cb := New("test", config)
-	
+
 	// Open the circuit
 	for i := 0; i < 2; i++ {
 		cb.Execute(func() error {
@@ -196,7 +196,7 @@ func TestCircuitBreaker_StateTransition_OpenToHalfOpen(t *testing.T) {
 	cb.Execute(func() error {
 		return nil
 	})
-	
+
 	// Note: State might be Closed if the request succeeded
 	state := cb.State()
 	if state != StateHalfOpen && state != StateClosed {
@@ -246,7 +246,7 @@ func TestCircuitBreaker_StateTransition_HalfOpenToClosed(t *testing.T) {
 
 func TestCircuitBreaker_Counts(t *testing.T) {
 	cb := New("test", nil)
-	
+
 	// Execute successful requests
 	for i := 0; i < 3; i++ {
 		cb.Execute(func() error {
@@ -265,7 +265,7 @@ func TestCircuitBreaker_Counts(t *testing.T) {
 			return errors.New("failure")
 		})
 	}
-	
+
 	counts = cb.Counts()
 	if counts.TotalFailures != 2 {
 		t.Errorf("Expected 2 failures, got %d", counts.TotalFailures)
@@ -365,30 +365,57 @@ func TestCircuitBreaker_Reset(t *testing.T) {
 			return counts.TotalFailures >= 2
 		},
 	}
-	
+
 	cb := New("test", config)
-	
+
 	// Open the circuit
 	for i := 0; i < 2; i++ {
 		cb.Execute(func() error {
 			return errors.New("failure")
 		})
 	}
-	
+
 	if cb.State() != StateOpen {
 		t.Fatalf("Expected state Open, got %v", cb.State())
 	}
-	
+
 	// Reset the circuit breaker
 	cb.Reset()
-	
+
 	if cb.State() != StateClosed {
 		t.Errorf("Expected state Closed after reset, got %v", cb.State())
 	}
-	
+
 	counts := cb.Counts()
 	if counts.Requests != 0 {
 		t.Errorf("Expected 0 requests after reset, got %d", counts.Requests)
 	}
 }
 
+// ============================================================================
+// ADDITIONAL COVERAGE TESTS
+// ============================================================================
+
+func TestCircuitBreaker_DefaultConfig(t *testing.T) {
+	cb := New("test", nil)
+
+	if cb.State() != StateClosed {
+		t.Errorf("Expected StateClosed, got %v", cb.State())
+	}
+
+	// Should work with default config
+	err := cb.Execute(func() error {
+		return nil
+	})
+	if err != nil {
+		t.Errorf("Expected success with default config, got error: %v", err)
+	}
+}
+
+func TestCircuitBreaker_Name(t *testing.T) {
+	cb := New("test-breaker", &Config{})
+
+	if cb.Name() != "test-breaker" {
+		t.Errorf("Expected name 'test-breaker', got '%s'", cb.Name())
+	}
+}

@@ -1,3 +1,5 @@
+//go:build examples
+
 package main
 
 import (
@@ -69,14 +71,12 @@ func demonstrateMultipleFiles() {
 		Fields: map[string]string{},
 		Files: map[string]*httpc.FileData{
 			"document": {
-				Filename:    "report.pdf",
-				Content:     pdfContent,
-				ContentType: "application/pdf",
+				Filename: "report.pdf",
+				Content:  pdfContent,
 			},
 			"thumbnail": {
-				Filename:    "preview.jpg",
-				Content:     jpegContent,
-				ContentType: "image/jpeg",
+				Filename: "preview.jpg",
+				Content:  jpegContent,
 			},
 		},
 	}
@@ -118,9 +118,8 @@ func demonstrateFileWithFields() {
 		},
 		Files: map[string]*httpc.FileData{
 			"file": {
-				Filename:    "document.pdf",
-				Content:     fileContent,
-				ContentType: "application/pdf",
+				Filename: "document.pdf",
+				Content:  fileContent,
 			},
 		},
 	}

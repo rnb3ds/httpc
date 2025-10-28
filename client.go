@@ -2,13 +2,15 @@ package httpc
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/cybergodev/httpc/internal/engine"
 )
 
-// Client represents the public HTTP client interface
+// Client represents the HTTP client interface
 type Client interface {
 	// HTTP methods
 	Get(url string, options ...RequestOption) (*Response, error)
@@ -22,9 +24,9 @@ type Client interface {
 	// Generic request method
 	Request(ctx context.Context, method, url string, options ...RequestOption) (*Response, error)
 
-	// File download methods
+	// File download
 	DownloadFile(url string, filePath string, options ...RequestOption) (*DownloadResult, error)
-	DownloadFileWithOptions(url string, downloadOpts *DownloadOptions, options ...RequestOption) (*DownloadResult, error)
+	DownloadWithOptions(url string, downloadOpts *DownloadOptions, options ...RequestOption) (*DownloadResult, error)
 
 	// Client management
 	Close() error
@@ -41,6 +43,10 @@ func New(config ...*Config) (Client, error) {
 	var cfg *Config
 	if len(config) > 0 && config[0] != nil {
 		cfg = config[0]
+		// 验证配置安全性
+		if err := ValidateConfig(cfg); err != nil {
+			return nil, fmt.Errorf("invalid configuration: %w", err)
+		}
 	} else {
 		cfg = DefaultConfig()
 	}
@@ -241,36 +247,51 @@ func convertToEngineConfig(cfg *Config) *engine.Config {
 		cfg = DefaultConfig()
 	}
 
+	// 安全性验证和限制
+	maxIdleConnsPerHost := cfg.MaxIdleConns / 10
+	if maxIdleConnsPerHost < 1 {
+		maxIdleConnsPerHost = 1
+	}
+	if maxIdleConnsPerHost > 50 {
+		maxIdleConnsPerHost = 50 // 限制最大值
+	}
+
+	// 限制最大并发请求数以防止资源耗尽
+	maxConcurrent := 500
+	if cfg.MaxConnsPerHost > 0 && cfg.MaxConnsPerHost < maxConcurrent {
+		maxConcurrent = cfg.MaxConnsPerHost * 10
+	}
+
 	return &engine.Config{
 		Timeout:               cfg.Timeout,
-		DialTimeout:           cfg.DialTimeout,
-		KeepAlive:             cfg.KeepAlive,
-		TLSHandshakeTimeout:   cfg.TLSHandshakeTimeout,
-		ResponseHeaderTimeout: cfg.ResponseHeaderTimeout,
-		IdleConnTimeout:       cfg.IdleConnTimeout,
+		DialTimeout:           15 * time.Second,
+		KeepAlive:             30 * time.Second,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
 		MaxIdleConns:          cfg.MaxIdleConns,
-		MaxIdleConnsPerHost:   cfg.MaxIdleConnsPerHost,
+		MaxIdleConnsPerHost:   maxIdleConnsPerHost,
 		MaxConnsPerHost:       cfg.MaxConnsPerHost,
 		ProxyURL:              cfg.ProxyURL,
 		TLSConfig:             cfg.TLSConfig,
-		MinTLSVersion:         cfg.MinTLSVersion,
-		MaxTLSVersion:         cfg.MaxTLSVersion,
+		MinTLSVersion:         tls.VersionTLS12, // 强制最低TLS 1.2
+		MaxTLSVersion:         tls.VersionTLS13,
 		InsecureSkipVerify:    cfg.InsecureSkipVerify,
 		MaxResponseBodySize:   cfg.MaxResponseBodySize,
-		MaxConcurrentRequests: cfg.MaxConcurrentRequests,
-		ValidateURL:           cfg.ValidateURL,
-		ValidateHeaders:       cfg.ValidateHeaders,
+		MaxConcurrentRequests: maxConcurrent,
+		ValidateURL:           true, // 强制启用URL验证
+		ValidateHeaders:       true, // 强制启用头部验证
 		AllowPrivateIPs:       cfg.AllowPrivateIPs,
 		MaxRetries:            cfg.MaxRetries,
 		RetryDelay:            cfg.RetryDelay,
-		MaxRetryDelay:         cfg.MaxRetryDelay,
+		MaxRetryDelay:         1 * time.Second, // 固定最大延迟防止DoS
 		BackoffFactor:         cfg.BackoffFactor,
-		Jitter:                cfg.Jitter,
+		Jitter:                true, // 启用抖动防止雷群效应
 		UserAgent:             cfg.UserAgent,
 		Headers:               cfg.Headers,
 		FollowRedirects:       cfg.FollowRedirects,
 		EnableHTTP2:           cfg.EnableHTTP2,
-		CookieJar:             cfg.CookieJar,
+		CookieJar:             createCookieJar(cfg.EnableCookies),
 		EnableCookies:         cfg.EnableCookies,
 	}
 }
@@ -321,25 +342,30 @@ func convertEngineResponse(engineResp *engine.Response) *Response {
 		return nil
 	}
 
-	headers := make(map[string][]string)
-	if engineResp.Headers != nil {
-		for k, v := range engineResp.Headers {
-			headers[k] = v
-		}
-	}
-
 	return &Response{
 		StatusCode:    engineResp.StatusCode,
 		Status:        engineResp.Status,
-		Headers:       headers,
+		Headers:       engineResp.Headers,
 		Body:          engineResp.Body,
 		RawBody:       engineResp.RawBody,
 		ContentLength: engineResp.ContentLength,
-		Proto:         engineResp.Proto,
 		Duration:      engineResp.Duration,
 		Attempts:      engineResp.Attempts,
-		Request:       engineResp.Request,
-		Response:      engineResp.Response,
 		Cookies:       engineResp.Cookies,
 	}
+}
+
+// createCookieJar creates a cookie jar if cookies are enabled
+func createCookieJar(enableCookies bool) interface{} {
+	if !enableCookies {
+		return nil
+	}
+
+	jar, err := NewCookieJar()
+	if err != nil {
+		// If we can't create a cookie jar, return nil
+		return nil
+	}
+
+	return jar
 }

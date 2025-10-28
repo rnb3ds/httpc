@@ -4,14 +4,13 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
-	"encoding/xml"
 	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"time"
 )
 
-// Response represents an HTTP response with enhanced functionality
+// Response represents an HTTP response
 type Response struct {
 	StatusCode    int
 	Status        string
@@ -19,11 +18,8 @@ type Response struct {
 	Body          string
 	RawBody       []byte
 	ContentLength int64
-	Proto         string
 	Duration      time.Duration
 	Attempts      int
-	Request       interface{} // *http.Request
-	Response      interface{} // *http.Response
 	Cookies       []*http.Cookie
 }
 
@@ -47,14 +43,18 @@ func (r *Response) IsServerError() bool {
 	return r.StatusCode >= 500 && r.StatusCode < 600
 }
 
-// JSON unmarshals the response body into the provided interface
+// JSON unmarshals the response body into the provided interface with size limits
 func (r *Response) JSON(v interface{}) error {
-	return json.Unmarshal(r.RawBody, v)
-}
+	if r.RawBody == nil {
+		return fmt.Errorf("response body is empty")
+	}
 
-// XML unmarshals the response body into the provided interface
-func (r *Response) XML(v interface{}) error {
-	return xml.Unmarshal(r.RawBody, v)
+	// Limit JSON parsing size to prevent memory exhaustion attacks
+	if len(r.RawBody) > 50*1024*1024 { // 50MB
+		return fmt.Errorf("response body too large for JSON parsing")
+	}
+
+	return json.Unmarshal(r.RawBody, v)
 }
 
 // GetCookie returns the named cookie from the response or nil if not found
@@ -72,47 +72,31 @@ func (r *Response) HasCookie(name string) bool {
 	return r.GetCookie(name) != nil
 }
 
-// Config represents the unified client configuration
+// Config represents the client configuration
 type Config struct {
 	// Network settings
-	Timeout               time.Duration
-	DialTimeout           time.Duration
-	KeepAlive             time.Duration
-	TLSHandshakeTimeout   time.Duration
-	ResponseHeaderTimeout time.Duration
-	IdleConnTimeout       time.Duration
-	MaxIdleConns          int
-	MaxIdleConnsPerHost   int
-	MaxConnsPerHost       int
-	ProxyURL              string
+	Timeout         time.Duration
+	MaxIdleConns    int
+	MaxConnsPerHost int
+	ProxyURL        string
 
 	// Security settings
-	TLSConfig             *tls.Config
-	MinTLSVersion         uint16
-	MaxTLSVersion         uint16
-	InsecureSkipVerify    bool
-	MaxResponseBodySize   int64
-	MaxConcurrentRequests int
-	ValidateURL           bool
-	ValidateHeaders       bool
-	AllowPrivateIPs       bool // Allow requests to private/internal IPs (for testing)
+	TLSConfig           *tls.Config
+	InsecureSkipVerify  bool
+	MaxResponseBodySize int64
+	AllowPrivateIPs     bool
 
 	// Retry settings
 	MaxRetries    int
 	RetryDelay    time.Duration
-	MaxRetryDelay time.Duration
 	BackoffFactor float64
-	Jitter        bool
 
 	// Headers and features
 	UserAgent       string
 	Headers         map[string]string
 	FollowRedirects bool
 	EnableHTTP2     bool
-
-	// Cookie settings
-	CookieJar     http.CookieJar // Custom cookie jar, if nil and EnableCookies is true, a default jar will be created
-	EnableCookies bool           // Enable automatic cookie management
+	EnableCookies   bool
 }
 
 // RequestOption defines a function that modifies a request
@@ -139,9 +123,8 @@ type FormData struct {
 
 // FileData represents a file to be uploaded
 type FileData struct {
-	Filename    string
-	Content     []byte
-	ContentType string
+	Filename string
+	Content  []byte
 }
 
 // HTTPError represents an HTTP error response (public API)
@@ -157,40 +140,23 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("HTTP %d: %s %s", e.StatusCode, e.Method, e.URL)
 }
 
-// DefaultConfig returns a configuration with secure and optimized defaults
+// DefaultConfig returns a configuration with secure defaults
 func DefaultConfig() *Config {
 	return &Config{
-		Timeout:               60 * time.Second,
-		DialTimeout:           15 * time.Second,
-		KeepAlive:             30 * time.Second,
-		TLSHandshakeTimeout:   15 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
-		IdleConnTimeout:       90 * time.Second,
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   10,
-		MaxConnsPerHost:       20,
-
-		MinTLSVersion:         tls.VersionTLS12,
-		MaxTLSVersion:         tls.VersionTLS13,
-		InsecureSkipVerify:    false,
-		MaxResponseBodySize:   50 * 1024 * 1024,
-		MaxConcurrentRequests: 500,
-		ValidateURL:           true,
-		ValidateHeaders:       true,
-		AllowPrivateIPs:       false,
-
-		MaxRetries:    2,
-		RetryDelay:    2 * time.Second,
-		MaxRetryDelay: 60 * time.Second,
-		BackoffFactor: 2.0,
-		Jitter:        true,
-
-		UserAgent:       "httpc/1.0 (Go HTTP Client)",
-		Headers:         make(map[string]string),
-		FollowRedirects: true,
-		EnableHTTP2:     true,
-
-		EnableCookies: true,
+		Timeout:             60 * time.Second,
+		MaxIdleConns:        100,
+		MaxConnsPerHost:     20,
+		InsecureSkipVerify:  false,
+		MaxResponseBodySize: 50 * 1024 * 1024, // 50MB
+		AllowPrivateIPs:     false,
+		MaxRetries:          2,
+		RetryDelay:          2 * time.Second,
+		BackoffFactor:       2.0,
+		UserAgent:           "httpc/1.0",
+		Headers:             make(map[string]string),
+		FollowRedirects:     true, // Allow redirects but with limits
+		EnableHTTP2:         true,
+		EnableCookies:       true,
 	}
 }
 
@@ -199,4 +165,53 @@ func NewCookieJar() (http.CookieJar, error) {
 	return cookiejar.New(&cookiejar.Options{
 		PublicSuffixList: nil,
 	})
+}
+
+// ValidateConfig validates the security of the configuration
+func ValidateConfig(cfg *Config) error {
+	if cfg == nil {
+		return fmt.Errorf("config cannot be nil")
+	}
+
+	// Validate timeout settings
+	if cfg.Timeout < 0 {
+		return fmt.Errorf("timeout cannot be negative")
+	}
+	if cfg.Timeout > 10*time.Minute {
+		return fmt.Errorf("timeout too large (max 10 minutes)")
+	}
+
+	// Validate connection pool settings
+	if cfg.MaxIdleConns < 0 || cfg.MaxIdleConns > 1000 {
+		return fmt.Errorf("MaxIdleConns must be between 0 and 1000")
+	}
+	if cfg.MaxConnsPerHost < 0 || cfg.MaxConnsPerHost > 100 {
+		return fmt.Errorf("MaxConnsPerHost must be between 0 and 100")
+	}
+
+	// Validate response body size limits
+	if cfg.MaxResponseBodySize < 0 {
+		return fmt.Errorf("MaxResponseBodySize cannot be negative")
+	}
+	if cfg.MaxResponseBodySize > 1024*1024*1024 { // 1GB
+		return fmt.Errorf("MaxResponseBodySize too large (max 1GB)")
+	}
+
+	// 验证重试设置
+	if cfg.MaxRetries < 0 || cfg.MaxRetries > 10 {
+		return fmt.Errorf("MaxRetries must be between 0 and 10")
+	}
+	if cfg.RetryDelay < 0 {
+		return fmt.Errorf("RetryDelay cannot be negative")
+	}
+	if cfg.BackoffFactor < 1.0 || cfg.BackoffFactor > 10.0 {
+		return fmt.Errorf("BackoffFactor must be between 1.0 and 10.0")
+	}
+
+	// 验证User-Agent
+	if len(cfg.UserAgent) > 512 {
+		return fmt.Errorf("UserAgent too long (max 512 characters)")
+	}
+
+	return nil
 }

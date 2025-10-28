@@ -357,11 +357,11 @@ func TestEdgeCase_StatusCodes(t *testing.T) {
 		{"401 Unauthorized", 401, false},
 		{"403 Forbidden", 403, false},
 		{"404 Not Found", 404, false},
-		{"429 Too Many Requests", 429, true}, // Retryable
+		{"429 Too Many Requests", 429, true},     // Retryable
 		{"500 Internal Server Error", 500, true}, // Retryable
-		{"502 Bad Gateway", 502, true}, // Retryable
-		{"503 Service Unavailable", 503, true}, // Retryable
-		{"504 Gateway Timeout", 504, true}, // Retryable
+		{"502 Bad Gateway", 502, true},           // Retryable
+		{"503 Service Unavailable", 503, true},   // Retryable
+		{"504 Gateway Timeout", 504, true},       // Retryable
 	}
 
 	for _, tt := range tests {
@@ -524,4 +524,3 @@ func TestEdgeCase_PackageLevelFunctions(t *testing.T) {
 		}
 	})
 }
-

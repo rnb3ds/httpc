@@ -68,7 +68,6 @@ func TestDownloadFileWithProgress(t *testing.T) {
 
 	progressCalled := false
 	opts := DefaultDownloadOptions(filePath)
-	opts.ProgressInterval = 100 * time.Millisecond
 	opts.ProgressCallback = func(downloaded, total int64, speed float64) {
 		progressCalled = true
 		if total > 0 {
@@ -80,7 +79,7 @@ func TestDownloadFileWithProgress(t *testing.T) {
 
 	// Use a more reliable test URL - GitHub's raw content
 	// This file is large enough to trigger progress callbacks
-	result, err := client.DownloadFileWithOptions(
+	result, err := client.DownloadWithOptions(
 		"https://raw.githubusercontent.com/golang/go/master/src/go/parser/parser.go",
 		opts,
 		WithTimeout(60*time.Second),
@@ -136,7 +135,7 @@ func TestDownloadFileOverwrite(t *testing.T) {
 	opts := DefaultDownloadOptions(filePath)
 	opts.Overwrite = true
 
-	result, err := client.DownloadFileWithOptions(
+	result, err := client.DownloadWithOptions(
 		"https://raw.githubusercontent.com/golang/go/master/README.md",
 		opts,
 	)
@@ -253,7 +252,9 @@ func TestDownloadWithAuthentication(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := New()
+	config := DefaultConfig()
+	config.AllowPrivateIPs = true // Allow localhost for testing
+	client, err := New(config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -266,7 +267,7 @@ func TestDownloadWithAuthentication(t *testing.T) {
 	opts.Overwrite = true
 
 	// Test 1: Download with correct authentication
-	result, err := client.DownloadFileWithOptions(
+	result, err := client.DownloadWithOptions(
 		server.URL,
 		opts,
 		WithBearerToken(expectedToken),
@@ -294,7 +295,7 @@ func TestDownloadWithAuthentication(t *testing.T) {
 	opts2 := DefaultDownloadOptions(filePath2)
 	opts2.Overwrite = true
 
-	_, err = client.DownloadFileWithOptions(
+	_, err = client.DownloadWithOptions(
 		server.URL,
 		opts2,
 		// No authentication header

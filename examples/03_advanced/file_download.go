@@ -1,3 +1,5 @@
+//go:build examples
+
 package main
 
 import (
@@ -47,7 +49,7 @@ func demonstrateSimpleDownload() {
 	opts := httpc.DefaultDownloadOptions("downloads/golang-readme.md")
 	opts.Overwrite = true
 
-	result, err := client.DownloadFileWithOptions(
+	result, err := client.DownloadWithOptions(
 		"https://raw.githubusercontent.com/golang/go/master/README.md",
 		opts,
 	)
@@ -75,7 +77,6 @@ func demonstrateDownloadWithProgress() {
 	// Create download options with progress callback
 	opts := httpc.DefaultDownloadOptions("downloads/sample-file.bin")
 	opts.Overwrite = true
-	opts.ProgressInterval = 200 * time.Millisecond
 	opts.ProgressCallback = func(downloaded, total int64, speed float64) {
 		if total > 0 {
 			percentage := float64(downloaded) / float64(total) * 100
@@ -95,7 +96,7 @@ func demonstrateDownloadWithProgress() {
 
 	// Download a file with progress tracking
 	// Using a reliable test file from GitHub
-	result, err := client.DownloadFileWithOptions(
+	result, err := client.DownloadWithOptions(
 		"https://raw.githubusercontent.com/golang/go/master/LICENSE",
 		opts,
 		httpc.WithTimeout(60*time.Second),
@@ -123,7 +124,6 @@ func demonstrateLargeFileDownload() {
 	// Configure for large file download
 	opts := httpc.DefaultDownloadOptions("downloads/large-file.bin")
 	opts.Overwrite = true
-	opts.BufferSize = 64 * 1024 // 64KB buffer for better performance
 	opts.ProgressCallback = func(downloaded, total int64, speed float64) {
 		if total > 0 {
 			percentage := float64(downloaded) / float64(total) * 100
@@ -136,7 +136,7 @@ func demonstrateLargeFileDownload() {
 
 	// Download with longer timeout for large files
 	// Using a larger file from GitHub
-	result, err := client.DownloadFileWithOptions(
+	result, err := client.DownloadWithOptions(
 		"https://raw.githubusercontent.com/golang/go/master/README.md",
 		opts,
 		httpc.WithTimeout(5*time.Minute),
@@ -173,7 +173,7 @@ func demonstrateResumeDownload() {
 
 	// Download with a short timeout to simulate interruption
 	// Using a file from GitHub
-	_, err = client.DownloadFileWithOptions(
+	_, err = client.DownloadWithOptions(
 		"https://raw.githubusercontent.com/golang/go/master/README.md",
 		opts1,
 		httpc.WithTimeout(1*time.Second), // Very short timeout to interrupt
@@ -201,7 +201,7 @@ func demonstrateResumeDownload() {
 			}
 		}
 
-		result, err := client.DownloadFileWithOptions(
+		result, err := client.DownloadWithOptions(
 			"https://raw.githubusercontent.com/golang/go/master/README.md",
 			opts2,
 			httpc.WithTimeout(5*time.Minute),
@@ -266,7 +266,7 @@ func demonstrateAuthenticatedDownload() {
 	opts := httpc.DefaultDownloadOptions("downloads/authenticated-file.txt")
 	opts.Overwrite = true
 
-	result, err := client.DownloadFileWithOptions(
+	result, err := client.DownloadWithOptions(
 		"https://httpbin.org/get",
 		opts,
 		httpc.WithBearerToken("your-api-token-here"),

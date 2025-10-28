@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -15,29 +17,10 @@ type DownloadProgressCallback func(downloaded, total int64, speed float64)
 
 // DownloadOptions configures file download behavior
 type DownloadOptions struct {
-	// FilePath is the destination file path (required)
-	FilePath string
-
-	// ProgressCallback is called periodically to report download progress
+	FilePath         string
 	ProgressCallback DownloadProgressCallback
-
-	// ProgressInterval is how often to call the progress callback (default: 500ms)
-	ProgressInterval time.Duration
-
-	// BufferSize is the size of the buffer used for copying data (default: 32KB)
-	BufferSize int
-
-	// CreateDirs creates parent directories if they don't exist (default: true)
-	CreateDirs bool
-
-	// Overwrite allows overwriting existing files (default: false)
-	Overwrite bool
-
-	// ResumeDownload attempts to resume partial downloads using Range requests (default: false)
-	ResumeDownload bool
-
-	// FileMode is the permission mode for the created file (default: 0644)
-	FileMode os.FileMode
+	Overwrite        bool
+	ResumeDownload   bool
 }
 
 // DownloadResult contains information about a completed download
@@ -53,13 +36,9 @@ type DownloadResult struct {
 
 func DefaultDownloadOptions(filePath string) *DownloadOptions {
 	return &DownloadOptions{
-		FilePath:         filePath,
-		ProgressInterval: 500 * time.Millisecond,
-		BufferSize:       32 * 1024,
-		CreateDirs:       true,
-		Overwrite:        false,
-		ResumeDownload:   false,
-		FileMode:         0644,
+		FilePath:       filePath,
+		Overwrite:      false,
+		ResumeDownload: false,
 	}
 }
 
@@ -73,26 +52,16 @@ func DownloadFile(url string, filePath string, options ...RequestOption) (*Downl
 	return client.(*clientImpl).downloadFile(context.Background(), url, downloadOpts, options...)
 }
 
-func DownloadWithOptions(url string, downloadOpts *DownloadOptions, options ...RequestOption) (*DownloadResult, error) {
-	client, err := getDefaultClient()
-	if err != nil {
-		return nil, err
-	}
-
-	return client.(*clientImpl).downloadFile(context.Background(), url, downloadOpts, options...)
-}
-
 func (c *clientImpl) DownloadFile(url string, filePath string, options ...RequestOption) (*DownloadResult, error) {
 	downloadOpts := DefaultDownloadOptions(filePath)
 	return c.downloadFile(context.Background(), url, downloadOpts, options...)
 }
 
-// DownloadFileWithOptions downloads a file with custom download options
-func (c *clientImpl) DownloadFileWithOptions(url string, downloadOpts *DownloadOptions, options ...RequestOption) (*DownloadResult, error) {
+func (c *clientImpl) DownloadWithOptions(url string, downloadOpts *DownloadOptions, options ...RequestOption) (*DownloadResult, error) {
 	return c.downloadFile(context.Background(), url, downloadOpts, options...)
 }
 
-// downloadFile implements the core download logic
+// downloadFile implements the core download logic with security checks
 func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *DownloadOptions, options ...RequestOption) (*DownloadResult, error) {
 	if opts == nil {
 		return nil, fmt.Errorf("download options cannot be nil")
@@ -102,7 +71,12 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 		return nil, fmt.Errorf("file path cannot be empty")
 	}
 
-	if err := prepareFilePath(opts); err != nil {
+	// 验证URL安全性
+	if err := validateDownloadURL(url); err != nil {
+		return nil, fmt.Errorf("URL validation failed: %w", err)
+	}
+
+	if err := prepareFilePath(opts.FilePath); err != nil {
 		return nil, fmt.Errorf("failed to prepare file path: %w", err)
 	}
 	var resumeOffset int64
@@ -189,9 +163,9 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 
 	var file *os.File
 	if resumed {
-		file, err = os.OpenFile(opts.FilePath, os.O_WRONLY|os.O_APPEND, opts.FileMode)
+		file, err = os.OpenFile(opts.FilePath, os.O_WRONLY|os.O_APPEND, 0644)
 	} else {
-		file, err = os.OpenFile(opts.FilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, opts.FileMode)
+		file, err = os.OpenFile(opts.FilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %w", err)
@@ -217,33 +191,53 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	}, nil
 }
 
-func prepareFilePath(opts *DownloadOptions) error {
-	opts.FilePath = filepath.Clean(opts.FilePath)
+func prepareFilePath(filePath string) error {
+	// 防止路径遍历攻击
+	cleanPath := filepath.Clean(filePath)
 
-	if opts.CreateDirs {
-		dir := filepath.Dir(opts.FilePath)
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return fmt.Errorf("failed to create directories: %w", err)
+	// 检查是否包含路径遍历尝试
+	if strings.Contains(cleanPath, "..") {
+		return fmt.Errorf("path traversal detected: %s", filePath)
+	}
+
+	// 确保路径是绝对路径或相对于当前目录的安全路径
+	if filepath.IsAbs(cleanPath) {
+		// 对于绝对路径，确保不在系统敏感目录
+		if isSystemPath(cleanPath) {
+			return fmt.Errorf("access to system path denied: %s", cleanPath)
 		}
 	}
 
+	dir := filepath.Dir(cleanPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directories: %w", err)
+	}
 	return nil
 }
 
-func copyWithProgress(dst io.Writer, src io.Reader, offset, total int64, opts *DownloadOptions) (int64, error) {
-	if opts.BufferSize <= 0 {
-		opts.BufferSize = 32 * 1024
+// isSystemPath 检查是否为系统敏感路径
+func isSystemPath(path string) bool {
+	systemPaths := []string{
+		"/etc", "/sys", "/proc", "/dev", "/boot",
+		"C:\\Windows", "C:\\System32", "C:\\Program Files",
 	}
 
-	buffer := make([]byte, opts.BufferSize)
+	cleanPath := strings.ToLower(filepath.Clean(path))
+	for _, sysPath := range systemPaths {
+		if strings.HasPrefix(cleanPath, strings.ToLower(sysPath)) {
+			return true
+		}
+	}
+	return false
+}
+
+func copyWithProgress(dst io.Writer, src io.Reader, offset, total int64, opts *DownloadOptions) (int64, error) {
+	const bufferSize = 32 * 1024
+	const progressInterval = 500 * time.Millisecond
+
+	buffer := make([]byte, bufferSize)
 	var written int64
 	var lastProgress time.Time
-
-	progressInterval := opts.ProgressInterval
-	if progressInterval <= 0 {
-		progressInterval = 500 * time.Millisecond
-	}
-
 	startTime := time.Now()
 	var lastWritten int64
 
@@ -284,20 +278,19 @@ func copyWithProgress(dst io.Writer, src io.Reader, offset, total int64, opts *D
 	return written, nil
 }
 
-// SaveToFile saves the response body to a file.
+// SaveToFile saves the response body to a file with security checks.
 func (r *Response) SaveToFile(filePath string) error {
 	if r.RawBody == nil {
 		return fmt.Errorf("response body is empty")
 	}
 
-	filePath = filepath.Clean(filePath)
-
-	dir := filepath.Dir(filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directories: %w", err)
+	// 使用相同的安全检查
+	if err := prepareFilePath(filePath); err != nil {
+		return fmt.Errorf("file path validation failed: %w", err)
 	}
 
-	if err := os.WriteFile(filePath, r.RawBody, 0644); err != nil {
+	cleanPath := filepath.Clean(filePath)
+	if err := os.WriteFile(cleanPath, r.RawBody, 0644); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
@@ -319,4 +312,36 @@ func FormatBytes(bytes int64) string {
 
 func FormatSpeed(bytesPerSecond float64) string {
 	return FormatBytes(int64(bytesPerSecond)) + "/s"
+}
+
+// validateDownloadURL 验证下载URL的安全性
+func validateDownloadURL(urlStr string) error {
+	if urlStr == "" {
+		return fmt.Errorf("URL cannot be empty")
+	}
+
+	// 解析URL
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return fmt.Errorf("invalid URL format: %w", err)
+	}
+
+	// 只允许HTTP和HTTPS协议
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return fmt.Errorf("unsupported protocol: %s (only http/https allowed)", parsedURL.Scheme)
+	}
+
+	// 检查主机名
+	if parsedURL.Host == "" {
+		return fmt.Errorf("URL must have a host")
+	}
+
+	// 防止本地文件访问
+	if strings.HasPrefix(strings.ToLower(parsedURL.Host), "localhost") ||
+		strings.HasPrefix(parsedURL.Host, "127.") ||
+		parsedURL.Host == "::1" {
+		return fmt.Errorf("localhost downloads are not allowed for security reasons")
+	}
+
+	return nil
 }

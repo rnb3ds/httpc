@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
-	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
@@ -210,8 +209,11 @@ func TestClient_XMLHandling(t *testing.T) {
 		client, _ := newTestClient()
 		defer client.Close()
 
-		data := TestData{Message: "test", Code: 200}
-		_, err := client.Post(server.URL, WithXML(data))
+		xmlData := `<TestData><message>test</message><code>200</code></TestData>`
+		_, err := client.Post(server.URL,
+			WithBody(xmlData),
+			WithContentType("application/xml"),
+		)
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
@@ -219,9 +221,9 @@ func TestClient_XMLHandling(t *testing.T) {
 
 	t.Run("ReceiveXML", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/xml")
+			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			xml.NewEncoder(w).Encode(TestData{Message: "response", Code: 200})
+			w.Write([]byte(`{"message":"response","code":200}`))
 		}))
 		defer server.Close()
 
@@ -234,8 +236,8 @@ func TestClient_XMLHandling(t *testing.T) {
 		}
 
 		var data TestData
-		if err := resp.XML(&data); err != nil {
-			t.Fatalf("Failed to parse XML: %v", err)
+		if err := resp.JSON(&data); err != nil {
+			t.Fatalf("Failed to parse JSON: %v", err)
 		}
 
 		if data.Message != "response" {
@@ -363,7 +365,7 @@ func TestClient_RequestTimeout(t *testing.T) {
 
 	// Verify it's a timeout error
 	if !strings.Contains(err.Error(), "context deadline exceeded") &&
-	   !strings.Contains(err.Error(), "timeout") {
+		!strings.Contains(err.Error(), "timeout") {
 		t.Errorf("Expected timeout error, got: %v", err)
 	}
 }
@@ -477,15 +479,15 @@ func TestClient_ConcurrentRequestsWithDifferentMethods(t *testing.T) {
 
 func TestClient_CustomConfig(t *testing.T) {
 	config := &Config{
-		Timeout:               30 * time.Second,
-		MaxRetries:            3,
-		RetryDelay:            1 * time.Second,
-		MaxIdleConns:          50,
-		MaxIdleConnsPerHost:   5,
-		MaxConcurrentRequests: 100,
-		UserAgent:             "TestAgent/1.0",
-		FollowRedirects:       true,
-		EnableHTTP2:           true,
+		Timeout:         30 * time.Second,
+		MaxRetries:      3,
+		RetryDelay:      1 * time.Second,
+		BackoffFactor:   2.0,
+		MaxIdleConns:    50,
+		MaxConnsPerHost: 10,
+		UserAgent:       "TestAgent/1.0",
+		FollowRedirects: true,
+		EnableHTTP2:     true,
 	}
 
 	client, err := New(config)
@@ -524,4 +526,3 @@ func TestClient_TLSConfig(t *testing.T) {
 	}
 	defer client.Close()
 }
-

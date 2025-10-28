@@ -218,7 +218,6 @@ func TestRetry_ExponentialBackoff(t *testing.T) {
 	config.MaxRetries = 3
 	config.RetryDelay = 100 * time.Millisecond
 	config.BackoffFactor = 2.0
-	config.Jitter = false // Disable jitter for predictable testing
 	config.AllowPrivateIPs = true
 
 	client, _ := New(config)
@@ -261,7 +260,6 @@ func TestRetry_WithJitter(t *testing.T) {
 	config := DefaultConfig()
 	config.MaxRetries = 3
 	config.RetryDelay = 100 * time.Millisecond
-	config.Jitter = true
 	config.AllowPrivateIPs = true
 
 	client, _ := New(config)
@@ -335,8 +333,6 @@ func TestRetry_MaxRetryDelay(t *testing.T) {
 	config.MaxRetries = 5
 	config.RetryDelay = 100 * time.Millisecond
 	config.BackoffFactor = 10.0 // Very high backoff
-	config.MaxRetryDelay = 500 * time.Millisecond
-	config.Jitter = false
 	config.AllowPrivateIPs = true
 
 	client, _ := New(config)

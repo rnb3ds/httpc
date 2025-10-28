@@ -1,3 +1,5 @@
+//go:build examples
+
 package main
 
 import (
@@ -33,7 +35,7 @@ func simpleDownload() {
 	opts := httpc.DefaultDownloadOptions("downloads/readme.md")
 	opts.Overwrite = true
 
-	result, err := client.DownloadFileWithOptions(
+	result, err := client.DownloadWithOptions(
 		"https://raw.githubusercontent.com/golang/go/master/README.md",
 		opts,
 	)
@@ -59,9 +61,8 @@ func downloadWithProgress() {
 
 	opts := httpc.DefaultDownloadOptions("downloads/test-file.txt")
 	opts.Overwrite = true
-	opts.ProgressInterval = 200 * time.Millisecond
 
-	// Progress callback
+	// Progress callback (ProgressInterval is now fixed at 500ms internally)
 	opts.ProgressCallback = func(downloaded, total int64, speed float64) {
 		if total > 0 {
 			percentage := float64(downloaded) / float64(total) * 100
@@ -80,7 +81,7 @@ func downloadWithProgress() {
 		}
 	}
 
-	result, err := client.DownloadFileWithOptions(
+	result, err := client.DownloadWithOptions(
 		"https://raw.githubusercontent.com/golang/go/master/LICENSE",
 		opts,
 		httpc.WithTimeout(30*time.Second),

@@ -24,6 +24,7 @@ const (
 	ErrorTypeDNS
 	ErrorTypeValidation
 	ErrorTypeCircuitBreaker
+	ErrorTypeHTTP
 )
 
 type ClientError struct {

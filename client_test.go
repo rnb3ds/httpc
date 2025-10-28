@@ -181,9 +181,8 @@ func TestFormData(t *testing.T) {
 		},
 		Files: map[string]*FileData{
 			"file1": {
-				Filename:    "test.txt",
-				Content:     []byte("test content"),
-				ContentType: "text/plain",
+				Filename: "test.txt",
+				Content:  []byte("test content"),
 			},
 		},
 	}

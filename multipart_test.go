@@ -88,19 +88,16 @@ func TestMultipart_MultipleFiles(t *testing.T) {
 		Fields: map[string]string{},
 		Files: map[string]*FileData{
 			"file1": {
-				Filename:    "file1.txt",
-				Content:     []byte("Content of file 1"),
-				ContentType: "text/plain",
+				Filename: "file1.txt",
+				Content:  []byte("Content of file 1"),
 			},
 			"file2": {
-				Filename:    "file2.txt",
-				Content:     []byte("Content of file 2"),
-				ContentType: "text/plain",
+				Filename: "file2.txt",
+				Content:  []byte("Content of file 2"),
 			},
 			"file3": {
-				Filename:    "file3.txt",
-				Content:     []byte("Content of file 3"),
-				ContentType: "text/plain",
+				Filename: "file3.txt",
+				Content:  []byte("Content of file 3"),
 			},
 		},
 	}
@@ -155,9 +152,8 @@ func TestMultipart_MixedFieldsAndFiles(t *testing.T) {
 		},
 		Files: map[string]*FileData{
 			"avatar": {
-				Filename:    "avatar.png",
-				Content:     []byte{0x89, 0x50, 0x4E, 0x47}, // PNG header
-				ContentType: "image/png",
+				Filename: "avatar.png",
+				Content:  []byte{0x89, 0x50, 0x4E, 0x47}, // PNG header
 			},
 		},
 	}
@@ -230,7 +226,7 @@ func TestMultipart_BinaryFile(t *testing.T) {
 		defer file.Close()
 
 		content, _ := io.ReadAll(file)
-		
+
 		// Verify binary content
 		if len(content) != 256 {
 			t.Errorf("Expected 256 bytes, got %d", len(content))
@@ -264,9 +260,8 @@ func TestMultipart_BinaryFile(t *testing.T) {
 		Fields: map[string]string{},
 		Files: map[string]*FileData{
 			"binary": {
-				Filename:    "binary.dat",
-				Content:     binaryContent,
-				ContentType: "application/octet-stream",
+				Filename: "binary.dat",
+				Content:  binaryContent,
 			},
 		},
 	}
@@ -369,9 +364,8 @@ func TestMultipart_DifferentContentTypes(t *testing.T) {
 				Fields: map[string]string{},
 				Files: map[string]*FileData{
 					"file": {
-						Filename:    tt.filename,
-						Content:     tt.content,
-						ContentType: tt.contentType,
+						Filename: tt.filename,
+						Content:  tt.content,
 					},
 				},
 			}
@@ -391,7 +385,7 @@ func TestMultipart_DifferentContentTypes(t *testing.T) {
 func TestMultipart_BoundaryHandling(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		contentType := r.Header.Get("Content-Type")
-		
+
 		// Parse boundary from content type
 		_, params, err := mime.ParseMediaType(contentType)
 		if err != nil {
@@ -405,7 +399,7 @@ func TestMultipart_BoundaryHandling(t *testing.T) {
 
 		// Parse multipart form with boundary
 		reader := multipart.NewReader(r.Body, boundary)
-		
+
 		partCount := 0
 		for {
 			part, err := reader.NextPart()
@@ -436,9 +430,8 @@ func TestMultipart_BoundaryHandling(t *testing.T) {
 		},
 		Files: map[string]*FileData{
 			"file1": {
-				Filename:    "test.txt",
-				Content:     []byte("test"),
-				ContentType: "text/plain",
+				Filename: "test.txt",
+				Content:  []byte("test"),
 			},
 		},
 	}
@@ -452,4 +445,3 @@ func TestMultipart_BoundaryHandling(t *testing.T) {
 		t.Errorf("Expected status 200, got %d", resp.StatusCode)
 	}
 }
-

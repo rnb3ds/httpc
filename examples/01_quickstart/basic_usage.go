@@ -1,3 +1,5 @@
+//go:build examples
+
 package main
 
 import (
@@ -127,7 +129,7 @@ func useClientInstance() {
 func putRequest() {
 	fmt.Println("--- Example 4: PUT Request ---")
 
-	updateData := map[string]interface{}{
+	updateData := map[string]any{
 		"name":   "Jane Smith",
 		"email":  "jane@example.com",
 		"status": "active",
