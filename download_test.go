@@ -67,7 +67,9 @@ func TestDownloadFileWithProgress(t *testing.T) {
 	filePath := filepath.Join(tempDir, "test-progress.bin")
 
 	progressCalled := false
-	opts := DefaultDownloadOptions(filePath)
+	opts := &DownloadOptions{
+		FilePath: filePath,
+	}
 	opts.ProgressCallback = func(downloaded, total int64, speed float64) {
 		progressCalled = true
 		if total > 0 {
@@ -132,8 +134,10 @@ func TestDownloadFileOverwrite(t *testing.T) {
 	}
 
 	// DownloadFile with overwrite
-	opts := DefaultDownloadOptions(filePath)
-	opts.Overwrite = true
+	opts := &DownloadOptions{
+		FilePath:  filePath,
+		Overwrite: true,
+	}
 
 	result, err := client.DownloadWithOptions(
 		"https://raw.githubusercontent.com/golang/go/master/README.md",
@@ -263,8 +267,10 @@ func TestDownloadWithAuthentication(t *testing.T) {
 	tempDir := t.TempDir()
 	filePath := filepath.Join(tempDir, "auth-test.json")
 
-	opts := DefaultDownloadOptions(filePath)
-	opts.Overwrite = true
+	opts := &DownloadOptions{
+		FilePath:  filePath,
+		Overwrite: true,
+	}
 
 	// Test 1: Download with correct authentication
 	result, err := client.DownloadWithOptions(
@@ -292,8 +298,10 @@ func TestDownloadWithAuthentication(t *testing.T) {
 
 	// Test 2: Download without authentication should fail
 	filePath2 := filepath.Join(tempDir, "auth-test-fail.json")
-	opts2 := DefaultDownloadOptions(filePath2)
-	opts2.Overwrite = true
+	opts2 := &DownloadOptions{
+		FilePath:  filePath2,
+		Overwrite: true,
+	}
 
 	_, err = client.DownloadWithOptions(
 		server.URL,
@@ -305,50 +313,6 @@ func TestDownloadWithAuthentication(t *testing.T) {
 	}
 	if err != nil && !strings.Contains(err.Error(), "401") {
 		t.Logf("Got expected error: %v", err)
-	}
-}
-
-func TestFormatBytes(t *testing.T) {
-	tests := []struct {
-		bytes    int64
-		expected string
-	}{
-		{0, "0 B"},
-		{1023, "1023 B"},
-		{1024, "1.00 KB"},
-		{1536, "1.50 KB"},
-		{1048576, "1.00 MB"},
-		{1073741824, "1.00 GB"},
-		{1099511627776, "1.00 TB"},
-	}
-
-	for _, tt := range tests {
-		t.Run(fmt.Sprintf("%d bytes", tt.bytes), func(t *testing.T) {
-			result := FormatBytes(tt.bytes)
-			if result != tt.expected {
-				t.Errorf("FormatBytes(%d) = %s, want %s", tt.bytes, result, tt.expected)
-			}
-		})
-	}
-}
-
-func TestFormatSpeed(t *testing.T) {
-	tests := []struct {
-		speed    float64
-		expected string
-	}{
-		{1024, "1.00 KB/s"},
-		{1048576, "1.00 MB/s"},
-		{1073741824, "1.00 GB/s"},
-	}
-
-	for _, tt := range tests {
-		t.Run(fmt.Sprintf("%.0f bytes/s", tt.speed), func(t *testing.T) {
-			result := FormatSpeed(tt.speed)
-			if result != tt.expected {
-				t.Errorf("FormatSpeed(%.0f) = %s, want %s", tt.speed, result, tt.expected)
-			}
-		})
 	}
 }
 

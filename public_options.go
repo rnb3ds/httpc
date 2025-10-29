@@ -11,51 +11,37 @@ import (
 	"time"
 )
 
-// WithHeader sets a request header with security validation
+// WithHeader sets a request header
 func WithHeader(key, value string) RequestOption {
 	return func(r *Request) {
 		if r.Headers == nil {
 			r.Headers = make(map[string]string)
 		}
 
-		// 基本安全检查
-		if err := validateHeaderSafety(key, value); err != nil {
-			// 静默忽略不安全的头部，避免暴露错误信息
-			return
+		// Basic validation - reject headers with control characters or excessive length
+		if strings.TrimSpace(key) != "" &&
+			len(key) <= 256 && len(value) <= 8192 &&
+			!strings.ContainsAny(key, "\r\n\x00") &&
+			!strings.ContainsAny(value, "\r\n\x00") {
+			r.Headers[key] = value
 		}
-
-		r.Headers[key] = value
 	}
 }
 
-// validateHeaderSafety 执行基本的头部安全检查
-func validateHeaderSafety(key, value string) error {
-	// 检查CRLF注入
-	if strings.ContainsAny(key, "\r\n\x00") || strings.ContainsAny(value, "\r\n\x00") {
-		return fmt.Errorf("header contains invalid characters")
-	}
-
-	// 检查长度限制
-	if len(key) > 256 || len(value) > 8192 {
-		return fmt.Errorf("header too long")
-	}
-
-	// 检查空键
-	if strings.TrimSpace(key) == "" {
-		return fmt.Errorf("header key cannot be empty")
-	}
-
-	return nil
-}
-
-// WithHeaderMap sets multiple request headers
+// WithHeaderMap sets multiple request headers with validation
 func WithHeaderMap(headers map[string]string) RequestOption {
 	return func(r *Request) {
 		if r.Headers == nil {
 			r.Headers = make(map[string]string)
 		}
 		for k, v := range headers {
-			r.Headers[k] = v
+			// Apply same validation as WithHeader
+			if strings.TrimSpace(k) != "" &&
+				len(k) <= 256 && len(v) <= 8192 &&
+				!strings.ContainsAny(k, "\r\n\x00") &&
+				!strings.ContainsAny(v, "\r\n\x00") {
+				r.Headers[k] = v
+			}
 		}
 	}
 }
@@ -80,26 +66,23 @@ func WithJSONAccept() RequestOption {
 	return WithAccept("application/json")
 }
 
-// WithBasicAuth sets basic authentication with input validation
+// WithBasicAuth sets basic authentication with enhanced security
 func WithBasicAuth(username, password string) RequestOption {
 	return func(r *Request) {
 		if r.Headers == nil {
 			r.Headers = make(map[string]string)
 		}
 
-		// 验证输入
+		// Enhanced validation
 		if strings.TrimSpace(username) == "" {
-			return // 静默忽略空用户名
+			return
 		}
 
-		// 检查是否包含危险字符
-		if strings.ContainsAny(username, "\r\n\x00:") || strings.ContainsAny(password, "\r\n\x00") {
-			return // 静默忽略包含危险字符的凭据
-		}
-
-		// 限制长度以防止过长的凭据
-		if len(username) > 255 || len(password) > 255 {
-			return // 静默忽略过长的凭据
+		// Check for dangerous characters and length limits
+		if strings.ContainsAny(username, "\r\n\x00:") ||
+			strings.ContainsAny(password, "\r\n\x00") ||
+			len(username) > 255 || len(password) > 255 {
+			return
 		}
 
 		auth := fmt.Sprintf("%s:%s", username, password)
@@ -108,59 +91,73 @@ func WithBasicAuth(username, password string) RequestOption {
 	}
 }
 
-// WithBearerToken sets bearer token authentication
+// WithBearerToken sets bearer token authentication with validation
 func WithBearerToken(token string) RequestOption {
-	return WithHeader("Authorization", "Bearer "+token)
+	return func(r *Request) {
+		// Validate token
+		if strings.TrimSpace(token) == "" {
+			return
+		}
+
+		// Check for dangerous characters and reasonable length limits
+		if strings.ContainsAny(token, "\r\n\x00") || len(token) > 2048 {
+			return
+		}
+
+		if r.Headers == nil {
+			r.Headers = make(map[string]string)
+		}
+		r.Headers["Authorization"] = "Bearer " + token
+	}
 }
 
 // WithQuery sets a single query parameter with validation
-func WithQuery(key string, value interface{}) RequestOption {
+func WithQuery(key string, value any) RequestOption {
 	return func(r *Request) {
 		if r.QueryParams == nil {
 			r.QueryParams = make(map[string]any)
 		}
-
-		// 验证查询参数键
-		if strings.TrimSpace(key) == "" {
-			return // 静默忽略空键
-		}
-
-		// 检查键中的危险字符
-		if strings.ContainsAny(key, "\r\n\x00&=") {
-			return // 静默忽略包含危险字符的键
-		}
-
-		// 限制键长度
-		if len(key) > 256 {
-			return // 静默忽略过长的键
-		}
-
-		// 验证值
-		if value != nil {
-			valueStr := fmt.Sprintf("%v", value)
-			if len(valueStr) > 8192 { // 限制查询参数值的长度
-				return // 静默忽略过长的值
+		// Validate query parameter key and value
+		if strings.TrimSpace(key) != "" && len(key) <= 256 &&
+			!strings.ContainsAny(key, "\r\n\x00&=") {
+			// Validate value size
+			if value != nil {
+				valueStr := fmt.Sprintf("%v", value)
+				if len(valueStr) <= 8192 {
+					r.QueryParams[key] = value
+				}
+			} else {
+				r.QueryParams[key] = value
 			}
 		}
-
-		r.QueryParams[key] = value
 	}
 }
 
-// WithQueryMap sets multiple query parameters from a map
-func WithQueryMap(params map[string]interface{}) RequestOption {
+// WithQueryMap sets multiple query parameters from a map with validation
+func WithQueryMap(params map[string]any) RequestOption {
 	return func(r *Request) {
 		if r.QueryParams == nil {
 			r.QueryParams = make(map[string]any)
 		}
 		for k, v := range params {
-			r.QueryParams[k] = v
+			// Apply same validation as WithQuery
+			if strings.TrimSpace(k) != "" && len(k) <= 256 &&
+				!strings.ContainsAny(k, "\r\n\x00&=") {
+				if v != nil {
+					valueStr := fmt.Sprintf("%v", v)
+					if len(valueStr) <= 8192 {
+						r.QueryParams[k] = v
+					}
+				} else {
+					r.QueryParams[k] = v
+				}
+			}
 		}
 	}
 }
 
 // WithJSON sets the request body as JSON and sets appropriate Content-Type
-func WithJSON(data interface{}) RequestOption {
+func WithJSON(data any) RequestOption {
 	return func(r *Request) {
 		r.Body = data
 		if r.Headers == nil {
@@ -207,34 +204,38 @@ func WithFormData(data *FormData) RequestOption {
 	}
 }
 
-// WithFile uploads a single file with security validation
+// WithFile uploads a single file with enhanced security validation
 func WithFile(fieldName, filename string, content []byte) RequestOption {
 	return func(r *Request) {
-		// 验证字段名
-		if strings.TrimSpace(fieldName) == "" {
-			return // 静默忽略空字段名
+		// Enhanced validation
+		if strings.TrimSpace(fieldName) == "" || strings.TrimSpace(filename) == "" {
+			return
 		}
 
-		// 验证文件名
-		if strings.TrimSpace(filename) == "" {
-			return // 静默忽略空文件名
+		// Validate field name and filename lengths and characters
+		if len(fieldName) > 256 || len(filename) > 256 {
+			return
 		}
 
-		// 清理文件名，防止路径遍历
+		// Check for dangerous characters
+		if strings.ContainsAny(fieldName, "\r\n\x00\"'<>&") ||
+			strings.ContainsAny(filename, "\r\n\x00\"'<>&") {
+			return
+		}
+
 		cleanFilename := filepath.Base(filename)
-		if cleanFilename == "." || cleanFilename == ".." {
-			return // 静默忽略危险文件名
+		if cleanFilename == "." || cleanFilename == ".." || cleanFilename == "" {
+			return
 		}
 
-		// 检查文件大小限制 (50MB)
+		// File size limit (50MB)
 		if len(content) > 50*1024*1024 {
-			return // 静默忽略过大文件
+			return
 		}
 
-		// 检查字段名和文件名中的危险字符
-		if strings.ContainsAny(fieldName, "\r\n\x00\"'<>") ||
-			strings.ContainsAny(cleanFilename, "\r\n\x00") {
-			return // 静默忽略包含危险字符的名称
+		// Check for null bytes in content (potential security issue)
+		if len(content) > 0 && content[0] == 0 {
+			// Allow but be cautious with binary files starting with null
 		}
 
 		formData := &FormData{
@@ -272,7 +273,7 @@ func WithMaxRetries(maxRetries int) RequestOption {
 }
 
 // WithBody sets the raw request body
-func WithBody(body interface{}) RequestOption {
+func WithBody(body any) RequestOption {
 	return func(r *Request) {
 		r.Body = body
 	}
@@ -294,9 +295,29 @@ func WithBinary(data []byte, contentType ...string) RequestOption {
 	}
 }
 
-// WithCookie adds a cookie to the request
+// WithCookie adds a cookie to the request with validation
 func WithCookie(cookie *http.Cookie) RequestOption {
 	return func(r *Request) {
+		if cookie == nil {
+			return
+		}
+
+		// Validate cookie name and value
+		if strings.TrimSpace(cookie.Name) == "" {
+			return
+		}
+
+		// Check for dangerous characters in cookie name and value
+		if strings.ContainsAny(cookie.Name, "\r\n\x00;,") ||
+			strings.ContainsAny(cookie.Value, "\r\n\x00") {
+			return
+		}
+
+		// Limit cookie name and value length
+		if len(cookie.Name) > 256 || len(cookie.Value) > 4096 {
+			return
+		}
+
 		if r.Cookies == nil {
 			r.Cookies = make([]*http.Cookie, 0)
 		}
@@ -316,6 +337,14 @@ func WithCookies(cookies []*http.Cookie) RequestOption {
 
 // WithCookieValue adds a simple cookie with the given name and value
 func WithCookieValue(name, value string) RequestOption {
+	// Pre-validate before creating cookie
+	if strings.TrimSpace(name) == "" ||
+		strings.ContainsAny(name, "\r\n\x00;,") ||
+		strings.ContainsAny(value, "\r\n\x00") ||
+		len(name) > 256 || len(value) > 4096 {
+		return func(r *Request) {} // Return no-op function for invalid input
+	}
+
 	return WithCookie(&http.Cookie{
 		Name:  name,
 		Value: value,

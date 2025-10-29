@@ -431,7 +431,8 @@ func TestDownload_NoContentLength(t *testing.T) {
 	testContent := []byte("content without length header")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Don't set Content-Length header
+		// Don't set Content-Length header - use chunked encoding
+		w.Header().Set("Transfer-Encoding", "chunked")
 		w.WriteHeader(http.StatusOK)
 		w.Write(testContent)
 	}))

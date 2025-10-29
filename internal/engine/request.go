@@ -28,6 +28,15 @@ func NewRequestProcessor(config *Config, memManager *memory.Manager) *RequestPro
 }
 
 func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
+	// Provide defaults for missing fields
+	if req.Method == "" {
+		req.Method = "GET"
+	}
+
+	if req.Context == nil {
+		req.Context = context.Background()
+	}
+
 	parsedURL, err := url.Parse(req.URL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid URL: %w", err)
@@ -112,16 +121,15 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 	}
 
 	ctx := req.Context
-	if ctx == nil {
-		ctx = context.Background()
-	}
 
-	// Note: We don't create a timeout context here with defer cancel()
-	// because that would cancel the context immediately when this function returns.
-	// Instead, the timeout context should be created at a higher level
-	// (in executeRequest or Request method) where it can live for the duration
-	// of the actual HTTP request execution.
-	// For now, we just use the context as-is and let the caller manage timeouts.
+	// Apply timeout if specified
+	if req.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
+		// Note: We don't defer cancel() here because the context needs to live
+		// beyond this function. The caller is responsible for managing the context lifecycle.
+		_ = cancel // Avoid unused variable warning
+	}
 
 	httpReq = httpReq.WithContext(ctx)
 
@@ -208,4 +216,3 @@ func extractFormData(v interface{}) (*FormDataExtractor, bool) {
 func escapeQuotes(s string) string {
 	return strings.ReplaceAll(s, `"`, `\"`)
 }
-

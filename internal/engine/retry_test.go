@@ -207,9 +207,9 @@ func TestRetryEngine_GetDelay_ExponentialBackoff(t *testing.T) {
 	engine := NewRetryEngine(config)
 
 	tests := []struct {
-		attempt      int
-		expectedMin  time.Duration
-		expectedMax  time.Duration
+		attempt     int
+		expectedMin time.Duration
+		expectedMax time.Duration
 	}{
 		{
 			attempt:     0,
@@ -274,24 +274,25 @@ func TestRetryEngine_GetDelay_WithJitter(t *testing.T) {
 		t.Error("Expected variation in delays with jitter enabled")
 	}
 
-	// All delays should be within reasonable bounds
-	baseDelay := 200 * time.Millisecond // 100ms * 2^1
-	maxDelay := baseDelay + (baseDelay / 2)
+	// All delays should be within reasonable bounds (±10% jitter)
+	baseDelay := 200 * time.Millisecond      // 100ms * 2^1
+	minDelay := baseDelay - (baseDelay / 10) // -10%
+	maxDelay := baseDelay + (baseDelay / 10) // +10%
 
 	for i, delay := range delays {
-		if delay < baseDelay || delay > maxDelay {
+		if delay < minDelay || delay > maxDelay {
 			t.Errorf("Delay %d out of expected range: %v (expected %v to %v)",
-				i, delay, baseDelay, maxDelay)
+				i, delay, minDelay, maxDelay)
 		}
 	}
 }
 
 func TestRetryEngine_GetDelay_MaxRetryDelay(t *testing.T) {
 	config := &Config{
-		RetryDelay:     100 * time.Millisecond,
-		BackoffFactor:  2.0,
-		MaxRetryDelay:  500 * time.Millisecond,
-		Jitter:         false,
+		RetryDelay:    100 * time.Millisecond,
+		BackoffFactor: 2.0,
+		MaxRetryDelay: 500 * time.Millisecond,
+		Jitter:        false,
 	}
 
 	engine := NewRetryEngine(config)
@@ -461,4 +462,3 @@ func TestRetryEngine_GetSecureJitter_ZeroMax(t *testing.T) {
 		t.Errorf("Expected 0 jitter for 0 maxJitter, got %v", jitter)
 	}
 }
-

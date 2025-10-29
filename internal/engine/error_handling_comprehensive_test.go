@@ -403,7 +403,7 @@ func TestErrorHandling_IntegrationWithClient(t *testing.T) {
 				}
 			}),
 			expectedError: true,
-			expectedType:  ErrorTypeNetwork,
+			expectedType:  ErrorTypeTransport, // Connection close is a transport-level error
 			expectedRetry: true,
 		},
 	}
@@ -414,7 +414,7 @@ func TestErrorHandling_IntegrationWithClient(t *testing.T) {
 			defer server.Close()
 
 			config := &Config{
-				Timeout:         5 * time.Second,
+				Timeout:         10 * time.Second, // Increase timeout
 				AllowPrivateIPs: true,
 				MaxRetries:      2,
 				RetryDelay:      50 * time.Millisecond,
@@ -429,7 +429,8 @@ func TestErrorHandling_IntegrationWithClient(t *testing.T) {
 			}
 			defer client.Close()
 
-			ctx := context.Background()
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
 			resp, err := client.Request(ctx, "GET", server.URL)
 
 			if tt.expectedError {

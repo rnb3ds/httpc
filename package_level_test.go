@@ -28,15 +28,15 @@ func TestPackageLevel_Post(t *testing.T) {
 		if r.Method != "POST" {
 			t.Errorf("Expected POST method, got %s", r.Method)
 		}
-		
+
 		body, _ := io.ReadAll(r.Body)
 		var data map[string]interface{}
 		json.Unmarshal(body, &data)
-		
+
 		if data["test"] != "value" {
 			t.Errorf("Expected test=value, got %v", data["test"])
 		}
-		
+
 		w.WriteHeader(http.StatusCreated)
 		w.Write([]byte(`{"status":"created"}`))
 	}))
@@ -170,7 +170,7 @@ func TestPackageLevel_SetDefaultClient(t *testing.T) {
 	config.Timeout = 5 * time.Second
 	config.MaxRetries = 1
 	config.AllowPrivateIPs = true
-	
+
 	customClient, err := New(config)
 	if err != nil {
 		t.Fatalf("Failed to create custom client: %v", err)
@@ -260,7 +260,8 @@ func TestPackageLevel_WithTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	_, err := Do(ctx, "GET", server.URL)
+	client, _ := getDefaultClient()
+	_, err := client.Request(ctx, "GET", server.URL)
 	if err == nil {
 		t.Error("Expected timeout error, got nil")
 	}
@@ -277,7 +278,8 @@ func TestPackageLevel_WithContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	_, err := Do(ctx, "GET", server.URL)
+	client, _ := getDefaultClient()
+	_, err := client.Request(ctx, "GET", server.URL)
 	if err == nil {
 		t.Error("Expected context canceled error, got nil")
 	}
@@ -297,4 +299,3 @@ func TestPackageLevel_ErrorHandling(t *testing.T) {
 		t.Error("Expected error for non-existent server")
 	}
 }
-

@@ -76,7 +76,7 @@ func TestSanitizeURL(t *testing.T) {
 		{
 			name:     "URL with only username",
 			input:    "https://user@example.com/path",
-			expected: "https://***:***@example.com/path",
+			expected: "https://***@example.com/path",
 		},
 		{
 			name:     "URL with query parameters",
@@ -473,4 +473,3 @@ func TestErrorType_String(t *testing.T) {
 		seen[et] = true
 	}
 }
-

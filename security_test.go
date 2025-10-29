@@ -109,7 +109,11 @@ func TestSecurity_RequestSizeValidation(t *testing.T) {
 
 func TestSecurity_TLSConfiguration(t *testing.T) {
 	// TLS configuration is handled internally
-	client, err := New(ConfigPreset(SecurityLevelStrict))
+	config := DefaultConfig()
+	config.MaxRetries = 1
+	config.FollowRedirects = false
+	config.EnableCookies = false
+	client, err := New(config)
 	if err != nil {
 		t.Fatalf("Failed to create secure client: %v", err)
 	}

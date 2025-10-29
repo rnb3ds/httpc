@@ -276,11 +276,11 @@ func TestStress_HighConcurrency(t *testing.T) {
 		t.Skip("Skipping stress test in short mode")
 	}
 
-	// 检测环境并调整参数
-	numGoroutines := 50       // 降低并发数
-	requestsPerGoroutine := 5 // 减少每个协程的请求数
+	// Detect environment and adjust parameters
+	numGoroutines := 50       // Reduce concurrency
+	requestsPerGoroutine := 5 // Reduce requests per goroutine
 
-	// 在CI环境中进一步降低
+	// Further reduce in CI environment
 	if os.Getenv("CI") == "true" || os.Getenv("GITHUB_ACTIONS") == "true" {
 		numGoroutines = 20
 		requestsPerGoroutine = 2
@@ -289,15 +289,15 @@ func TestStress_HighConcurrency(t *testing.T) {
 	var requestCount int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&requestCount, 1)
-		time.Sleep(2 * time.Millisecond) // 减少服务器延迟
+		time.Sleep(2 * time.Millisecond) // Reduce server delay
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 
-	// 使用更宽松的配置
+	// Use more lenient configuration
 	config := DefaultConfig()
-	config.Timeout = 30 * time.Second // 增加超时时间
-	config.AllowPrivateIPs = true     // 允许访问测试服务器
+	config.Timeout = 30 * time.Second // Increase timeout
+	config.AllowPrivateIPs = true     // Allow access to test server
 	client, err := New(config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
@@ -309,20 +309,20 @@ func TestStress_HighConcurrency(t *testing.T) {
 
 	start := time.Now()
 
-	// 使用信号量控制并发启动
-	sem := make(chan struct{}, 10) // 限制同时启动的协程数
+	// Use semaphore to control concurrent startup
+	sem := make(chan struct{}, 10) // Limit concurrent goroutines
 
 	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
 
-			// 获取信号量
+			// Acquire semaphore
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
 			for j := 0; j < requestsPerGoroutine; j++ {
-				// 添加小延迟避免瞬间大量请求
+				// Add small delay to avoid burst requests
 				if j > 0 {
 					time.Sleep(time.Millisecond)
 				}
@@ -332,7 +332,7 @@ func TestStress_HighConcurrency(t *testing.T) {
 					select {
 					case errors <- err:
 					default:
-						// 错误通道满了，忽略
+						// Error channel is full, ignore
 					}
 				}
 			}
@@ -361,10 +361,10 @@ func TestStress_HighConcurrency(t *testing.T) {
 	t.Logf("  Duration: %v", duration)
 	t.Logf("  Throughput: %.2f req/s", float64(totalRequests)/duration.Seconds())
 
-	// 根据环境调整期望成功率
+	// Adjust expected success rate based on environment
 	expectedSuccessRate := 95.0
 	if os.Getenv("CI") == "true" || os.Getenv("GITHUB_ACTIONS") == "true" {
-		expectedSuccessRate = 85.0 // CI环境中降低期望
+		expectedSuccessRate = 85.0 // Lower expectations in CI environment
 	}
 
 	if successRate < expectedSuccessRate {

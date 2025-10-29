@@ -191,7 +191,7 @@ func TestRequestProcessor_BuildHTTPRequest(t *testing.T) {
 				URL:     "https://api.example.com/users",
 				Context: context.Background(),
 			},
-			expectError: true,
+			expectError: false, // Empty method defaults to GET
 		},
 		{
 			name: "Nil context",
@@ -200,7 +200,7 @@ func TestRequestProcessor_BuildHTTPRequest(t *testing.T) {
 				URL:     "https://api.example.com/users",
 				Context: nil,
 			},
-			expectError: true,
+			expectError: false, // Nil context defaults to Background
 		},
 	}
 

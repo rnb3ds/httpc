@@ -91,7 +91,7 @@ func TestEdgeCase_SpecialCharactersInURL(t *testing.T) {
 	}{
 		{"Spaces", map[string]interface{}{"key": "value with spaces"}},
 		{"Special Chars", map[string]interface{}{"key": "value!@#$%^&*()"}},
-		{"Unicode", map[string]interface{}{"key": "值中文"}},
+		{"Unicode", map[string]interface{}{"key": "测试中文"}},
 		{"Emoji", map[string]interface{}{"key": "😀🎉"}},
 	}
 
@@ -489,7 +489,8 @@ func TestEdgeCase_PackageLevelFunctions(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		resp, err := Do(ctx, "GET", server.URL)
+		client, _ := getDefaultClient()
+		resp, err := client.Request(ctx, "GET", server.URL)
 		if err != nil {
 			t.Fatalf("Get failed: %v", err)
 		}
@@ -502,7 +503,8 @@ func TestEdgeCase_PackageLevelFunctions(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		resp, err := Do(ctx, "POST", server.URL, WithJSON(map[string]string{"key": "value"}))
+		client, _ := getDefaultClient()
+		resp, err := client.Request(ctx, "POST", server.URL, WithJSON(map[string]string{"key": "value"}))
 		if err != nil {
 			t.Fatalf("Post failed: %v", err)
 		}
@@ -515,9 +517,10 @@ func TestEdgeCase_PackageLevelFunctions(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		resp, err := Do(ctx, "GET", server.URL)
+		client, _ := getDefaultClient()
+		resp, err := client.Request(ctx, "GET", server.URL)
 		if err != nil {
-			t.Fatalf("Do failed: %v", err)
+			t.Fatalf("Request failed: %v", err)
 		}
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("Expected status 200, got %d", resp.StatusCode)

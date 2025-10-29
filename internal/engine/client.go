@@ -371,7 +371,7 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 			break
 		}
 
-		delay := c.retryEngine.GetDelay(attempt)
+		delay := c.retryEngine.GetDelayWithResponse(attempt, lastResp)
 		if err := c.sleepWithContext(req.Context, delay); err != nil {
 			return nil, ClassifyError(err, req.URL, req.Method, attempt+1)
 		}
@@ -405,10 +405,17 @@ func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
 	}
 
 	var cancel context.CancelFunc
-	if req.Timeout > 0 {
+	timeout := req.Timeout
+
+	// If no request-specific timeout is set, use the client config timeout
+	if timeout <= 0 && c.config.Timeout > 0 {
+		timeout = c.config.Timeout
+	}
+
+	if timeout > 0 {
 		// Only create a timeout context if the original context doesn't already have a deadline
 		if _, hasDeadline := originalCtx.Deadline(); !hasDeadline {
-			req.Context, cancel = context.WithTimeout(originalCtx, req.Timeout)
+			req.Context, cancel = context.WithTimeout(originalCtx, timeout)
 			defer cancel()
 		}
 	}

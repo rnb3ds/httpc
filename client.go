@@ -43,12 +43,18 @@ func New(config ...*Config) (Client, error) {
 	var cfg *Config
 	if len(config) > 0 && config[0] != nil {
 		cfg = config[0]
-		// 验证配置安全性
+		// Validate configuration security
 		if err := ValidateConfig(cfg); err != nil {
 			return nil, fmt.Errorf("invalid configuration: %w", err)
 		}
 	} else {
 		cfg = DefaultConfig()
+	}
+
+	// Additional security validation
+	if cfg.InsecureSkipVerify {
+		// Log warning or return error for production builds
+		// For now, we'll allow it but could be made stricter
 	}
 
 	engineConfig := convertToEngineConfig(cfg)
@@ -59,6 +65,22 @@ func New(config ...*Config) (Client, error) {
 	}
 
 	return &clientImpl{engine: engineClient}, nil
+}
+
+// NewSecure creates a new HTTP client with maximum security settings.
+// This function enforces strict security policies and is recommended for production use.
+func NewSecure() (Client, error) {
+	cfg := DefaultConfig()
+
+	// Enforce strict security settings
+	cfg.InsecureSkipVerify = false
+	cfg.AllowPrivateIPs = false
+	cfg.MaxResponseBodySize = 10 * 1024 * 1024 // Reduce to 10MB for security
+	cfg.MaxRetries = 1                         // Reduce retries to prevent abuse
+	cfg.Timeout = 30 * time.Second             // Shorter timeout
+	cfg.FollowRedirects = false                // Disable redirects for security
+
+	return New(cfg)
 }
 
 func (c *clientImpl) Get(url string, options ...RequestOption) (*Response, error) {
@@ -200,19 +222,10 @@ func Options(url string, options ...RequestOption) (*Response, error) {
 	return client.Options(url, options...)
 }
 
-// Do execute a request using the default client
-func Do(ctx context.Context, method, url string, options ...RequestOption) (*Response, error) {
-	client, err := getDefaultClient()
-	if err != nil {
-		return nil, err
-	}
-	return client.Request(ctx, method, url, options...)
-}
-
 // SetDefaultClient sets the default client used by package-level functions
-func SetDefaultClient(client Client) error {
+func SetDefaultClient(client Client) {
 	if client == nil {
-		return fmt.Errorf("client cannot be nil")
+		return
 	}
 
 	defaultMu.Lock()
@@ -223,23 +236,6 @@ func SetDefaultClient(client Client) error {
 	}
 
 	defaultClient = client
-	return nil
-}
-
-// CloseDefaultClient closes the default client and releases its resources
-func CloseDefaultClient() error {
-	defaultMu.Lock()
-	defer defaultMu.Unlock()
-
-	var err error
-	if defaultClient != nil {
-		err = defaultClient.Close()
-	}
-
-	defaultClient = nil
-	defaultErr = nil
-
-	return err
 }
 
 func convertToEngineConfig(cfg *Config) *engine.Config {
@@ -247,16 +243,10 @@ func convertToEngineConfig(cfg *Config) *engine.Config {
 		cfg = DefaultConfig()
 	}
 
-	// 安全性验证和限制
-	maxIdleConnsPerHost := cfg.MaxIdleConns / 10
-	if maxIdleConnsPerHost < 1 {
-		maxIdleConnsPerHost = 1
-	}
-	if maxIdleConnsPerHost > 50 {
-		maxIdleConnsPerHost = 50 // 限制最大值
-	}
+	// Security validation and limits
+	maxIdleConnsPerHost := max(1, min(50, cfg.MaxIdleConns/10))
 
-	// 限制最大并发请求数以防止资源耗尽
+	// Limit maximum concurrent requests to prevent resource exhaustion
 	maxConcurrent := 500
 	if cfg.MaxConnsPerHost > 0 && cfg.MaxConnsPerHost < maxConcurrent {
 		maxConcurrent = cfg.MaxConnsPerHost * 10
@@ -274,19 +264,19 @@ func convertToEngineConfig(cfg *Config) *engine.Config {
 		MaxConnsPerHost:       cfg.MaxConnsPerHost,
 		ProxyURL:              cfg.ProxyURL,
 		TLSConfig:             cfg.TLSConfig,
-		MinTLSVersion:         tls.VersionTLS12, // 强制最低TLS 1.2
+		MinTLSVersion:         tls.VersionTLS12, // Force minimum TLS 1.2
 		MaxTLSVersion:         tls.VersionTLS13,
 		InsecureSkipVerify:    cfg.InsecureSkipVerify,
 		MaxResponseBodySize:   cfg.MaxResponseBodySize,
 		MaxConcurrentRequests: maxConcurrent,
-		ValidateURL:           true, // 强制启用URL验证
-		ValidateHeaders:       true, // 强制启用头部验证
+		ValidateURL:           true, // Force enable URL validation
+		ValidateHeaders:       true, // Force enable header validation
 		AllowPrivateIPs:       cfg.AllowPrivateIPs,
 		MaxRetries:            cfg.MaxRetries,
 		RetryDelay:            cfg.RetryDelay,
-		MaxRetryDelay:         1 * time.Second, // 固定最大延迟防止DoS
+		MaxRetryDelay:         1 * time.Second, // Fixed maximum delay to prevent DoS
 		BackoffFactor:         cfg.BackoffFactor,
-		Jitter:                true, // 启用抖动防止雷群效应
+		Jitter:                true, // Enable jitter to prevent thundering herd
 		UserAgent:             cfg.UserAgent,
 		Headers:               cfg.Headers,
 		FollowRedirects:       cfg.FollowRedirects,
@@ -356,14 +346,13 @@ func convertEngineResponse(engineResp *engine.Response) *Response {
 }
 
 // createCookieJar creates a cookie jar if cookies are enabled
-func createCookieJar(enableCookies bool) interface{} {
+func createCookieJar(enableCookies bool) any {
 	if !enableCookies {
 		return nil
 	}
 
 	jar, err := NewCookieJar()
 	if err != nil {
-		// If we can't create a cookie jar, return nil
 		return nil
 	}
 

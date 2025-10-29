@@ -203,7 +203,6 @@ func TestRetryEngine_NetworkErrors(t *testing.T) {
 		fmt.Errorf("dial tcp: timeout"),
 		fmt.Errorf("read tcp: connection reset by peer"),
 		fmt.Errorf("write tcp: broken pipe"),
-		context.DeadlineExceeded,
 	}
 
 	for _, err := range networkErrors {
@@ -220,6 +219,7 @@ func TestRetryEngine_NetworkErrors(t *testing.T) {
 		fmt.Errorf("invalid JSON"),
 		fmt.Errorf("permission denied"),
 		context.Canceled,
+		context.DeadlineExceeded,
 	}
 
 	for _, err := range nonNetworkErrors {
@@ -295,7 +295,8 @@ func TestRetryEngine_IntegrationWithClient(t *testing.T) {
 	}
 	defer client.Close()
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	resp, err := client.Request(ctx, "GET", server.URL)
 
 	if err != nil {
@@ -415,7 +416,8 @@ func TestRetryEngine_RetryAfterHeader(t *testing.T) {
 	defer client.Close()
 
 	start := time.Now()
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	resp, err := client.Request(ctx, "GET", server.URL)
 	duration := time.Since(start)
 

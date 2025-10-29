@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/cybergodev/httpc"
@@ -32,20 +33,24 @@ func simpleDownload() {
 	}
 	defer client.Close()
 
-	opts := httpc.DefaultDownloadOptions("downloads/readme.md")
-	opts.Overwrite = true
+	// Create downloads directory if it doesn't exist
+	if err := os.MkdirAll("downloads", 0755); err != nil {
+		log.Printf("   Error creating downloads directory: %v\n", err)
+		return
+	}
 
-	result, err := client.DownloadWithOptions(
+	// Use the simple DownloadFile method for basic downloads
+	result, err := client.DownloadFile(
 		"https://raw.githubusercontent.com/golang/go/master/README.md",
-		opts,
+		"downloads/readme.md",
 	)
 	if err != nil {
 		log.Printf("   Error: %v\n", err)
 		return
 	}
 
-	fmt.Printf("   ✓ Downloaded: %s\n", httpc.FormatBytes(result.BytesWritten))
-	fmt.Printf("   ✓ Speed: %s\n", httpc.FormatSpeed(result.AverageSpeed))
+	fmt.Printf("   ✓ Downloaded: %s\n", formatBytes(result.BytesWritten))
+	fmt.Printf("   ✓ Speed: %s/s\n", formatBytes(int64(result.AverageSpeed)))
 	fmt.Printf("   ✓ Duration: %v\n\n", result.Duration)
 }
 
@@ -59,26 +64,27 @@ func downloadWithProgress() {
 	}
 	defer client.Close()
 
-	opts := httpc.DefaultDownloadOptions("downloads/test-file.txt")
-	opts.Overwrite = true
-
-	// Progress callback (ProgressInterval is now fixed at 500ms internally)
-	opts.ProgressCallback = func(downloaded, total int64, speed float64) {
-		if total > 0 {
-			percentage := float64(downloaded) / float64(total) * 100
-			bar := createProgressBar(int(percentage), 40)
-			fmt.Printf("\r   [%s] %.1f%% - %s - %s/s    ",
-				bar,
-				percentage,
-				httpc.FormatBytes(downloaded),
-				httpc.FormatSpeed(speed),
-			)
-		} else {
-			fmt.Printf("\r   Downloaded: %s - %s/s    ",
-				httpc.FormatBytes(downloaded),
-				httpc.FormatSpeed(speed),
-			)
-		}
+	// Create download options with progress callback
+	opts := &httpc.DownloadOptions{
+		FilePath:  "downloads/test-file.txt",
+		Overwrite: true,
+		ProgressCallback: func(downloaded, total int64, speed float64) {
+			if total > 0 {
+				percentage := float64(downloaded) / float64(total) * 100
+				bar := createProgressBar(int(percentage), 40)
+				fmt.Printf("\r   [%s] %.1f%% - %s - %s/s    ",
+					bar,
+					percentage,
+					formatBytes(downloaded),
+					formatBytes(int64(speed)),
+				)
+			} else {
+				fmt.Printf("\r   Downloaded: %s - %s/s    ",
+					formatBytes(downloaded),
+					formatBytes(int64(speed)),
+				)
+			}
+		},
 	}
 
 	result, err := client.DownloadWithOptions(
@@ -93,9 +99,23 @@ func downloadWithProgress() {
 
 	fmt.Printf("\n   ✓ Download completed!\n")
 	fmt.Printf("   ✓ File: %s\n", result.FilePath)
-	fmt.Printf("   ✓ Size: %s\n", httpc.FormatBytes(result.BytesWritten))
-	fmt.Printf("   ✓ Average speed: %s\n", httpc.FormatSpeed(result.AverageSpeed))
+	fmt.Printf("   ✓ Size: %s\n", formatBytes(result.BytesWritten))
+	fmt.Printf("   ✓ Average speed: %s/s\n", formatBytes(int64(result.AverageSpeed)))
 }
+
+// formatBytes formats bytes in human readable format
+// func formatBytes(bytes int64) string {
+// 	const unit = 1024
+// 	if bytes < unit {
+// 		return fmt.Sprintf("%d B", bytes)
+// 	}
+// 	div, exp := int64(unit), 0
+// 	for n := bytes / unit; n >= unit; n /= unit {
+// 		div *= unit
+// 		exp++
+// 	}
+// 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+// }
 
 // createProgressBar creates a simple text progress bar
 func createProgressBar(percentage, width int) string {

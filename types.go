@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/cookiejar"
+	"strings"
 	"time"
 )
 
@@ -43,8 +44,8 @@ func (r *Response) IsServerError() bool {
 	return r.StatusCode >= 500 && r.StatusCode < 600
 }
 
-// JSON unmarshals the response body into the provided interface with size limits
-func (r *Response) JSON(v interface{}) error {
+// JSON unmarshals the response body into the provided interface with enhanced security
+func (r *Response) JSON(v any) error {
 	if r.RawBody == nil {
 		return fmt.Errorf("response body is empty")
 	}
@@ -54,6 +55,13 @@ func (r *Response) JSON(v interface{}) error {
 		return fmt.Errorf("response body too large for JSON parsing")
 	}
 
+	// Check for potential JSON bombs (deeply nested structures)
+	if strings.Count(string(r.RawBody), "{") > 10000 ||
+		strings.Count(string(r.RawBody), "[") > 10000 {
+		return fmt.Errorf("JSON structure too complex (potential JSON bomb)")
+	}
+
+	// Use standard unmarshaling but with pre-validation
 	return json.Unmarshal(r.RawBody, v)
 }
 
@@ -197,7 +205,7 @@ func ValidateConfig(cfg *Config) error {
 		return fmt.Errorf("MaxResponseBodySize too large (max 1GB)")
 	}
 
-	// 验证重试设置
+	// Validate retry settings
 	if cfg.MaxRetries < 0 || cfg.MaxRetries > 10 {
 		return fmt.Errorf("MaxRetries must be between 0 and 10")
 	}
@@ -208,9 +216,29 @@ func ValidateConfig(cfg *Config) error {
 		return fmt.Errorf("BackoffFactor must be between 1.0 and 10.0")
 	}
 
-	// 验证User-Agent
+	// Validate User-Agent
 	if len(cfg.UserAgent) > 512 {
 		return fmt.Errorf("UserAgent too long (max 512 characters)")
+	}
+
+	// Check for dangerous characters in User-Agent
+	if strings.ContainsAny(cfg.UserAgent, "\r\n\x00") {
+		return fmt.Errorf("UserAgent contains invalid characters")
+	}
+
+	// Validate headers map
+	if cfg.Headers != nil {
+		for key, value := range cfg.Headers {
+			if strings.TrimSpace(key) == "" {
+				return fmt.Errorf("header key cannot be empty")
+			}
+			if len(key) > 256 || len(value) > 8192 {
+				return fmt.Errorf("header key or value too long")
+			}
+			if strings.ContainsAny(key, "\r\n\x00") || strings.ContainsAny(value, "\r\n\x00") {
+				return fmt.Errorf("header contains invalid characters")
+			}
+		}
 	}
 
 	return nil

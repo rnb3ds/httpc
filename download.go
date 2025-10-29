@@ -3,9 +3,7 @@ package httpc
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,7 +32,7 @@ type DownloadResult struct {
 	Resumed       bool
 }
 
-func DefaultDownloadOptions(filePath string) *DownloadOptions {
+func defaultDownloadOptions(filePath string) *DownloadOptions {
 	return &DownloadOptions{
 		FilePath:       filePath,
 		Overwrite:      false,
@@ -48,12 +46,12 @@ func DownloadFile(url string, filePath string, options ...RequestOption) (*Downl
 		return nil, err
 	}
 
-	downloadOpts := DefaultDownloadOptions(filePath)
+	downloadOpts := defaultDownloadOptions(filePath)
 	return client.(*clientImpl).downloadFile(context.Background(), url, downloadOpts, options...)
 }
 
 func (c *clientImpl) DownloadFile(url string, filePath string, options ...RequestOption) (*DownloadResult, error) {
-	downloadOpts := DefaultDownloadOptions(filePath)
+	downloadOpts := defaultDownloadOptions(filePath)
 	return c.downloadFile(context.Background(), url, downloadOpts, options...)
 }
 
@@ -71,14 +69,10 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 		return nil, fmt.Errorf("file path cannot be empty")
 	}
 
-	// 验证URL安全性
-	if err := validateDownloadURL(url); err != nil {
-		return nil, fmt.Errorf("URL validation failed: %w", err)
-	}
-
 	if err := prepareFilePath(opts.FilePath); err != nil {
 		return nil, fmt.Errorf("failed to prepare file path: %w", err)
 	}
+
 	var resumeOffset int64
 	if fileInfo, err := os.Stat(opts.FilePath); err == nil {
 		if !opts.Overwrite && !opts.ResumeDownload {
@@ -91,74 +85,29 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 		}
 	}
 
-	startTime := time.Now()
-	req := &Request{
-		Method:      "GET",
-		URL:         url,
-		Context:     ctx,
-		Headers:     make(map[string]string),
-		QueryParams: make(map[string]any),
-	}
-
-	for _, opt := range options {
-		if opt != nil {
-			opt(req)
-		}
-	}
-	httpReq, err := http.NewRequestWithContext(req.Context, req.Method, req.URL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	for key, value := range req.Headers {
-		httpReq.Header.Set(key, value)
-	}
-
-	if len(req.QueryParams) > 0 {
-		q := httpReq.URL.Query()
-		for key, value := range req.QueryParams {
-			q.Add(key, fmt.Sprintf("%v", value))
-		}
-		httpReq.URL.RawQuery = q.Encode()
-	}
-
-	for _, cookie := range req.Cookies {
-		httpReq.AddCookie(cookie)
-	}
-	httpClient := &http.Client{
-		Timeout: req.Timeout,
-	}
-
-	httpResp, err := httpClient.Do(httpReq)
+	// Use the client's own Request method for consistency
+	resp, err := c.Request(ctx, "GET", url, options...)
 	if err != nil {
 		return nil, fmt.Errorf("download request failed: %w", err)
 	}
-	defer httpResp.Body.Close()
 
-	resumed := false
-	if resumeOffset > 0 && httpResp.StatusCode == http.StatusPartialContent {
-		resumed = true
-	} else if resumeOffset > 0 && httpResp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
-		duration := time.Since(startTime)
+	resumed := resumeOffset > 0 && resp.StatusCode == http.StatusPartialContent
+
+	// Handle Range Not Satisfiable (416) - this means the file is already complete
+	if resumeOffset > 0 && resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
 		return &DownloadResult{
 			FilePath:      opts.FilePath,
-			BytesWritten:  resumeOffset,
-			Duration:      duration,
+			BytesWritten:  0,
+			Duration:      resp.Duration,
 			AverageSpeed:  0,
-			StatusCode:    httpResp.StatusCode,
+			StatusCode:    resp.StatusCode,
 			ContentLength: resumeOffset,
 			Resumed:       false,
 		}, nil
-	} else if resumeOffset > 0 {
-		resumeOffset = 0
 	}
 
-	if httpResp.StatusCode != http.StatusOK && httpResp.StatusCode != http.StatusPartialContent {
-		return nil, fmt.Errorf("unexpected status code: %d", httpResp.StatusCode)
-	}
-	contentLength := httpResp.ContentLength
-	if resumed {
-		contentLength += resumeOffset
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
 	var file *os.File
@@ -172,37 +121,73 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	}
 	defer file.Close()
 
-	bytesWritten, err := copyWithProgress(file, httpResp.Body, resumeOffset, contentLength, opts)
-	if err != nil {
+	bytesWritten := int64(len(resp.RawBody))
+	if _, err := file.Write(resp.RawBody); err != nil {
 		return nil, fmt.Errorf("failed to write file: %w", err)
 	}
 
-	duration := time.Since(startTime)
-	averageSpeed := float64(bytesWritten) / duration.Seconds()
+	// Call progress callback if provided
+	if opts.ProgressCallback != nil {
+		totalSize := resp.ContentLength
+		if resumed {
+			totalSize += resumeOffset
+		}
+		speed := float64(bytesWritten) / resp.Duration.Seconds()
+		opts.ProgressCallback(resumeOffset+bytesWritten, totalSize, speed)
+	}
+
+	averageSpeed := float64(bytesWritten) / resp.Duration.Seconds()
 
 	return &DownloadResult{
 		FilePath:      opts.FilePath,
 		BytesWritten:  bytesWritten,
-		Duration:      duration,
+		Duration:      resp.Duration,
 		AverageSpeed:  averageSpeed,
-		StatusCode:    httpResp.StatusCode,
-		ContentLength: contentLength,
+		StatusCode:    resp.StatusCode,
+		ContentLength: resp.ContentLength,
 		Resumed:       resumed,
 	}, nil
 }
 
 func prepareFilePath(filePath string) error {
-	// 防止路径遍历攻击
+	// Enhanced path validation
+	if strings.TrimSpace(filePath) == "" {
+		return fmt.Errorf("file path cannot be empty")
+	}
+
+	// Check for null bytes and other dangerous characters
+	if strings.ContainsAny(filePath, "\x00\r\n") {
+		return fmt.Errorf("file path contains invalid characters")
+	}
+
+	// Limit path length
+	if len(filePath) > 4096 {
+		return fmt.Errorf("file path too long (max 4096 characters)")
+	}
+
+	// Prevent path traversal attacks
 	cleanPath := filepath.Clean(filePath)
 
-	// 检查是否包含路径遍历尝试
-	if strings.Contains(cleanPath, "..") {
+	// More thorough path traversal check
+	if strings.Contains(cleanPath, "..") || strings.Contains(filePath, "..") {
 		return fmt.Errorf("path traversal detected: %s", filePath)
 	}
 
-	// 确保路径是绝对路径或相对于当前目录的安全路径
+	// Check for suspicious patterns
+	suspiciousPatterns := []string{
+		"../", "..\\", "/..", "\\..",
+		"/./", ".\\", "/.", "\\.",
+	}
+	lowerPath := strings.ToLower(filePath)
+	for _, pattern := range suspiciousPatterns {
+		if strings.Contains(lowerPath, pattern) {
+			return fmt.Errorf("suspicious path pattern detected: %s", filePath)
+		}
+	}
+
+	// Ensure path is absolute or safe relative to current directory
 	if filepath.IsAbs(cleanPath) {
-		// 对于绝对路径，确保不在系统敏感目录
+		// For absolute paths, ensure not in system sensitive directories
 		if isSystemPath(cleanPath) {
 			return fmt.Errorf("access to system path denied: %s", cleanPath)
 		}
@@ -215,67 +200,33 @@ func prepareFilePath(filePath string) error {
 	return nil
 }
 
-// isSystemPath 检查是否为系统敏感路径
+// isSystemPath checks if the path is in a system-sensitive directory
 func isSystemPath(path string) bool {
 	systemPaths := []string{
-		"/etc", "/sys", "/proc", "/dev", "/boot",
-		"C:\\Windows", "C:\\System32", "C:\\Program Files",
+		// Unix/Linux system paths
+		"/etc", "/sys", "/proc", "/dev", "/boot", "/root", "/usr/bin", "/usr/sbin",
+		"/bin", "/sbin", "/var/log", "/var/run", "/tmp", "/var/tmp",
+		// Windows system paths
+		"C:\\Windows", "C:\\System32", "C:\\Program Files", "C:\\Program Files (x86)",
+		"C:\\ProgramData", "C:\\Users\\All Users", "C:\\Documents and Settings",
+		"C:\\WINDOWS", "C:\\WINNT", "C:\\Boot", "C:\\Recovery",
+		// Additional sensitive paths
+		"/Library", "/System", "/Applications", "/private",
 	}
 
 	cleanPath := strings.ToLower(filepath.Clean(path))
 	for _, sysPath := range systemPaths {
-		if strings.HasPrefix(cleanPath, strings.ToLower(sysPath)) {
-			return true
+		sysPathLower := strings.ToLower(sysPath)
+		if strings.HasPrefix(cleanPath, sysPathLower) {
+			// Ensure it's actually a subdirectory, not just a prefix match
+			if len(cleanPath) == len(sysPathLower) ||
+				(len(cleanPath) > len(sysPathLower) &&
+					(cleanPath[len(sysPathLower)] == '/' || cleanPath[len(sysPathLower)] == '\\')) {
+				return true
+			}
 		}
 	}
 	return false
-}
-
-func copyWithProgress(dst io.Writer, src io.Reader, offset, total int64, opts *DownloadOptions) (int64, error) {
-	const bufferSize = 32 * 1024
-	const progressInterval = 500 * time.Millisecond
-
-	buffer := make([]byte, bufferSize)
-	var written int64
-	var lastProgress time.Time
-	startTime := time.Now()
-	var lastWritten int64
-
-	for {
-		nr, readErr := src.Read(buffer)
-		if nr > 0 {
-			nw, writeErr := dst.Write(buffer[:nr])
-			if nw > 0 {
-				written += int64(nw)
-			}
-			if writeErr != nil {
-				return written, writeErr
-			}
-			if nr != nw {
-				return written, io.ErrShortWrite
-			}
-
-			if opts.ProgressCallback != nil && time.Since(lastProgress) >= progressInterval {
-				currentSpeed := float64(written-lastWritten) / time.Since(lastProgress).Seconds()
-				opts.ProgressCallback(offset+written, total, currentSpeed)
-				lastProgress = time.Now()
-				lastWritten = written
-			}
-		}
-		if readErr != nil {
-			if readErr == io.EOF {
-				if opts.ProgressCallback != nil {
-					elapsed := time.Since(startTime).Seconds()
-					avgSpeed := float64(written) / elapsed
-					opts.ProgressCallback(offset+written, total, avgSpeed)
-				}
-				break
-			}
-			return written, readErr
-		}
-	}
-
-	return written, nil
 }
 
 // SaveToFile saves the response body to a file with security checks.
@@ -284,7 +235,7 @@ func (r *Response) SaveToFile(filePath string) error {
 		return fmt.Errorf("response body is empty")
 	}
 
-	// 使用相同的安全检查
+	// Use same security checks
 	if err := prepareFilePath(filePath); err != nil {
 		return fmt.Errorf("file path validation failed: %w", err)
 	}
@@ -292,55 +243,6 @@ func (r *Response) SaveToFile(filePath string) error {
 	cleanPath := filepath.Clean(filePath)
 	if err := os.WriteFile(cleanPath, r.RawBody, 0644); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
-	}
-
-	return nil
-}
-
-func FormatBytes(bytes int64) string {
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
-	}
-	div, exp := int64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.2f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
-}
-
-func FormatSpeed(bytesPerSecond float64) string {
-	return FormatBytes(int64(bytesPerSecond)) + "/s"
-}
-
-// validateDownloadURL 验证下载URL的安全性
-func validateDownloadURL(urlStr string) error {
-	if urlStr == "" {
-		return fmt.Errorf("URL cannot be empty")
-	}
-
-	// 解析URL
-	parsedURL, err := url.Parse(urlStr)
-	if err != nil {
-		return fmt.Errorf("invalid URL format: %w", err)
-	}
-
-	// 只允许HTTP和HTTPS协议
-	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		return fmt.Errorf("unsupported protocol: %s (only http/https allowed)", parsedURL.Scheme)
-	}
-
-	// 检查主机名
-	if parsedURL.Host == "" {
-		return fmt.Errorf("URL must have a host")
-	}
-
-	// 防止本地文件访问
-	if strings.HasPrefix(strings.ToLower(parsedURL.Host), "localhost") ||
-		strings.HasPrefix(parsedURL.Host, "127.") ||
-		parsedURL.Host == "::1" {
-		return fmt.Errorf("localhost downloads are not allowed for security reasons")
 	}
 
 	return nil

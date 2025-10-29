@@ -315,9 +315,11 @@ func TestEngine_ErrorHandling(t *testing.T) {
 					w.Write([]byte("short")) // Content length mismatch
 				}))
 			},
-			expectError: false, // HTTP library handles this case
+			expectError: true, // Our enhanced security now detects this
 			errorCheck: func(t *testing.T, err error) {
-				// This case might not error, but response might be incomplete
+				if err == nil {
+					t.Error("Expected content-length mismatch error, got nil")
+				}
 			},
 		},
 	}

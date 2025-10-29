@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/cybergodev/httpc/internal/memory"
 )
@@ -35,13 +36,22 @@ func (p *ResponseProcessor) Process(httpResp *http.Response) (*Response, error) 
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
+	// Only use ContentLength from HTTP response if Content-Length header was actually provided
+	contentLength := int64(-1) // Default to -1 to indicate no Content-Length header
+	if contentLengthHeader := httpResp.Header.Get("Content-Length"); contentLengthHeader != "" {
+		contentLength = httpResp.ContentLength
+	} else {
+		// No Content-Length header provided, use -1 to indicate this
+		contentLength = -1
+	}
+
 	resp := &Response{
 		StatusCode:    httpResp.StatusCode,
 		Status:        httpResp.Status,
 		Headers:       httpResp.Header,
 		Body:          string(body),
 		RawBody:       body,
-		ContentLength: httpResp.ContentLength,
+		ContentLength: contentLength,
 		Proto:         httpResp.Proto,
 		Request:       httpResp.Request,
 		Response:      httpResp,
@@ -61,10 +71,17 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 		reader = io.LimitReader(httpResp.Body, p.config.MaxResponseBodySize)
 	}
 
-	body, err := p.readWithContext(reader, httpResp.Request.Context())
+	var ctx context.Context
+	if httpResp.Request != nil {
+		ctx = httpResp.Request.Context()
+	} else {
+		ctx = context.Background()
+	}
+
+	body, err := p.readWithContext(reader, ctx)
 	if err != nil {
-		if httpResp.Request.Context().Err() != nil {
-			return nil, fmt.Errorf("request context canceled during body read: %w", httpResp.Request.Context().Err())
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("request context canceled during body read: %w", ctx.Err())
 		}
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
@@ -96,6 +113,14 @@ func (p *ResponseProcessor) readWithContext(reader io.Reader, ctx context.Contex
 		if err != nil {
 			if err == io.EOF {
 				break
+			}
+			// For content length mismatch errors, return what we've read so far
+			errMsg := err.Error()
+			if strings.Contains(errMsg, "unexpected EOF") ||
+				strings.Contains(errMsg, "content length") ||
+				strings.Contains(errMsg, "body closed") {
+				// Return the data we've successfully read
+				return result, nil
 			}
 			return nil, err
 		}

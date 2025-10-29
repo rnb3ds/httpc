@@ -147,7 +147,10 @@ func TestClient_Request(t *testing.T) {
 	}
 	defer client.Close()
 
-	ctx := context.Background()
+	// Use a context with timeout to ensure the request doesn't hang
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	resp, err := client.Request(ctx, "GET", server.URL)
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)

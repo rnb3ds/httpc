@@ -502,7 +502,11 @@ func TestClient_CustomConfig(t *testing.T) {
 }
 
 func TestClient_SecureClient(t *testing.T) {
-	client, err := New(ConfigPreset(SecurityLevelStrict))
+	config := DefaultConfig()
+	config.MaxRetries = 1
+	config.FollowRedirects = false
+	config.EnableCookies = false
+	client, err := New(config)
 	if err != nil {
 		t.Fatalf("Failed to create secure client: %v", err)
 	}

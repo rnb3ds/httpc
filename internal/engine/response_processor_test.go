@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -228,8 +229,9 @@ func TestResponseProcessor_HeaderProcessing(t *testing.T) {
 	processor := NewResponseProcessor(config, memManager)
 
 	httpResponse := &http.Response{
-		StatusCode: 200,
-		Status:     "200 OK",
+		StatusCode:    200,
+		Status:        "200 OK",
+		ContentLength: 13, // Set ContentLength field directly
 		Header: http.Header{
 			"Content-Type":    []string{"application/json"},
 			"Content-Length":  []string{"13"},
@@ -498,15 +500,21 @@ func TestResponseProcessor_ContentLengthHandling(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			headers := http.Header{}
+			var contentLength int64 = 0
 			if tt.contentLength != "" {
 				headers.Set("Content-Length", tt.contentLength)
+				// Parse content length for the ContentLength field
+				if parsed, err := strconv.ParseInt(tt.contentLength, 10, 64); err == nil {
+					contentLength = parsed
+				}
 			}
 
 			httpResponse := &http.Response{
-				StatusCode: 200,
-				Status:     "200 OK",
-				Header:     headers,
-				Body:       io.NopCloser(strings.NewReader(tt.body)),
+				StatusCode:    200,
+				Status:        "200 OK",
+				ContentLength: contentLength,
+				Header:        headers,
+				Body:          io.NopCloser(strings.NewReader(tt.body)),
 			}
 
 			resp, err := processor.Process(httpResponse)

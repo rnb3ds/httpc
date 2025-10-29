@@ -45,13 +45,16 @@ func demonstrateSimpleDownload() {
 	}
 	defer client.Close()
 
-	// Download a small file
-	opts := httpc.DefaultDownloadOptions("downloads/golang-readme.md")
-	opts.Overwrite = true
+	// Create downloads directory if it doesn't exist
+	if err := os.MkdirAll("downloads", 0755); err != nil {
+		log.Printf("Error creating downloads directory: %v\n", err)
+		return
+	}
 
-	result, err := client.DownloadWithOptions(
+	// Download a small file using the simple DownloadFile method
+	result, err := client.DownloadFile(
 		"https://raw.githubusercontent.com/golang/go/master/README.md",
-		opts,
+		"downloads/golang-readme.md",
 	)
 	if err != nil {
 		log.Printf("Error: %v\n", err)
@@ -59,9 +62,9 @@ func demonstrateSimpleDownload() {
 	}
 
 	fmt.Printf("✓ Downloaded: %s\n", result.FilePath)
-	fmt.Printf("  Size: %s\n", httpc.FormatBytes(result.BytesWritten))
+	fmt.Printf("  Size: %s\n", formatBytes(result.BytesWritten))
 	fmt.Printf("  Duration: %v\n", result.Duration)
-	fmt.Printf("  Speed: %s\n\n", httpc.FormatSpeed(result.AverageSpeed))
+	fmt.Printf("  Speed: %s/s\n\n", formatBytes(int64(result.AverageSpeed)))
 }
 
 // demonstrateDownloadWithProgress shows download with progress tracking
@@ -75,23 +78,25 @@ func demonstrateDownloadWithProgress() {
 	defer client.Close()
 
 	// Create download options with progress callback
-	opts := httpc.DefaultDownloadOptions("downloads/sample-file.bin")
-	opts.Overwrite = true
-	opts.ProgressCallback = func(downloaded, total int64, speed float64) {
-		if total > 0 {
-			percentage := float64(downloaded) / float64(total) * 100
-			fmt.Printf("\r  Progress: %.1f%% (%s / %s) - Speed: %s",
-				percentage,
-				httpc.FormatBytes(downloaded),
-				httpc.FormatBytes(total),
-				httpc.FormatSpeed(speed),
-			)
-		} else {
-			fmt.Printf("\r  Downloaded: %s - Speed: %s",
-				httpc.FormatBytes(downloaded),
-				httpc.FormatSpeed(speed),
-			)
-		}
+	opts := &httpc.DownloadOptions{
+		FilePath:  "downloads/sample-file.bin",
+		Overwrite: true,
+		ProgressCallback: func(downloaded, total int64, speed float64) {
+			if total > 0 {
+				percentage := float64(downloaded) / float64(total) * 100
+				fmt.Printf("\r  Progress: %.1f%% (%s / %s) - Speed: %s",
+					percentage,
+					formatBytes(downloaded),
+					formatBytes(total),
+					formatBytes(int64(speed))+"/s",
+				)
+			} else {
+				fmt.Printf("\r  Downloaded: %s - Speed: %s",
+					formatBytes(downloaded),
+					formatBytes(int64(speed))+"/s",
+				)
+			}
+		},
 	}
 
 	// Download a file with progress tracking
@@ -107,8 +112,8 @@ func demonstrateDownloadWithProgress() {
 	}
 
 	fmt.Printf("\n✓ Download completed: %s\n", result.FilePath)
-	fmt.Printf("  Total size: %s\n", httpc.FormatBytes(result.BytesWritten))
-	fmt.Printf("  Average speed: %s\n\n", httpc.FormatSpeed(result.AverageSpeed))
+	fmt.Printf("  Total size: %s\n", formatBytes(result.BytesWritten))
+	fmt.Printf("  Average speed: %s/s\n\n", formatBytes(int64(result.AverageSpeed)))
 }
 
 // demonstrateLargeFileDownload shows downloading large files with custom settings
@@ -122,16 +127,18 @@ func demonstrateLargeFileDownload() {
 	defer client.Close()
 
 	// Configure for large file download
-	opts := httpc.DefaultDownloadOptions("downloads/large-file.bin")
-	opts.Overwrite = true
-	opts.ProgressCallback = func(downloaded, total int64, speed float64) {
-		if total > 0 {
-			percentage := float64(downloaded) / float64(total) * 100
-			fmt.Printf("\r  Downloading: %.1f%% - %s",
-				percentage,
-				httpc.FormatSpeed(speed),
-			)
-		}
+	opts := &httpc.DownloadOptions{
+		FilePath:  "downloads/large-file.bin",
+		Overwrite: true,
+		ProgressCallback: func(downloaded, total int64, speed float64) {
+			if total > 0 {
+				percentage := float64(downloaded) / float64(total) * 100
+				fmt.Printf("\r  Downloading: %.1f%% - %s/s",
+					percentage,
+					formatBytes(int64(speed)),
+				)
+			}
+		},
 	}
 
 	// Download with longer timeout for large files
@@ -149,9 +156,9 @@ func demonstrateLargeFileDownload() {
 
 	fmt.Printf("\n✓ Large file downloaded successfully\n")
 	fmt.Printf("  File: %s\n", result.FilePath)
-	fmt.Printf("  Size: %s\n", httpc.FormatBytes(result.BytesWritten))
+	fmt.Printf("  Size: %s\n", formatBytes(result.BytesWritten))
 	fmt.Printf("  Time: %v\n", result.Duration)
-	fmt.Printf("  Average speed: %s\n\n", httpc.FormatSpeed(result.AverageSpeed))
+	fmt.Printf("  Average speed: %s/s\n\n", formatBytes(int64(result.AverageSpeed)))
 }
 
 // demonstrateResumeDownload shows resuming interrupted downloads
@@ -168,8 +175,10 @@ func demonstrateResumeDownload() {
 
 	// First, simulate a partial download by downloading only part of the file
 	fmt.Println("  Simulating interrupted download...")
-	opts1 := httpc.DefaultDownloadOptions(filePath)
-	opts1.Overwrite = true
+	opts1 := &httpc.DownloadOptions{
+		FilePath:  filePath,
+		Overwrite: true,
+	}
 
 	// Download with a short timeout to simulate interruption
 	// Using a file from GitHub
@@ -185,20 +194,22 @@ func demonstrateResumeDownload() {
 
 	// Check if partial file exists
 	if fileInfo, err := os.Stat(filePath); err == nil {
-		fmt.Printf("  Partial file size: %s\n", httpc.FormatBytes(fileInfo.Size()))
+		fmt.Printf("  Partial file size: %s\n", formatBytes(fileInfo.Size()))
 
 		// Now resume the download
 		fmt.Println("  Resuming download...")
-		opts2 := httpc.DefaultDownloadOptions(filePath)
-		opts2.ResumeDownload = true
-		opts2.ProgressCallback = func(downloaded, total int64, speed float64) {
-			if total > 0 {
-				percentage := float64(downloaded) / float64(total) * 100
-				fmt.Printf("\r  Progress: %.1f%% - %s",
-					percentage,
-					httpc.FormatSpeed(speed),
-				)
-			}
+		opts2 := &httpc.DownloadOptions{
+			FilePath:       filePath,
+			ResumeDownload: true,
+			ProgressCallback: func(downloaded, total int64, speed float64) {
+				if total > 0 {
+					percentage := float64(downloaded) / float64(total) * 100
+					fmt.Printf("\r  Progress: %.1f%% - %s/s",
+						percentage,
+						formatBytes(int64(speed)),
+					)
+				}
+			},
 		}
 
 		result, err := client.DownloadWithOptions(
@@ -218,7 +229,7 @@ func demonstrateResumeDownload() {
 		} else {
 			fmt.Printf("\n✓ Download completed (server doesn't support resume)\n")
 		}
-		fmt.Printf("  Final size: %s\n\n", httpc.FormatBytes(result.BytesWritten))
+		fmt.Printf("  Final size: %s\n\n", formatBytes(result.BytesWritten))
 	} else {
 		fmt.Println("  Note: Resume example skipped (partial file not created)\n ")
 	}
@@ -249,7 +260,7 @@ func demonstrateSaveResponseToFile() {
 	}
 
 	fmt.Printf("✓ Response saved to: %s\n", filePath)
-	fmt.Printf("  Size: %s\n\n", httpc.FormatBytes(int64(len(resp.RawBody))))
+	fmt.Printf("  Size: %s\n\n", formatBytes(int64(len(resp.RawBody))))
 }
 
 // demonstrateAuthenticatedDownload shows downloading files with authentication
@@ -263,8 +274,10 @@ func demonstrateAuthenticatedDownload() {
 	defer client.Close()
 
 	// Download with authentication headers
-	opts := httpc.DefaultDownloadOptions("downloads/authenticated-file.txt")
-	opts.Overwrite = true
+	opts := &httpc.DownloadOptions{
+		FilePath:  "downloads/authenticated-file.txt",
+		Overwrite: true,
+	}
 
 	result, err := client.DownloadWithOptions(
 		"https://httpbin.org/get",
@@ -280,7 +293,21 @@ func demonstrateAuthenticatedDownload() {
 
 	fmt.Printf("✓ Authenticated download completed\n")
 	fmt.Printf("  File: %s\n", result.FilePath)
-	fmt.Printf("  Size: %s\n\n", httpc.FormatBytes(result.BytesWritten))
+	fmt.Printf("  Size: %s\n\n", formatBytes(result.BytesWritten))
+}
+
+// Helper function to format bytes in human-readable format
+func formatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
 // Helper function to clean up downloaded files (optional)
