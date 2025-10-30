@@ -2,8 +2,11 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -11,6 +14,7 @@ import (
 	"github.com/cybergodev/httpc/internal/concurrency"
 	"github.com/cybergodev/httpc/internal/connection"
 	"github.com/cybergodev/httpc/internal/memory"
+	"github.com/cybergodev/httpc/internal/monitoring"
 	"github.com/cybergodev/httpc/internal/security"
 )
 
@@ -27,6 +31,7 @@ type Client struct {
 	concurrencyManager *concurrency.Manager
 	memoryManager      *memory.Manager
 	connectionPool     *connection.PoolManager
+	healthChecker      *monitoring.HealthChecker
 
 	closed             int32
 	totalRequests      int64
@@ -169,6 +174,7 @@ func NewClient(config *Config) (*Client, error) {
 		AllowPrivateIPs:       config.AllowPrivateIPs,
 	}
 	client.validator = security.NewValidatorWithConfig(validatorConfig)
+	client.healthChecker = monitoring.NewHealthChecker()
 
 	return client, nil
 }
@@ -219,6 +225,14 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 
 	duration := time.Since(startTime)
 	c.updateLatencyMetrics(duration.Nanoseconds())
+
+	// Record request metrics for health monitoring
+	isTimeout := err != nil && (errors.Is(err, context.DeadlineExceeded) ||
+		strings.Contains(err.Error(), "timeout") ||
+		strings.Contains(err.Error(), "deadline exceeded"))
+
+	success := err == nil
+	c.healthChecker.RecordRequest(success, duration, isTimeout)
 
 	if err != nil {
 		atomic.AddInt64(&c.failedRequests, 1)
@@ -420,9 +434,23 @@ func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
 		}
 	}
 
+	// Check context before proceeding
+	select {
+	case <-req.Context.Done():
+		return nil, ClassifyError(req.Context.Err(), req.URL, req.Method, 0)
+	default:
+	}
+
 	httpReq, err := c.requestProcessor.Build(req)
 	if err != nil {
 		return nil, ClassifyError(fmt.Errorf("failed to build request: %w", err), req.URL, req.Method, 0)
+	}
+
+	// Check context again after building request
+	select {
+	case <-req.Context.Done():
+		return nil, ClassifyError(req.Context.Err(), req.URL, req.Method, 0)
+	default:
 	}
 
 	start := time.Now()
@@ -433,11 +461,24 @@ func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
 		return nil, ClassifyError(fmt.Errorf("transport error: %w", err), req.URL, req.Method, 0)
 	}
 
+	// Ensure response body is always closed to prevent resource leaks
 	defer func() {
 		if httpResp != nil && httpResp.Body != nil {
+			// Drain and close body to enable connection reuse
+			if resp == nil || resp.RawBody == nil {
+				// If we haven't read the body yet, drain it
+				io.Copy(io.Discard, io.LimitReader(httpResp.Body, 64*1024)) // Limit drain to 64KB
+			}
 			httpResp.Body.Close()
 		}
 	}()
+
+	// Check context before processing response
+	select {
+	case <-req.Context.Done():
+		return nil, ClassifyError(req.Context.Err(), req.URL, req.Method, 0)
+	default:
+	}
 
 	resp, err = c.responseProcessor.Process(httpResp)
 	if err != nil {
@@ -446,6 +487,23 @@ func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
 
 	resp.Duration = duration
 	return resp, nil
+}
+
+// GetHealthStatus returns the current health status of the client
+func (c *Client) GetHealthStatus() monitoring.HealthStatus {
+	// Update resource metrics before health check
+	if c.connectionPool != nil {
+		metrics := c.connectionPool.GetMetrics()
+		poolUtil := float64(metrics.ActiveConnections) / float64(metrics.TotalConnections+1) // +1 to avoid division by zero
+		c.healthChecker.UpdateResourceMetrics(metrics.ActiveConnections, poolUtil, 0)        // Memory usage would need to be tracked separately
+	}
+
+	return c.healthChecker.CheckHealth()
+}
+
+// IsHealthy returns true if the client is in a healthy state
+func (c *Client) IsHealthy() bool {
+	return c.healthChecker.IsHealthy()
 }
 
 func (c *Client) Close() error {

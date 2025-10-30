@@ -236,6 +236,11 @@ func (m *Manager) PutBuffer(buf []byte) {
 		return
 	}
 
+	// Check if manager is closed
+	if atomic.LoadInt32(&m.closed) == 1 {
+		return
+	}
+
 	size := cap(buf)
 	var pool *BufferPool
 
@@ -257,7 +262,14 @@ func (m *Manager) PutBuffer(buf []byte) {
 	// Check if we should return to pool based on current usage
 	if atomic.LoadInt64(&pool.inUse) < pool.maxCount {
 		atomic.AddInt64(&pool.inUse, -1)
+		// Clear the buffer before returning to pool to prevent data leaks
+		for i := range buf {
+			buf[i] = 0
+		}
 		pool.pool.Put(buf[:cap(buf)]) // Reset length to capacity
+	} else {
+		// Pool is full, let GC handle this buffer
+		atomic.AddInt64(&pool.inUse, -1)
 	}
 }
 
@@ -274,6 +286,11 @@ func (m *Manager) PutHeaders(headers map[string]string) {
 		return
 	}
 
+	// Check if manager is closed
+	if atomic.LoadInt32(&m.closed) == 1 {
+		return
+	}
+
 	// Clear the map but keep capacity
 	for k := range headers {
 		delete(headers, k)
@@ -281,7 +298,11 @@ func (m *Manager) PutHeaders(headers map[string]string) {
 
 	atomic.AddInt64(&m.headerPools.inUse, -1)
 	atomic.AddInt64(&m.stats.HeadersInUse, -1)
-	m.headerPools.pool.Put(headers)
+
+	// Only return to pool if we're not over capacity
+	if atomic.LoadInt64(&m.headerPools.inUse) < 1000 { // Reasonable limit
+		m.headerPools.pool.Put(headers)
+	}
 }
 
 // PooledRequest represents a pooled request object
@@ -342,15 +363,15 @@ func (r *PooledResponse) Reset() {
 
 // cleanupLoop performs periodic cleanup and memory pressure monitoring
 func (m *Manager) cleanupLoop() {
-	for {
-		// Check if manager is closed before waiting
-		if atomic.LoadInt32(&m.closed) == 1 {
-			return
-		}
+	defer func() {
+		// Perform final cleanup on exit
+		m.performCleanup()
+	}()
 
+	for {
 		select {
 		case <-m.ticker.C:
-			// Double-check closed state after ticker fires
+			// Check if manager is closed after ticker fires
 			if atomic.LoadInt32(&m.closed) == 1 {
 				return
 			}

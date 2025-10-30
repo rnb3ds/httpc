@@ -14,7 +14,6 @@ type Manager struct {
 
 	active   int64
 	queued   int64
-	total    int64
 	rejected int64
 
 	semaphore chan struct{}
@@ -23,7 +22,6 @@ type Manager struct {
 
 	closed int32
 	wg     sync.WaitGroup
-	mu     sync.RWMutex
 }
 
 type Request struct {
@@ -116,11 +114,6 @@ func (m *Manager) worker() {
 	defer m.wg.Done()
 
 	for {
-		// Check if manager is closed before waiting for requests
-		if atomic.LoadInt32(&m.closed) == 1 {
-			return
-		}
-
 		select {
 		case req, ok := <-m.queue:
 			if !ok {
@@ -128,19 +121,40 @@ func (m *Manager) worker() {
 				return
 			}
 			if req == nil {
+				continue
+			}
+
+			// Check if manager is closed before processing
+			if atomic.LoadInt32(&m.closed) == 1 {
+				// Send error to request and exit
+				select {
+				case req.Result <- fmt.Errorf("concurrency manager is closed"):
+				default:
+				}
 				return
 			}
+
 			m.processRequest(req)
 		}
 	}
 }
 
 func (m *Manager) processRequest(req *Request) {
+	// Acquire semaphore with context cancellation support
 	select {
 	case m.semaphore <- struct{}{}:
-		defer func() { <-m.semaphore }()
+		defer func() {
+			select {
+			case <-m.semaphore:
+			default:
+				// Semaphore already drained, this shouldn't happen but handle gracefully
+			}
+		}()
 	case <-req.Context.Done():
-		req.Result <- req.Context.Err()
+		select {
+		case req.Result <- req.Context.Err():
+		default:
+		}
 		return
 	}
 
@@ -157,15 +171,28 @@ func (m *Manager) processRequest(req *Request) {
 	// Check context again before executing
 	select {
 	case <-req.Context.Done():
-		req.Result <- req.Context.Err()
+		select {
+		case req.Result <- req.Context.Err():
+		default:
+		}
 		return
 	default:
 	}
 
 	startTime := time.Now()
-	err := req.Execute()
-	execTime := time.Since(startTime).Nanoseconds()
 
+	// Execute with panic recovery
+	var err error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("panic during request execution: %v", r)
+			}
+		}()
+		err = req.Execute()
+	}()
+
+	execTime := time.Since(startTime).Nanoseconds()
 	m.updateExecTime(execTime)
 
 	if err != nil {
@@ -174,9 +201,13 @@ func (m *Manager) processRequest(req *Request) {
 		atomic.AddInt64(&m.metrics.CompletedRequests, 1)
 	}
 
+	// Send result with timeout protection
 	select {
 	case req.Result <- err:
 	case <-req.Context.Done():
+		// Context cancelled, don't block
+	case <-time.After(100 * time.Millisecond):
+		// Prevent indefinite blocking if result channel is not being read
 	}
 }
 
@@ -242,8 +273,24 @@ func (m *Manager) Close() error {
 		return fmt.Errorf("concurrency manager already closed")
 	}
 
+	// Close the queue channel to signal workers to stop
 	close(m.queue)
-	m.wg.Wait()
+
+	// Wait for all workers to finish with timeout
+	done := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(done)
+	}()
+
+	// Wait for workers to finish or timeout after 5 seconds
+	select {
+	case <-done:
+		// All workers finished gracefully
+	case <-time.After(5 * time.Second):
+		// Timeout - workers didn't finish in time
+		return fmt.Errorf("timeout waiting for workers to finish")
+	}
 
 	return nil
 }

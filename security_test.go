@@ -306,10 +306,14 @@ func TestSecurity_ConnectionPoolExhaustion(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.MaxIdleConns = 10
+	config.MaxIdleConns = 50 // Increase to accommodate MaxConnsPerHost
+	config.MaxConnsPerHost = 10
 	config.AllowPrivateIPs = true
 
-	client, _ := New(config)
+	client, err := New(config)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
 	defer client.Close()
 
 	// Make many concurrent requests

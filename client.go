@@ -10,6 +10,35 @@ import (
 	"github.com/cybergodev/httpc/internal/engine"
 )
 
+// Helper functions for min/max operations
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxDuration(a, b time.Duration) time.Duration {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 // Client represents the HTTP client interface
 type Client interface {
 	// HTTP methods
@@ -148,15 +177,31 @@ func getDefaultClient() (Client, error) {
 	defaultMu.RLock()
 	if defaultClient != nil {
 		client := defaultClient
+		err := defaultErr
 		defaultMu.RUnlock()
-		return client, nil
+		return client, err
 	}
 	defaultMu.RUnlock()
 
-	defaultOnce.Do(func() {
-		defaultClient, defaultErr = New()
-	})
-	return defaultClient, defaultErr
+	// Use a separate mutex for initialization to avoid deadlock
+	defaultMu.Lock()
+	defer defaultMu.Unlock()
+
+	// Double-check pattern
+	if defaultClient != nil {
+		return defaultClient, defaultErr
+	}
+
+	// Create new client with error handling
+	client, err := New()
+	if err != nil {
+		defaultErr = err
+		return nil, err
+	}
+
+	defaultClient = client
+	defaultErr = nil
+	return defaultClient, nil
 }
 
 // Get executes a GET request using the default client
@@ -231,11 +276,16 @@ func SetDefaultClient(client Client) {
 	defaultMu.Lock()
 	defer defaultMu.Unlock()
 
+	// Close previous client safely
 	if defaultClient != nil {
-		_ = defaultClient.Close()
+		if err := defaultClient.Close(); err != nil {
+			// Log error but don't fail the operation
+			// In production, you might want to use a proper logger here
+		}
 	}
 
 	defaultClient = client
+	defaultErr = nil // Reset error state
 }
 
 func convertToEngineConfig(cfg *Config) *engine.Config {
@@ -243,22 +293,22 @@ func convertToEngineConfig(cfg *Config) *engine.Config {
 		cfg = DefaultConfig()
 	}
 
-	// Security validation and limits
-	maxIdleConnsPerHost := max(1, min(50, cfg.MaxIdleConns/10))
+	// Optimized connection pool calculations
+	maxIdleConnsPerHost := calculateOptimalIdleConnsPerHost(cfg.MaxIdleConns, cfg.MaxConnsPerHost)
 
-	// Limit maximum concurrent requests to prevent resource exhaustion
-	maxConcurrent := 500
-	if cfg.MaxConnsPerHost > 0 && cfg.MaxConnsPerHost < maxConcurrent {
-		maxConcurrent = cfg.MaxConnsPerHost * 10
-	}
+	// Intelligent concurrent request limits based on system resources and configuration
+	maxConcurrent := calculateOptimalConcurrency(cfg.MaxConnsPerHost, cfg.MaxIdleConns)
+
+	// Adaptive timeout settings based on configuration
+	timeouts := calculateOptimalTimeouts(cfg.Timeout)
 
 	return &engine.Config{
 		Timeout:               cfg.Timeout,
-		DialTimeout:           15 * time.Second,
-		KeepAlive:             30 * time.Second,
-		TLSHandshakeTimeout:   15 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
-		IdleConnTimeout:       90 * time.Second,
+		DialTimeout:           timeouts.Dial,
+		KeepAlive:             timeouts.KeepAlive,
+		TLSHandshakeTimeout:   timeouts.TLS,
+		ResponseHeaderTimeout: timeouts.ResponseHeader,
+		IdleConnTimeout:       timeouts.IdleConn,
 		MaxIdleConns:          cfg.MaxIdleConns,
 		MaxIdleConnsPerHost:   maxIdleConnsPerHost,
 		MaxConnsPerHost:       cfg.MaxConnsPerHost,
@@ -274,7 +324,7 @@ func convertToEngineConfig(cfg *Config) *engine.Config {
 		AllowPrivateIPs:       cfg.AllowPrivateIPs,
 		MaxRetries:            cfg.MaxRetries,
 		RetryDelay:            cfg.RetryDelay,
-		MaxRetryDelay:         1 * time.Second, // Fixed maximum delay to prevent DoS
+		MaxRetryDelay:         calculateMaxRetryDelay(cfg.RetryDelay, cfg.BackoffFactor),
 		BackoffFactor:         cfg.BackoffFactor,
 		Jitter:                true, // Enable jitter to prevent thundering herd
 		UserAgent:             cfg.UserAgent,
@@ -284,6 +334,117 @@ func convertToEngineConfig(cfg *Config) *engine.Config {
 		CookieJar:             createCookieJar(cfg.EnableCookies),
 		EnableCookies:         cfg.EnableCookies,
 	}
+}
+
+// TimeoutConfig holds optimized timeout values
+type TimeoutConfig struct {
+	Dial           time.Duration
+	TLS            time.Duration
+	ResponseHeader time.Duration
+	KeepAlive      time.Duration
+	IdleConn       time.Duration
+}
+
+// calculateOptimalIdleConnsPerHost calculates the optimal idle connections per host
+func calculateOptimalIdleConnsPerHost(maxIdleConns, maxConnsPerHost int) int {
+	if maxConnsPerHost <= 0 {
+		// Default calculation based on total idle connections
+		result := max(2, min(20, maxIdleConns/10))
+		return result
+	}
+
+	// Base it on MaxConnsPerHost but ensure reasonable limits
+	result := max(2, min(maxConnsPerHost/2, 50))
+
+	// Ensure it doesn't exceed total idle connections
+	if maxIdleConns > 0 {
+		result = min(result, maxIdleConns/5) // Allow up to 5 hosts to use all idle connections
+		if result < 2 {
+			result = 2
+		}
+	}
+
+	return result
+}
+
+// calculateOptimalConcurrency calculates the optimal concurrent request limit
+func calculateOptimalConcurrency(maxConnsPerHost, maxIdleConns int) int {
+	baseLimit := 500
+
+	if maxConnsPerHost > 0 {
+		// Scale based on connection limits, but be more aggressive for performance
+		hostBasedLimit := maxConnsPerHost * 10
+		baseLimit = max(100, min(2000, hostBasedLimit))
+	}
+
+	if maxIdleConns > 0 {
+		// Also consider total connection capacity
+		idleBasedLimit := maxIdleConns * 2
+		baseLimit = max(baseLimit, min(2000, idleBasedLimit))
+	}
+
+	return baseLimit
+}
+
+// calculateOptimalTimeouts calculates optimal timeout values based on overall timeout
+func calculateOptimalTimeouts(overallTimeout time.Duration) TimeoutConfig {
+	config := TimeoutConfig{
+		Dial:           15 * time.Second,
+		TLS:            15 * time.Second,
+		ResponseHeader: 30 * time.Second,
+		KeepAlive:      30 * time.Second,
+		IdleConn:       90 * time.Second,
+	}
+
+	// If overall timeout is specified and reasonable, scale component timeouts
+	if overallTimeout > 0 && overallTimeout < 5*time.Minute {
+		if overallTimeout < 30*time.Second {
+			// For short timeouts, scale proportionally but maintain minimums
+			ratio := float64(overallTimeout) / float64(30*time.Second)
+
+			config.Dial = maxDuration(2*time.Second, time.Duration(float64(config.Dial)*ratio))
+			config.TLS = maxDuration(3*time.Second, time.Duration(float64(config.TLS)*ratio))
+			config.ResponseHeader = maxDuration(5*time.Second, time.Duration(float64(config.ResponseHeader)*ratio))
+		} else {
+			// For longer timeouts, use more generous values
+			config.Dial = minDuration(30*time.Second, overallTimeout/4)
+			config.TLS = minDuration(30*time.Second, overallTimeout/4)
+			config.ResponseHeader = minDuration(60*time.Second, overallTimeout/2)
+		}
+	}
+
+	return config
+}
+
+// calculateMaxRetryDelay calculates the maximum retry delay to prevent excessive waits
+func calculateMaxRetryDelay(baseDelay time.Duration, backoffFactor float64) time.Duration {
+	if baseDelay <= 0 {
+		return 5 * time.Second // Reduced default
+	}
+
+	// For very high backoff factors, be more conservative
+	if backoffFactor >= 5.0 {
+		// Cap at a much lower value for high backoff factors
+		return 2 * time.Second
+	}
+
+	// Calculate what the delay would be after 3 iterations (reasonable for most cases)
+	maxDelay := time.Duration(float64(baseDelay) * backoffFactor * backoffFactor * backoffFactor)
+
+	// Cap at reasonable limits based on base delay
+	maxLimit := 10 * time.Second
+	if baseDelay > 1*time.Second {
+		maxLimit = 30 * time.Second
+	}
+
+	if maxDelay > maxLimit {
+		maxDelay = maxLimit
+	}
+	if maxDelay < baseDelay {
+		maxDelay = baseDelay
+	}
+
+	return maxDelay
 }
 
 func convertRequestOptions(options []RequestOption) []engine.RequestOption {

@@ -185,6 +185,7 @@ func ClassifyError(err error, url, method string, attempts int) *ClientError {
 		Attempts: attempts,
 	}
 
+	// Check for context errors first (most specific)
 	if errors.Is(err, context.Canceled) {
 		clientErr.Type = ErrorTypeContextCanceled
 		clientErr.Message = "request was canceled"
@@ -199,6 +200,7 @@ func ClassifyError(err error, url, method string, attempts int) *ClientError {
 
 	errMsg := err.Error()
 
+	// Check for context-related errors in message
 	if strings.Contains(errMsg, "context canceled") {
 		clientErr.Type = ErrorTypeContextCanceled
 		clientErr.Message = "request context was canceled"
@@ -211,22 +213,43 @@ func ClassifyError(err error, url, method string, attempts int) *ClientError {
 		return clientErr
 	}
 
-	// Check for URL errors by message content (validation errors)
+	// Check for URL validation errors
 	if strings.Contains(errMsg, "missing protocol scheme") ||
 		strings.Contains(errMsg, "invalid URL") ||
-		strings.Contains(errMsg, "parse") && strings.Contains(errMsg, "://") {
+		(strings.Contains(errMsg, "parse") && strings.Contains(errMsg, "://")) {
 		clientErr.Type = ErrorTypeValidation
 		clientErr.Message = "URL validation failed"
 		return clientErr
 	}
 
-	// Check for OpError first (more specific)
-	if _, ok := err.(*net.OpError); ok {
-		clientErr.Type = ErrorTypeNetwork
-		clientErr.Message = "network operation failed"
+	// Check for DNS errors (more specific than general network errors)
+	if dnsErr, ok := err.(*net.DNSError); ok {
+		clientErr.Type = ErrorTypeDNS
+		if dnsErr.IsTimeout {
+			clientErr.Message = "DNS resolution timed out"
+		} else if dnsErr.IsTemporary {
+			clientErr.Message = "temporary DNS resolution failure"
+		} else {
+			clientErr.Message = "DNS resolution failed"
+		}
 		return clientErr
 	}
 
+	// Check for OpError (network operations)
+	if opErr, ok := err.(*net.OpError); ok {
+		clientErr.Type = ErrorTypeNetwork
+		if opErr.Timeout() {
+			clientErr.Type = ErrorTypeTimeout
+			clientErr.Message = "network operation timed out"
+		} else if opErr.Temporary() {
+			clientErr.Message = "temporary network operation failed"
+		} else {
+			clientErr.Message = "network operation failed"
+		}
+		return clientErr
+	}
+
+	// Check for general network errors
 	if netErr, ok := err.(net.Error); ok {
 		if netErr.Timeout() {
 			clientErr.Type = ErrorTypeTimeout
@@ -241,24 +264,18 @@ func ClassifyError(err error, url, method string, attempts int) *ClientError {
 		return clientErr
 	}
 
-	if _, ok := err.(*net.DNSError); ok {
-		clientErr.Type = ErrorTypeNetwork
-		clientErr.Message = "DNS resolution failed"
-		return clientErr
-	}
-
+	// Pattern-based classification for wrapped errors
 	switch {
 	case strings.Contains(errMsg, "HTTP ") && (strings.Contains(errMsg, "HTTP 4") || strings.Contains(errMsg, "HTTP 5")):
-		// Only classify as HTTP error if it's specifically an HTTP status code error
 		clientErr.Type = ErrorTypeHTTP
 		clientErr.Message = errMsg
-	case strings.Contains(errMsg, "tls:") || strings.Contains(errMsg, "TLS"):
+	case strings.Contains(errMsg, "tls:") || strings.Contains(errMsg, "TLS handshake"):
 		clientErr.Type = ErrorTypeTLS
 		clientErr.Message = "TLS handshake error"
 	case strings.Contains(errMsg, "certificate") || strings.Contains(errMsg, "x509"):
 		clientErr.Type = ErrorTypeCertificate
 		clientErr.Message = "certificate validation error"
-	case strings.Contains(errMsg, "transport"):
+	case strings.Contains(errMsg, "transport round trip failed"):
 		clientErr.Type = ErrorTypeTransport
 		clientErr.Message = "HTTP transport error"
 	case strings.Contains(errMsg, "failed to read response body"):
@@ -268,17 +285,29 @@ func ClassifyError(err error, url, method string, attempts int) *ClientError {
 		clientErr.Type = ErrorTypeNetwork
 		clientErr.Message = "connection refused by server"
 	case strings.Contains(errMsg, "no such host") || strings.Contains(errMsg, "dns"):
-		clientErr.Type = ErrorTypeNetwork
+		clientErr.Type = ErrorTypeDNS
 		clientErr.Message = "DNS resolution failed"
-	case strings.Contains(errMsg, "timeout"):
+	case strings.Contains(errMsg, "timeout") && !strings.Contains(errMsg, "context"):
 		clientErr.Type = ErrorTypeTimeout
 		clientErr.Message = "operation timed out"
-	case strings.Contains(errMsg, "validation"):
+	case strings.Contains(errMsg, "validation failed"):
 		clientErr.Type = ErrorTypeValidation
 		clientErr.Message = "request validation failed"
 	case strings.Contains(errMsg, "circuit breaker"):
 		clientErr.Type = ErrorTypeCircuitBreaker
 		clientErr.Message = "circuit breaker is open"
+	case strings.Contains(errMsg, "panic during request execution"):
+		clientErr.Type = ErrorTypeUnknown
+		clientErr.Message = "internal error during request execution"
+	case strings.Contains(errMsg, "connection reset by peer"):
+		clientErr.Type = ErrorTypeNetwork
+		clientErr.Message = "connection reset by peer"
+	case strings.Contains(errMsg, "broken pipe"):
+		clientErr.Type = ErrorTypeNetwork
+		clientErr.Message = "broken pipe"
+	case strings.Contains(errMsg, "EOF"):
+		clientErr.Type = ErrorTypeResponseRead
+		clientErr.Message = "unexpected end of response"
 	default:
 		clientErr.Type = ErrorTypeUnknown
 		clientErr.Message = fmt.Sprintf("unknown error: %s", errMsg)

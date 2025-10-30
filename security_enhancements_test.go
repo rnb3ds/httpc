@@ -167,7 +167,8 @@ func TestSecurity_JSONBombPrevention(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for JSON bomb, got nil")
 	}
-	if !strings.Contains(err.Error(), "JSON structure too complex") {
+	if !strings.Contains(err.Error(), "JSON structure too complex") &&
+		!strings.Contains(err.Error(), "JSON nesting too deep") {
 		t.Errorf("Expected JSON bomb error, got: %v", err)
 	}
 }

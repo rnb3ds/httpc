@@ -34,6 +34,7 @@ type PoolManager struct {
 
 	// Lifecycle management
 	closed int32
+	done   chan struct{} // Channel to signal shutdown
 	mu     sync.RWMutex
 }
 
@@ -187,6 +188,7 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 	}
 
 	pm.transport = transport
+	pm.done = make(chan struct{})
 
 	if config.EnableMetrics {
 		go pm.metricsLoop()
@@ -262,7 +264,15 @@ type trackedConn struct {
 }
 
 func (tc *trackedConn) Close() error {
+	// Update connection metrics
 	atomic.AddInt64(&tc.pm.activeConns, -1)
+
+	// Update host-specific metrics
+	if value, ok := tc.pm.hostConns.Load(tc.host); ok {
+		stats := value.(*HostStats)
+		atomic.AddInt64(&stats.ActiveConns, -1)
+	}
+
 	return tc.Conn.Close()
 }
 
@@ -305,7 +315,12 @@ func (pm *PoolManager) metricsLoop() {
 	for {
 		select {
 		case <-ticker.C:
+			if atomic.LoadInt32(&pm.closed) == 1 {
+				return
+			}
 			pm.updateMetrics()
+		case <-pm.done:
+			return
 		}
 	}
 }
@@ -385,6 +400,9 @@ func (pm *PoolManager) Close() error {
 	if !atomic.CompareAndSwapInt32(&pm.closed, 0, 1) {
 		return nil
 	}
+
+	// Signal metrics goroutine to stop
+	close(pm.done)
 
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
