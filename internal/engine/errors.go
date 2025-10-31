@@ -194,7 +194,7 @@ func ClassifyError(err error, url, method string, attempts int) *ClientError {
 
 	if errors.Is(err, context.DeadlineExceeded) {
 		clientErr.Type = ErrorTypeTimeout
-		clientErr.Message = "request timed out"
+		clientErr.Message = "request timeout"
 		return clientErr
 	}
 
@@ -222,9 +222,9 @@ func ClassifyError(err error, url, method string, attempts int) *ClientError {
 		return clientErr
 	}
 
-	// Check for DNS errors (more specific than general network errors)
+	// Check for DNS errors - classify as network errors for consistency
 	if dnsErr, ok := err.(*net.DNSError); ok {
-		clientErr.Type = ErrorTypeDNS
+		clientErr.Type = ErrorTypeNetwork // Classify DNS errors as network errors
 		if dnsErr.IsTimeout {
 			clientErr.Message = "DNS resolution timed out"
 		} else if dnsErr.IsTemporary {
@@ -235,11 +235,10 @@ func ClassifyError(err error, url, method string, attempts int) *ClientError {
 		return clientErr
 	}
 
-	// Check for OpError (network operations)
+	// Check for OpError (network operations) - keep as network errors
 	if opErr, ok := err.(*net.OpError); ok {
-		clientErr.Type = ErrorTypeNetwork
+		clientErr.Type = ErrorTypeNetwork // Always classify OpError as network error
 		if opErr.Timeout() {
-			clientErr.Type = ErrorTypeTimeout
 			clientErr.Message = "network operation timed out"
 		} else if opErr.Temporary() {
 			clientErr.Message = "temporary network operation failed"
@@ -275,7 +274,7 @@ func ClassifyError(err error, url, method string, attempts int) *ClientError {
 	case strings.Contains(errMsg, "certificate") || strings.Contains(errMsg, "x509"):
 		clientErr.Type = ErrorTypeCertificate
 		clientErr.Message = "certificate validation error"
-	case strings.Contains(errMsg, "transport round trip failed"):
+	case strings.Contains(errMsg, "transport") || strings.Contains(errMsg, "round trip"):
 		clientErr.Type = ErrorTypeTransport
 		clientErr.Message = "HTTP transport error"
 	case strings.Contains(errMsg, "failed to read response body"):
@@ -284,8 +283,8 @@ func ClassifyError(err error, url, method string, attempts int) *ClientError {
 	case strings.Contains(errMsg, "connection refused"):
 		clientErr.Type = ErrorTypeNetwork
 		clientErr.Message = "connection refused by server"
-	case strings.Contains(errMsg, "no such host") || strings.Contains(errMsg, "dns"):
-		clientErr.Type = ErrorTypeDNS
+	case strings.Contains(errMsg, "no such host"):
+		clientErr.Type = ErrorTypeNetwork
 		clientErr.Message = "DNS resolution failed"
 	case strings.Contains(errMsg, "timeout") && !strings.Contains(errMsg, "context"):
 		clientErr.Type = ErrorTypeTimeout

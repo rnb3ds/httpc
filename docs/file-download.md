@@ -1,4 +1,4 @@
-# File Download Guide
+﻿# File Download Guide
 
 This guide covers all aspects of downloading files using HTTPC, from simple downloads to advanced features like progress tracking and resume support.
 
@@ -23,7 +23,10 @@ The easiest way to download a file:
 package main
 
 import (
+    "fmt"
     "log"
+    "strings"
+    "time"
     "github.com/cybergodev/httpc"
 )
 
@@ -89,12 +92,13 @@ result, err := client.DownloadFile(
 
 ### Real-time Progress
 
-Track download progress in real-time:
+Track download completion:
+
+**Note**: The current implementation loads the entire response into memory before writing to disk, so the progress callback is called once at the end with final statistics. This is suitable for most files but may not be ideal for very large files.
 
 ```go
 opts := httpc.DefaultDownloadOptions("downloads/large-file.zip")
 opts.Overwrite = true
-opts.ProgressInterval = 500 * time.Millisecond
 
 opts.ProgressCallback = func(downloaded, total int64, speed float64) {
     if total > 0 {
@@ -114,7 +118,7 @@ opts.ProgressCallback = func(downloaded, total int64, speed float64) {
     }
 }
 
-result, err := client.DownloadFileWithOptions(url, opts)
+result, err := client.DownloadWithOptions(url, opts)
 fmt.Println() // New line after progress
 ```
 
@@ -150,7 +154,7 @@ opts := httpc.DefaultDownloadOptions("downloads/large-file.zip")
 opts.ResumeDownload = true  // Enable resume
 opts.Overwrite = false      // Don't overwrite existing file
 
-result, err := client.DownloadFileWithOptions(url, opts)
+result, err := client.DownloadWithOptions(url, opts)
 if err != nil {
     log.Fatal(err)
 }
@@ -174,7 +178,7 @@ opts.ProgressCallback = func(downloaded, total int64, speed float64) {
     fmt.Printf("\rResuming: %.1f%% - %s", percentage, httpc.FormatSpeed(speed))
 }
 
-result, err := client.DownloadFileWithOptions(url, opts)
+result, err := client.DownloadWithOptions(url, opts)
 ```
 
 ### Retry Failed Downloads
@@ -190,7 +194,7 @@ for attempt := 1; attempt <= maxAttempts; attempt++ {
     opts := httpc.DefaultDownloadOptions("downloads/file.zip")
     opts.ResumeDownload = true
     
-    result, err = client.DownloadFileWithOptions(
+    result, err = client.DownloadWithOptions(
         url,
         opts,
         httpc.WithTimeout(10*time.Minute),
@@ -213,9 +217,7 @@ Configure for optimal large file downloads:
 
 ```go
 opts := httpc.DefaultDownloadOptions("downloads/large-video.mp4")
-opts.BufferSize = 128 * 1024  // 128KB buffer for better performance
 opts.Overwrite = true
-opts.ProgressInterval = 1 * time.Second  // Update less frequently
 
 opts.ProgressCallback = func(downloaded, total int64, speed float64) {
     percentage := float64(downloaded) / float64(total) * 100
@@ -230,7 +232,7 @@ opts.ProgressCallback = func(downloaded, total int64, speed float64) {
     )
 }
 
-result, err := client.DownloadFileWithOptions(
+result, err := client.DownloadWithOptions(
     url,
     opts,
     httpc.WithTimeout(30*time.Minute),  // Longer timeout
@@ -285,21 +287,21 @@ opts := &httpc.DownloadOptions{
     // File handling
     Overwrite:      true,      // Overwrite existing files
     ResumeDownload: false,     // Resume partial downloads
-    CreateDirs:     true,      // Create parent directories
-    FileMode:       0644,      // File permissions (Unix)
-    
-    // Performance
-    BufferSize: 32 * 1024,     // 32KB buffer (default)
     
     // Progress tracking
-    ProgressInterval: 500 * time.Millisecond,
     ProgressCallback: func(downloaded, total int64, speed float64) {
         // Your progress handler
     },
 }
 
-result, err := client.DownloadFileWithOptions(url, opts)
+result, err := client.DownloadWithOptions(url, opts)
 ```
+
+**Available Options:**
+- `FilePath` (string) - Destination file path (required)
+- `Overwrite` (bool) - Overwrite existing files (default: false)
+- `ResumeDownload` (bool) - Resume partial downloads (default: false)
+- `ProgressCallback` (func) - Progress tracking callback (optional)
 
 ### Save Response to File
 
@@ -318,6 +320,55 @@ if err != nil {
     log.Fatal(err)
 }
 ```
+
+### Manual Streaming (for very large files)
+
+For maximum control over large file downloads:
+
+```go
+import (
+    "io"
+    "os"
+)
+
+// Make a regular GET request
+resp, err := client.Get("https://example.com/very-large-file.bin")
+if err != nil {
+    log.Fatal(err)
+}
+
+// Create file
+file, err := os.Create("large-file.bin")
+if err != nil {
+    log.Fatal(err)
+}
+defer file.Close()
+
+// Copy response body to file
+// Note: This requires implementing custom streaming if needed
+_, err = file.Write(resp.RawBody)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+## Implementation Notes
+
+### Current Behavior
+
+The HTTPC download implementation:
+- Loads the entire response into memory before writing to disk
+- Progress callback is called once at completion with final statistics
+- Supports resume downloads using HTTP Range requests
+- Automatically creates parent directories
+- Includes security checks to prevent path traversal attacks
+
+### Memory Considerations
+
+For very large files (>100MB), consider:
+- Using the regular `Get()` method and handling the response stream manually
+- Monitoring available memory during downloads
+- Using resume functionality to handle interrupted downloads
 
 ## Best Practices
 
@@ -408,7 +459,7 @@ size := httpc.FormatBytes(1048576)  // "1.00 MB"
 ### Format Speed
 
 ```go
-speed := httpc.FormatSpeed(1048576)  // "1.00 MB/s"
+speed := httpc.FormatSpeed(1048576.0)  // "1.00 MB/s" (note: float64 parameter)
 ```
 
 ## Examples

@@ -1,4 +1,4 @@
-# HTTPC Library Complete Usage Guide
+﻿# HTTPC Library Complete Usage Guide
 
 ## 🚀 Quick Start
 
@@ -63,10 +63,10 @@ defer client.Close()
 ### Security Preset Configuration
 ```go
 // Balanced mode (default) - suitable for most applications
-client, err := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelBalanced))
+client, err := httpc.New(httpc.DefaultConfig())
 
 // Strict mode - suitable for high security requirement environments
-client, err := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelStrict))
+client, err := httpc.New(httpc.SecureConfig())
 ```
 
 ### Custom Configuration
@@ -123,8 +123,11 @@ user := map[string]interface{}{
 }
 
 resp, err := client.Post("https://api.example.com/users",
-    httpc.WithJSON(user),
     httpc.WithBearerToken("your-token"),
+    httpc.WithJSON(user),
+	
+    // Content-Type is set automatically based on the data type
+    // httpc.WithContentType("application/json"),
 )
 
 // POST form data
@@ -133,12 +136,17 @@ resp, err := client.Post("https://api.example.com/login",
         "username": "johndoe",
         "password": "password123",
     }),
+	
+    // Content-Type is set automatically based on the data type
+    // httpc.WithContentType("application/x-www-form-urlencoded")
 )
 
 // POST text data
 resp, err := client.Post("https://api.example.com/webhook",
     httpc.WithText("Hello, World!"),
-    httpc.WithContentType("text/plain"),
+
+    // Content-Type is set automatically based on the data type
+    // httpc.WithContentType("text/plain")
 )
 ```
 
@@ -537,16 +545,16 @@ if !resp.IsSuccess() {
 }
 ```
 
-### 重试和熔断器
+### Retry and Circuit Breaker
 ```go
-// 熔断器会自动处理连续失败
+// Circuit breaker automatically handles consecutive failures
 resp, err := client.Get(url)
 if err != nil && strings.Contains(err.Error(), "circuit breaker is open") {
-    // 服务暂时不可用，使用备用方案
+    // Service temporarily unavailable, use fallback
     return getFallbackData()
 }
 
-// 配置重试行为
+// Configure retry behavior
 config := httpc.DefaultConfig()
 config.MaxRetries = 3
 config.RetryDelay = 1 * time.Second
@@ -555,33 +563,33 @@ config.BackoffFactor = 2.0
 client, err := httpc.New(config)
 ```
 
-### 上下文取消
+### Context Cancellation
 ```go
 ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 defer cancel()
 
-// 在另一个 goroutine 中可以取消请求
+// Cancel request from another goroutine
 go func() {
     time.Sleep(5 * time.Second)
-    cancel() // 5秒后取消请求
+    cancel() // Cancel after 5 seconds
 }()
 
 resp, err := client.Get(url, httpc.WithContext(ctx))
 if err != nil {
     if errors.Is(err, context.Canceled) {
-        fmt.Println("请求被取消")
+        fmt.Println("Request was canceled")
     } else if errors.Is(err, context.DeadlineExceeded) {
-        fmt.Println("请求超时")
+        fmt.Println("Request timed out")
     }
     return err
 }
 ```
 
-## 🎯 高级功能
+## 🎯 Advanced Features
 
-### 并发请求
+### Concurrent Requests
 ```go
-// 并发发送多个请求
+// Send multiple requests concurrently
 urls := []string{
     "https://api.example.com/users/1",
     "https://api.example.com/users/2",
@@ -603,7 +611,7 @@ for _, url := range urls {
             httpc.WithTimeout(10*time.Second),
         )
         if err != nil {
-            log.Printf("请求失败 %s: %v", u, err)
+            log.Printf("Request failed %s: %v", u, err)
             return
         }
         results <- resp
@@ -613,50 +621,50 @@ for _, url := range urls {
 wg.Wait()
 close(results)
 
-// 处理结果
+// Process results
 for resp := range results {
-    fmt.Printf("状态: %d, 耗时: %v\n", resp.StatusCode, resp.Duration)
+    fmt.Printf("Status: %d, Duration: %v\n", resp.StatusCode, resp.Duration)
 }
 ```
 
-### 自定义传输层
+### Custom Transport Layer
 ```go
 config := httpc.DefaultConfig()
 
-// 自定义 TLS 配置
+// Custom TLS configuration
 config.TLSConfig = &tls.Config{
     MinVersion: tls.VersionTLS12,
     MaxVersion: tls.VersionTLS13,
 }
 
-// 代理配置
+// Proxy configuration
 config.ProxyURL = "http://proxy.example.com:8080"
 
 client, err := httpc.New(config)
 ```
 
-### Cookie 管理
+### Cookie Management
 ```go
-// 自动 Cookie 管理（默认启用）
+// Automatic Cookie management (enabled by default)
 client, err := httpc.New()
 
-// 第一个请求设置 Cookie
+// First request sets cookies
 resp1, _ := client.Post("https://example.com/login",
     httpc.WithForm(map[string]string{
-        "username": "zhangsan",
+        "username": "john",
         "password": "password123",
     }),
 )
 
-// 后续请求自动包含 Cookie
+// Subsequent requests automatically include cookies
 resp2, _ := client.Get("https://example.com/profile")
 ```
 
-## 💡 最佳实践
+## 💡 Best Practices
 
-### 1. 客户端生命周期管理
+### 1. Client Lifecycle Management
 ```go
-// ✅ 推荐：创建客户端并重用
+// ✅ Recommended: Create and reuse client
 func NewAPIClient() *APIClient {
     client, err := httpc.New()
     if err != nil {
@@ -670,7 +678,7 @@ func (c *APIClient) Close() error {
     return c.client.Close()
 }
 
-// ❌ 不推荐：每次请求都创建新客户端
+// ❌ Not recommended: Create new client for each request
 func badExample() {
     client, _ := httpc.New()
     resp, _ := client.Get(url)
@@ -678,55 +686,55 @@ func badExample() {
 }
 ```
 
-### 2. 错误处理模式
+### 2. Error Handling Pattern
 ```go
-// ✅ 推荐：完整的错误处理
+// ✅ Recommended: Complete error handling
 func fetchUser(id int) (*User, error) {
     resp, err := client.Get(fmt.Sprintf("/users/%d", id),
         httpc.WithBearerToken(token),
         httpc.WithTimeout(10*time.Second),
     )
     if err != nil {
-        return nil, fmt.Errorf("获取用户失败: %w", err)
+        return nil, fmt.Errorf("failed to fetch user: %w", err)
     }
 
     if !resp.IsSuccess() {
-        return nil, fmt.Errorf("API 错误: %d %s", resp.StatusCode, resp.Status)
+        return nil, fmt.Errorf("API error: %d %s", resp.StatusCode, resp.Status)
     }
 
     var user User
     if err := resp.JSON(&user); err != nil {
-        return nil, fmt.Errorf("解析响应失败: %w", err)
+        return nil, fmt.Errorf("failed to parse response: %w", err)
     }
 
     return &user, nil
 }
 ```
 
-### 3. 配置选择
+### 3. Configuration Selection
 ```go
-// 开发环境
-client, _ := httpc.New() // 使用默认配置
+// Development environment
+client, _ := httpc.New() // Use default configuration
 
-// 生产环境
-client, _ := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelBalanced))
+// Production environment
+client, _ := httpc.New(httpc.DefaultConfig())
 
-// 高安全环境
-client, _ := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelStrict))
+// High security environment
+client, _ := httpc.New(httpc.SecureConfig())
 ```
 
-### 4. 超时设置
+### 4. Timeout Settings
 ```go
-// 不同场景的超时设置
-healthCheck := 2 * time.Second    // 健康检查
-userRequest := 5 * time.Second    // 用户请求
-criticalOp := 30 * time.Second    // 关键操作
-backgroundJob := 2 * time.Minute  // 后台任务
+// Different timeout settings for different scenarios
+healthCheck := 2 * time.Second    // Health checks
+userRequest := 5 * time.Second    // User requests
+criticalOp := 30 * time.Second    // Critical operations
+backgroundJob := 2 * time.Minute  // Background tasks
 
 resp, err := client.Get(url, httpc.WithTimeout(userRequest))
 ```
 
-### 5. API 客户端封装
+### 5. API Client Wrapper
 ```go
 type APIClient struct {
     client  httpc.Client
@@ -756,16 +764,16 @@ func (c *APIClient) GetUser(ctx context.Context, id int) (*User, error) {
         httpc.WithTimeout(10*time.Second),
     )
     if err != nil {
-        return nil, fmt.Errorf("获取用户失败: %w", err)
+        return nil, fmt.Errorf("failed to get user: %w", err)
     }
     
     if !resp.IsSuccess() {
-        return nil, fmt.Errorf("API 返回错误: %d", resp.StatusCode)
+        return nil, fmt.Errorf("API returned error: %d", resp.StatusCode)
     }
     
     var user User
     if err := resp.JSON(&user); err != nil {
-        return nil, fmt.Errorf("解析响应失败: %w", err)
+        return nil, fmt.Errorf("failed to parse response: %w", err)
     }
     
     return &user, nil
@@ -776,14 +784,14 @@ func (c *APIClient) Close() error {
 }
 ```
 
-## ❓ 常见问题
+## ❓ Common Issues
 
-### Q: 如何处理大文件下载？
+### Q: How to handle large file downloads?
 ```go
-// 使用流式下载，避免内存占用过大
+// Use streaming download to avoid excessive memory usage
 opts := httpc.DefaultDownloadOptions("large-file.zip")
 opts.ProgressCallback = func(downloaded, total int64, speed float64) {
-    fmt.Printf("\r进度: %.1f%%", float64(downloaded)/float64(total)*100)
+    fmt.Printf("\rProgress: %.1f%%", float64(downloaded)/float64(total)*100)
 }
 
 result, err := client.DownloadWithOptions(url, opts,
@@ -791,39 +799,39 @@ result, err := client.DownloadWithOptions(url, opts,
 )
 ```
 
-### Q: 如何设置代理？
+### Q: How to set up a proxy?
 ```go
 config := httpc.DefaultConfig()
 config.ProxyURL = "http://proxy.example.com:8080"
 client, err := httpc.New(config)
 ```
 
-### Q: 如何跳过 TLS 验证（仅测试环境）？
+### Q: How to skip TLS verification (testing only)?
 ```go
 config := httpc.DefaultConfig()
-config.InsecureSkipVerify = true // ⚠️ 仅用于测试！
+config.InsecureSkipVerify = true // ⚠️ For testing only!
 client, err := httpc.New(config)
 ```
 
-### Q: 如何处理重定向？
+### Q: How to handle redirects?
 ```go
-// 默认自动跟随重定向
-// 如需禁用：
+// Automatically follows redirects by default
+// To disable:
 config := httpc.DefaultConfig()
 config.FollowRedirects = false
 client, err := httpc.New(config)
 ```
 
-### Q: 如何限制并发请求数？
+### Q: How to limit concurrent requests?
 ```go
 config := httpc.DefaultConfig()
-config.MaxConcurrentRequests = 100 // 限制最大并发数
+config.MaxConcurrentRequests = 100 // Limit maximum concurrency
 client, err := httpc.New(config)
 ```
 
-### Q: 如何处理 API 限流？
+### Q: How to handle API rate limiting?
 ```go
-// 使用重试机制处理 429 状态码
+// Use retry mechanism to handle 429 status codes
 resp, err := client.Get(url,
     httpc.WithMaxRetries(3),
     httpc.WithTimeout(30*time.Second),
@@ -831,21 +839,21 @@ resp, err := client.Get(url,
 
 if err != nil {
     if strings.Contains(err.Error(), "429") {
-        // 处理限流
+        // Handle rate limiting
         time.Sleep(time.Minute)
-        // 重试请求
+        // Retry request
     }
 }
 ```
 
-## 🔗 相关资源
+## 🔗 Related Resources
 
-- [完整 API 文档](README.md)
-- [示例代码](examples/)
-- [安全优化报告](SECURITY_OPTIMIZATION_REPORT.md)
-- [性能优化指南](OPTIMIZATION_SUMMARY.md)
-- [测试覆盖率分析](TEST_COVERAGE_ANALYSIS.md)
+- [Complete API Documentation](README.md)
+- [Example Code](examples/)
+- [Security Guide](docs/security.md)
+- [Best Practices](docs/best-practices.md)
+- [Configuration Guide](docs/configuration.md)
 
 ---
 
-这个使用指南涵盖了 httpc 库的所有主要功能和最佳实践。如果您有任何问题或需要更多示例，请参考示例代码或提交 Issue。
+This usage guide covers all major features and best practices of the httpc library. If you have any questions or need more examples, please refer to the example code or submit an issue.

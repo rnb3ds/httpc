@@ -15,9 +15,7 @@ type Manager struct {
 	largeBuffers  *BufferPool // 64KB - 512KB
 
 	// Object pools
-	headerPools   *HeaderPool
-	requestPools  *RequestPool
-	responsePools *ResponsePool
+	headerPools *HeaderPool
 
 	// Memory statistics
 	stats *Stats
@@ -62,12 +60,8 @@ type Stats struct {
 	LargeBuffersTotal  int64
 
 	// Object pool statistics
-	HeadersInUse   int64
-	RequestsInUse  int64
-	ResponsesInUse int64
-	HeadersTotal   int64
-	RequestsTotal  int64
-	ResponsesTotal int64
+	HeadersInUse int64
+	HeadersTotal int64
 
 	// Memory statistics
 	AllocatedBytes int64
@@ -95,20 +89,6 @@ type BufferPool struct {
 
 // HeaderPool manages header map objects
 type HeaderPool struct {
-	pool  sync.Pool
-	inUse int64
-	total int64
-}
-
-// RequestPool manages request objects
-type RequestPool struct {
-	pool  sync.Pool
-	inUse int64
-	total int64
-}
-
-// ResponsePool manages response objects
-type ResponsePool struct {
 	pool  sync.Pool
 	inUse int64
 	total int64
@@ -181,25 +161,6 @@ func NewManager(config *Config) *Manager {
 		},
 	}
 
-	m.requestPools = &RequestPool{
-		pool: sync.Pool{
-			New: func() interface{} {
-				return &PooledRequest{
-					Headers:     make(map[string]string, 8),
-					QueryParams: make(map[string]interface{}, 4),
-				}
-			},
-		},
-	}
-
-	m.responsePools = &ResponsePool{
-		pool: sync.Pool{
-			New: func() interface{} {
-				return &PooledResponse{}
-			},
-		},
-	}
-
 	// Start background cleanup
 	m.ticker = time.NewTicker(config.CleanupInterval)
 	go m.cleanupLoop()
@@ -260,17 +221,20 @@ func (m *Manager) PutBuffer(buf []byte) {
 	}
 
 	// Check if we should return to pool based on current usage
+	atomic.AddInt64(&pool.inUse, -1)
+
 	if atomic.LoadInt64(&pool.inUse) < pool.maxCount {
-		atomic.AddInt64(&pool.inUse, -1)
 		// Clear the buffer before returning to pool to prevent data leaks
-		for i := range buf {
-			buf[i] = 0
+		// Use a more efficient clearing method for large buffers
+		if len(buf) > 0 {
+			// Zero out only the used portion, not the entire capacity
+			for i := range buf {
+				buf[i] = 0
+			}
 		}
 		pool.pool.Put(buf[:cap(buf)]) // Reset length to capacity
-	} else {
-		// Pool is full, let GC handle this buffer
-		atomic.AddInt64(&pool.inUse, -1)
 	}
+	// If pool is full, let GC handle this buffer
 }
 
 // GetHeaders returns a header map from the pool
@@ -303,62 +267,6 @@ func (m *Manager) PutHeaders(headers map[string]string) {
 	if atomic.LoadInt64(&m.headerPools.inUse) < 1000 { // Reasonable limit
 		m.headerPools.pool.Put(headers)
 	}
-}
-
-// PooledRequest represents a pooled request object
-type PooledRequest struct {
-	Method      string
-	URL         string
-	Headers     map[string]string
-	QueryParams map[string]interface{}
-	Body        interface{}
-	Timeout     time.Duration
-	MaxRetries  int
-	Context     interface{} // context.Context
-}
-
-// Reset clears the request for reuse
-func (r *PooledRequest) Reset() {
-	r.Method = ""
-	r.URL = ""
-	r.Body = nil
-	r.Timeout = 0
-	r.MaxRetries = 0
-	r.Context = nil
-
-	// Clear maps but keep capacity
-	for k := range r.Headers {
-		delete(r.Headers, k)
-	}
-	for k := range r.QueryParams {
-		delete(r.QueryParams, k)
-	}
-}
-
-// PooledResponse represents a pooled response object
-type PooledResponse struct {
-	StatusCode    int
-	Status        string
-	Headers       map[string][]string
-	Body          string
-	RawBody       []byte
-	ContentLength int64
-	Proto         string
-	Duration      time.Duration
-	Attempts      int
-}
-
-// Reset clears the response for reuse
-func (r *PooledResponse) Reset() {
-	r.StatusCode = 0
-	r.Status = ""
-	r.Headers = nil
-	r.Body = ""
-	r.RawBody = nil
-	r.ContentLength = 0
-	r.Proto = ""
-	r.Duration = 0
-	r.Attempts = 0
 }
 
 // cleanupLoop performs periodic cleanup and memory pressure monitoring
@@ -414,8 +322,6 @@ func (m *Manager) GetStats() Stats {
 		MediumBuffersTotal: atomic.LoadInt64(&m.mediumBuffers.total),
 		LargeBuffersTotal:  atomic.LoadInt64(&m.largeBuffers.total),
 		HeadersInUse:       atomic.LoadInt64(&m.stats.HeadersInUse),
-		RequestsInUse:      atomic.LoadInt64(&m.stats.RequestsInUse),
-		ResponsesInUse:     atomic.LoadInt64(&m.stats.ResponsesInUse),
 		AllocatedBytes:     atomic.LoadInt64(&m.stats.AllocatedBytes),
 		SystemBytes:        atomic.LoadInt64(&m.stats.SystemBytes),
 		GCCycles:           atomic.LoadInt64(&m.stats.GCCycles),
@@ -423,44 +329,6 @@ func (m *Manager) GetStats() Stats {
 		MemoryPressure:     m.stats.MemoryPressure,
 		LastUpdate:         atomic.LoadInt64(&m.stats.LastUpdate),
 	}
-}
-
-// GetPooledRequest returns a pooled request object
-func (m *Manager) GetPooledRequest() *PooledRequest {
-	atomic.AddInt64(&m.requestPools.inUse, 1)
-	atomic.AddInt64(&m.stats.RequestsInUse, 1)
-	return m.requestPools.pool.Get().(*PooledRequest)
-}
-
-// PutPooledRequest returns a pooled request object
-func (m *Manager) PutPooledRequest(req *PooledRequest) {
-	if req == nil {
-		return
-	}
-
-	req.Reset()
-	atomic.AddInt64(&m.requestPools.inUse, -1)
-	atomic.AddInt64(&m.stats.RequestsInUse, -1)
-	m.requestPools.pool.Put(req)
-}
-
-// GetPooledResponse returns a pooled response object
-func (m *Manager) GetPooledResponse() *PooledResponse {
-	atomic.AddInt64(&m.responsePools.inUse, 1)
-	atomic.AddInt64(&m.stats.ResponsesInUse, 1)
-	return m.responsePools.pool.Get().(*PooledResponse)
-}
-
-// PutPooledResponse returns a pooled response object
-func (m *Manager) PutPooledResponse(resp *PooledResponse) {
-	if resp == nil {
-		return
-	}
-
-	resp.Reset()
-	atomic.AddInt64(&m.responsePools.inUse, -1)
-	atomic.AddInt64(&m.stats.ResponsesInUse, -1)
-	m.responsePools.pool.Put(resp)
 }
 
 // Close shuts down the memory manager

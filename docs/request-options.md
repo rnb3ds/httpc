@@ -1,4 +1,4 @@
-# Request Options
+﻿# Request Options
 
 This guide covers all available request options in HTTPC for customizing HTTP requests.
 

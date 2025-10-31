@@ -38,10 +38,10 @@ func TestResponseProcessor_Process(t *testing.T) {
 			httpResponse: &http.Response{
 				StatusCode:    200,
 				Status:        "200 OK",
-				ContentLength: 27, // Set ContentLength field
+				ContentLength: 32, // Correct length for the JSON string
 				Header: http.Header{
 					"Content-Type":   []string{"application/json"},
-					"Content-Length": []string{"27"},
+					"Content-Length": []string{"32"},
 				},
 				Body:    io.NopCloser(strings.NewReader(`{"message":"success","code":200}`)),
 				Request: &http.Request{}, // Add Request to avoid nil pointer
@@ -59,8 +59,8 @@ func TestResponseProcessor_Process(t *testing.T) {
 				if len(resp.RawBody) == 0 {
 					t.Error("RawBody should not be empty")
 				}
-				if resp.ContentLength != 27 {
-					t.Errorf("Expected content length 27, got %d", resp.ContentLength)
+				if resp.ContentLength != 32 {
+					t.Errorf("Expected content length 32, got %d", resp.ContentLength)
 				}
 			},
 		},

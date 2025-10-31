@@ -1,4 +1,4 @@
-# Error Handling
+﻿# Error Handling
 
 This guide covers comprehensive error handling patterns and best practices for HTTPC.
 

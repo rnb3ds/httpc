@@ -1,4 +1,4 @@
-# HTTPC 快速参考指南
+﻿# HTTPC 快速参考指南
 
 ## 🚀 快速开始
 
@@ -20,7 +20,8 @@ resp, err := client.Get("https://api.example.com/users")
 |------|------|------|
 | `httpc.New()` | 默认配置 | `client, err := httpc.New()` |
 | `httpc.New(config)` | 自定义配置 | `client, err := httpc.New(myConfig)` |
-| `httpc.ConfigPreset()` | 预设配置 | `httpc.ConfigPreset(httpc.SecurityLevelStrict)` |
+| `httpc.SecureConfig()` | 安全预设配置 | `config := httpc.SecureConfig()` |
+| `httpc.PerformanceConfig()` | 性能预设配置 | `config := httpc.PerformanceConfig()` |
 
 ### HTTP 方法
 | 方法 | 说明 | 示例 |
@@ -163,16 +164,19 @@ resp, err := client.Get("https://api.example.com/users")
 | `EnableHTTP2` | `bool` | `true` | 启用 HTTP/2 |
 | `EnableCookies` | `bool` | `true` | 启用 Cookie |
 
-## 🛡️ 安全预设
+## 🛡️ 配置预设
 
-| 预设 | 说明 | 适用场景 |
+| 预设函数 | 说明 | 适用场景 |
 |------|------|----------|
-| `SecurityLevelBalanced` | 平衡模式（默认） | 大多数应用 |
-| `SecurityLevelStrict` | 严格模式 | 高安全要求 |
+| `DefaultConfig()` | 平衡模式（默认） | 大多数应用 |
+| `SecureConfig()` | 安全模式 | 高安全要求 |
+| `PerformanceConfig()` | 性能模式 | 高吞吐量场景 |
+| `TestingConfig()` | 测试模式 | 开发测试 |
 
 ```go
 // 使用预设
-client, err := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelStrict))
+config := httpc.SecureConfig()
+client, err := httpc.New(config)
 ```
 
 ## 🚨 错误处理

@@ -98,7 +98,7 @@ func TestRetry_MaxRetriesExceeded(t *testing.T) {
 		t.Fatalf("Request failed: %v", err)
 	}
 
-	// Should return response even after max retries
+	// Should return response even after maxInt retries
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Errorf("Expected status 500, got %d", resp.StatusCode)
 	}
@@ -346,13 +346,13 @@ func TestRetry_MaxRetryDelay(t *testing.T) {
 		t.Fatalf("Request failed: %v", err)
 	}
 
-	// With max delay cap, total time should be reasonable
-	// Expected: ~50ms + ~250ms + ~1250ms + ~2000ms (capped) = ~3.5s max
+	// With maxInt delay cap, total time should be reasonable
+	// Expected: ~50ms + ~250ms + ~1250ms + ~2000ms (capped) = ~3.5s maxInt
 	if duration > 8*time.Second { // Increased tolerance but still reasonable
 		t.Errorf("Request took too long: %v (expected under 8s)", duration)
 	}
 
-	// Verify that the max delay cap is working by ensuring it's not extremely long
+	// Verify that the maxInt delay cap is working by ensuring it's not extremely long
 	if duration > 15*time.Second {
 		t.Errorf("Max delay cap not working properly, took: %v", duration)
 	}
@@ -381,7 +381,7 @@ func TestRetry_RequestSpecificRetries(t *testing.T) {
 		t.Fatalf("Request failed: %v", err)
 	}
 
-	// Should return response even after max retries
+	// Should return response even after maxInt retries
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Errorf("Expected status 500, got %d", resp.StatusCode)
 	}

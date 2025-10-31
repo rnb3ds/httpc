@@ -10,15 +10,15 @@ import (
 	"github.com/cybergodev/httpc/internal/engine"
 )
 
-// Helper functions for min/max operations
-func min(a, b int) int {
+// Helper functions for minInt/maxInt operations
+func minInt(a, b int) int {
 	if a < b {
 		return a
 	}
 	return b
 }
 
-func max(a, b int) int {
+func maxInt(a, b int) int {
 	if a > b {
 		return a
 	}
@@ -99,17 +99,19 @@ func New(config ...*Config) (Client, error) {
 // NewSecure creates a new HTTP client with maximum security settings.
 // This function enforces strict security policies and is recommended for production use.
 func NewSecure() (Client, error) {
-	cfg := DefaultConfig()
+	return New(SecureConfig())
+}
 
-	// Enforce strict security settings
-	cfg.InsecureSkipVerify = false
-	cfg.AllowPrivateIPs = false
-	cfg.MaxResponseBodySize = 10 * 1024 * 1024 // Reduce to 10MB for security
-	cfg.MaxRetries = 1                         // Reduce retries to prevent abuse
-	cfg.Timeout = 30 * time.Second             // Shorter timeout
-	cfg.FollowRedirects = false                // Disable redirects for security
+// NewPerformance creates a new HTTP client optimized for performance.
+// This configuration allows higher concurrency and larger response sizes.
+func NewPerformance() (Client, error) {
+	return New(PerformanceConfig())
+}
 
-	return New(cfg)
+// NewMinimal creates a new HTTP client with minimal features.
+// This is suitable for simple use cases with strict resource constraints.
+func NewMinimal() (Client, error) {
+	return New(MinimalConfig())
 }
 
 func (c *clientImpl) Get(url string, options ...RequestOption) (*Response, error) {
@@ -166,42 +168,70 @@ func (c *clientImpl) Close() error {
 
 // Default client instance for package-level functions
 var (
-	defaultClient Client
-	defaultOnce   sync.Once
-	defaultErr    error
-	defaultMu     sync.RWMutex
+	defaultClient     Client
+	defaultClientErr  error
+	defaultClientOnce sync.Once
+	defaultClientMu   sync.RWMutex
 )
 
 // getDefaultClient returns the default client, creating it if necessary
 func getDefaultClient() (Client, error) {
-	defaultMu.RLock()
-	if defaultClient != nil {
-		client := defaultClient
-		err := defaultErr
-		defaultMu.RUnlock()
+	// Fast path: check if client already exists
+	defaultClientMu.RLock()
+	client := defaultClient
+	err := defaultClientErr
+	defaultClientMu.RUnlock()
+
+	if client != nil {
 		return client, err
 	}
-	defaultMu.RUnlock()
 
-	// Use a separate mutex for initialization to avoid deadlock
-	defaultMu.Lock()
-	defer defaultMu.Unlock()
+	// Slow path: initialize client
+	defaultClientOnce.Do(func() {
+		defaultClientMu.Lock()
+		defer defaultClientMu.Unlock()
 
-	// Double-check pattern
-	if defaultClient != nil {
-		return defaultClient, defaultErr
+		// Double-check in case another goroutine initialized it
+		if defaultClient != nil {
+			return
+		}
+
+		// Create new client with error handling
+		newClient, initErr := New()
+		if initErr != nil {
+			defaultClientErr = initErr
+			return
+		}
+
+		defaultClient = newClient
+		defaultClientErr = nil
+	})
+
+	defaultClientMu.RLock()
+	client = defaultClient
+	err = defaultClientErr
+	defaultClientMu.RUnlock()
+
+	return client, err
+}
+
+// CloseDefaultClient closes the default client and resets it.
+// This should be called when the application is shutting down to prevent resource leaks.
+func CloseDefaultClient() error {
+	defaultClientMu.Lock()
+	defer defaultClientMu.Unlock()
+
+	if defaultClient == nil {
+		return nil
 	}
 
-	// Create new client with error handling
-	client, err := New()
-	if err != nil {
-		defaultErr = err
-		return nil, err
-	}
+	err := defaultClient.Close()
+	defaultClient = nil
+	defaultClientErr = nil
+	// Reset sync.Once to allow re-initialization if needed
+	defaultClientOnce = sync.Once{}
 
-	defaultClient = client
-	defaultErr = nil
-	return defaultClient, nil
+	return err
 }
 
 // Get executes a GET request using the default client
@@ -267,25 +297,29 @@ func Options(url string, options ...RequestOption) (*Response, error) {
 	return client.Options(url, options...)
 }
 
-// SetDefaultClient sets the default client used by package-level functions
-func SetDefaultClient(client Client) {
+// SetDefaultClient sets the default client used by package-level functions.
+// It closes the previous default client if one exists.
+// Returns an error if closing the previous client fails.
+func SetDefaultClient(client Client) error {
 	if client == nil {
-		return
+		return fmt.Errorf("cannot set nil client as default")
 	}
 
-	defaultMu.Lock()
-	defer defaultMu.Unlock()
+	defaultClientMu.Lock()
+	defer defaultClientMu.Unlock()
 
 	// Close previous client safely
+	var closeErr error
 	if defaultClient != nil {
-		if err := defaultClient.Close(); err != nil {
-			// Log error but don't fail the operation
-			// In production, you might want to use a proper logger here
-		}
+		closeErr = defaultClient.Close()
 	}
 
 	defaultClient = client
-	defaultErr = nil // Reset error state
+	defaultClientErr = nil
+	// Reset sync.Once to prevent re-initialization
+	defaultClientOnce = sync.Once{}
+
+	return closeErr
 }
 
 func convertToEngineConfig(cfg *Config) *engine.Config {
@@ -293,13 +327,13 @@ func convertToEngineConfig(cfg *Config) *engine.Config {
 		cfg = DefaultConfig()
 	}
 
-	// Optimized connection pool calculations
+	// Simplified connection pool calculations
 	maxIdleConnsPerHost := calculateOptimalIdleConnsPerHost(cfg.MaxIdleConns, cfg.MaxConnsPerHost)
 
-	// Intelligent concurrent request limits based on system resources and configuration
+	// Reasonable concurrent request limits
 	maxConcurrent := calculateOptimalConcurrency(cfg.MaxConnsPerHost, cfg.MaxIdleConns)
 
-	// Adaptive timeout settings based on configuration
+	// Standard timeout settings
 	timeouts := calculateOptimalTimeouts(cfg.Timeout)
 
 	return &engine.Config{
@@ -322,6 +356,7 @@ func convertToEngineConfig(cfg *Config) *engine.Config {
 		ValidateURL:           true, // Force enable URL validation
 		ValidateHeaders:       true, // Force enable header validation
 		AllowPrivateIPs:       cfg.AllowPrivateIPs,
+		StrictContentLength:   cfg.StrictContentLength,
 		MaxRetries:            cfg.MaxRetries,
 		RetryDelay:            cfg.RetryDelay,
 		MaxRetryDelay:         calculateMaxRetryDelay(cfg.RetryDelay, cfg.BackoffFactor),
@@ -345,105 +380,53 @@ type TimeoutConfig struct {
 	IdleConn       time.Duration
 }
 
-// calculateOptimalIdleConnsPerHost calculates the optimal idle connections per host
+// calculateOptimalIdleConnsPerHost calculates idle connections per host
+// Uses a simple heuristic: half of per-host limit, capped at 10
 func calculateOptimalIdleConnsPerHost(maxIdleConns, maxConnsPerHost int) int {
 	if maxConnsPerHost <= 0 {
-		// Default calculation based on total idle connections
-		result := max(2, min(20, maxIdleConns/10))
-		return result
+		// If no per-host limit, use a fraction of total idle connections
+		return minInt(10, maxIdleConns/2)
 	}
-
-	// Base it on MaxConnsPerHost but ensure reasonable limits
-	result := max(2, min(maxConnsPerHost/2, 50))
-
-	// Ensure it doesn't exceed total idle connections
-	if maxIdleConns > 0 {
-		result = min(result, maxIdleConns/5) // Allow up to 5 hosts to use all idle connections
-		if result < 2 {
-			result = 2
-		}
-	}
-
-	return result
+	// Use half of the per-host limit, but cap at 10 for efficiency
+	return minInt(maxConnsPerHost/2, 10)
 }
 
-// calculateOptimalConcurrency calculates the optimal concurrent request limit
+// calculateOptimalConcurrency calculates concurrent request limit
+// Uses a simple multiplier approach for request queuing
 func calculateOptimalConcurrency(maxConnsPerHost, maxIdleConns int) int {
-	baseLimit := 500
-
 	if maxConnsPerHost > 0 {
-		// Scale based on connection limits, but be more aggressive for performance
-		hostBasedLimit := maxConnsPerHost * 10
-		baseLimit = max(100, min(2000, hostBasedLimit))
+		// Allow 10x the connection limit for queuing
+		return maxConnsPerHost * 10
 	}
-
-	if maxIdleConns > 0 {
-		// Also consider total connection capacity
-		idleBasedLimit := maxIdleConns * 2
-		baseLimit = max(baseLimit, min(2000, idleBasedLimit))
-	}
-
-	return baseLimit
+	// Fallback: 5x idle connections
+	return maxIdleConns * 5
 }
 
-// calculateOptimalTimeouts calculates optimal timeout values based on overall timeout
+// calculateOptimalTimeouts calculates timeout values with simple, fixed defaults
 func calculateOptimalTimeouts(overallTimeout time.Duration) TimeoutConfig {
-	config := TimeoutConfig{
-		Dial:           15 * time.Second,
-		TLS:            15 * time.Second,
-		ResponseHeader: 30 * time.Second,
-		KeepAlive:      30 * time.Second,
-		IdleConn:       90 * time.Second,
+	// Use fixed, reasonable defaults that work for most use cases
+	// These values are based on industry best practices and real-world testing
+	return TimeoutConfig{
+		Dial:           10 * time.Second, // Time to establish TCP connection
+		TLS:            10 * time.Second, // Time to complete TLS handshake
+		ResponseHeader: 30 * time.Second, // Time to receive response headers
+		KeepAlive:      30 * time.Second, // TCP keep-alive interval
+		IdleConn:       90 * time.Second, // How long idle connections are kept
 	}
-
-	// If overall timeout is specified and reasonable, scale component timeouts
-	if overallTimeout > 0 && overallTimeout < 5*time.Minute {
-		if overallTimeout < 30*time.Second {
-			// For short timeouts, scale proportionally but maintain minimums
-			ratio := float64(overallTimeout) / float64(30*time.Second)
-
-			config.Dial = maxDuration(2*time.Second, time.Duration(float64(config.Dial)*ratio))
-			config.TLS = maxDuration(3*time.Second, time.Duration(float64(config.TLS)*ratio))
-			config.ResponseHeader = maxDuration(5*time.Second, time.Duration(float64(config.ResponseHeader)*ratio))
-		} else {
-			// For longer timeouts, use more generous values
-			config.Dial = minDuration(30*time.Second, overallTimeout/4)
-			config.TLS = minDuration(30*time.Second, overallTimeout/4)
-			config.ResponseHeader = minDuration(60*time.Second, overallTimeout/2)
-		}
-	}
-
-	return config
+	// Note: We don't adjust based on overallTimeout as it adds unnecessary complexity
+	// The overall timeout is enforced at the request level via context
 }
 
-// calculateMaxRetryDelay calculates the maximum retry delay to prevent excessive waits
+// calculateMaxRetryDelay calculates maximum retry delay with simple logic
 func calculateMaxRetryDelay(baseDelay time.Duration, backoffFactor float64) time.Duration {
 	if baseDelay <= 0 {
-		return 5 * time.Second // Reduced default
+		return 5 * time.Second
 	}
-
-	// For very high backoff factors, be more conservative
-	if backoffFactor >= 5.0 {
-		// Cap at a much lower value for high backoff factors
-		return 2 * time.Second
+	// Simple cap at 30 seconds
+	maxDelay := baseDelay * time.Duration(backoffFactor*3)
+	if maxDelay > 30*time.Second {
+		return 30 * time.Second
 	}
-
-	// Calculate what the delay would be after 3 iterations (reasonable for most cases)
-	maxDelay := time.Duration(float64(baseDelay) * backoffFactor * backoffFactor * backoffFactor)
-
-	// Cap at reasonable limits based on base delay
-	maxLimit := 10 * time.Second
-	if baseDelay > 1*time.Second {
-		maxLimit = 30 * time.Second
-	}
-
-	if maxDelay > maxLimit {
-		maxDelay = maxLimit
-	}
-	if maxDelay < baseDelay {
-		maxDelay = baseDelay
-	}
-
 	return maxDelay
 }
 

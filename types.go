@@ -44,29 +44,26 @@ func (r *Response) IsServerError() bool {
 	return r.StatusCode >= 500 && r.StatusCode < 600
 }
 
-// JSON unmarshals the response body into the provided interface with enhanced security
+// JSON unmarshals the response body into the provided interface with security validation
 func (r *Response) JSON(v any) error {
 	if r.RawBody == nil {
 		return fmt.Errorf("response body is empty")
 	}
 
-	// Limit JSON parsing size to prevent memory exhaustion attacks
-	if len(r.RawBody) > 100*1024*1024 { // 100MB - increased for better usability
-		return fmt.Errorf("response body too large for JSON parsing (%d bytes, max 100MB)", len(r.RawBody))
+	// Reasonable size limit for JSON parsing
+	if len(r.RawBody) > 50*1024*1024 { // 50MB limit
+		return fmt.Errorf("response body too large for JSON parsing (%d bytes, maxInt 50MB)", len(r.RawBody))
 	}
 
-	// More efficient JSON bomb detection
+	// Simple JSON bomb protection - check for excessive repetition
 	bodyStr := string(r.RawBody)
-	braceCount := strings.Count(bodyStr, "{") + strings.Count(bodyStr, "}")
-	bracketCount := strings.Count(bodyStr, "[") + strings.Count(bodyStr, "]")
 
-	// Check for excessive nesting indicators
-	if braceCount > 50000 || bracketCount > 50000 {
-		return fmt.Errorf("JSON structure too complex (potential JSON bomb): %d braces, %d brackets",
-			braceCount, bracketCount)
+	// Quick check for obvious JSON bombs
+	if strings.Count(bodyStr, "{") > 10000 || strings.Count(bodyStr, "[") > 10000 {
+		return fmt.Errorf("JSON structure too complex (potential JSON bomb)")
 	}
 
-	// Check for excessive depth by looking for deeply nested patterns
+	// Simple depth check by counting nested brackets
 	maxDepth := 0
 	currentDepth := 0
 	for _, char := range bodyStr {
@@ -76,15 +73,15 @@ func (r *Response) JSON(v any) error {
 			if currentDepth > maxDepth {
 				maxDepth = currentDepth
 			}
-			if maxDepth > 1000 { // Reasonable depth limit
-				return fmt.Errorf("JSON nesting too deep (max 1000 levels)")
+			if maxDepth > 500 { // Reasonable depth limit
+				return fmt.Errorf("JSON nesting too deep (maxInt 500 levels)")
 			}
 		case '}', ']':
 			currentDepth--
 		}
 	}
 
-	// Use standard unmarshaling with the pre-validation
+	// Use standard JSON unmarshaling
 	return json.Unmarshal(r.RawBody, v)
 }
 
@@ -116,6 +113,7 @@ type Config struct {
 	InsecureSkipVerify  bool
 	MaxResponseBodySize int64
 	AllowPrivateIPs     bool
+	StrictContentLength bool
 
 	// Retry settings
 	MaxRetries    int
@@ -174,20 +172,21 @@ func (e *HTTPError) Error() string {
 // DefaultConfig returns a configuration with secure defaults
 func DefaultConfig() *Config {
 	return &Config{
-		Timeout:             60 * time.Second,
-		MaxIdleConns:        100,
-		MaxConnsPerHost:     20,
-		InsecureSkipVerify:  false,
-		MaxResponseBodySize: 50 * 1024 * 1024, // 50MB
-		AllowPrivateIPs:     false,
-		MaxRetries:          2,
-		RetryDelay:          2 * time.Second,
-		BackoffFactor:       2.0,
+		Timeout:             30 * time.Second, // Reduced for better responsiveness
+		MaxIdleConns:        50,               // Reduced for better resource management
+		MaxConnsPerHost:     10,               // Reduced to prevent overwhelming servers
+		InsecureSkipVerify:  false,            // Always secure by default
+		MaxResponseBodySize: 10 * 1024 * 1024, // 10MB - more reasonable default
+		AllowPrivateIPs:     false,            // Secure by default
+		StrictContentLength: true,             // Strict by default for security
+		MaxRetries:          3,                // Reasonable retry count
+		RetryDelay:          1 * time.Second,  // Faster initial retry
+		BackoffFactor:       2.0,              // Standard exponential backoff
 		UserAgent:           "httpc/1.0",
 		Headers:             make(map[string]string),
-		FollowRedirects:     true, // Allow redirects but with limits
+		FollowRedirects:     true,
 		EnableHTTP2:         true,
-		EnableCookies:       true,
+		EnableCookies:       false, // Disabled by default for security
 	}
 }
 
@@ -198,78 +197,60 @@ func NewCookieJar() (http.CookieJar, error) {
 	})
 }
 
-// ValidateConfig validates the security of the configuration
+// ValidateConfig validates the configuration with reasonable limits
 func ValidateConfig(cfg *Config) error {
 	if cfg == nil {
 		return fmt.Errorf("config cannot be nil")
 	}
 
-	// Validate timeout settings with more detailed messages
+	// Validate timeout settings - be more permissive
 	if cfg.Timeout < 0 {
 		return fmt.Errorf("timeout cannot be negative, got %v", cfg.Timeout)
 	}
-	if cfg.Timeout > 10*time.Minute {
-		return fmt.Errorf("timeout too large (max 10 minutes), got %v", cfg.Timeout)
+	if cfg.Timeout > 30*time.Minute { // Increased limit for long-running operations
+		return fmt.Errorf("timeout too large (maxInt 30 minutes), got %v", cfg.Timeout)
 	}
 
-	// Validate connection pool settings with improved limits
-	if cfg.MaxIdleConns < 0 || cfg.MaxIdleConns > 2000 {
-		return fmt.Errorf("MaxIdleConns must be between 0 and 2000, got %d", cfg.MaxIdleConns)
+	// Validate connection pool settings - more reasonable limits
+	if cfg.MaxIdleConns < 0 {
+		return fmt.Errorf("MaxIdleConns cannot be negative, got %d", cfg.MaxIdleConns)
 	}
-	if cfg.MaxConnsPerHost < 0 || cfg.MaxConnsPerHost > 200 {
-		return fmt.Errorf("MaxConnsPerHost must be between 0 and 200, got %d", cfg.MaxConnsPerHost)
+	if cfg.MaxIdleConns > 1000 {
+		return fmt.Errorf("MaxIdleConns too large (maxInt 1000), got %d", cfg.MaxIdleConns)
 	}
-
-	// Validate logical relationship between connection settings
-	if cfg.MaxConnsPerHost > 0 && cfg.MaxIdleConns > 0 {
-		// Allow MaxConnsPerHost to be up to MaxIdleConns (more flexible)
-		if cfg.MaxConnsPerHost > cfg.MaxIdleConns {
-			// Auto-adjust MaxIdleConns to accommodate MaxConnsPerHost
-			cfg.MaxIdleConns = cfg.MaxConnsPerHost * 2
-			if cfg.MaxIdleConns > 2000 {
-				cfg.MaxIdleConns = 2000
-			}
-		}
+	if cfg.MaxConnsPerHost < 0 {
+		return fmt.Errorf("MaxConnsPerHost cannot be negative, got %d", cfg.MaxConnsPerHost)
+	}
+	if cfg.MaxConnsPerHost > 1000 {
+		return fmt.Errorf("MaxConnsPerHost too large (maxInt 1000), got %d", cfg.MaxConnsPerHost)
 	}
 
 	// Validate response body size limits
 	if cfg.MaxResponseBodySize < 0 {
 		return fmt.Errorf("MaxResponseBodySize cannot be negative, got %d", cfg.MaxResponseBodySize)
 	}
-	if cfg.MaxResponseBodySize > 2*1024*1024*1024 { // 2GB
-		return fmt.Errorf("MaxResponseBodySize too large (max 2GB), got %d", cfg.MaxResponseBodySize)
-	}
 
-	// Validate retry settings with improved limits
-	if cfg.MaxRetries < 0 || cfg.MaxRetries > 20 {
-		return fmt.Errorf("MaxRetries must be between 0 and 20, got %d", cfg.MaxRetries)
+	// Validate retry settings - more permissive
+	if cfg.MaxRetries < 0 {
+		return fmt.Errorf("MaxRetries cannot be negative, got %d", cfg.MaxRetries)
+	}
+	if cfg.MaxRetries > 10 {
+		return fmt.Errorf("MaxRetries too large (maxInt 10), got %d", cfg.MaxRetries)
 	}
 	if cfg.RetryDelay < 0 {
 		return fmt.Errorf("RetryDelay cannot be negative, got %v", cfg.RetryDelay)
 	}
-	if cfg.RetryDelay > 1*time.Minute {
-		return fmt.Errorf("RetryDelay too large (max 1 minute), got %v", cfg.RetryDelay)
-	}
-	if cfg.BackoffFactor < 1.0 || cfg.BackoffFactor > 10.0 {
-		return fmt.Errorf("BackoffFactor must be between 1.0 and 10.0, got %f", cfg.BackoffFactor)
+	if cfg.BackoffFactor < 1.0 {
+		return fmt.Errorf("BackoffFactor must be at least 1.0, got %f", cfg.BackoffFactor)
 	}
 
-	// Validate User-Agent with improved limits
-	if len(cfg.UserAgent) > 1024 {
-		return fmt.Errorf("UserAgent too long (max 1024 characters), got %d", len(cfg.UserAgent))
-	}
-
-	// Check for dangerous characters in User-Agent
+	// Validate User-Agent - basic validation only
 	if strings.ContainsAny(cfg.UserAgent, "\r\n\x00") {
 		return fmt.Errorf("UserAgent contains invalid control characters")
 	}
 
-	// Validate headers map with improved validation
+	// Validate headers map - basic validation
 	if cfg.Headers != nil {
-		if len(cfg.Headers) > 100 {
-			return fmt.Errorf("too many default headers (max 100), got %d", len(cfg.Headers))
-		}
-
 		for key, value := range cfg.Headers {
 			if err := validateHeaderKeyValue(key, value); err != nil {
 				return fmt.Errorf("invalid header %s: %w", key, err)
@@ -286,10 +267,10 @@ func validateHeaderKeyValue(key, value string) error {
 		return fmt.Errorf("header key cannot be empty or whitespace-only")
 	}
 	if len(key) > 256 {
-		return fmt.Errorf("header key too long (max 256 characters)")
+		return fmt.Errorf("header key too long (maxInt 256 characters)")
 	}
 	if len(value) > 8192 {
-		return fmt.Errorf("header value too long (max 8KB)")
+		return fmt.Errorf("header value too long (maxInt 8KB)")
 	}
 	if strings.ContainsAny(key, "\r\n\x00") {
 		return fmt.Errorf("header key contains invalid characters")
@@ -311,4 +292,37 @@ func validateHeaderKeyValue(key, value string) error {
 	}
 
 	return nil
+}
+
+// FormatBytes formats bytes in human-readable format (e.g., "1.50 KB", "2.30 MB")
+func FormatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.2f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// FormatSpeed formats speed in human-readable format (e.g., "1.50 KB/s", "2.30 MB/s")
+func FormatSpeed(bytesPerSecond float64) string {
+	const unit = 1024.0
+	if bytesPerSecond < unit {
+		return fmt.Sprintf("%.0f B/s", bytesPerSecond)
+	}
+
+	units := []string{"KB/s", "MB/s", "GB/s", "TB/s", "PB/s", "EB/s"}
+	div := unit
+	exp := 0
+
+	for bytesPerSecond >= div*unit && exp < len(units)-1 {
+		div *= unit
+		exp++
+	}
+
+	return fmt.Sprintf("%.2f %s", bytesPerSecond/div, units[exp])
 }

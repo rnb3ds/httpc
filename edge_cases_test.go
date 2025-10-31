@@ -476,7 +476,12 @@ func TestEdgeCase_PackageLevelFunctions(t *testing.T) {
 	config.AllowPrivateIPs = true
 	client, _ := New(config)
 	SetDefaultClient(client)
-	defer client.Close()
+	defer func() {
+		// Reset default client before closing
+		defaultClient, _ := newTestClient()
+		SetDefaultClient(defaultClient)
+		client.Close()
+	}()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

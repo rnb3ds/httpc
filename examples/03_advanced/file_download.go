@@ -62,9 +62,9 @@ func demonstrateSimpleDownload() {
 	}
 
 	fmt.Printf("✓ Downloaded: %s\n", result.FilePath)
-	fmt.Printf("  Size: %s\n", formatBytes(result.BytesWritten))
+	fmt.Printf("  Size: %s\n", httpc.FormatBytes(result.BytesWritten))
 	fmt.Printf("  Duration: %v\n", result.Duration)
-	fmt.Printf("  Speed: %s/s\n\n", formatBytes(int64(result.AverageSpeed)))
+	fmt.Printf("  Speed: %s\n\n", httpc.FormatSpeed(result.AverageSpeed))
 }
 
 // demonstrateDownloadWithProgress shows download with progress tracking
@@ -86,14 +86,14 @@ func demonstrateDownloadWithProgress() {
 				percentage := float64(downloaded) / float64(total) * 100
 				fmt.Printf("\r  Progress: %.1f%% (%s / %s) - Speed: %s",
 					percentage,
-					formatBytes(downloaded),
-					formatBytes(total),
-					formatBytes(int64(speed))+"/s",
+					httpc.FormatBytes(downloaded),
+					httpc.FormatBytes(total),
+					httpc.FormatSpeed(speed),
 				)
 			} else {
 				fmt.Printf("\r  Downloaded: %s - Speed: %s",
-					formatBytes(downloaded),
-					formatBytes(int64(speed))+"/s",
+					httpc.FormatBytes(downloaded),
+					httpc.FormatSpeed(speed),
 				)
 			}
 		},
@@ -112,8 +112,8 @@ func demonstrateDownloadWithProgress() {
 	}
 
 	fmt.Printf("\n✓ Download completed: %s\n", result.FilePath)
-	fmt.Printf("  Total size: %s\n", formatBytes(result.BytesWritten))
-	fmt.Printf("  Average speed: %s/s\n\n", formatBytes(int64(result.AverageSpeed)))
+	fmt.Printf("  Total size: %s\n", httpc.FormatBytes(result.BytesWritten))
+	fmt.Printf("  Average speed: %s\n\n", httpc.FormatSpeed(result.AverageSpeed))
 }
 
 // demonstrateLargeFileDownload shows downloading large files with custom settings
@@ -133,9 +133,9 @@ func demonstrateLargeFileDownload() {
 		ProgressCallback: func(downloaded, total int64, speed float64) {
 			if total > 0 {
 				percentage := float64(downloaded) / float64(total) * 100
-				fmt.Printf("\r  Downloading: %.1f%% - %s/s",
+				fmt.Printf("\r  Downloading: %.1f%% - %s",
 					percentage,
-					formatBytes(int64(speed)),
+					httpc.FormatSpeed(speed),
 				)
 			}
 		},
@@ -156,9 +156,9 @@ func demonstrateLargeFileDownload() {
 
 	fmt.Printf("\n✓ Large file downloaded successfully\n")
 	fmt.Printf("  File: %s\n", result.FilePath)
-	fmt.Printf("  Size: %s\n", formatBytes(result.BytesWritten))
+	fmt.Printf("  Size: %s\n", httpc.FormatBytes(result.BytesWritten))
 	fmt.Printf("  Time: %v\n", result.Duration)
-	fmt.Printf("  Average speed: %s/s\n\n", formatBytes(int64(result.AverageSpeed)))
+	fmt.Printf("  Average speed: %s\n\n", httpc.FormatSpeed(result.AverageSpeed))
 }
 
 // demonstrateResumeDownload shows resuming interrupted downloads
@@ -194,7 +194,7 @@ func demonstrateResumeDownload() {
 
 	// Check if partial file exists
 	if fileInfo, err := os.Stat(filePath); err == nil {
-		fmt.Printf("  Partial file size: %s\n", formatBytes(fileInfo.Size()))
+		fmt.Printf("  Partial file size: %s\n", httpc.FormatBytes(fileInfo.Size()))
 
 		// Now resume the download
 		fmt.Println("  Resuming download...")
@@ -204,9 +204,9 @@ func demonstrateResumeDownload() {
 			ProgressCallback: func(downloaded, total int64, speed float64) {
 				if total > 0 {
 					percentage := float64(downloaded) / float64(total) * 100
-					fmt.Printf("\r  Progress: %.1f%% - %s/s",
+					fmt.Printf("\r  Progress: %.1f%% - %s",
 						percentage,
-						formatBytes(int64(speed)),
+						httpc.FormatSpeed(speed),
 					)
 				}
 			},
@@ -229,7 +229,7 @@ func demonstrateResumeDownload() {
 		} else {
 			fmt.Printf("\n✓ Download completed (server doesn't support resume)\n")
 		}
-		fmt.Printf("  Final size: %s\n\n", formatBytes(result.BytesWritten))
+		fmt.Printf("  Final size: %s\n\n", httpc.FormatBytes(result.BytesWritten))
 	} else {
 		fmt.Println("  Note: Resume example skipped (partial file not created)\n ")
 	}
@@ -260,7 +260,7 @@ func demonstrateSaveResponseToFile() {
 	}
 
 	fmt.Printf("✓ Response saved to: %s\n", filePath)
-	fmt.Printf("  Size: %s\n\n", formatBytes(int64(len(resp.RawBody))))
+	fmt.Printf("  Size: %s\n\n", httpc.FormatBytes(int64(len(resp.RawBody))))
 }
 
 // demonstrateAuthenticatedDownload shows downloading files with authentication
@@ -293,21 +293,7 @@ func demonstrateAuthenticatedDownload() {
 
 	fmt.Printf("✓ Authenticated download completed\n")
 	fmt.Printf("  File: %s\n", result.FilePath)
-	fmt.Printf("  Size: %s\n\n", formatBytes(result.BytesWritten))
-}
-
-// Helper function to format bytes in human-readable format
-func formatBytes(bytes int64) string {
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
-	}
-	div, exp := int64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+	fmt.Printf("  Size: %s\n\n", httpc.FormatBytes(result.BytesWritten))
 }
 
 // Helper function to clean up downloaded files (optional)

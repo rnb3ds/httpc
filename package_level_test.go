@@ -15,7 +15,7 @@ func setupPackageLevelTests() {
 	config := DefaultConfig()
 	config.AllowPrivateIPs = true
 	client, _ := New(config)
-	SetDefaultClient(client)
+	_ = SetDefaultClient(client) // Ignore error in test setup
 }
 
 // ============================================================================
@@ -175,10 +175,11 @@ func TestPackageLevel_SetDefaultClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create custom client: %v", err)
 	}
-	defer customClient.Close()
 
 	// Set as default
-	SetDefaultClient(customClient)
+	if err := SetDefaultClient(customClient); err != nil {
+		t.Fatalf("Failed to set default client: %v", err)
+	}
 
 	// Test that package-level functions use the custom client
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -196,9 +197,14 @@ func TestPackageLevel_SetDefaultClient(t *testing.T) {
 		t.Errorf("Expected status 200, got %d", resp.StatusCode)
 	}
 
-	// Reset to default client for other tests
+	// Reset to default client for other tests BEFORE closing the custom client
 	defaultClient, _ := newTestClient()
-	SetDefaultClient(defaultClient)
+	if err := SetDefaultClient(defaultClient); err != nil {
+		t.Fatalf("Failed to reset default client: %v", err)
+	}
+
+	// Now it's safe to close the custom client
+	customClient.Close()
 }
 
 func TestPackageLevel_ConcurrentUsage(t *testing.T) {
@@ -297,5 +303,70 @@ func TestPackageLevel_ErrorHandling(t *testing.T) {
 	_, err = Post("http://localhost:99999", WithJSON(map[string]string{"test": "data"}))
 	if err == nil {
 		t.Error("Expected error for non-existent server")
+	}
+}
+
+// ============================================================================
+// UTILITY FUNCTION TESTS
+// ============================================================================
+
+func TestFormatBytes(t *testing.T) {
+	tests := []struct {
+		input    int64
+		expected string
+	}{
+		{0, "0 B"},
+		{512, "512 B"},
+		{1024, "1.00 KB"},
+		{1536, "1.50 KB"},
+		{1048576, "1.00 MB"},
+		{1073741824, "1.00 GB"},
+		{1099511627776, "1.00 TB"},
+	}
+
+	for _, test := range tests {
+		result := FormatBytes(test.input)
+		if result != test.expected {
+			t.Errorf("FormatBytes(%d) = %s, expected %s", test.input, result, test.expected)
+		}
+	}
+}
+
+func TestFormatSpeed(t *testing.T) {
+	tests := []struct {
+		input    float64
+		expected string
+	}{
+		{0, "0 B/s"},
+		{512, "512 B/s"},
+		{1024, "1.00 KB/s"},
+		{1536, "1.50 KB/s"},
+		{1048576, "1.00 MB/s"},
+		{1073741824, "1.00 GB/s"},
+		{1099511627776, "1.00 TB/s"},
+	}
+
+	for _, test := range tests {
+		result := FormatSpeed(test.input)
+		if result != test.expected {
+			t.Errorf("FormatSpeed(%f) = %s, expected %s", test.input, result, test.expected)
+		}
+	}
+}
+
+func TestDefaultDownloadOptions(t *testing.T) {
+	filePath := "test/file.txt"
+	opts := DefaultDownloadOptions(filePath)
+
+	if opts.FilePath != filePath {
+		t.Errorf("Expected FilePath %s, got %s", filePath, opts.FilePath)
+	}
+
+	if opts.Overwrite != false {
+		t.Errorf("Expected Overwrite to be false, got %t", opts.Overwrite)
+	}
+
+	if opts.ResumeDownload != false {
+		t.Errorf("Expected ResumeDownload to be false, got %t", opts.ResumeDownload)
 	}
 }

@@ -407,6 +407,7 @@ func TestDownload_ContentLengthMismatch(t *testing.T) {
 
 	config := DefaultConfig()
 	config.AllowPrivateIPs = true
+	config.StrictContentLength = false // Allow content-length mismatch for this test
 	client, err := New(config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)

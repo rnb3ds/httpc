@@ -1,4 +1,4 @@
-# Configuration
+﻿# Configuration
 
 This guide covers all configuration options for HTTPC clients.
 
@@ -23,19 +23,19 @@ defer client.Close()
 ```
 
 **Default values:**
-- Timeout: 60 seconds
-- MaxRetries: 2
-- RetryDelay: 2 seconds
-- MaxRetryDelay: 60 seconds
-- MaxIdleConns: 100
-- MaxIdleConnsPerHost: 10
-- MaxConnsPerHost: 20
-- MaxConcurrentRequests: 500
-- MaxResponseBodySize: 50 MB
-- TLS: 1.2-1.3 with secure cipher suites
+- Timeout: 30 seconds
+- MaxRetries: 3
+- RetryDelay: 1 second
+- BackoffFactor: 2.0
+- MaxIdleConns: 50
+- MaxConnsPerHost: 10
+- MaxResponseBodySize: 10 MB
+- TLS: 1.2-1.3 (via TLSConfig if set)
 - HTTP/2: Enabled
-- ValidateURL: true
-- ValidateHeaders: true
+- FollowRedirects: true
+- EnableCookies: false
+- AllowPrivateIPs: false
+- StrictContentLength: true
 
 ## Security Presets
 
@@ -46,7 +46,7 @@ Choose the right security level for your use case.
 For development environments and internal APIs:
 
 ```go
-client, err := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelPermissive))
+client, err := httpc.New(httpc.TestingConfig())
 if err != nil {
     log.Fatal(err)
 }
@@ -73,7 +73,7 @@ defer client.Close()
 For most applications:
 
 ```go
-client, err := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelBalanced))
+client, err := httpc.New(httpc.DefaultConfig())
 // Or simply:
 client, err := httpc.New()  // Uses balanced by default
 ```
@@ -100,7 +100,7 @@ client, err := httpc.New()  // Uses balanced by default
 For high-security environments and compliance:
 
 ```go
-client, err := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelStrict))
+client, err := httpc.New(httpc.SecureConfig())
 if err != nil {
     log.Fatal(err)
 }
@@ -194,7 +194,7 @@ defer client.Close()
 Start with a preset and customize:
 
 ```go
-config := httpc.ConfigPreset(httpc.SecurityLevelBalanced)
+config := httpc.DefaultConfig()
 config.Timeout = 30 * time.Second
 config.MaxRetries = 3
 config.UserAgent = "MyApp/1.0"
@@ -330,8 +330,8 @@ client, err := httpc.New(config)
 
 ### ✅ DO
 
-- Use `SecurityLevelBalanced` for production
-- Use `SecurityLevelStrict` for compliance requirements
+- Use `DefaultConfig()` for production
+- Use `SecureConfig()` for compliance requirements
 - Set appropriate timeouts for your use case
 - Enable TLS 1.2+ in production
 - Validate URLs and headers
@@ -342,8 +342,8 @@ client, err := httpc.New(config)
 - Use `InsecureSkipVerify` in production
 - Set very long timeouts without good reason
 - Disable header validation
-- Use `SecurityLevelPermissive` for external APIs
-- Set `MaxConcurrentRequests` too high
+- Use `TestingConfig()` for external APIs
+- Set excessive connection limits without testing
 
 ## Examples
 
@@ -360,7 +360,7 @@ client, err := httpc.New(config)
 ### Example 2: High-Throughput Client
 
 ```go
-config := httpc.ConfigPreset(httpc.SecurityLevelBalanced)
+config := httpc.DefaultConfig()
 config.MaxConcurrentRequests = 1000
 config.MaxIdleConnsPerHost = 50
 config.MaxConnsPerHost = 100
@@ -371,7 +371,7 @@ client, err := httpc.New(config)
 ### Example 3: Strict Security Client
 
 ```go
-config := httpc.ConfigPreset(httpc.SecurityLevelStrict)
+config := httpc.SecureConfig()
 config.TLSConfig = &tls.Config{
     MinVersion: tls.VersionTLS13,
     CipherSuites: []uint16{

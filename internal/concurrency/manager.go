@@ -201,13 +201,19 @@ func (m *Manager) processRequest(req *Request) {
 		atomic.AddInt64(&m.metrics.CompletedRequests, 1)
 	}
 
-	// Send result with timeout protection
+	// Send result with context-aware timeout protection
+	// Use a timer to avoid goroutine leak
+	timer := time.NewTimer(100 * time.Millisecond)
+	defer timer.Stop()
+
 	select {
 	case req.Result <- err:
+		// Successfully sent result
 	case <-req.Context.Done():
 		// Context cancelled, don't block
-	case <-time.After(100 * time.Millisecond):
-		// Prevent indefinite blocking if result channel is not being read
+	case <-timer.C:
+		// Timeout - result channel is not being read
+		// This prevents goroutine leak but the caller won't get the result
 	}
 }
 

@@ -11,20 +11,23 @@ import (
 	"time"
 )
 
-// WithHeader sets a request header
+// WithHeader sets a request header with proper validation.
+// Invalid headers are silently ignored to maintain backward compatibility.
+// Use ValidateConfig to catch invalid headers at configuration time.
 func WithHeader(key, value string) RequestOption {
 	return func(r *Request) {
 		if r.Headers == nil {
 			r.Headers = make(map[string]string)
 		}
 
-		// Basic validation - reject headers with control characters or excessive length
-		if strings.TrimSpace(key) != "" &&
-			len(key) <= 256 && len(value) <= 8192 &&
-			!strings.ContainsAny(key, "\r\n\x00") &&
-			!strings.ContainsAny(value, "\r\n\x00") {
-			r.Headers[key] = value
+		// Strict validation - skip invalid headers
+		if err := validateHeaderKeyValue(key, value); err != nil {
+			// Invalid headers are silently ignored to prevent breaking existing code
+			// Consider logging this in debug mode in future versions
+			return
 		}
+
+		r.Headers[key] = value
 	}
 }
 
@@ -35,13 +38,12 @@ func WithHeaderMap(headers map[string]string) RequestOption {
 			r.Headers = make(map[string]string)
 		}
 		for k, v := range headers {
-			// Apply same validation as WithHeader
-			if strings.TrimSpace(k) != "" &&
-				len(k) <= 256 && len(v) <= 8192 &&
-				!strings.ContainsAny(k, "\r\n\x00") &&
-				!strings.ContainsAny(v, "\r\n\x00") {
-				r.Headers[k] = v
+			// Apply strict validation
+			if err := validateHeaderKeyValue(k, v); err != nil {
+				// Skip invalid headers silently
+				continue
 			}
+			r.Headers[k] = v
 		}
 	}
 }
@@ -318,10 +320,21 @@ func WithCookie(cookie *http.Cookie) RequestOption {
 			return
 		}
 
-		if r.Cookies == nil {
-			r.Cookies = make([]*http.Cookie, 0)
+		// Enhance security by setting secure defaults if not specified
+		if cookie.Secure == false && cookie.HttpOnly == false {
+			// Create a copy to avoid modifying the original
+			secureCookie := *cookie
+			secureCookie.HttpOnly = true // Prevent XSS attacks
+			if r.Cookies == nil {
+				r.Cookies = make([]*http.Cookie, 0)
+			}
+			r.Cookies = append(r.Cookies, &secureCookie)
+		} else {
+			if r.Cookies == nil {
+				r.Cookies = make([]*http.Cookie, 0)
+			}
+			r.Cookies = append(r.Cookies, cookie)
 		}
-		r.Cookies = append(r.Cookies, cookie)
 	}
 }
 
@@ -335,7 +348,7 @@ func WithCookies(cookies []*http.Cookie) RequestOption {
 	}
 }
 
-// WithCookieValue adds a simple cookie with the given name and value
+// WithCookieValue adds a simple cookie with the given name and value with secure defaults
 func WithCookieValue(name, value string) RequestOption {
 	// Pre-validate before creating cookie
 	if strings.TrimSpace(name) == "" ||
@@ -346,7 +359,9 @@ func WithCookieValue(name, value string) RequestOption {
 	}
 
 	return WithCookie(&http.Cookie{
-		Name:  name,
-		Value: value,
+		Name:     name,
+		Value:    value,
+		HttpOnly: true,                 // Secure default to prevent XSS
+		SameSite: http.SameSiteLaxMode, // CSRF protection
 	})
 }

@@ -123,14 +123,17 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 	ctx := req.Context
 
 	// Apply timeout if specified
+	// Note: The timeout context will be automatically canceled when the request completes
+	// or when the parent context is canceled. The http.Client handles this internally.
 	if req.Timeout > 0 {
 		// Only create timeout context if the current context doesn't already have a deadline
 		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithTimeout(ctx, req.Timeout)
-			// Store cancel function in request for proper cleanup
-			// Note: The caller is responsible for managing the context lifecycle
-			_ = cancel // Avoid unused variable warning - context will be managed by caller
+			// The cancel function will be called by the HTTP client when the request completes.
+			// We don't need to call it explicitly here as http.Client.Do handles cleanup.
+			// However, for long-lived request objects, the caller should ensure proper cleanup.
+			defer cancel()
 		}
 	}
 

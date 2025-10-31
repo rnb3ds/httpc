@@ -23,11 +23,11 @@ func TestConfigValidation_DefaultConfig(t *testing.T) {
 	}
 
 	if config.MaxRetries < 0 {
-		t.Error("Default max retries should be non-negative")
+		t.Error("Default maxInt retries should be non-negative")
 	}
 
 	if config.MaxIdleConns <= 0 {
-		t.Error("Default max idle connections should be positive")
+		t.Error("Default maxInt idle connections should be positive")
 	}
 
 	if config.UserAgent == "" {
@@ -106,9 +106,9 @@ func TestConfigValidation_ConnectionPoolValues(t *testing.T) {
 		wantErr         bool
 	}{
 		{"Normal pool", 100, 10, false},
-		{"Zero max idle", 0, 10, false},
-		{"Negative max idle", -1, 10, true}, // Should error
-		{"Large pool", 10000, 1000, true},   // Should error (> 1000)
+		{"Zero maxInt idle", 0, 10, false},
+		{"Negative maxInt idle", -1, 10, true}, // Should error
+		{"Large pool", 10000, 1000, true},      // Should error (> 1000)
 	}
 
 	for _, tt := range tests {

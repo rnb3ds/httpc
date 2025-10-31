@@ -138,12 +138,24 @@ func (v *Validator) validateHost(host string) error {
 		hostname = h
 	}
 
+	// Check for localhost patterns first
 	if isLocalhost(hostname) {
 		return fmt.Errorf("localhost and loopback addresses are not allowed")
 	}
 
+	// Check if hostname is already an IP address
+	if ip := net.ParseIP(hostname); ip != nil {
+		if isPrivateOrReservedIP(ip) {
+			return fmt.Errorf("private or reserved IP addresses are not allowed: %s", ip.String())
+		}
+		return nil
+	}
+
+	// For domain names, perform DNS lookup
 	ips, err := net.LookupIP(hostname)
 	if err != nil {
+		// DNS lookup failed, but we don't block the request
+		// The actual request will fail with a proper DNS error
 		return nil
 	}
 

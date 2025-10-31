@@ -202,7 +202,7 @@ func TestClassifyError_ContextErrors(t *testing.T) {
 			name:         "Context deadline exceeded",
 			err:          context.DeadlineExceeded,
 			expectedType: ErrorTypeTimeout,
-			expectedMsg:  "request timed out",
+			expectedMsg:  "request timeout",
 		},
 		{
 			name:         "Context canceled in message",

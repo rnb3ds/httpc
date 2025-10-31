@@ -67,6 +67,7 @@ type Config struct {
 	ValidateURL           bool
 	ValidateHeaders       bool
 	AllowPrivateIPs       bool
+	StrictContentLength   bool
 
 	// Retry settings
 	MaxRetries    int

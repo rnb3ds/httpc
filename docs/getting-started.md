@@ -1,4 +1,4 @@
-# Getting Started with HTTPC
+﻿# Getting Started with HTTPC
 
 This guide will help you get started with HTTPC in just a few minutes.
 
@@ -349,13 +349,13 @@ client, err := httpc.New()
 
 ```go
 // Development - Permissive settings
-client, err := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelPermissive))
+client, err := httpc.New(httpc.TestingConfig())
 
 // Production - Balanced (default)
-client, err := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelBalanced))
+client, err := httpc.New(httpc.DefaultConfig())
 
 // High Security - Strict settings
-client, err := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelStrict))
+client, err := httpc.New(httpc.SecureConfig())
 ```
 
 **See also:** [Configuration Guide](configuration.md) for detailed configuration options.
@@ -416,7 +416,7 @@ TLS configuration issue. Check certificate or use permissive mode for testing:
 
 ```go
 // For testing only (not for production!)
-client, err := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelPermissive))
+client, err := httpc.New(httpc.TestingConfig())
 ```
 
 ## Getting Help

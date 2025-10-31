@@ -337,6 +337,7 @@ func TestEngine_ErrorHandling(t *testing.T) {
 				ValidateURL:           true,
 				ValidateHeaders:       true,
 				AllowPrivateIPs:       true, // Allow test server access
+				StrictContentLength:   true, // Enable strict content-length validation
 			}
 
 			client, err := NewClient(config)

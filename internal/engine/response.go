@@ -36,16 +36,22 @@ func (p *ResponseProcessor) Process(httpResp *http.Response) (*Response, error) 
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	// Handle Content-Length validation
-	contentLength := int64(-1) // Default to -1 to indicate no Content-Length header
-	if contentLengthHeader := httpResp.Header.Get("Content-Length"); contentLengthHeader != "" {
-		contentLength = httpResp.ContentLength
+	// Handle Content-Length - use the value from HTTP response
+	contentLength := httpResp.ContentLength
 
-		// Validate content length if header was provided
-		if contentLength >= 0 && int64(len(body)) != contentLength {
-			// Log the mismatch but don't fail the request
-			// In production, you might want to use a proper logger
-			// For now, we'll continue with the actual body length
+	// Validate content length if it was provided and is positive
+	// Skip validation for HEAD requests which may have Content-Length but no body
+	if contentLength > 0 && contentLength != int64(len(body)) {
+		// Check if this is a HEAD request by looking at the request method
+		isHeadRequest := false
+		if httpResp.Request != nil && httpResp.Request.Method == "HEAD" {
+			isHeadRequest = true
+		}
+
+		// HEAD requests are allowed to have Content-Length without body
+		if !isHeadRequest && p.config.StrictContentLength {
+			// Content-Length mismatch - this could indicate a security issue or server problem
+			return nil, fmt.Errorf("content-length mismatch: expected %d bytes, got %d bytes", contentLength, len(body))
 		}
 	}
 

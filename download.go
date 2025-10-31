@@ -40,14 +40,22 @@ func defaultDownloadOptions(filePath string) *DownloadOptions {
 	}
 }
 
+// DefaultDownloadOptions creates a new DownloadOptions with default settings
+func DefaultDownloadOptions(filePath string) *DownloadOptions {
+	return &DownloadOptions{
+		FilePath:       filePath,
+		Overwrite:      false,
+		ResumeDownload: false,
+	}
+}
+
 func DownloadFile(url string, filePath string, options ...RequestOption) (*DownloadResult, error) {
 	client, err := getDefaultClient()
 	if err != nil {
 		return nil, err
 	}
 
-	downloadOpts := defaultDownloadOptions(filePath)
-	return client.(*clientImpl).downloadFile(context.Background(), url, downloadOpts, options...)
+	return client.DownloadFile(url, filePath, options...)
 }
 
 func (c *clientImpl) DownloadFile(url string, filePath string, options ...RequestOption) (*DownloadResult, error) {
@@ -162,7 +170,7 @@ func prepareFilePath(filePath string) error {
 
 	// Limit path length
 	if len(filePath) > 4096 {
-		return fmt.Errorf("file path too long (max 4096 characters)")
+		return fmt.Errorf("file path too long (maxInt 4096 characters)")
 	}
 
 	// Prevent path traversal attacks
@@ -202,28 +210,22 @@ func prepareFilePath(filePath string) error {
 
 // isSystemPath checks if the path is in a system-sensitive directory
 func isSystemPath(path string) bool {
+	// Simplified system path detection
 	systemPaths := []string{
-		// Unix/Linux system paths
-		"/etc", "/sys", "/proc", "/dev", "/boot", "/root", "/usr/bin", "/usr/sbin",
-		"/bin", "/sbin", "/var/log", "/var/run", "/tmp", "/var/tmp",
-		// Windows system paths
-		"C:\\Windows", "C:\\System32", "C:\\Program Files", "C:\\Program Files (x86)",
-		"C:\\ProgramData", "C:\\Users\\All Users", "C:\\Documents and Settings",
-		"C:\\WINDOWS", "C:\\WINNT", "C:\\Boot", "C:\\Recovery",
+		// Unix/Linux critical paths
+		"/etc/", "/sys/", "/proc/", "/dev/", "/boot/", "/root/",
+		"/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/",
+		// Windows critical paths
+		"c:\\windows\\", "c:\\system32\\", "c:\\program files\\",
+		"c:\\programdata\\", "c:\\boot\\",
 		// Additional sensitive paths
-		"/Library", "/System", "/Applications", "/private",
+		"/library/", "/system/", "/applications/",
 	}
 
 	cleanPath := strings.ToLower(filepath.Clean(path))
 	for _, sysPath := range systemPaths {
-		sysPathLower := strings.ToLower(sysPath)
-		if strings.HasPrefix(cleanPath, sysPathLower) {
-			// Ensure it's actually a subdirectory, not just a prefix match
-			if len(cleanPath) == len(sysPathLower) ||
-				(len(cleanPath) > len(sysPathLower) &&
-					(cleanPath[len(sysPathLower)] == '/' || cleanPath[len(sysPathLower)] == '\\')) {
-				return true
-			}
+		if strings.HasPrefix(cleanPath, sysPath) {
+			return true
 		}
 	}
 	return false

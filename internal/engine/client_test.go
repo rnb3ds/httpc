@@ -74,58 +74,7 @@ func TestNewClient_InvalidConfig(t *testing.T) {
 	}
 }
 
-func TestClient_HTTPMethods(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"method": "` + r.Method + `"}`))
-	}))
-	defer server.Close()
-
-	config := &Config{
-		Timeout:         30 * time.Second,
-		AllowPrivateIPs: true,
-		MaxRetries:      1,
-		UserAgent:       "test-client/1.0",
-	}
-
-	client, err := NewClient(config)
-	if err != nil {
-		t.Fatalf("NewClient failed: %v", err)
-	}
-	defer client.Close()
-
-	tests := []struct {
-		name   string
-		method func(string, ...RequestOption) (*Response, error)
-		want   string
-	}{
-		{"GET", client.Get, "GET"},
-		{"POST", client.Post, "POST"},
-		{"PUT", client.Put, "PUT"},
-		{"PATCH", client.Patch, "PATCH"},
-		{"DELETE", client.Delete, "DELETE"},
-		{"HEAD", client.Head, "HEAD"},
-		{"OPTIONS", client.Options, "OPTIONS"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resp, err := tt.method(server.URL)
-			if err != nil {
-				t.Fatalf("Request failed: %v", err)
-			}
-
-			if resp.StatusCode != http.StatusOK {
-				t.Errorf("Expected status 200, got %d", resp.StatusCode)
-			}
-
-			if tt.want != "HEAD" && !strings.Contains(resp.Body, tt.want) {
-				t.Errorf("Expected method %s in response, got: %s", tt.want, resp.Body)
-			}
-		})
-	}
-}
+// TestClient_HTTPMethods removed - duplicate of TestClient_AllHTTPMethods in comprehensive_test.go
 
 func TestClient_Request(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
