@@ -29,7 +29,6 @@ func NewRequestProcessor(config *Config, memManager *memory.Manager) *RequestPro
 }
 
 func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
-	// Provide defaults for missing fields
 	if req.Method == "" {
 		req.Method = "GET"
 	}
@@ -106,13 +105,11 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 				body = &buf
 				contentType = writer.FormDataContentType()
 			} else {
-				// Check if Content-Type is already set in headers to determine serialization format
 				existingContentType := ""
 				if req.Headers != nil {
 					existingContentType = req.Headers["Content-Type"]
 				}
 
-				// Use XML marshaling if Content-Type is application/xml
 				if existingContentType == "application/xml" {
 					xmlData, err := xml.Marshal(v)
 					if err != nil {
@@ -121,7 +118,6 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 					body = bytes.NewReader(xmlData)
 					contentType = "application/xml"
 				} else {
-					// Default to JSON marshaling
 					jsonData, err := json.Marshal(v)
 					if err != nil {
 						return nil, fmt.Errorf("failed to marshal request body as JSON: %w", err)
@@ -138,24 +134,7 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 	}
 
-	ctx := req.Context
-
-	// Apply timeout if specified
-	// Note: The timeout context will be automatically canceled when the request completes
-	// or when the parent context is canceled. The http.Client handles this internally.
-	if req.Timeout > 0 {
-		// Only create timeout context if the current context doesn't already have a deadline
-		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, req.Timeout)
-			// The cancel function will be called by the HTTP client when the request completes.
-			// We don't need to call it explicitly here as http.Client.Do handles cleanup.
-			// However, for long-lived request objects, the caller should ensure proper cleanup.
-			defer cancel()
-		}
-	}
-
-	httpReq = httpReq.WithContext(ctx)
+	httpReq = httpReq.WithContext(req.Context)
 
 	if contentType != "" && httpReq.Header.Get("Content-Type") == "" {
 		httpReq.Header.Set("Content-Type", contentType)
@@ -175,7 +154,6 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 		httpReq.Header.Set("User-Agent", p.config.UserAgent)
 	}
 
-	// Add cookies to the request
 	for _, cookie := range req.Cookies {
 		httpReq.AddCookie(cookie)
 	}

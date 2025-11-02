@@ -13,31 +13,25 @@ import (
 	"time"
 )
 
-// RetryEngine handles retry logic with exponential backoff
 type RetryEngine struct {
 	config *Config
 }
 
-// NewRetryEngine creates a new retry engine
 func NewRetryEngine(config *Config) *RetryEngine {
 	return &RetryEngine{
 		config: config,
 	}
 }
 
-// ShouldRetry determines if a request should be retried
 func (r *RetryEngine) ShouldRetry(resp *Response, err error, attempt int) bool {
-	// Don't retry if we've exceeded max attempts
 	if attempt >= r.config.MaxRetries {
 		return false
 	}
 
-	// Retry on network errors
 	if err != nil {
 		return r.isRetryableError(err)
 	}
 
-	// Retry on specific HTTP status codes
 	if resp != nil {
 		return r.isRetryableStatus(resp.StatusCode)
 	}
@@ -45,24 +39,19 @@ func (r *RetryEngine) ShouldRetry(resp *Response, err error, attempt int) bool {
 	return false
 }
 
-// GetDelay calculates the delay for the next retry attempt
 func (r *RetryEngine) GetDelay(attempt int) time.Duration {
 	return r.GetDelayWithResponse(attempt, nil)
 }
 
-// GetDelayWithResponse calculates the delay for the next retry attempt, considering Retry-After header
 func (r *RetryEngine) GetDelayWithResponse(attempt int, resp *Response) time.Duration {
-	// Check for Retry-After header first
 	if resp != nil && resp.Headers != nil {
 		if retryAfterValues, exists := resp.Headers["Retry-After"]; exists && len(retryAfterValues) > 0 {
 			retryAfter := retryAfterValues[0]
 
-			// Try to parse as seconds (integer)
 			if seconds, err := strconv.Atoi(retryAfter); err == nil && seconds > 0 {
 				return time.Duration(seconds) * time.Second
 			}
 
-			// Try to parse as HTTP date (RFC 1123)
 			if retryTime, err := time.Parse(time.RFC1123, retryAfter); err == nil {
 				delay := time.Until(retryTime)
 				if delay > 0 {
@@ -71,13 +60,11 @@ func (r *RetryEngine) GetDelayWithResponse(attempt int, resp *Response) time.Dur
 			}
 		}
 	}
-	// Base delay
+
 	delay := r.config.RetryDelay
 	if delay <= 0 {
 		delay = 1 * time.Second
 	}
-
-	// Apply exponential backoff
 	backoffFactor := r.config.BackoffFactor
 	if backoffFactor <= 0 {
 		backoffFactor = 2.0
@@ -85,29 +72,24 @@ func (r *RetryEngine) GetDelayWithResponse(attempt int, resp *Response) time.Dur
 
 	exponentialDelay := time.Duration(float64(delay) * math.Pow(backoffFactor, float64(attempt)))
 
-	// Apply maximum delay limit
 	if r.config.MaxRetryDelay > 0 && exponentialDelay > r.config.MaxRetryDelay {
 		exponentialDelay = r.config.MaxRetryDelay
 	}
 
-	// Add jitter if enabled (±10% variation)
 	if r.config.Jitter {
-		jitterRange := exponentialDelay / 10                       // 10% of the delay
-		jitter := r.getSecureJitter(jitterRange * 2)               // 0 to 20%
-		exponentialDelay = exponentialDelay - jitterRange + jitter // ±10%
+		jitterRange := exponentialDelay / 10
+		jitter := r.getSecureJitter(jitterRange * 2)
+		exponentialDelay = exponentialDelay - jitterRange + jitter
 	}
 
 	return exponentialDelay
 }
 
-// MaxRetries returns the maximum number of retry attempts
 func (r *RetryEngine) MaxRetries() int {
 	return r.config.MaxRetries
 }
 
-// isRetryableError checks if an error is retryable
 func (r *RetryEngine) isRetryableError(err error) bool {
-	// Context cancellation should never be retried
 	if errors.Is(err, context.Canceled) {
 		return false
 	}

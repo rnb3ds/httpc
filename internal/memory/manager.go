@@ -7,51 +7,38 @@ import (
 	"time"
 )
 
-// Manager provides intelligent memory management with monitoring and optimization
 type Manager struct {
-	// Buffer pools for different sizes
-	smallBuffers  *BufferPool // 1KB - 8KB
-	mediumBuffers *BufferPool // 8KB - 64KB
-	largeBuffers  *BufferPool // 64KB - 512KB
+	smallBuffers  *BufferPool
+	mediumBuffers *BufferPool
+	largeBuffers  *BufferPool
 
-	// Object pools
 	headerPools *HeaderPool
 
-	// Memory statistics
 	stats *Stats
 
-	// Configuration
 	config *Config
 
-	// Lifecycle
 	closed int32
 	ticker *time.Ticker
 	done   chan struct{}
 }
 
-// Config defines memory manager configuration
 type Config struct {
-	// Buffer pool sizes
-	SmallBufferSize  int // Default: 4KB
-	MediumBufferSize int // Default: 32KB
-	LargeBufferSize  int // Default: 256KB
+	SmallBufferSize  int
+	MediumBufferSize int
+	LargeBufferSize  int
 
-	// Pool limits
-	MaxSmallBuffers  int // Default: 1000
-	MaxMediumBuffers int // Default: 500
-	MaxLargeBuffers  int // Default: 100
+	MaxSmallBuffers  int
+	MaxMediumBuffers int
+	MaxLargeBuffers  int
 
-	// Cleanup intervals
-	CleanupInterval time.Duration // Default: 30s
+	CleanupInterval time.Duration
 
-	// Memory pressure thresholds
-	MemoryPressureThreshold float64 // Default: 0.8 (80% of available memory)
-	GCTriggerThreshold      float64 // Default: 0.9 (90% of available memory)
+	MemoryPressureThreshold float64
+	GCTriggerThreshold      float64
 }
 
-// Stats provides memory usage statistics
 type Stats struct {
-	// Buffer pool statistics
 	SmallBuffersInUse  int64
 	MediumBuffersInUse int64
 	LargeBuffersInUse  int64
@@ -59,26 +46,21 @@ type Stats struct {
 	MediumBuffersTotal int64
 	LargeBuffersTotal  int64
 
-	// Object pool statistics
 	HeadersInUse int64
 	HeadersTotal int64
 
-	// Memory statistics
 	AllocatedBytes int64
 	SystemBytes    int64
 	GCCycles       int64
 	LastGCTime     int64
 
-	// Performance metrics
 	BufferHitRate  float64
 	ObjectHitRate  float64
 	MemoryPressure float64
 
-	// Timestamps
 	LastUpdate int64
 }
 
-// BufferPool manages buffers of a specific size range
 type BufferPool struct {
 	pool     sync.Pool
 	size     int
@@ -87,19 +69,17 @@ type BufferPool struct {
 	total    int64
 }
 
-// HeaderPool manages header map objects
 type HeaderPool struct {
 	pool  sync.Pool
 	inUse int64
 	total int64
 }
 
-// DefaultConfig returns default memory manager configuration
 func DefaultConfig() *Config {
 	return &Config{
-		SmallBufferSize:         4 * 1024,   // 4KB
-		MediumBufferSize:        32 * 1024,  // 32KB
-		LargeBufferSize:         256 * 1024, // 256KB
+		SmallBufferSize:         4 * 1024,
+		MediumBufferSize:        32 * 1024,
+		LargeBufferSize:         256 * 1024,
 		MaxSmallBuffers:         1000,
 		MaxMediumBuffers:        500,
 		MaxLargeBuffers:         100,
@@ -109,7 +89,6 @@ func DefaultConfig() *Config {
 	}
 }
 
-// NewManager creates a new memory manager
 func NewManager(config *Config) *Manager {
 	if config == nil {
 		config = DefaultConfig()
@@ -121,7 +100,6 @@ func NewManager(config *Config) *Manager {
 		done:   make(chan struct{}),
 	}
 
-	// Initialize buffer pools
 	m.smallBuffers = &BufferPool{
 		size:     config.SmallBufferSize,
 		maxCount: int64(config.MaxSmallBuffers),
@@ -152,7 +130,6 @@ func NewManager(config *Config) *Manager {
 		},
 	}
 
-	// Initialize object pools
 	m.headerPools = &HeaderPool{
 		pool: sync.Pool{
 			New: func() interface{} {
@@ -161,7 +138,6 @@ func NewManager(config *Config) *Manager {
 		},
 	}
 
-	// Start background cleanup
 	m.ticker = time.NewTicker(config.CleanupInterval)
 	go m.cleanupLoop()
 
@@ -191,13 +167,11 @@ func (m *Manager) GetBuffer(size int) []byte {
 	return pool.pool.Get().([]byte)
 }
 
-// PutBuffer returns a buffer to the appropriate pool
 func (m *Manager) PutBuffer(buf []byte) {
 	if buf == nil {
 		return
 	}
 
-	// Check if manager is closed
 	if atomic.LoadInt32(&m.closed) == 1 {
 		return
 	}
@@ -216,25 +190,14 @@ func (m *Manager) PutBuffer(buf []byte) {
 		pool = m.largeBuffers
 		atomic.AddInt64(&m.stats.LargeBuffersInUse, -1)
 	default:
-		// Not from our pools, just let GC handle it
 		return
 	}
 
-	// Check if we should return to pool based on current usage
 	atomic.AddInt64(&pool.inUse, -1)
 
 	if atomic.LoadInt64(&pool.inUse) < pool.maxCount {
-		// Clear the buffer before returning to pool to prevent data leaks
-		// Use a more efficient clearing method for large buffers
-		if len(buf) > 0 {
-			// Zero out only the used portion, not the entire capacity
-			for i := range buf {
-				buf[i] = 0
-			}
-		}
-		pool.pool.Put(buf[:cap(buf)]) // Reset length to capacity
+		pool.pool.Put(buf[:0])
 	}
-	// If pool is full, let GC handle this buffer
 }
 
 // GetHeaders returns a header map from the pool
@@ -269,17 +232,12 @@ func (m *Manager) PutHeaders(headers map[string]string) {
 	}
 }
 
-// cleanupLoop performs periodic cleanup and memory pressure monitoring
 func (m *Manager) cleanupLoop() {
-	defer func() {
-		// Perform final cleanup on exit
-		m.performCleanup()
-	}()
+	defer m.performCleanup()
 
 	for {
 		select {
 		case <-m.ticker.C:
-			// Check if manager is closed after ticker fires
 			if atomic.LoadInt32(&m.closed) == 1 {
 				return
 			}
@@ -290,9 +248,7 @@ func (m *Manager) cleanupLoop() {
 	}
 }
 
-// performCleanup performs memory cleanup and monitoring
 func (m *Manager) performCleanup() {
-	// Update memory statistics
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
 
@@ -302,11 +258,9 @@ func (m *Manager) performCleanup() {
 	atomic.StoreInt64(&m.stats.LastGCTime, int64(memStats.LastGC))
 	atomic.StoreInt64(&m.stats.LastUpdate, time.Now().Unix())
 
-	// Calculate memory pressure
 	memoryPressure := float64(memStats.Alloc) / float64(memStats.Sys)
 	m.stats.MemoryPressure = memoryPressure
 
-	// Trigger GC if memory pressure is high
 	if memoryPressure > m.config.GCTriggerThreshold {
 		runtime.GC()
 	}

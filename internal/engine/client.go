@@ -18,7 +18,6 @@ import (
 	"github.com/cybergodev/httpc/internal/security"
 )
 
-// Client implements the core HTTP client engine with optimal performance
 type Client struct {
 	config *Config
 
@@ -43,9 +42,7 @@ type Client struct {
 	mu        sync.RWMutex
 }
 
-// Config represents the unified client configuration
 type Config struct {
-	// Network settings
 	Timeout               time.Duration
 	DialTimeout           time.Duration
 	KeepAlive             time.Duration
@@ -57,8 +54,7 @@ type Config struct {
 	MaxConnsPerHost       int
 	ProxyURL              string
 
-	// Security settings
-	TLSConfig             interface{} // *tls.Config
+	TLSConfig             interface{}
 	MinTLSVersion         uint16
 	MaxTLSVersion         uint16
 	InsecureSkipVerify    bool
@@ -69,25 +65,21 @@ type Config struct {
 	AllowPrivateIPs       bool
 	StrictContentLength   bool
 
-	// Retry settings
 	MaxRetries    int
 	RetryDelay    time.Duration
 	MaxRetryDelay time.Duration
 	BackoffFactor float64
 	Jitter        bool
 
-	// Headers and features
 	UserAgent       string
 	Headers         map[string]string
 	FollowRedirects bool
 	EnableHTTP2     bool
 
-	// Cookie settings
-	CookieJar     interface{} // http.CookieJar
+	CookieJar     interface{}
 	EnableCookies bool
 }
 
-// Request represents an HTTP request
 type Request struct {
 	Method      string
 	URL         string
@@ -100,7 +92,6 @@ type Request struct {
 	Cookies     []*http.Cookie
 }
 
-// Response represents an HTTP response
 type Response struct {
 	StatusCode    int
 	Status        string
@@ -116,7 +107,6 @@ type Response struct {
 	Cookies       []*http.Cookie
 }
 
-// NewClient creates a new HTTP client engine
 func NewClient(config *Config) (*Client, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config cannot be nil")
@@ -166,7 +156,6 @@ func NewClient(config *Config) (*Client, error) {
 	client.responseProcessor = NewResponseProcessor(config, client.memoryManager)
 	client.retryEngine = NewRetryEngine(config)
 
-	// Create validator with security configuration
 	validatorConfig := &security.Config{
 		ValidateURL:           config.ValidateURL,
 		ValidateHeaders:       config.ValidateHeaders,
@@ -180,7 +169,6 @@ func NewClient(config *Config) (*Client, error) {
 	return client, nil
 }
 
-// Request executes an HTTP request
 func (c *Client) Request(ctx context.Context, method, url string, options ...RequestOption) (*Response, error) {
 	if atomic.LoadInt32(&c.closed) == 1 {
 		return nil, fmt.Errorf("client is closed")
@@ -217,17 +205,10 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 		return nil, fmt.Errorf("request validation failed: %w", err)
 	}
 
-	var response *Response
-	err := c.concurrencyManager.Execute(ctx, func() error {
-		resp, execErr := c.executeWithRetry(req)
-		response = resp
-		return execErr
-	})
-
+	response, err := c.executeWithRetry(req)
 	duration := time.Since(startTime)
 	c.updateLatencyMetrics(duration.Nanoseconds())
 
-	// Record request metrics for health monitoring
 	isTimeout := err != nil && (errors.Is(err, context.DeadlineExceeded) ||
 		strings.Contains(err.Error(), "timeout") ||
 		strings.Contains(err.Error(), "deadline exceeded"))
@@ -281,44 +262,16 @@ func (c *Client) Options(url string, options ...RequestOption) (*Response, error
 	return c.executeWithDefaultContext("OPTIONS", url, options...)
 }
 
-// executeWithDefaultContext executes a request with a default context if none is provided
 func (c *Client) executeWithDefaultContext(method, url string, options ...RequestOption) (*Response, error) {
-	// Check if a context or timeout is already provided in options
-	hasContext := false
-	hasTimeout := false
-	for _, opt := range options {
-		if opt != nil {
-			// Create a temporary request to check if context or timeout is set
-			tempReq := &Request{}
-			opt(tempReq)
-			if tempReq.Context != nil {
-				hasContext = true
-			}
-			if tempReq.Timeout > 0 {
-				hasTimeout = true
-			}
-		}
-	}
-
-	// If no context is provided and no timeout is specified, create one with default timeout
-	// If timeout is specified via WithTimeout, don't create a context with default timeout
-	// to allow the request-level timeout to take precedence
-	if !hasContext && !hasTimeout {
-		ctx, cancel := c.createDefaultContext()
-		defer cancel()
-		return c.Request(ctx, method, url, options...)
-	}
-
-	// Use context.Background() as the base context since options will override it
-	return c.Request(context.Background(), method, url, options...)
+	ctx, cancel := c.createDefaultContext()
+	defer cancel()
+	return c.Request(ctx, method, url, options...)
 }
 
-// createDefaultContext creates a context with timeout if configured
 func (c *Client) createDefaultContext() (context.Context, context.CancelFunc) {
 	if c.config.Timeout > 0 {
 		return context.WithTimeout(context.Background(), c.config.Timeout)
 	}
-	// Return a cancellable context even without timeout for proper cleanup
 	return context.WithCancel(context.Background())
 }
 
@@ -412,46 +365,43 @@ func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
 		}
 	}()
 
-	// Handle timeout by creating a context with timeout if specified
-	// This context will live for the duration of the request execution
 	originalCtx := req.Context
 	if originalCtx == nil {
 		originalCtx = context.Background()
 	}
 
 	var cancel context.CancelFunc
+	var execCtx context.Context
 	timeout := req.Timeout
 
-	// If no request-specific timeout is set, use the client config timeout
 	if timeout <= 0 && c.config.Timeout > 0 {
 		timeout = c.config.Timeout
 	}
 
 	if timeout > 0 {
-		// Only create a timeout context if the original context doesn't already have a deadline
-		if _, hasDeadline := originalCtx.Deadline(); !hasDeadline {
-			req.Context, cancel = context.WithTimeout(originalCtx, timeout)
+		existingDeadline, hasDeadline := originalCtx.Deadline()
+
+		if !hasDeadline || (hasDeadline && time.Until(existingDeadline) > timeout) {
+			execCtx, cancel = context.WithTimeout(originalCtx, timeout)
 			defer cancel()
+		} else {
+			execCtx = originalCtx
 		}
+	} else {
+		execCtx = originalCtx
 	}
 
-	// Check context before proceeding
 	select {
-	case <-req.Context.Done():
-		return nil, ClassifyError(req.Context.Err(), req.URL, req.Method, 0)
+	case <-execCtx.Done():
+		return nil, ClassifyError(execCtx.Err(), req.URL, req.Method, 0)
 	default:
 	}
 
-	httpReq, err := c.requestProcessor.Build(req)
+	reqCopy := *req
+	reqCopy.Context = execCtx
+	httpReq, err := c.requestProcessor.Build(&reqCopy)
 	if err != nil {
 		return nil, ClassifyError(fmt.Errorf("failed to build request: %w", err), req.URL, req.Method, 0)
-	}
-
-	// Check context again after building request
-	select {
-	case <-req.Context.Done():
-		return nil, ClassifyError(req.Context.Err(), req.URL, req.Method, 0)
-	default:
 	}
 
 	start := time.Now()
@@ -462,24 +412,14 @@ func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
 		return nil, ClassifyError(fmt.Errorf("transport error: %w", err), req.URL, req.Method, 0)
 	}
 
-	// Ensure response body is always closed to prevent resource leaks
 	defer func() {
 		if httpResp != nil && httpResp.Body != nil {
-			// Drain and close body to enable connection reuse
 			if resp == nil || resp.RawBody == nil {
-				// If we haven't read the body yet, drain it
-				io.Copy(io.Discard, io.LimitReader(httpResp.Body, 64*1024)) // Limit drain to 64KB
+				io.Copy(io.Discard, io.LimitReader(httpResp.Body, 64*1024))
 			}
 			httpResp.Body.Close()
 		}
 	}()
-
-	// Check context before processing response
-	select {
-	case <-req.Context.Done():
-		return nil, ClassifyError(req.Context.Err(), req.URL, req.Method, 0)
-	default:
-	}
 
 	resp, err = c.responseProcessor.Process(httpResp)
 	if err != nil {
@@ -490,19 +430,16 @@ func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
 	return resp, nil
 }
 
-// GetHealthStatus returns the current health status of the client
 func (c *Client) GetHealthStatus() monitoring.HealthStatus {
-	// Update resource metrics before health check
 	if c.connectionPool != nil {
 		metrics := c.connectionPool.GetMetrics()
-		poolUtil := float64(metrics.ActiveConnections) / float64(metrics.TotalConnections+1) // +1 to avoid division by zero
-		c.healthChecker.UpdateResourceMetrics(metrics.ActiveConnections, poolUtil, 0)        // Memory usage would need to be tracked separately
+		poolUtil := float64(metrics.ActiveConnections) / float64(metrics.TotalConnections+1)
+		c.healthChecker.UpdateResourceMetrics(metrics.ActiveConnections, poolUtil, 0)
 	}
 
 	return c.healthChecker.CheckHealth()
 }
 
-// IsHealthy returns true if the client is in a healthy state
 func (c *Client) IsHealthy() bool {
 	return c.healthChecker.IsHealthy()
 }
