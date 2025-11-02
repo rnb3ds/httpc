@@ -7,7 +7,6 @@ This guide covers all aspects of downloading files using HTTPC, from simple down
 - [Quick Start](#quick-start)
 - [Basic Download](#basic-download)
 - [Progress Tracking](#progress-tracking)
-- [Resume Downloads](#resume-downloads)
 - [Large Files](#large-files)
 - [Authentication](#authentication)
 - [Advanced Options](#advanced-options)
@@ -15,9 +14,9 @@ This guide covers all aspects of downloading files using HTTPC, from simple down
 
 ## Quick Start
 
-### Simple Download
+### Simple Download (Package-Level Function)
 
-The easiest way to download a file:
+The easiest way to download a file - no need to create a client:
 
 ```go
 package main
@@ -31,7 +30,7 @@ import (
 )
 
 func main() {
-    // Download a file
+    // Download a file using package-level function
     result, err := httpc.DownloadFile(
         "https://example.com/file.zip",
         "downloads/file.zip",
@@ -51,7 +50,7 @@ func main() {
 
 ### Using Client Instance
 
-For reusable clients, create a client instance:
+For reusable clients or when making multiple requests, create a client instance:
 
 ```go
 client, err := httpc.New()
@@ -140,72 +139,6 @@ opts.ProgressCallback = func(downloaded, total int64, speed float64) {
             httpc.FormatSpeed(speed),
         )
     }
-}
-```
-
-## Resume Downloads
-
-### Basic Resume
-
-Resume interrupted downloads automatically:
-
-```go
-opts := httpc.DefaultDownloadOptions("downloads/large-file.zip")
-opts.ResumeDownload = true  // Enable resume
-opts.Overwrite = false      // Don't overwrite existing file
-
-result, err := client.DownloadWithOptions(url, opts)
-if err != nil {
-    log.Fatal(err)
-}
-
-if result.Resumed {
-    fmt.Println("✓ Download resumed from previous position")
-} else {
-    fmt.Println("✓ Download completed (server doesn't support resume)")
-}
-```
-
-### Resume with Progress
-
-Combine resume with progress tracking:
-
-```go
-opts := httpc.DefaultDownloadOptions("downloads/movie.mp4")
-opts.ResumeDownload = true
-opts.ProgressCallback = func(downloaded, total int64, speed float64) {
-    percentage := float64(downloaded) / float64(total) * 100
-    fmt.Printf("\rResuming: %.1f%% - %s", percentage, httpc.FormatSpeed(speed))
-}
-
-result, err := client.DownloadWithOptions(url, opts)
-```
-
-### Retry Failed Downloads
-
-Automatically retry with resume:
-
-```go
-const maxAttempts = 3
-var result *httpc.DownloadResult
-var err error
-
-for attempt := 1; attempt <= maxAttempts; attempt++ {
-    opts := httpc.DefaultDownloadOptions("downloads/file.zip")
-    opts.ResumeDownload = true
-    
-    result, err = client.DownloadWithOptions(
-        url,
-        opts,
-        httpc.WithTimeout(10*time.Minute),
-    )
-    
-    if err == nil {
-        break
-    }
-    
-    log.Printf("Attempt %d failed: %v", attempt, err)
-    time.Sleep(time.Second * time.Duration(attempt))
 }
 ```
 
@@ -416,38 +349,6 @@ if err != nil {
 }
 ```
 
-### 5. Verify Downloads
-
-```go
-result, err := client.DownloadFile(url, filePath)
-if err != nil {
-    log.Fatal(err)
-}
-
-// Verify file size
-fileInfo, _ := os.Stat(filePath)
-if fileInfo.Size() != result.BytesWritten {
-    log.Fatal("File size mismatch")
-}
-
-// Verify checksum (if available)
-if expectedChecksum != "" {
-    actualChecksum := calculateChecksum(filePath)
-    if actualChecksum != expectedChecksum {
-        log.Fatal("Checksum mismatch")
-    }
-}
-```
-
-### 6. Use Progress for User Feedback
-
-```go
-opts.ProgressCallback = func(downloaded, total int64, speed float64) {
-    // Update UI, log progress, or send to monitoring system
-    metrics.RecordDownloadProgress(downloaded, total, speed)
-}
-```
-
 ## Helper Functions
 
 ### Format Bytes
@@ -466,10 +367,5 @@ speed := httpc.FormatSpeed(1048576.0)  // "1.00 MB/s" (note: float64 parameter)
 
 See the [file_download.go](../examples/03_advanced/file_download.go) example for complete working code.
 
-## Related Documentation
-
-- [Getting Started](getting-started.md) - Basic usage
-- [Request Options](request-options.md) - Authentication and timeout options
-- [Error Handling](error-handling.md) - Handling download errors
 
 ---

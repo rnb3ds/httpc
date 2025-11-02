@@ -749,7 +749,7 @@ HTTPC provides powerful file download capabilities with progress tracking, resum
 ### Simple File Download
 
 ```go
-// Download a file to disk
+// Download a file to disk using package-level function
 result, err := httpc.DownloadFile(
     "https://example.com/file.zip",
     "downloads/file.zip",
@@ -762,7 +762,29 @@ fmt.Printf("Downloaded: %s\n", httpc.FormatBytes(result.BytesWritten))
 fmt.Printf("Speed: %s\n", httpc.FormatSpeed(result.AverageSpeed))
 ```
 
-### Download with Progress Tracking
+### Download with Progress Tracking (Package-Level)
+
+```go
+// Configure download options
+opts := httpc.DefaultDownloadOptions("downloads/large-file.zip")
+opts.Overwrite = true
+opts.ProgressCallback = func(downloaded, total int64, speed float64) {
+    percentage := float64(downloaded) / float64(total) * 100
+    fmt.Printf("\rProgress: %.1f%% - %s",
+        percentage,
+        httpc.FormatSpeed(speed),
+    )
+}
+
+// Download with progress using package-level function
+result, err := httpc.DownloadWithOptions(
+    "https://example.com/large-file.zip",
+    opts,
+    httpc.WithTimeout(10*time.Minute),
+)
+```
+
+### Download with Progress Tracking (Client Instance)
 
 ```go
 client, _ := httpc.New()
@@ -779,7 +801,7 @@ opts.ProgressCallback = func(downloaded, total int64, speed float64) {
     )
 }
 
-// Download with progress
+// Download with progress using client instance
 result, err := client.DownloadWithOptions(
     "https://example.com/large-file.zip",
     opts,
@@ -795,7 +817,8 @@ opts := httpc.DefaultDownloadOptions("downloads/file.zip")
 opts.ResumeDownload = true  // Resume from where it left off
 opts.Overwrite = false      // Don't overwrite, append instead
 
-result, err := client.DownloadWithOptions(url, opts)
+// Works with both package-level function and client instance
+result, err := httpc.DownloadWithOptions(url, opts)
 if result.Resumed {
     fmt.Println("Download resumed successfully")
 }

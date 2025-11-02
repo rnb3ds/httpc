@@ -296,16 +296,16 @@ client, err := httpc.New(config)
 
 ### Security Settings
 
-| Field                   | Type          | Default | Description                          |
-|-------------------------|---------------|---------|--------------------------------------|
-| `MinTLSVersion`         | `uint16`      | TLS 1.2 | Minimum TLS version                  |
-| `MaxTLSVersion`         | `uint16`      | TLS 1.3 | Maximum TLS version                  |
-| `InsecureSkipVerify`    | `bool`        | false   | Skip TLS verification (⚠️ dangerous) |
-| `MaxResponseBodySize`   | `int64`       | 50 MB   | Max response body size               |
-| `MaxConcurrentRequests` | `int`         | 500     | Max concurrent requests              |
-| `ValidateURL`           | `bool`        | true    | Validate URL format                  |
-| `ValidateHeaders`       | `bool`        | true    | Validate headers (CRLF protection)   |
-| `TLSConfig`             | `*tls.Config` | nil     | Custom TLS configuration             |
+| Field                   | Type          | Default | Description                        |
+|-------------------------|---------------|---------|------------------------------------|
+| `MinTLSVersion`         | `uint16`      | TLS 1.2 | Minimum TLS version                |
+| `MaxTLSVersion`         | `uint16`      | TLS 1.3 | Maximum TLS version                |
+| `InsecureSkipVerify`    | `bool`        | false   | Skip TLS verification (dangerous)  |
+| `MaxResponseBodySize`   | `int64`       | 50 MB   | Max response body size             |
+| `MaxConcurrentRequests` | `int`         | 500     | Max concurrent requests            |
+| `ValidateURL`           | `bool`        | true    | Validate URL format                |
+| `ValidateHeaders`       | `bool`        | true    | Validate headers (CRLF protection) |
+| `TLSConfig`             | `*tls.Config` | nil     | Custom TLS configuration           |
 
 ### Retry Settings
 
@@ -344,51 +344,6 @@ client, err := httpc.New(config)
 - Disable header validation
 - Use `TestingConfig()` for external APIs
 - Set excessive connection limits without testing
-
-## Examples
-
-### Example 1: API Client with Custom Timeout
-
-```go
-config := httpc.DefaultConfig()
-config.Timeout = 30 * time.Second
-config.UserAgent = "MyApp/1.0"
-
-client, err := httpc.New(config)
-```
-
-### Example 2: High-Throughput Client
-
-```go
-config := httpc.DefaultConfig()
-config.MaxConcurrentRequests = 1000
-config.MaxIdleConnsPerHost = 50
-config.MaxConnsPerHost = 100
-
-client, err := httpc.New(config)
-```
-
-### Example 3: Strict Security Client
-
-```go
-config := httpc.SecureConfig()
-config.TLSConfig = &tls.Config{
-    MinVersion: tls.VersionTLS13,
-    CipherSuites: []uint16{
-        tls.TLS_AES_256_GCM_SHA384,
-        tls.TLS_CHACHA20_POLY1305_SHA256,
-    },
-}
-
-client, err := httpc.New(config)
-```
-
-## Related Documentation
-
-- [Getting Started](getting-started.md) - Basic usage and first steps
-- [Request Options](request-options.md) - Customizing requests
-- [Security Guide](security.md) - Security features and TLS configuration
-- [Best Practices](best-practices.md) - Production patterns
 
 ---
 

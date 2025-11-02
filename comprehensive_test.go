@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
@@ -197,7 +198,37 @@ func TestClient_JSONHandling(t *testing.T) {
 }
 
 func TestClient_XMLHandling(t *testing.T) {
-	t.Run("SendXML", func(t *testing.T) {
+	t.Run("SendXML_WithXMLFunction", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Content-Type") != "application/xml" {
+				t.Errorf("Expected Content-Type: application/xml, got %s", r.Header.Get("Content-Type"))
+			}
+
+			body, _ := io.ReadAll(r.Body)
+			var data TestData
+			if err := xml.Unmarshal(body, &data); err != nil {
+				t.Errorf("Failed to unmarshal XML: %v", err)
+			}
+
+			if data.Message != "test" {
+				t.Errorf("Expected message=test, got %s", data.Message)
+			}
+
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		data := TestData{Message: "test", Code: 200}
+		_, err := client.Post(server.URL, WithXML(data))
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+	})
+
+	t.Run("SendXML_ManualMethod", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("Content-Type") != "application/xml" {
 				t.Errorf("Expected Content-Type: application/xml")

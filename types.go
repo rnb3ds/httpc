@@ -110,6 +110,8 @@ type Config struct {
 
 	// Security settings
 	TLSConfig           *tls.Config
+	MinTLSVersion       uint16 // Minimum TLS version (e.g., tls.VersionTLS12)
+	MaxTLSVersion       uint16 // Maximum TLS version (e.g., tls.VersionTLS13)
 	InsecureSkipVerify  bool
 	MaxResponseBodySize int64
 	AllowPrivateIPs     bool
@@ -152,8 +154,9 @@ type FormData struct {
 
 // FileData represents a file to be uploaded
 type FileData struct {
-	Filename string
-	Content  []byte
+	Filename    string
+	Content     []byte
+	ContentType string // Optional: MIME type of the file (e.g., "application/pdf", "image/jpeg")
 }
 
 // HTTPError represents an HTTP error response (public API)
@@ -175,6 +178,8 @@ func DefaultConfig() *Config {
 		Timeout:             30 * time.Second, // Reduced for better responsiveness
 		MaxIdleConns:        50,               // Reduced for better resource management
 		MaxConnsPerHost:     10,               // Reduced to prevent overwhelming servers
+		MinTLSVersion:       tls.VersionTLS12, // Minimum TLS 1.2
+		MaxTLSVersion:       tls.VersionTLS13, // Maximum TLS 1.3
 		InsecureSkipVerify:  false,            // Always secure by default
 		MaxResponseBodySize: 10 * 1024 * 1024, // 10MB - more reasonable default
 		AllowPrivateIPs:     false,            // Secure by default

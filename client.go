@@ -336,6 +336,17 @@ func convertToEngineConfig(cfg *Config) *engine.Config {
 	// Standard timeout settings
 	timeouts := calculateOptimalTimeouts(cfg.Timeout)
 
+	// Determine TLS version settings
+	minTLSVersion := cfg.MinTLSVersion
+	if minTLSVersion == 0 {
+		minTLSVersion = tls.VersionTLS12 // Default to TLS 1.2
+	}
+
+	maxTLSVersion := cfg.MaxTLSVersion
+	if maxTLSVersion == 0 {
+		maxTLSVersion = tls.VersionTLS13 // Default to TLS 1.3
+	}
+
 	return &engine.Config{
 		Timeout:               cfg.Timeout,
 		DialTimeout:           timeouts.Dial,
@@ -348,8 +359,8 @@ func convertToEngineConfig(cfg *Config) *engine.Config {
 		MaxConnsPerHost:       cfg.MaxConnsPerHost,
 		ProxyURL:              cfg.ProxyURL,
 		TLSConfig:             cfg.TLSConfig,
-		MinTLSVersion:         tls.VersionTLS12, // Force minimum TLS 1.2
-		MaxTLSVersion:         tls.VersionTLS13,
+		MinTLSVersion:         minTLSVersion,
+		MaxTLSVersion:         maxTLSVersion,
 		InsecureSkipVerify:    cfg.InsecureSkipVerify,
 		MaxResponseBodySize:   cfg.MaxResponseBodySize,
 		MaxConcurrentRequests: maxConcurrent,

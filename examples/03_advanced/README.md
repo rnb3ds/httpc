@@ -170,7 +170,7 @@ config.MaxRetries = 3
 client, err := httpc.New(config)
 ```
 
-For detailed configuration options, see the main [USAGE_GUIDE.md](../../USAGE_GUIDE.md) and [QUICK_REFERENCE.md](../../QUICK_REFERENCE.md).
+For detailed configuration options, see the main [USAGE_GUIDE.md](../../USAGE_GUIDE.md).
 
 ## Timeout Strategies
 

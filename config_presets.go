@@ -11,6 +11,8 @@ func SecureConfig() *Config {
 		Timeout:             15 * time.Second, // Shorter timeout for security
 		MaxIdleConns:        20,               // Limited connections
 		MaxConnsPerHost:     5,                // Conservative per-host limit
+		MinTLSVersion:       tls.VersionTLS12, // Minimum TLS 1.2
+		MaxTLSVersion:       tls.VersionTLS13, // Maximum TLS 1.3
 		InsecureSkipVerify:  false,            // Always verify TLS
 		MaxResponseBodySize: 5 * 1024 * 1024,  // 5MB limit
 		AllowPrivateIPs:     false,            // Block private IPs
@@ -35,6 +37,8 @@ func PerformanceConfig() *Config {
 		Timeout:             60 * time.Second,
 		MaxIdleConns:        100,              // More connections for performance
 		MaxConnsPerHost:     20,               // Higher per-host limit
+		MinTLSVersion:       tls.VersionTLS12, // Minimum TLS 1.2
+		MaxTLSVersion:       tls.VersionTLS13, // Maximum TLS 1.3
 		InsecureSkipVerify:  false,            // Still secure
 		MaxResponseBodySize: 50 * 1024 * 1024, // 50MB for large responses
 		AllowPrivateIPs:     false,
@@ -55,6 +59,8 @@ func TestingConfig() *Config {
 		Timeout:             30 * time.Second,
 		MaxIdleConns:        10,
 		MaxConnsPerHost:     5,
+		MinTLSVersion:       tls.VersionTLS10, // Allow older TLS for testing
+		MaxTLSVersion:       tls.VersionTLS13, // Up to TLS 1.3
 		InsecureSkipVerify:  true,             // Allow for testing
 		MaxResponseBodySize: 10 * 1024 * 1024, // 10MB
 		AllowPrivateIPs:     true,             // Allow localhost for testing
@@ -78,6 +84,8 @@ func MinimalConfig() *Config {
 		Timeout:             30 * time.Second,
 		MaxIdleConns:        10,
 		MaxConnsPerHost:     2,
+		MinTLSVersion:       tls.VersionTLS12, // Minimum TLS 1.2
+		MaxTLSVersion:       tls.VersionTLS13, // Maximum TLS 1.3
 		InsecureSkipVerify:  false,
 		MaxResponseBodySize: 1 * 1024 * 1024, // 1MB
 		AllowPrivateIPs:     false,

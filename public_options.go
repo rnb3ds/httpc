@@ -12,7 +12,6 @@ import (
 )
 
 // WithHeader sets a request header with proper validation.
-// Invalid headers are silently ignored to maintain backward compatibility.
 // Use ValidateConfig to catch invalid headers at configuration time.
 func WithHeader(key, value string) RequestOption {
 	return func(r *Request) {
@@ -23,7 +22,6 @@ func WithHeader(key, value string) RequestOption {
 		// Strict validation - skip invalid headers
 		if err := validateHeaderKeyValue(key, value); err != nil {
 			// Invalid headers are silently ignored to prevent breaking existing code
-			// Consider logging this in debug mode in future versions
 			return
 		}
 
@@ -66,6 +64,11 @@ func WithAccept(accept string) RequestOption {
 // WithJSONAccept sets Accept header to application/json
 func WithJSONAccept() RequestOption {
 	return WithAccept("application/json")
+}
+
+// WithXMLAccept sets Accept header to application/xml
+func WithXMLAccept() RequestOption {
+	return WithAccept("application/xml")
 }
 
 // WithBasicAuth sets basic authentication with enhanced security
@@ -169,6 +172,17 @@ func WithJSON(data any) RequestOption {
 	}
 }
 
+// WithXML sets the request body as XML and sets appropriate Content-Type
+func WithXML(data any) RequestOption {
+	return func(r *Request) {
+		r.Body = data
+		if r.Headers == nil {
+			r.Headers = make(map[string]string)
+		}
+		r.Headers["Content-Type"] = "application/xml"
+	}
+}
+
 // WithText sets the request body as plain text and sets appropriate Content-Type
 func WithText(content string) RequestOption {
 	return func(r *Request) {
@@ -227,11 +241,6 @@ func WithFile(fieldName, filename string, content []byte) RequestOption {
 
 		cleanFilename := filepath.Base(filename)
 		if cleanFilename == "." || cleanFilename == ".." || cleanFilename == "" {
-			return
-		}
-
-		// File size limit (50MB)
-		if len(content) > 50*1024*1024 {
 			return
 		}
 

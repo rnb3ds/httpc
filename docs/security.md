@@ -363,8 +363,6 @@ client, err := httpc.New(config)
 
 ## Best Practices
 
-### ✅ DO
-
 1. **Use TLS 1.2+ for secure connections**
    ```go
    config.MinTLSVersion = tls.VersionTLS12
@@ -406,54 +404,6 @@ client, err := httpc.New(config)
    config.TLSConfig.CipherSuites = []uint16{...}
    ```
 
-### ❌ DON'T
-
-1. **Never skip TLS verification**
-   ```go
-   // Bad!
-   config.InsecureSkipVerify = true
-   ```
-
-2. **Don't use permissive preset for external APIs**
-   ```go
-   // Bad for external APIs!
-   httpc.TestingConfig()
-   ```
-
-3. **Don't allow private IPs for external APIs**
-   ```go
-   // Bad for external APIs!
-   config.AllowPrivateIPs = true
-   ```
-
-4. **Don't disable validation**
-   ```go
-   // Bad!
-   config.ValidateURL = false
-   config.ValidateHeaders = false
-   ```
-
-5. **Don't use weak TLS versions**
-   ```go
-   // Bad!
-   config.MinTLSVersion = tls.VersionTLS10
-   ```
-
-6. **Don't log sensitive data**
-   ```go
-   // Bad!
-   log.Printf("Token: %s", token)
-   ```
-
-7. **Don't hardcode credentials**
-   ```go
-   // Bad!
-   httpc.WithBearerToken("hardcoded-token")
-
-   // Good - use environment variables
-   httpc.WithBearerToken(os.Getenv("API_TOKEN"))
-   ```
-
 ## Security Checklist
 
 ### Deployment Checklist
@@ -481,13 +431,6 @@ client, err := httpc.New(config)
 - [ ] Access controls in place
 - [ ] Security monitoring active
 - [ ] Incident response plan ready
-
-## Additional Resources
-
-- [OWASP Top 10](https://owasp.org/www-project-top-ten/)
-- [TLS Best Practices](https://wiki.mozilla.org/Security/Server_Side_TLS)
-- [PCI DSS Requirements](https://www.pcisecuritystandards.org/)
-- [NIST Cybersecurity Framework](https://www.nist.gov/cyberframework)
 
 ---
 

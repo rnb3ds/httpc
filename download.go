@@ -49,6 +49,7 @@ func DefaultDownloadOptions(filePath string) *DownloadOptions {
 	}
 }
 
+// DownloadFile downloads a file from the given URL to the specified file path using the default client
 func DownloadFile(url string, filePath string, options ...RequestOption) (*DownloadResult, error) {
 	client, err := getDefaultClient()
 	if err != nil {
@@ -56,6 +57,16 @@ func DownloadFile(url string, filePath string, options ...RequestOption) (*Downl
 	}
 
 	return client.DownloadFile(url, filePath, options...)
+}
+
+// DownloadWithOptions downloads a file with custom download options using the default client
+func DownloadWithOptions(url string, downloadOpts *DownloadOptions, options ...RequestOption) (*DownloadResult, error) {
+	client, err := getDefaultClient()
+	if err != nil {
+		return nil, err
+	}
+
+	return client.DownloadWithOptions(url, downloadOpts, options...)
 }
 
 func (c *clientImpl) DownloadFile(url string, filePath string, options ...RequestOption) (*DownloadResult, error) {

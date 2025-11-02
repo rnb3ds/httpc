@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -105,12 +106,29 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 				body = &buf
 				contentType = writer.FormDataContentType()
 			} else {
-				jsonData, err := json.Marshal(v)
-				if err != nil {
-					return nil, fmt.Errorf("failed to marshal request body: %w", err)
+				// Check if Content-Type is already set in headers to determine serialization format
+				existingContentType := ""
+				if req.Headers != nil {
+					existingContentType = req.Headers["Content-Type"]
 				}
-				body = bytes.NewReader(jsonData)
-				contentType = "application/json"
+
+				// Use XML marshaling if Content-Type is application/xml
+				if existingContentType == "application/xml" {
+					xmlData, err := xml.Marshal(v)
+					if err != nil {
+						return nil, fmt.Errorf("failed to marshal request body as XML: %w", err)
+					}
+					body = bytes.NewReader(xmlData)
+					contentType = "application/xml"
+				} else {
+					// Default to JSON marshaling
+					jsonData, err := json.Marshal(v)
+					if err != nil {
+						return nil, fmt.Errorf("failed to marshal request body as JSON: %w", err)
+					}
+					body = bytes.NewReader(jsonData)
+					contentType = "application/json"
+				}
 			}
 		}
 	}

@@ -76,13 +76,6 @@ resp, err := client.Get("https://api.example.com/data")
 5. **Use `WithJSON()`** for sending JSON data
 6. **Check response status** with `resp.IsSuccess()`
 
-## Next Steps
-
-Once you're comfortable with these basics, move on to:
-- **[Core Features](../02_core_features)** - Learn about headers, authentication, and more request options
-- **[Advanced Usage](../03_advanced)** - Master timeouts, retries, and concurrent requests
-- **[Real-World Examples](../04_real_world)** - See practical implementations
-
 ## Common Patterns
 
 ### Quick Testing
@@ -111,6 +104,14 @@ if !resp.IsSuccess() {
 }
 ```
 
+## Next Steps
+
+Once you're comfortable with these basics, move on to:
+- **[Core Features](../02_core_features)** - Learn about headers, authentication, and more request options
+- **[Advanced Usage](../03_advanced)** - Master timeouts, retries, and concurrent requests
+- **[Real-World Examples](../04_real_world)** - See practical implementations
+
+
 ## Tips
 
 - Start with package-level functions to learn the API
@@ -119,3 +120,4 @@ if !resp.IsSuccess() {
 - Check the response status before parsing the body
 - Use `resp.JSON(&result)` to parse JSON responses
 
+---

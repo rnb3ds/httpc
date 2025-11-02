@@ -338,3 +338,44 @@ func TestPackageLevelDownload(t *testing.T) {
 		t.Errorf("File not created: %v", err)
 	}
 }
+
+func TestPackageLevelDownloadWithOptions(t *testing.T) {
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "package-level-download-with-options.txt")
+
+	// Test package-level DownloadWithOptions function
+	progressCalled := false
+	opts := DefaultDownloadOptions(filePath)
+	opts.Overwrite = true
+	opts.ProgressCallback = func(downloaded, total int64, speed float64) {
+		progressCalled = true
+		t.Logf("Progress: %d/%d bytes (%.2f KB/s)", downloaded, total, speed/1024)
+	}
+
+	result, err := DownloadWithOptions(
+		"https://raw.githubusercontent.com/golang/go/master/LICENSE",
+		opts,
+		WithTimeout(60*time.Second),
+	)
+	if err != nil {
+		t.Fatalf("Package-level DownloadWithOptions failed: %v", err)
+	}
+
+	if result.BytesWritten <= 0 {
+		t.Errorf("Expected bytes written > 0, got %d", result.BytesWritten)
+	}
+
+	if !progressCalled {
+		t.Error("Progress callback was not called")
+	}
+
+	// Verify file exists
+	if _, err := os.Stat(filePath); err != nil {
+		t.Errorf("File not created: %v", err)
+	}
+
+	t.Logf("Downloaded %d bytes in %v (avg speed: %.2f KB/s)",
+		result.BytesWritten,
+		result.Duration,
+		result.AverageSpeed/1024)
+}

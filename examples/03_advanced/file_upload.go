@@ -157,7 +157,7 @@ func demonstrateLargeFile() {
 	}
 
 	resp, err := client.Post("https://echo.hoppscotch.io/upload",
-		httpc.WithFile("file", "large-file.bin", largeFileContent),
+		httpc.WithFile("file", "large-file.log", largeFileContent),
 		httpc.WithTimeout(60*time.Second), // Longer timeout for large files
 		httpc.WithMaxRetries(2),
 	)

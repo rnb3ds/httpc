@@ -381,36 +381,34 @@ resp, err := client.Get(url,
 
 ### All Request Options
 
-| Option | Description | Example |
-|--------|-------------|---------|
-| `WithHeader(key, value)` | Set single header | `WithHeader("X-API-Key", "key")` |
-| `WithHeaderMap(headers)` | Set multiple headers | `WithHeaderMap(map[string]string{...})` |
-| `WithContentType(ct)` | Set Content-Type | `WithContentType("application/json")` |
-| `WithAccept(accept)` | Set Accept header | `WithAccept("application/json")` |
-| `WithJSONAccept()` | Accept JSON | `WithJSONAccept()` |
-| `WithXMLAccept()` | Accept XML | `WithXMLAccept()` |
-| `WithUserAgent(ua)` | Set User-Agent | `WithUserAgent("MyApp/1.0")` |
-| `WithBearerToken(token)` | Bearer auth | `WithBearerToken("jwt-token")` |
-| `WithBasicAuth(u, p)` | Basic auth | `WithBasicAuth("user", "pass")` |
-| `WithQuery(key, value)` | Add query param | `WithQuery("page", 1)` |
-| `WithQueryMap(params)` | Add multiple params | `WithQueryMap(map[string]any{...})` |
-| `WithJSON(data)` | JSON body | `WithJSON(struct{...})` |
-| `WithXML(data)` | XML body | `WithXML(struct{...})` |
-| `WithForm(data)` | Form data | `WithForm(map[string]string{...})` |
-| `WithText(content)` | Plain text | `WithText("content")` |
-| `WithBinary(data, ct)` | Binary data | `WithBinary([]byte{...}, "image/png")` |
-| `WithBody(data)` | Raw body | `WithBody([]byte{...})` |
-| `WithFile(field, name, content)` | Single file | `WithFile("file", "doc.pdf", data)` |
-| `WithFormData(fd)` | Multipart form | `WithFormData(&FormData{...})` |
-| `WithTimeout(duration)` | Request timeout | `WithTimeout(30*time.Second)` |
-| `WithContext(ctx)` | Request context | `WithContext(ctx)` |
-| `WithMaxRetries(n)` | Max retry attempts | `WithMaxRetries(3)` |
-| `WithCookie(cookie)` | Add cookie | `WithCookie(&http.Cookie{...})` |
-| `WithCookies(cookies)` | Add multiple cookies | `WithCookies([]*http.Cookie{...})` |
+| Option                           | Description          | Example                                 |
+|----------------------------------|----------------------|-----------------------------------------|
+| `WithHeader(key, value)`         | Set single header    | `WithHeader("X-API-Key", "key")`        |
+| `WithHeaderMap(headers)`         | Set multiple headers | `WithHeaderMap(map[string]string{...})` |
+| `WithContentType(ct)`            | Set Content-Type     | `WithContentType("application/json")`   |
+| `WithAccept(accept)`             | Set Accept header    | `WithAccept("application/json")`        |
+| `WithJSONAccept()`               | Accept JSON          | `WithJSONAccept()`                      |
+| `WithXMLAccept()`                | Accept XML           | `WithXMLAccept()`                       |
+| `WithUserAgent(ua)`              | Set User-Agent       | `WithUserAgent("MyApp/1.0")`            |
+| `WithBearerToken(token)`         | Bearer auth          | `WithBearerToken("jwt-token")`          |
+| `WithBasicAuth(u, p)`            | Basic auth           | `WithBasicAuth("user", "pass")`         |
+| `WithQuery(key, value)`          | Add query param      | `WithQuery("page", 1)`                  |
+| `WithQueryMap(params)`           | Add multiple params  | `WithQueryMap(map[string]any{...})`     |
+| `WithJSON(data)`                 | JSON body            | `WithJSON(struct{...})`                 |
+| `WithXML(data)`                  | XML body             | `WithXML(struct{...})`                  |
+| `WithForm(data)`                 | Form data            | `WithForm(map[string]string{...})`      |
+| `WithText(content)`              | Plain text           | `WithText("content")`                   |
+| `WithBinary(data, ct)`           | Binary data          | `WithBinary([]byte{...}, "image/png")`  |
+| `WithBody(data)`                 | Raw body             | `WithBody([]byte{...})`                 |
+| `WithFile(field, name, content)` | Single file          | `WithFile("file", "doc.pdf", data)`     |
+| `WithFormData(fd)`               | Multipart form       | `WithFormData(&FormData{...})`          |
+| `WithTimeout(duration)`          | Request timeout      | `WithTimeout(30*time.Second)`           |
+| `WithContext(ctx)`               | Request context      | `WithContext(ctx)`                      |
+| `WithMaxRetries(n)`              | Max retry attempts   | `WithMaxRetries(3)`                     |
+| `WithCookie(cookie)`             | Add cookie           | `WithCookie(&http.Cookie{...})`         |
+| `WithCookies(cookies)`           | Add multiple cookies | `WithCookies([]*http.Cookie{...})`      |
 
 ## Best Practices
-
-### ✅ DO
 
 1. **Use appropriate content types**
    ```go
@@ -433,35 +431,5 @@ resp, err := client.Get(url,
    resp1, _ := client.Get(url1, authOption)
    resp2, _ := client.Get(url2, authOption)
    ```
-
-### ❌ DON'T
-
-1. **Don't set conflicting options**
-   ```go
-   // Bad - conflicting body types
-   httpc.WithJSON(data),
-   httpc.WithForm(formData),
-   ```
-
-2. **Don't set very long timeouts**
-   ```go
-   // Bad - too long
-   httpc.WithTimeout(10*time.Minute)
-   ```
-
-3. **Don't ignore context cancellation**
-   ```go
-   // Bad - context not used
-   ctx, cancel := context.WithCancel(ctx)
-   defer cancel()
-   client.Get(url)  // Missing WithContext(ctx)
-   ```
-
-## Examples
-
-See the [examples directory](../examples/02_core_features/) for complete working examples:
-- [headers_auth.go](../examples/02_core_features/headers_auth.go) - Headers and authentication
-- [request_body.go](../examples/02_core_features/body_formats.go) - Request body formats
-- [query_params.go](../examples/02_core_features/query_params.go) - Query parameters
 
 ---

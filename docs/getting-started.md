@@ -360,17 +360,6 @@ client, err := httpc.New(httpc.SecureConfig())
 
 **See also:** [Configuration Guide](configuration.md) for detailed configuration options.
 
-## Next Steps
-
-Now that you know the basics, explore more features:
-
-1. **[Request Options](request-options.md)** - Headers, authentication, body formats
-2. **[Error Handling](error-handling.md)** - Comprehensive error handling patterns
-3. **[Configuration](configuration.md)** - Client configuration and presets
-4. **[Circuit Breaker](circuit-breaker.md)** - Automatic fault protection
-5. **[File Download](file-download.md)** - Download files with progress tracking
-6. **[Best Practices](best-practices.md)** - Recommended usage patterns
-7. **[Examples](examples.md)** - Working code examples
 
 ## Quick Tips
 
@@ -387,42 +376,5 @@ Now that you know the basics, explore more features:
 - Use package-level functions in production code
 - Set very long timeouts without good reason
 - Forget to close clients
-
-## Troubleshooting
-
-### "connection refused"
-
-The server is not running or the URL is incorrect.
-
-```go
-// Check the URL
-resp, err := client.Get("https://api.example.com/data")  // Correct
-// Not: http://localhost:8080 (if server is not running)
-```
-
-### "timeout"
-
-The request took too long. Increase timeout or check network:
-
-```go
-resp, err := client.Get(url,
-    httpc.WithTimeout(30*time.Second),  // Increase timeout
-)
-```
-
-### "TLS handshake error"
-
-TLS configuration issue. Check certificate or use permissive mode for testing:
-
-```go
-// For testing only (not for production!)
-client, err := httpc.New(httpc.TestingConfig())
-```
-
-## Getting Help
-
-- **Questions?** Open a [GitHub Discussion](https://github.com/cybergodev/httpc/discussions)
-- **Bug reports?** Open a [GitHub Issue](https://github.com/cybergodev/httpc/issues)
-- **More examples?** Check the [examples directory](../examples)
 
 ---

@@ -749,7 +749,7 @@ HTTPC 提供强大的文件下载功能，支持进度跟踪、断点续传和�
 ### 简单文件下载
 
 ```go
-// 下载文件到磁盘
+// 使用包级别函数下载文件到磁盘
 result, err := httpc.DownloadFile(
     "https://example.com/file.zip",
     "downloads/file.zip",
@@ -762,7 +762,29 @@ fmt.Printf("已下载: %s\n", httpc.FormatBytes(result.BytesWritten))
 fmt.Printf("速度: %s\n", httpc.FormatSpeed(result.AverageSpeed))
 ```
 
-### 带进度跟踪的下载
+### 带进度跟踪的下载（包级别函数）
+
+```go
+// 配置下载选项
+opts := httpc.DefaultDownloadOptions("downloads/large-file.zip")
+opts.Overwrite = true
+opts.ProgressCallback = func(downloaded, total int64, speed float64) {
+    percentage := float64(downloaded) / float64(total) * 100
+    fmt.Printf("\r进度: %.1f%% - %s",
+        percentage,
+        httpc.FormatSpeed(speed),
+    )
+}
+
+// 使用包级别函数带进度的下载
+result, err := httpc.DownloadWithOptions(
+    "https://example.com/large-file.zip",
+    opts,
+    httpc.WithTimeout(10*time.Minute),
+)
+```
+
+### 带进度跟踪的下载（客户端实例）
 
 ```go
 client, _ := httpc.New()
@@ -779,7 +801,7 @@ opts.ProgressCallback = func(downloaded, total int64, speed float64) {
     )
 }
 
-// 带进度的下载
+// 使用客户端实例带进度的下载
 result, err := client.DownloadWithOptions(
     "https://example.com/large-file.zip",
     opts,
@@ -795,7 +817,8 @@ opts := httpc.DefaultDownloadOptions("downloads/file.zip")
 opts.ResumeDownload = true  // 从中断处继续
 opts.Overwrite = false      // 不覆盖，而是追加
 
-result, err := client.DownloadWithOptions(url, opts)
+// 包级别函数和客户端实例都支持
+result, err := httpc.DownloadWithOptions(url, opts)
 if result.Resumed {
     fmt.Println("下载已成功续传")
 }
