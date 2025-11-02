@@ -47,7 +47,6 @@ func (e *ClientError) Error() string {
 		baseMsg = e.Message
 	}
 
-	// Add attempt information if available
 	if e.Attempts > 0 {
 		return fmt.Sprintf("%s (attempt %d)", baseMsg, e.Attempts)
 	}
@@ -55,23 +54,16 @@ func (e *ClientError) Error() string {
 	return baseMsg
 }
 
-// sanitizeURL removes sensitive information (username, password) from URL
 func sanitizeURL(urlStr string) string {
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
-		// If parsing fails, return a generic placeholder
 		return "[invalid-url]"
 	}
 
-	// Remove user info (username and password)
 	if parsedURL.User != nil {
-		// Check if there's a password
 		_, hasPassword := parsedURL.User.Password()
-
-		// Clear the user info completely
 		parsedURL.User = nil
 
-		// Reconstruct URL string manually to show redaction
 		scheme := parsedURL.Scheme
 		host := parsedURL.Host
 		path := parsedURL.Path
@@ -82,12 +74,10 @@ func sanitizeURL(urlStr string) string {
 			path += "#" + parsedURL.Fragment
 		}
 
-		// Show appropriate redaction based on whether password exists
 		if hasPassword {
 			return fmt.Sprintf("%s://***:***@%s%s", scheme, host, path)
-		} else {
-			return fmt.Sprintf("%s://***@%s%s", scheme, host, path)
 		}
+		return fmt.Sprintf("%s://***@%s%s", scheme, host, path)
 	}
 
 	return parsedURL.String()

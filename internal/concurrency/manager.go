@@ -3,31 +3,22 @@ package concurrency
 import (
 	"context"
 	"fmt"
-	"sync"
 	"sync/atomic"
 	"time"
 )
 
 type Manager struct {
 	maxConcurrent int64
-	queueSize     int
+	queueSize     int64
 
 	active   int64
-	queued   int64
 	rejected int64
 
 	semaphore chan struct{}
-	queue     chan *Request
+	queue     chan struct{}
 	metrics   *Metrics
 
 	closed int32
-	wg     sync.WaitGroup
-}
-
-type Request struct {
-	Execute func() error
-	Context context.Context
-	Result  chan error
 }
 
 type Metrics struct {
@@ -51,20 +42,17 @@ func NewManager(maxConcurrent int, queueSize int) *Manager {
 		maxConcurrent = 100
 	}
 	if queueSize <= 0 {
-		queueSize = maxConcurrent * 2
+		queueSize = 1000
 	}
+
+	totalCapacity := maxConcurrent + queueSize
 
 	m := &Manager{
 		maxConcurrent: int64(maxConcurrent),
-		queueSize:     queueSize,
+		queueSize:     int64(queueSize),
 		semaphore:     make(chan struct{}, maxConcurrent),
-		queue:         make(chan *Request, queueSize),
+		queue:         make(chan struct{}, totalCapacity),
 		metrics:       &Metrics{},
-	}
-
-	for i := 0; i < maxConcurrent; i++ {
-		m.wg.Add(1)
-		go m.worker()
 	}
 
 	return m
@@ -75,19 +63,10 @@ func (m *Manager) Execute(ctx context.Context, fn func() error) error {
 		return fmt.Errorf("concurrency manager is closed")
 	}
 
-	req := &Request{
-		Execute: fn,
-		Context: ctx,
-		Result:  make(chan error, 1),
-	}
-
 	atomic.AddInt64(&m.metrics.TotalRequests, 1)
-	startTime := time.Now()
 
 	select {
-	case m.queue <- req:
-		atomic.AddInt64(&m.queued, 1)
-		atomic.AddInt64(&m.metrics.QueuedRequests, 1)
+	case m.queue <- struct{}{}:
 	case <-ctx.Done():
 		atomic.AddInt64(&m.rejected, 1)
 		atomic.AddInt64(&m.metrics.RejectedRequests, 1)
@@ -98,90 +77,40 @@ func (m *Manager) Execute(ctx context.Context, fn func() error) error {
 		return fmt.Errorf("request queue is full")
 	}
 
+	defer func() {
+		<-m.queue
+	}()
+
 	select {
-	case err := <-req.Result:
-		waitTime := time.Since(startTime).Nanoseconds()
-		m.updateWaitTime(waitTime)
-		return err
+	case m.semaphore <- struct{}{}:
 	case <-ctx.Done():
 		atomic.AddInt64(&m.rejected, 1)
 		atomic.AddInt64(&m.metrics.RejectedRequests, 1)
 		return ctx.Err()
 	}
-}
 
-func (m *Manager) worker() {
-	defer m.wg.Done()
-
-	for {
-		select {
-		case req, ok := <-m.queue:
-			if !ok {
-				// Channel closed, exit worker
-				return
-			}
-			if req == nil {
-				continue
-			}
-
-			// Check if manager is closed before processing
-			if atomic.LoadInt32(&m.closed) == 1 {
-				// Send error to request and exit
-				select {
-				case req.Result <- fmt.Errorf("concurrency manager is closed"):
-				default:
-				}
-				return
-			}
-
-			m.processRequest(req)
-		}
-	}
-}
-
-func (m *Manager) processRequest(req *Request) {
-	// Acquire semaphore with context cancellation support
-	select {
-	case m.semaphore <- struct{}{}:
-		defer func() {
-			select {
-			case <-m.semaphore:
-			default:
-				// Semaphore already drained, this shouldn't happen but handle gracefully
-			}
-		}()
-	case <-req.Context.Done():
-		select {
-		case req.Result <- req.Context.Err():
-		default:
-		}
-		return
-	}
+	defer func() {
+		<-m.semaphore
+	}()
 
 	atomic.AddInt64(&m.active, 1)
-	atomic.AddInt64(&m.queued, -1)
 	atomic.AddInt64(&m.metrics.ActiveRequests, 1)
-	atomic.AddInt64(&m.metrics.QueuedRequests, -1)
 
 	defer func() {
 		atomic.AddInt64(&m.active, -1)
 		atomic.AddInt64(&m.metrics.ActiveRequests, -1)
 	}()
 
-	// Check context again before executing
 	select {
-	case <-req.Context.Done():
-		select {
-		case req.Result <- req.Context.Err():
-		default:
-		}
-		return
+	case <-ctx.Done():
+		atomic.AddInt64(&m.rejected, 1)
+		atomic.AddInt64(&m.metrics.RejectedRequests, 1)
+		return ctx.Err()
 	default:
 	}
 
 	startTime := time.Now()
 
-	// Execute with panic recovery
 	var err error
 	func() {
 		defer func() {
@@ -189,7 +118,7 @@ func (m *Manager) processRequest(req *Request) {
 				err = fmt.Errorf("panic during request execution: %v", r)
 			}
 		}()
-		err = req.Execute()
+		err = fn()
 	}()
 
 	execTime := time.Since(startTime).Nanoseconds()
@@ -201,41 +130,10 @@ func (m *Manager) processRequest(req *Request) {
 		atomic.AddInt64(&m.metrics.CompletedRequests, 1)
 	}
 
-	// Send result with context-aware timeout protection
-	// Use a timer to avoid goroutine leak
-	timer := time.NewTimer(100 * time.Millisecond)
-	defer timer.Stop()
-
-	select {
-	case req.Result <- err:
-		// Successfully sent result
-	case <-req.Context.Done():
-		// Context cancelled, don't block
-	case <-timer.C:
-		// Timeout - result channel is not being read
-		// This prevents goroutine leak but the caller won't get the result
-	}
+	return err
 }
 
-func (m *Manager) updateWaitTime(waitTime int64) {
-	for {
-		current := atomic.LoadInt64(&m.metrics.AverageWaitTime)
-		newAvg := (current*9 + waitTime) / 10
-		if atomic.CompareAndSwapInt64(&m.metrics.AverageWaitTime, current, newAvg) {
-			break
-		}
-	}
 
-	for {
-		current := atomic.LoadInt64(&m.metrics.MaxWaitTime)
-		if waitTime <= current {
-			break
-		}
-		if atomic.CompareAndSwapInt64(&m.metrics.MaxWaitTime, current, waitTime) {
-			break
-		}
-	}
-}
 
 func (m *Manager) updateExecTime(execTime int64) {
 	for {
@@ -261,15 +159,15 @@ func (m *Manager) GetMetrics() Metrics {
 	return Metrics{
 		TotalRequests:     atomic.LoadInt64(&m.metrics.TotalRequests),
 		ActiveRequests:    atomic.LoadInt64(&m.active),
-		QueuedRequests:    atomic.LoadInt64(&m.queued),
+		QueuedRequests:    0,
 		RejectedRequests:  atomic.LoadInt64(&m.rejected),
 		CompletedRequests: atomic.LoadInt64(&m.metrics.CompletedRequests),
 		FailedRequests:    atomic.LoadInt64(&m.metrics.FailedRequests),
-		AverageWaitTime:   atomic.LoadInt64(&m.metrics.AverageWaitTime),
+		AverageWaitTime:   0,
 		AverageExecTime:   atomic.LoadInt64(&m.metrics.AverageExecTime),
-		MaxWaitTime:       atomic.LoadInt64(&m.metrics.MaxWaitTime),
+		MaxWaitTime:       0,
 		MaxExecTime:       atomic.LoadInt64(&m.metrics.MaxExecTime),
-		CurrentQueueSize:  int64(len(m.queue)),
+		CurrentQueueSize:  0,
 		LastUpdate:        time.Now().Unix(),
 	}
 }
@@ -279,35 +177,11 @@ func (m *Manager) Close() error {
 		return fmt.Errorf("concurrency manager already closed")
 	}
 
-	// Close the queue channel to signal workers to stop
-	close(m.queue)
-
-	// Wait for all workers to finish with timeout
-	done := make(chan struct{})
-	go func() {
-		m.wg.Wait()
-		close(done)
-	}()
-
-	// Wait for workers to finish or timeout after 5 seconds
-	select {
-	case <-done:
-		// All workers finished gracefully
-	case <-time.After(5 * time.Second):
-		// Timeout - workers didn't finish in time
-		return fmt.Errorf("timeout waiting for workers to finish")
-	}
-
 	return nil
 }
 
 func (m *Manager) IsHealthy() bool {
 	metrics := m.GetMetrics()
-
-	queueUtilization := float64(metrics.CurrentQueueSize) / float64(m.queueSize)
-	if queueUtilization > 0.8 {
-		return false
-	}
 
 	if metrics.TotalRequests > 100 {
 		rejectionRate := float64(metrics.RejectedRequests) / float64(metrics.TotalRequests)

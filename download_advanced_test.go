@@ -398,16 +398,29 @@ func TestDownload_ContentLengthMismatch(t *testing.T) {
 	actualContent := []byte("short content")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Lie about content length
-		w.Header().Set("Content-Length", "1000")
-		w.WriteHeader(http.StatusOK)
-		w.Write(actualContent)
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("Server doesn't support hijacking")
+			return
+		}
+
+		conn, bufrw, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("Hijack failed: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		response := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n%s", actualContent)
+		bufrw.WriteString(response)
+		bufrw.Flush()
 	}))
 	defer server.Close()
 
 	config := DefaultConfig()
 	config.AllowPrivateIPs = true
-	config.StrictContentLength = false // Allow content-length mismatch for this test
+	config.StrictContentLength = false
+	config.MaxRetries = 0
 	client, err := New(config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
@@ -417,15 +430,12 @@ func TestDownload_ContentLengthMismatch(t *testing.T) {
 	tempDir := t.TempDir()
 	filePath := filepath.Join(tempDir, "content-length-test.txt")
 
-	result, err := client.DownloadFile(server.URL, filePath)
-	if err != nil {
-		t.Fatalf("Download failed: %v", err)
+	_, err = client.DownloadFile(server.URL, filePath)
+	if err == nil {
+		t.Fatal("Expected error due to content-length mismatch, got nil")
 	}
 
-	// Should download actual content, not what Content-Length claimed
-	if result.BytesWritten != int64(len(actualContent)) {
-		t.Errorf("Expected %d bytes written, got %d", len(actualContent), result.BytesWritten)
-	}
+	t.Logf("Got expected error: %v", err)
 }
 
 func TestDownload_NoContentLength(t *testing.T) {
