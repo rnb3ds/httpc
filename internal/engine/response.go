@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,13 +8,11 @@ import (
 	"github.com/cybergodev/httpc/internal/memory"
 )
 
-// ResponseProcessor handles HTTP response processing
 type ResponseProcessor struct {
 	config        *Config
 	memoryManager *memory.Manager
 }
 
-// NewResponseProcessor creates a new response processor with memory management
 func NewResponseProcessor(config *Config, memManager *memory.Manager) *ResponseProcessor {
 	return &ResponseProcessor{
 		config:        config,
@@ -23,8 +20,6 @@ func NewResponseProcessor(config *Config, memManager *memory.Manager) *ResponseP
 	}
 }
 
-// Process converts an HTTP response to our internal response format.
-// The caller is responsible for closing httpResp.Body.
 func (p *ResponseProcessor) Process(httpResp *http.Response) (*Response, error) {
 	if httpResp == nil {
 		return nil, fmt.Errorf("HTTP response is nil")
@@ -35,13 +30,26 @@ func (p *ResponseProcessor) Process(httpResp *http.Response) (*Response, error) 
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
+	contentLength := httpResp.ContentLength
+
+	if contentLength > 0 && contentLength != int64(len(body)) {
+		isHeadRequest := false
+		if httpResp.Request != nil && httpResp.Request.Method == "HEAD" {
+			isHeadRequest = true
+		}
+
+		if !isHeadRequest && p.config.StrictContentLength {
+			return nil, fmt.Errorf("content-length mismatch: expected %d bytes, got %d bytes", contentLength, len(body))
+		}
+	}
+
 	resp := &Response{
 		StatusCode:    httpResp.StatusCode,
 		Status:        httpResp.Status,
 		Headers:       httpResp.Header,
 		Body:          string(body),
 		RawBody:       body,
-		ContentLength: httpResp.ContentLength,
+		ContentLength: contentLength,
 		Proto:         httpResp.Proto,
 		Request:       httpResp.Request,
 		Response:      httpResp,
@@ -61,11 +69,8 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 		reader = io.LimitReader(httpResp.Body, p.config.MaxResponseBodySize)
 	}
 
-	body, err := p.readWithContext(reader, httpResp.Request.Context())
+	body, err := io.ReadAll(reader)
 	if err != nil {
-		if httpResp.Request.Context().Err() != nil {
-			return nil, fmt.Errorf("request context canceled during body read: %w", httpResp.Request.Context().Err())
-		}
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
@@ -74,36 +79,4 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 	}
 
 	return body, nil
-}
-
-func (p *ResponseProcessor) readWithContext(reader io.Reader, ctx context.Context) ([]byte, error) {
-	const bufferSize = 32 * 1024
-	var result []byte
-	buffer := make([]byte, bufferSize)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-
-		n, err := reader.Read(buffer)
-		if n > 0 {
-			result = append(result, buffer[:n]...)
-		}
-
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
-
-		if p.config.MaxResponseBodySize > 0 && int64(len(result)) >= p.config.MaxResponseBodySize {
-			break
-		}
-	}
-
-	return result, nil
 }

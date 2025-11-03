@@ -143,7 +143,7 @@ func TestOptions_WithXMLAccept(t *testing.T) {
 	client, _ := newTestClient()
 	defer client.Close()
 
-	resp, err := client.Get(server.URL, WithXMLAccept())
+	resp, err := client.Get(server.URL, WithAccept("application/xml"))
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)
 	}
@@ -258,9 +258,8 @@ func TestOptions_WithFormData(t *testing.T) {
 		},
 		Files: map[string]*FileData{
 			"file1": {
-				Filename:    "test.txt",
-				Content:     []byte("test content"),
-				ContentType: "text/plain",
+				Filename: "test.txt",
+				Content:  []byte("test content"),
 			},
 		},
 	}

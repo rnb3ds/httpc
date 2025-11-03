@@ -1,3 +1,5 @@
+//go:build examples
+
 package main
 
 import (
@@ -43,13 +45,16 @@ func demonstrateSimpleDownload() {
 	}
 	defer client.Close()
 
-	// Download a small file
-	opts := httpc.DefaultDownloadOptions("downloads/golang-readme.md")
-	opts.Overwrite = true
+	// Create downloads directory if it doesn't exist
+	if err := os.MkdirAll("downloads", 0755); err != nil {
+		log.Printf("Error creating downloads directory: %v\n", err)
+		return
+	}
 
-	result, err := client.DownloadFileWithOptions(
+	// Download a small file using the simple DownloadFile method
+	result, err := client.DownloadFile(
 		"https://raw.githubusercontent.com/golang/go/master/README.md",
-		opts,
+		"downloads/golang-readme.md",
 	)
 	if err != nil {
 		log.Printf("Error: %v\n", err)
@@ -73,29 +78,30 @@ func demonstrateDownloadWithProgress() {
 	defer client.Close()
 
 	// Create download options with progress callback
-	opts := httpc.DefaultDownloadOptions("downloads/sample-file.bin")
-	opts.Overwrite = true
-	opts.ProgressInterval = 200 * time.Millisecond
-	opts.ProgressCallback = func(downloaded, total int64, speed float64) {
-		if total > 0 {
-			percentage := float64(downloaded) / float64(total) * 100
-			fmt.Printf("\r  Progress: %.1f%% (%s / %s) - Speed: %s",
-				percentage,
-				httpc.FormatBytes(downloaded),
-				httpc.FormatBytes(total),
-				httpc.FormatSpeed(speed),
-			)
-		} else {
-			fmt.Printf("\r  Downloaded: %s - Speed: %s",
-				httpc.FormatBytes(downloaded),
-				httpc.FormatSpeed(speed),
-			)
-		}
+	opts := &httpc.DownloadOptions{
+		FilePath:  "downloads/sample-file.bin",
+		Overwrite: true,
+		ProgressCallback: func(downloaded, total int64, speed float64) {
+			if total > 0 {
+				percentage := float64(downloaded) / float64(total) * 100
+				fmt.Printf("\r  Progress: %.1f%% (%s / %s) - Speed: %s",
+					percentage,
+					httpc.FormatBytes(downloaded),
+					httpc.FormatBytes(total),
+					httpc.FormatSpeed(speed),
+				)
+			} else {
+				fmt.Printf("\r  Downloaded: %s - Speed: %s",
+					httpc.FormatBytes(downloaded),
+					httpc.FormatSpeed(speed),
+				)
+			}
+		},
 	}
 
 	// Download a file with progress tracking
 	// Using a reliable test file from GitHub
-	result, err := client.DownloadFileWithOptions(
+	result, err := client.DownloadWithOptions(
 		"https://raw.githubusercontent.com/golang/go/master/LICENSE",
 		opts,
 		httpc.WithTimeout(60*time.Second),
@@ -121,22 +127,23 @@ func demonstrateLargeFileDownload() {
 	defer client.Close()
 
 	// Configure for large file download
-	opts := httpc.DefaultDownloadOptions("downloads/large-file.bin")
-	opts.Overwrite = true
-	opts.BufferSize = 64 * 1024 // 64KB buffer for better performance
-	opts.ProgressCallback = func(downloaded, total int64, speed float64) {
-		if total > 0 {
-			percentage := float64(downloaded) / float64(total) * 100
-			fmt.Printf("\r  Downloading: %.1f%% - %s",
-				percentage,
-				httpc.FormatSpeed(speed),
-			)
-		}
+	opts := &httpc.DownloadOptions{
+		FilePath:  "downloads/large-file.bin",
+		Overwrite: true,
+		ProgressCallback: func(downloaded, total int64, speed float64) {
+			if total > 0 {
+				percentage := float64(downloaded) / float64(total) * 100
+				fmt.Printf("\r  Downloading: %.1f%% - %s",
+					percentage,
+					httpc.FormatSpeed(speed),
+				)
+			}
+		},
 	}
 
 	// Download with longer timeout for large files
 	// Using a larger file from GitHub
-	result, err := client.DownloadFileWithOptions(
+	result, err := client.DownloadWithOptions(
 		"https://raw.githubusercontent.com/golang/go/master/README.md",
 		opts,
 		httpc.WithTimeout(5*time.Minute),
@@ -168,12 +175,14 @@ func demonstrateResumeDownload() {
 
 	// First, simulate a partial download by downloading only part of the file
 	fmt.Println("  Simulating interrupted download...")
-	opts1 := httpc.DefaultDownloadOptions(filePath)
-	opts1.Overwrite = true
+	opts1 := &httpc.DownloadOptions{
+		FilePath:  filePath,
+		Overwrite: true,
+	}
 
 	// Download with a short timeout to simulate interruption
 	// Using a file from GitHub
-	_, err = client.DownloadFileWithOptions(
+	_, err = client.DownloadWithOptions(
 		"https://raw.githubusercontent.com/golang/go/master/README.md",
 		opts1,
 		httpc.WithTimeout(1*time.Second), // Very short timeout to interrupt
@@ -189,19 +198,21 @@ func demonstrateResumeDownload() {
 
 		// Now resume the download
 		fmt.Println("  Resuming download...")
-		opts2 := httpc.DefaultDownloadOptions(filePath)
-		opts2.ResumeDownload = true
-		opts2.ProgressCallback = func(downloaded, total int64, speed float64) {
-			if total > 0 {
-				percentage := float64(downloaded) / float64(total) * 100
-				fmt.Printf("\r  Progress: %.1f%% - %s",
-					percentage,
-					httpc.FormatSpeed(speed),
-				)
-			}
+		opts2 := &httpc.DownloadOptions{
+			FilePath:       filePath,
+			ResumeDownload: true,
+			ProgressCallback: func(downloaded, total int64, speed float64) {
+				if total > 0 {
+					percentage := float64(downloaded) / float64(total) * 100
+					fmt.Printf("\r  Progress: %.1f%% - %s",
+						percentage,
+						httpc.FormatSpeed(speed),
+					)
+				}
+			},
 		}
 
-		result, err := client.DownloadFileWithOptions(
+		result, err := client.DownloadWithOptions(
 			"https://raw.githubusercontent.com/golang/go/master/README.md",
 			opts2,
 			httpc.WithTimeout(5*time.Minute),
@@ -263,10 +274,12 @@ func demonstrateAuthenticatedDownload() {
 	defer client.Close()
 
 	// Download with authentication headers
-	opts := httpc.DefaultDownloadOptions("downloads/authenticated-file.txt")
-	opts.Overwrite = true
+	opts := &httpc.DownloadOptions{
+		FilePath:  "downloads/authenticated-file.txt",
+		Overwrite: true,
+	}
 
-	result, err := client.DownloadFileWithOptions(
+	result, err := client.DownloadWithOptions(
 		"https://httpbin.org/get",
 		opts,
 		httpc.WithBearerToken("your-api-token-here"),

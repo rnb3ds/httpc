@@ -1,3 +1,5 @@
+//go:build examples
+
 package main
 
 import (
@@ -75,7 +77,7 @@ func demonstrateJSON(client httpc.Client) {
 	fmt.Printf("Request Data: %s\n\n", result.Data)
 
 	// Using a map
-	data := map[string]interface{}{
+	data := map[string]any{
 		"title":     "New Article",
 		"content":   "Article content here",
 		"published": true,
@@ -147,11 +149,19 @@ func demonstrateText(client httpc.Client) {
 	fmt.Printf("Text Data: %s\n\n", result.Data)
 }
 
-// demonstrateXML shows XML body handling
+// demonstrateXML shows XML body handling using WithXML
 func demonstrateXML(client httpc.Client) {
 	fmt.Println("--- Example 4: XML Body ---")
 
-	person := types.Person{
+	// Using WithXML with a struct
+	type Person struct {
+		XMLName struct{} `xml:"person"`
+		Name    string   `xml:"name"`
+		Age     int      `xml:"age"`
+		City    string   `xml:"city"`
+	}
+
+	person := Person{
 		Name: "Jane Smith",
 		Age:  28,
 		City: "New York",
@@ -174,6 +184,32 @@ func demonstrateXML(client httpc.Client) {
 	fmt.Printf("Status: %d\n", resp.StatusCode)
 	fmt.Printf("Content-Type: %s\n", result.Headers["content-type"])
 	fmt.Printf("XML Data: %s\n\n", result.Data)
+
+	// Alternative: Using WithBody and WithContentType for pre-formatted XML
+	xmlData := `<?xml version="1.0" encoding="UTF-8"?>
+<person>
+    <name>John Doe</name>
+    <age>30</age>
+    <city>Boston</city>
+</person>`
+
+	resp2, err := client.Post("https://echo.hoppscotch.io",
+		httpc.WithBody(xmlData),
+		httpc.WithContentType("application/xml"),
+	)
+	if err != nil {
+		log.Printf("Error: %v\n", err)
+		return
+	}
+
+	var result2 types.APIResponse
+	if err := resp2.JSON(&result2); err != nil {
+		log.Printf("Failed to parse JSON: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Status: %d\n", resp2.StatusCode)
+	fmt.Printf("Pre-formatted XML Data: %s\n\n", result2.Data)
 }
 
 // demonstrateBinary shows binary data handling

@@ -210,98 +210,6 @@ func TestManager_GetHeaders(t *testing.T) {
 	}
 }
 
-func TestManager_GetPooledRequest(t *testing.T) {
-	m := NewManager(nil)
-	defer m.Close()
-
-	req := m.GetPooledRequest()
-
-	if req == nil {
-		t.Fatal("Request should not be nil")
-	}
-
-	if req.Headers == nil {
-		t.Error("Request headers should not be nil")
-	}
-
-	if req.QueryParams == nil {
-		t.Error("Request query params should not be nil")
-	}
-
-	stats := m.GetStats()
-	if stats.RequestsInUse != 1 {
-		t.Errorf("Expected 1 request in use, got %d", stats.RequestsInUse)
-	}
-
-	// Set some data
-	req.Method = "POST"
-	req.URL = "https://example.com"
-	req.Headers["Content-Type"] = "application/json"
-
-	// Return request
-	m.PutPooledRequest(req)
-
-	// Should be reset
-	if req.Method != "" {
-		t.Error("Request method should be reset")
-	}
-
-	if req.URL != "" {
-		t.Error("Request URL should be reset")
-	}
-
-	if len(req.Headers) != 0 {
-		t.Error("Request headers should be cleared")
-	}
-
-	stats = m.GetStats()
-	if stats.RequestsInUse != 0 {
-		t.Errorf("Expected 0 requests in use after return, got %d", stats.RequestsInUse)
-	}
-}
-
-func TestManager_GetPooledResponse(t *testing.T) {
-	m := NewManager(nil)
-	defer m.Close()
-
-	resp := m.GetPooledResponse()
-
-	if resp == nil {
-		t.Fatal("Response should not be nil")
-	}
-
-	stats := m.GetStats()
-	if stats.ResponsesInUse != 1 {
-		t.Errorf("Expected 1 response in use, got %d", stats.ResponsesInUse)
-	}
-
-	// Set some data
-	resp.StatusCode = 200
-	resp.Status = "OK"
-	resp.Body = "test body"
-
-	// Return response
-	m.PutPooledResponse(resp)
-
-	// Should be reset
-	if resp.StatusCode != 0 {
-		t.Error("Response status code should be reset")
-	}
-
-	if resp.Status != "" {
-		t.Error("Response status should be reset")
-	}
-
-	if resp.Body != "" {
-		t.Error("Response body should be reset")
-	}
-
-	stats = m.GetStats()
-	if stats.ResponsesInUse != 0 {
-		t.Errorf("Expected 0 responses in use after return, got %d", stats.ResponsesInUse)
-	}
-}
-
 func TestManager_ConcurrentBufferAccess(t *testing.T) {
 	m := NewManager(nil)
 	defer m.Close()
@@ -337,7 +245,6 @@ func TestManager_GetStats(t *testing.T) {
 	buf1 := m.GetBuffer(2 * 1024)
 	buf2 := m.GetBuffer(16 * 1024)
 	headers := m.GetHeaders()
-	req := m.GetPooledRequest()
 
 	stats := m.GetStats()
 
@@ -353,15 +260,10 @@ func TestManager_GetStats(t *testing.T) {
 		t.Errorf("Expected 1 header in use, got %d", stats.HeadersInUse)
 	}
 
-	if stats.RequestsInUse != 1 {
-		t.Errorf("Expected 1 request in use, got %d", stats.RequestsInUse)
-	}
-
 	// Return resources
 	m.PutBuffer(buf1)
 	m.PutBuffer(buf2)
 	m.PutHeaders(headers)
-	m.PutPooledRequest(req)
 
 	stats = m.GetStats()
 

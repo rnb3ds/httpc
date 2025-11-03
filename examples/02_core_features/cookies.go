@@ -1,10 +1,11 @@
+//go:build examples
+
 package main
 
 import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 	"time"
 
 	"github.com/cybergodev/httpc"
@@ -147,17 +148,10 @@ func demonstrateResponseCookies() {
 func demonstrateCookieJar() {
 	fmt.Println("--- Example 3: Automatic Cookie Management (Cookie Jar) ---")
 
-	// Create a cookie jar
-	jar, err := httpc.NewCookieJar()
-	if err != nil {
-		log.Printf("Failed to create cookie jar: %v\n", err)
-		return
-	}
-
 	// Create client with cookie jar enabled
 	config := httpc.DefaultConfig()
 	config.EnableCookies = true
-	config.CookieJar = jar
+	// Note: Cookie jar is automatically created when EnableCookies is true
 
 	client, err := httpc.New(config)
 	if err != nil {
@@ -175,13 +169,8 @@ func demonstrateCookieJar() {
 	fmt.Printf("Status: %d\n", resp1.StatusCode)
 	fmt.Printf("Cookies in final response: %d (expected: 0, cookies are in redirect response)\n", len(resp1.Cookies))
 
-	// Check cookies in jar
-	u, _ := url.Parse("https://httpbin.org")
-	cookiesInJar := jar.Cookies(u)
-	fmt.Printf("Cookies stored in jar: %d\n", len(cookiesInJar))
-	for _, cookie := range cookiesInJar {
-		fmt.Printf("  - %s = %s\n", cookie.Name, cookie.Value)
-	}
+	// Note: Cookies are automatically managed by the client's internal cookie jar
+	fmt.Println("Cookies are automatically stored and managed by the client")
 
 	fmt.Println("\nStep 2: Cookies automatically sent in subsequent requests")
 	// Second request - cookies are automatically sent

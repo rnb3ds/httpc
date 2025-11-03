@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 
@@ -55,23 +54,6 @@ func NewTransport(config *Config, pool *connection.PoolManager) (*Transport, err
 
 // RoundTrip executes an HTTP round trip
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// Only set timeout if the request doesn't already have a context with timeout
-	ctx := req.Context()
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	// Check if context already has a deadline
-	if t.config.Timeout > 0 {
-		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-			// Only add timeout if context doesn't already have one
-			timeoutCtx, cancel := context.WithTimeout(ctx, t.config.Timeout)
-			defer cancel()
-			req = req.WithContext(timeoutCtx)
-		}
-	}
-
-	// Use http.Client.Do to support cookie jar
 	resp, err := t.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("transport round trip failed: %w", err)

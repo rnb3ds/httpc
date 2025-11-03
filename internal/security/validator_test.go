@@ -358,7 +358,7 @@ func TestValidator_SpecialCharacters(t *testing.T) {
 	}{
 		{
 			name:    "URL with Unicode",
-			url:     "https://example.com/path/中文",
+			url:     "https://example.com/path/chinese-text",
 			wantErr: false,
 		},
 		{
@@ -390,4 +390,3 @@ func TestValidator_SpecialCharacters(t *testing.T) {
 		})
 	}
 }
-

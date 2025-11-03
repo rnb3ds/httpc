@@ -35,7 +35,11 @@ func TestNewClientWithConfig(t *testing.T) {
 }
 
 func TestSecureClient(t *testing.T) {
-	client, err := New(ConfigPreset(SecurityLevelStrict))
+	config := DefaultConfig()
+	config.MaxRetries = 1
+	config.FollowRedirects = false
+	config.EnableCookies = false
+	client, err := New(config)
 	if err != nil {
 		t.Fatalf("Failed to create secure client: %v", err)
 	}
@@ -124,40 +128,9 @@ func TestResponseMethods(t *testing.T) {
 	}
 }
 
-func TestDefaultConfig(t *testing.T) {
-	config := DefaultConfig()
+// TestDefaultConfig removed - covered by config_validation_test.go
 
-	if config == nil {
-		t.Fatal("DefaultConfig should not return nil")
-	}
-
-	if config.Timeout <= 0 {
-		t.Error("Default timeout should be positive")
-	}
-
-	if config.MaxRetries < 0 {
-		t.Error("Default max retries should not be negative")
-	}
-
-	if config.UserAgent == "" {
-		t.Error("Default user agent should not be empty")
-	}
-}
-
-func TestPackageLevelFunctions(t *testing.T) {
-	// Test that package-level functions exist and handle invalid URLs gracefully
-	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("Package-level functions should not panic: %v", r)
-		}
-	}()
-
-	// Test with invalid URL to avoid actual HTTP requests
-	_, err := Get("invalid-url")
-	if err == nil {
-		t.Error("Expected error for invalid URL")
-	}
-}
+// TestPackageLevelFunctions removed - covered by package_level_test.go
 
 func TestHTTPError(t *testing.T) {
 	err := &HTTPError{
@@ -181,9 +154,8 @@ func TestFormData(t *testing.T) {
 		},
 		Files: map[string]*FileData{
 			"file1": {
-				Filename:    "test.txt",
-				Content:     []byte("test content"),
-				ContentType: "text/plain",
+				Filename: "test.txt",
+				Content:  []byte("test content"),
 			},
 		},
 	}
@@ -206,30 +178,7 @@ func TestFormData(t *testing.T) {
 	}
 }
 
-func TestSecurityFeatures(t *testing.T) {
-	config := DefaultConfig()
-
-	// Test secure defaults
-	if config.Timeout <= 0 {
-		t.Error("Default timeout should be positive")
-	}
-
-	if config.MaxRetries < 0 {
-		t.Error("Default max retries should not be negative")
-	}
-
-	client, err := New(ConfigPreset(SecurityLevelStrict))
-	if err != nil {
-		t.Fatalf("Failed to create secure client: %v", err)
-	}
-	defer client.Close()
-
-	// Test that client handles invalid URLs securely
-	_, err = client.Get("not-a-url")
-	if err == nil {
-		t.Error("Expected error for invalid URL")
-	}
-}
+// TestSecurityFeatures removed - covered by security_test.go and comprehensive_test.go
 
 func TestConcurrencyLimits(t *testing.T) {
 	client, err := newTestClient()

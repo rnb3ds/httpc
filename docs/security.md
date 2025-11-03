@@ -1,4 +1,4 @@
-# Security Guide
+﻿# Security Guide
 
 This guide covers security features, best practices, and compliance considerations for HTTPC.
 
@@ -184,11 +184,11 @@ client, err := httpc.New(config)
 
 ```go
 // Standard configuration
-config := httpc.ConfigPreset(httpc.SecurityLevelBalanced)
+config := httpc.DefaultConfig()
 config.AllowPrivateIPs = false  // Blocks 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
 
 // Development configuration
-config := httpc.ConfigPreset(httpc.SecurityLevelPermissive)
+config := httpc.TestingConfig()
 config.AllowPrivateIPs = true  // Allows private IPs
 ```
 
@@ -197,7 +197,7 @@ config.AllowPrivateIPs = true  // Allows private IPs
 ### Strict (Maximum Security)
 
 ```go
-client, err := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelStrict))
+client, err := httpc.New(httpc.SecureConfig())
 ```
 
 **Settings:**
@@ -217,7 +217,7 @@ client, err := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelStrict))
 ### Balanced (Default)
 
 ```go
-client, err := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelBalanced))
+client, err := httpc.New(httpc.DefaultConfig())
 // Or simply:
 client, err := httpc.New()
 ```
@@ -239,7 +239,7 @@ client, err := httpc.New()
 ### Permissive (Development Only)
 
 ```go
-client, err := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelPermissive))
+client, err := httpc.New(httpc.TestingConfig())
 ```
 
 **Settings:**
@@ -264,7 +264,7 @@ client, err := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelPermissive))
 
 ```go
 // Enabled by default in balanced preset
-config := httpc.ConfigPreset(httpc.SecurityLevelBalanced)
+config := httpc.DefaultConfig()
 config.AllowPrivateIPs = false
 
 client, err := httpc.New(config)
@@ -319,7 +319,7 @@ resp, err := client.Get(url,
 
 ```go
 // PCI DSS requires TLS 1.2+
-config := httpc.ConfigPreset(httpc.SecurityLevelStrict)
+config := httpc.SecureConfig()
 config.MinTLSVersion = tls.VersionTLS12
 
 // Disable weak cipher suites
@@ -338,7 +338,7 @@ client, err := httpc.New(config)
 
 ```go
 // HIPAA requires encryption in transit
-config := httpc.ConfigPreset(httpc.SecurityLevelStrict)
+config := httpc.SecureConfig()
 config.MinTLSVersion = tls.VersionTLS12
 config.InsecureSkipVerify = false  // Must verify certificates
 
@@ -352,7 +352,7 @@ client, err := httpc.New(config)
 
 ```go
 // GDPR requires data protection
-config := httpc.ConfigPreset(httpc.SecurityLevelBalanced)
+config := httpc.DefaultConfig()
 
 // Don't log sensitive data
 // Implement data minimization
@@ -362,8 +362,6 @@ client, err := httpc.New(config)
 ```
 
 ## Best Practices
-
-### ✅ DO
 
 1. **Use TLS 1.2+ for secure connections**
    ```go
@@ -388,7 +386,7 @@ client, err := httpc.New(config)
 
 5. **Use appropriate security preset**
    ```go
-   httpc.ConfigPreset(httpc.SecurityLevelBalanced)
+   httpc.DefaultConfig()
    ```
 
 6. **Implement timeout protection**
@@ -404,54 +402,6 @@ client, err := httpc.New(config)
 8. **Use strong cipher suites**
    ```go
    config.TLSConfig.CipherSuites = []uint16{...}
-   ```
-
-### ❌ DON'T
-
-1. **Never skip TLS verification**
-   ```go
-   // Bad!
-   config.InsecureSkipVerify = true
-   ```
-
-2. **Don't use permissive preset for external APIs**
-   ```go
-   // Bad for external APIs!
-   httpc.ConfigPreset(httpc.SecurityLevelPermissive)
-   ```
-
-3. **Don't allow private IPs for external APIs**
-   ```go
-   // Bad for external APIs!
-   config.AllowPrivateIPs = true
-   ```
-
-4. **Don't disable validation**
-   ```go
-   // Bad!
-   config.ValidateURL = false
-   config.ValidateHeaders = false
-   ```
-
-5. **Don't use weak TLS versions**
-   ```go
-   // Bad!
-   config.MinTLSVersion = tls.VersionTLS10
-   ```
-
-6. **Don't log sensitive data**
-   ```go
-   // Bad!
-   log.Printf("Token: %s", token)
-   ```
-
-7. **Don't hardcode credentials**
-   ```go
-   // Bad!
-   httpc.WithBearerToken("hardcoded-token")
-
-   // Good - use environment variables
-   httpc.WithBearerToken(os.Getenv("API_TOKEN"))
    ```
 
 ## Security Checklist
@@ -481,13 +431,6 @@ client, err := httpc.New(config)
 - [ ] Access controls in place
 - [ ] Security monitoring active
 - [ ] Incident response plan ready
-
-## Additional Resources
-
-- [OWASP Top 10](https://owasp.org/www-project-top-ten/)
-- [TLS Best Practices](https://wiki.mozilla.org/Security/Server_Side_TLS)
-- [PCI DSS Requirements](https://www.pcisecuritystandards.org/)
-- [NIST Cybersecurity Framework](https://www.nist.gov/cyberframework)
 
 ---
 

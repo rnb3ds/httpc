@@ -60,16 +60,8 @@ func TestManager_New(t *testing.T) {
 				t.Errorf("Expected maxConcurrent %d, got %d", tt.expectedMax, m.maxConcurrent)
 			}
 
-			if m.queueSize != tt.expectedQueue {
-				t.Errorf("Expected queueSize %d, got %d", tt.expectedQueue, m.queueSize)
-			}
-
 			if m.semaphore == nil {
 				t.Error("Semaphore should not be nil")
-			}
-
-			if m.queue == nil {
-				t.Error("Queue should not be nil")
 			}
 
 			if m.metrics == nil {

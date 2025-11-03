@@ -7,21 +7,18 @@ import (
 	"strings"
 )
 
-// Validator provides comprehensive security validation
 type Validator struct {
 	config *Config
 }
 
-// Config represents security configuration
 type Config struct {
 	ValidateURL           bool
 	ValidateHeaders       bool
 	MaxResponseBodySize   int64
 	MaxConcurrentRequests int
-	AllowPrivateIPs       bool // Allow requests to private/internal IPs (for testing)
+	AllowPrivateIPs       bool
 }
 
-// Request represents a request for validation
 type Request struct {
 	Method      string
 	URL         string
@@ -30,13 +27,11 @@ type Request struct {
 	Body        any
 }
 
-// NewValidator creates a new security validator with default configuration
 func NewValidator() *Validator {
-	// Create default security config
 	secConfig := &Config{
 		ValidateURL:           true,
 		ValidateHeaders:       true,
-		MaxResponseBodySize:   50 * 1024 * 1024, // 50MB (consistent with types.go)
+		MaxResponseBodySize:   50 * 1024 * 1024,
 		MaxConcurrentRequests: 1000,
 		AllowPrivateIPs:       false,
 	}
@@ -46,7 +41,6 @@ func NewValidator() *Validator {
 	}
 }
 
-// NewValidatorWithConfig creates a new security validator with custom configuration
 func NewValidatorWithConfig(config *Config) *Validator {
 	if config == nil {
 		return NewValidator()
@@ -57,16 +51,13 @@ func NewValidatorWithConfig(config *Config) *Validator {
 	}
 }
 
-// ValidateRequest performs comprehensive request validation
 func (v *Validator) ValidateRequest(req *Request) error {
-	// URL validation
 	if v.config.ValidateURL {
 		if err := v.validateURL(req.URL); err != nil {
 			return fmt.Errorf("URL validation failed: %w", err)
 		}
 	}
 
-	// Header validation
 	if v.config.ValidateHeaders {
 		for key, value := range req.Headers {
 			if err := v.validateHeader(key, value); err != nil {
@@ -75,7 +66,6 @@ func (v *Validator) ValidateRequest(req *Request) error {
 		}
 	}
 
-	// Request size validation
 	if req.Body != nil {
 		if err := v.validateRequestSize(req.Body); err != nil {
 			return fmt.Errorf("request size validation failed: %w", err)
@@ -138,18 +128,30 @@ func (v *Validator) validateHost(host string) error {
 		hostname = h
 	}
 
+	// Check for localhost patterns first
 	if isLocalhost(hostname) {
 		return fmt.Errorf("localhost and loopback addresses are not allowed")
 	}
 
+	// Check if hostname is already an IP address
+	if ip := net.ParseIP(hostname); ip != nil {
+		if isPrivateOrReservedIP(ip) {
+			return fmt.Errorf("private or reserved IP addresses are not allowed: %s", ip.String())
+		}
+		return nil
+	}
+
+	// For domain names, perform DNS lookup
 	ips, err := net.LookupIP(hostname)
 	if err != nil {
+		// DNS lookup failed, but we don't block the request
+		// The actual request will fail with a proper DNS error
 		return nil
 	}
 
 	for _, ip := range ips {
 		if isPrivateOrReservedIP(ip) {
-			return fmt.Errorf("private or reserved IP addresses are not allowed: %s", ip.String())
+			return fmt.Errorf("private or reserved IP addresses are not allowed")
 		}
 	}
 
@@ -217,20 +219,20 @@ func (v *Validator) validateHeader(key, value string) error {
 		return fmt.Errorf("header value too long (max 8KB)")
 	}
 
-	for i, r := range key {
+	for _, r := range key {
 		if !isValidHeaderChar(r) {
-			return fmt.Errorf("invalid character in header key at position %d", i)
+			return fmt.Errorf("invalid character in header key")
 		}
 	}
 
 	if strings.HasPrefix(key, ":") {
-		return fmt.Errorf("pseudo-headers (starting with ':') are not allowed")
+		return fmt.Errorf("pseudo-headers are not allowed")
 	}
 
 	keyLower := strings.ToLower(key)
 	switch keyLower {
 	case "content-length", "transfer-encoding":
-		return fmt.Errorf("%s header is managed automatically", key)
+		return fmt.Errorf("header is managed automatically")
 	}
 
 	return nil

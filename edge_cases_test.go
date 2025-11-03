@@ -91,7 +91,7 @@ func TestEdgeCase_SpecialCharactersInURL(t *testing.T) {
 	}{
 		{"Spaces", map[string]interface{}{"key": "value with spaces"}},
 		{"Special Chars", map[string]interface{}{"key": "value!@#$%^&*()"}},
-		{"Unicode", map[string]interface{}{"key": "值中文"}},
+		{"Unicode", map[string]interface{}{"key": "测试中文"}},
 		{"Emoji", map[string]interface{}{"key": "😀🎉"}},
 	}
 
@@ -357,11 +357,11 @@ func TestEdgeCase_StatusCodes(t *testing.T) {
 		{"401 Unauthorized", 401, false},
 		{"403 Forbidden", 403, false},
 		{"404 Not Found", 404, false},
-		{"429 Too Many Requests", 429, true}, // Retryable
+		{"429 Too Many Requests", 429, true},     // Retryable
 		{"500 Internal Server Error", 500, true}, // Retryable
-		{"502 Bad Gateway", 502, true}, // Retryable
-		{"503 Service Unavailable", 503, true}, // Retryable
-		{"504 Gateway Timeout", 504, true}, // Retryable
+		{"502 Bad Gateway", 502, true},           // Retryable
+		{"503 Service Unavailable", 503, true},   // Retryable
+		{"504 Gateway Timeout", 504, true},       // Retryable
 	}
 
 	for _, tt := range tests {
@@ -476,7 +476,12 @@ func TestEdgeCase_PackageLevelFunctions(t *testing.T) {
 	config.AllowPrivateIPs = true
 	client, _ := New(config)
 	SetDefaultClient(client)
-	defer client.Close()
+	defer func() {
+		// Reset default client before closing
+		defaultClient, _ := newTestClient()
+		SetDefaultClient(defaultClient)
+		client.Close()
+	}()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -489,7 +494,8 @@ func TestEdgeCase_PackageLevelFunctions(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		resp, err := Do(ctx, "GET", server.URL)
+		client, _ := getDefaultClient()
+		resp, err := client.Request(ctx, "GET", server.URL)
 		if err != nil {
 			t.Fatalf("Get failed: %v", err)
 		}
@@ -502,7 +508,8 @@ func TestEdgeCase_PackageLevelFunctions(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		resp, err := Do(ctx, "POST", server.URL, WithJSON(map[string]string{"key": "value"}))
+		client, _ := getDefaultClient()
+		resp, err := client.Request(ctx, "POST", server.URL, WithJSON(map[string]string{"key": "value"}))
 		if err != nil {
 			t.Fatalf("Post failed: %v", err)
 		}
@@ -515,13 +522,13 @@ func TestEdgeCase_PackageLevelFunctions(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		resp, err := Do(ctx, "GET", server.URL)
+		client, _ := getDefaultClient()
+		resp, err := client.Request(ctx, "GET", server.URL)
 		if err != nil {
-			t.Fatalf("Do failed: %v", err)
+			t.Fatalf("Request failed: %v", err)
 		}
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("Expected status 200, got %d", resp.StatusCode)
 		}
 	})
 }
-

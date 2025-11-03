@@ -8,35 +8,30 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
 
-// RetryEngine handles retry logic with exponential backoff
 type RetryEngine struct {
 	config *Config
 }
 
-// NewRetryEngine creates a new retry engine
 func NewRetryEngine(config *Config) *RetryEngine {
 	return &RetryEngine{
 		config: config,
 	}
 }
 
-// ShouldRetry determines if a request should be retried
 func (r *RetryEngine) ShouldRetry(resp *Response, err error, attempt int) bool {
-	// Don't retry if we've exceeded max attempts
 	if attempt >= r.config.MaxRetries {
 		return false
 	}
 
-	// Retry on network errors
 	if err != nil {
 		return r.isRetryableError(err)
 	}
 
-	// Retry on specific HTTP status codes
 	if resp != nil {
 		return r.isRetryableStatus(resp.StatusCode)
 	}
@@ -44,15 +39,32 @@ func (r *RetryEngine) ShouldRetry(resp *Response, err error, attempt int) bool {
 	return false
 }
 
-// GetDelay calculates the delay for the next retry attempt
 func (r *RetryEngine) GetDelay(attempt int) time.Duration {
-	// Base delay
+	return r.GetDelayWithResponse(attempt, nil)
+}
+
+func (r *RetryEngine) GetDelayWithResponse(attempt int, resp *Response) time.Duration {
+	if resp != nil && resp.Headers != nil {
+		if retryAfterValues, exists := resp.Headers["Retry-After"]; exists && len(retryAfterValues) > 0 {
+			retryAfter := retryAfterValues[0]
+
+			if seconds, err := strconv.Atoi(retryAfter); err == nil && seconds > 0 {
+				return time.Duration(seconds) * time.Second
+			}
+
+			if retryTime, err := time.Parse(time.RFC1123, retryAfter); err == nil {
+				delay := time.Until(retryTime)
+				if delay > 0 {
+					return delay
+				}
+			}
+		}
+	}
+
 	delay := r.config.RetryDelay
 	if delay <= 0 {
 		delay = 1 * time.Second
 	}
-
-	// Apply exponential backoff
 	backoffFactor := r.config.BackoffFactor
 	if backoffFactor <= 0 {
 		backoffFactor = 2.0
@@ -60,36 +72,36 @@ func (r *RetryEngine) GetDelay(attempt int) time.Duration {
 
 	exponentialDelay := time.Duration(float64(delay) * math.Pow(backoffFactor, float64(attempt)))
 
-	// Apply maximum delay limit
 	if r.config.MaxRetryDelay > 0 && exponentialDelay > r.config.MaxRetryDelay {
 		exponentialDelay = r.config.MaxRetryDelay
 	}
 
-	// Add jitter if enabled
 	if r.config.Jitter {
-		jitter := r.getSecureJitter(exponentialDelay / 2)
-		exponentialDelay += jitter
+		jitterRange := exponentialDelay / 10
+		jitter := r.getSecureJitter(jitterRange * 2)
+		exponentialDelay = exponentialDelay - jitterRange + jitter
 	}
 
 	return exponentialDelay
 }
 
-// MaxRetries returns the maximum number of retry attempts
 func (r *RetryEngine) MaxRetries() int {
 	return r.config.MaxRetries
 }
 
-// isRetryableError checks if an error is retryable
 func (r *RetryEngine) isRetryableError(err error) bool {
-	// Context cancellation errors should never be retried
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+
+	// Context deadline exceeded should not be retried (indicates overall timeout)
+	if errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 
 	// Check for context cancellation in error message
 	errMsg := err.Error()
 	if strings.Contains(errMsg, "context canceled") ||
-		strings.Contains(errMsg, "context deadline exceeded") ||
 		strings.Contains(errMsg, "request context canceled") {
 		return false
 	}
@@ -110,6 +122,23 @@ func (r *RetryEngine) isRetryableError(err error) bool {
 			return false
 		}
 		return netErr.Timeout()
+	}
+
+	// Check for common network error patterns in error messages
+	networkPatterns := []string{
+		"connection refused",
+		"no such host",
+		"timeout",
+		"connection reset by peer",
+		"broken pipe",
+		"network unreachable",
+		"host unreachable",
+	}
+
+	for _, pattern := range networkPatterns {
+		if strings.Contains(errMsg, pattern) {
+			return true
+		}
 	}
 
 	return false

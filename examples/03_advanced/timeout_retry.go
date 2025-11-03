@@ -1,3 +1,5 @@
+//go:build examples
+
 package main
 
 import (
@@ -165,71 +167,4 @@ func demonstrateNoRetry() {
 	fmt.Printf("Status: %d\n", resp.StatusCode)
 	fmt.Printf("Attempts: %d (no retries)\n", resp.Attempts)
 	fmt.Printf("Duration: %v\n\n", resp.Duration)
-}
-
-// demonstrateRealWorldPatterns shows practical timeout/retry patterns
-func demonstrateRealWorldPatterns() {
-	fmt.Println("=== Real-World Patterns ===\n ")
-
-	client, err := httpc.New()
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer client.Close()
-
-	// Pattern 1: Quick health check (short timeout, no retry)
-	fmt.Println("--- Pattern 1: Health Check ---")
-	resp, err := client.Get("https://echo.hoppscotch.io/health",
-		httpc.WithTimeout(2*time.Second),
-		httpc.WithMaxRetries(0),
-	)
-	if err != nil {
-		fmt.Printf("Health check failed: %v\n\n", err)
-	} else {
-		fmt.Printf("Health check OK: %d in %v\n\n", resp.StatusCode, resp.Duration)
-	}
-
-	// Pattern 2: Critical operation (long timeout, multiple retries)
-	fmt.Println("--- Pattern 2: Critical Operation ---")
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	resp, err = client.Post("https://echo.hoppscotch.io/api/critical",
-		httpc.WithJSON(map[string]string{"operation": "critical"}),
-		httpc.WithContext(ctx),
-		httpc.WithTimeout(20*time.Second),
-		httpc.WithMaxRetries(5),
-	)
-	if err != nil {
-		fmt.Printf("Critical operation failed: %v\n\n", err)
-	} else {
-		fmt.Printf("Critical operation succeeded: %d (attempts: %d)\n\n",
-			resp.StatusCode, resp.Attempts)
-	}
-
-	// Pattern 3: User-facing request (moderate timeout, few retries)
-	fmt.Println("--- Pattern 3: User-Facing Request ---")
-	resp, err = client.Get("https://echo.hoppscotch.io/api/data",
-		httpc.WithTimeout(5*time.Second),
-		httpc.WithMaxRetries(1),
-	)
-	if err != nil {
-		fmt.Printf("Request failed: %v\n\n", err)
-	} else {
-		fmt.Printf("Request succeeded: %d in %v\n\n", resp.StatusCode, resp.Duration)
-	}
-
-	// Pattern 4: Background job (very long timeout, many retries)
-	fmt.Println("--- Pattern 4: Background Job ---")
-	resp, err = client.Post("https://echo.hoppscotch.io/api/background",
-		httpc.WithJSON(map[string]string{"job": "process"}),
-		httpc.WithTimeout(120*time.Second),
-		httpc.WithMaxRetries(10),
-	)
-	if err != nil {
-		fmt.Printf("Background job failed: %v\n\n", err)
-	} else {
-		fmt.Printf("Background job completed: %d (attempts: %d, duration: %v)\n\n",
-			resp.StatusCode, resp.Attempts, resp.Duration)
-	}
 }

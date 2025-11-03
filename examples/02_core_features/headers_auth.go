@@ -1,3 +1,5 @@
+//go:build examples
+
 package main
 
 import (
@@ -35,7 +37,7 @@ func demonstrateHeaders() {
 		return
 	}
 
-	fmt.Printf("Custom headers sent:\n ")
+	fmt.Printf("Custom headers sent:\n")
 	fmt.Printf("  X-Custom-Header: %s\n", result.Headers["x-custom-header"])
 	fmt.Printf("  X-Request-ID: %s\n\n", result.Headers["x-request-id"])
 

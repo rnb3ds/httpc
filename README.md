@@ -1,4 +1,4 @@
-# HTTPC - Modern HTTP Client for Go
+﻿# HTTPC - Modern HTTP Client for Go
 
 [![Go Version](https://img.shields.io/badge/Go-1.24+-blue.svg)](https://golang.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -749,7 +749,7 @@ HTTPC provides powerful file download capabilities with progress tracking, resum
 ### Simple File Download
 
 ```go
-// Download a file to disk
+// Download a file to disk using package-level function
 result, err := httpc.DownloadFile(
     "https://example.com/file.zip",
     "downloads/file.zip",
@@ -762,7 +762,29 @@ fmt.Printf("Downloaded: %s\n", httpc.FormatBytes(result.BytesWritten))
 fmt.Printf("Speed: %s\n", httpc.FormatSpeed(result.AverageSpeed))
 ```
 
-### Download with Progress Tracking
+### Download with Progress Tracking (Package-Level)
+
+```go
+// Configure download options
+opts := httpc.DefaultDownloadOptions("downloads/large-file.zip")
+opts.Overwrite = true
+opts.ProgressCallback = func(downloaded, total int64, speed float64) {
+    percentage := float64(downloaded) / float64(total) * 100
+    fmt.Printf("\rProgress: %.1f%% - %s",
+        percentage,
+        httpc.FormatSpeed(speed),
+    )
+}
+
+// Download with progress using package-level function
+result, err := httpc.DownloadWithOptions(
+    "https://example.com/large-file.zip",
+    opts,
+    httpc.WithTimeout(10*time.Minute),
+)
+```
+
+### Download with Progress Tracking (Client Instance)
 
 ```go
 client, _ := httpc.New()
@@ -779,8 +801,8 @@ opts.ProgressCallback = func(downloaded, total int64, speed float64) {
     )
 }
 
-// Download with progress
-result, err := client.DownloadFileWithOptions(
+// Download with progress using client instance
+result, err := client.DownloadWithOptions(
     "https://example.com/large-file.zip",
     opts,
     httpc.WithTimeout(10*time.Minute),
@@ -795,7 +817,8 @@ opts := httpc.DefaultDownloadOptions("downloads/file.zip")
 opts.ResumeDownload = true  // Resume from where it left off
 opts.Overwrite = false      // Don't overwrite, append instead
 
-result, err := client.DownloadFileWithOptions(url, opts)
+// Works with both package-level function and client instance
+result, err := httpc.DownloadWithOptions(url, opts)
 if result.Resumed {
     fmt.Println("Download resumed successfully")
 }
@@ -828,7 +851,7 @@ opts := &httpc.DownloadOptions{
     FileMode:         0644,                  // File permissions
 }
 
-result, err := client.DownloadFileWithOptions(url, opts)
+result, err := client.DownloadWithOptions(url, opts)
 ```
 
 ### Download with Authentication
@@ -865,13 +888,13 @@ client, err := httpc.New()
 
 ```go
 // Permissive (Development/Testing)
-client, err := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelPermissive))
+client, err := httpc.New(httpc.TestingConfig())
 
 // Balanced (Production - Default)
-client, err := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelBalanced))
+client, err := httpc.New(httpc.DefaultConfig())
 
 // Strict (High Security)
-client, err := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelStrict))
+client, err := httpc.New(httpc.SecureConfig())
 ```
 
 ### Custom Configuration
@@ -1043,6 +1066,52 @@ config := httpc.DefaultConfig()
 config.CookieJar = jar
 client, err := httpc.New(config)
 ```
+
+### Resource Management
+
+**New in v1.0.0**: Proper resource cleanup for long-running applications.
+
+```go
+package main
+
+import (
+    "github.com/cybergodev/httpc"
+)
+
+func main() {
+    // Ensure default client is cleaned up on application shutdown
+    defer httpc.CloseDefaultClient()
+
+    // Use package-level functions
+    resp, err := httpc.Get("https://api.example.com/data")
+    // ...
+}
+```
+
+**Setting Custom Default Client**:
+
+```go
+// Create a custom client
+config := httpc.DefaultConfig()
+config.Timeout = 60 * time.Second
+client, err := httpc.New(config)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Set as default client (returns error if previous client fails to close)
+if err := httpc.SetDefaultClient(client); err != nil {
+    log.Printf("Warning: failed to close previous client: %v", err)
+}
+
+// Clean up on shutdown
+defer httpc.CloseDefaultClient()
+```
+
+**Important Notes**:
+- `CloseDefaultClient()` releases all resources (connections, goroutines, etc.)
+- After closing, the default client will be re-initialized on next use
+- `SetDefaultClient()` now returns an error (breaking change from previous versions)
 
 ### Context Support
 

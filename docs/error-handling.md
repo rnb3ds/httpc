@@ -1,4 +1,4 @@
-# Error Handling
+﻿# Error Handling
 
 This guide covers comprehensive error handling patterns and best practices for HTTPC.
 
@@ -189,7 +189,7 @@ func fetchData(client httpc.Client, url string) ([]byte, error) {
 ### Pattern 3: Error with Retry Logic
 
 ```go
-func fetchWithRetry(client httpc.Client, url string) (*Response, error) {
+func fetchWithRetry(client httpc.Client, url string) (*httpc.Response, error) {
     resp, err := client.Get(url,
         httpc.WithMaxRetries(3),
         httpc.WithTimeout(10*time.Second),
@@ -405,8 +405,6 @@ func fetchWithNetworkRetry(client httpc.Client, url string) ([]byte, error) {
 
 ## Best Practices
 
-### ✅ DO
-
 1. **Always check errors**
    ```go
    resp, err := client.Get(url)
@@ -449,48 +447,6 @@ func fetchWithNetworkRetry(client httpc.Client, url string) ([]byte, error) {
    ```go
    if strings.Contains(err.Error(), "circuit breaker is open") {
        return useFallback()
-   }
-   ```
-
-### ❌ DON'T
-
-1. **Don't ignore errors**
-   ```go
-   // Bad
-   resp, _ := client.Get(url)
-   ```
-
-2. **Don't ignore status codes**
-   ```go
-   // Bad
-   resp, err := client.Get(url)
-   if err != nil {
-       return err
-   }
-   // Missing status check!
-   ```
-
-3. **Don't retry indefinitely**
-   ```go
-   // Bad
-   for {
-       resp, err := client.Get(url)
-       if err == nil {
-           break
-       }
-   }
-   ```
-
-4. **Don't lose error context**
-   ```go
-   // Bad
-   if err != nil {
-       return errors.New("request failed")
-   }
-   
-   // Good
-   if err != nil {
-       return fmt.Errorf("request failed: %w", err)
    }
    ```
 
@@ -589,11 +545,5 @@ func main() {
     fmt.Printf("User: %+v\n", user)
 }
 ```
-
-## Related Documentation
-
-- [Circuit Breaker](circuit-breaker.md) - Understanding circuit breaker errors
-- [Configuration](configuration.md) - Timeout and retry configuration
-- [Request Options](request-options.md) - Context and timeout options
 
 ---

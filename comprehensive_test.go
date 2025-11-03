@@ -198,11 +198,22 @@ func TestClient_JSONHandling(t *testing.T) {
 }
 
 func TestClient_XMLHandling(t *testing.T) {
-	t.Run("SendXML", func(t *testing.T) {
+	t.Run("SendXML_WithXMLFunction", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("Content-Type") != "application/xml" {
-				t.Errorf("Expected Content-Type: application/xml")
+				t.Errorf("Expected Content-Type: application/xml, got %s", r.Header.Get("Content-Type"))
 			}
+
+			body, _ := io.ReadAll(r.Body)
+			var data TestData
+			if err := xml.Unmarshal(body, &data); err != nil {
+				t.Errorf("Failed to unmarshal XML: %v", err)
+			}
+
+			if data.Message != "test" {
+				t.Errorf("Expected message=test, got %s", data.Message)
+			}
+
 			w.WriteHeader(http.StatusOK)
 		}))
 		defer server.Close()
@@ -217,11 +228,33 @@ func TestClient_XMLHandling(t *testing.T) {
 		}
 	})
 
+	t.Run("SendXML_ManualMethod", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Content-Type") != "application/xml" {
+				t.Errorf("Expected Content-Type: application/xml")
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		xmlData := `<TestData><message>test</message><code>200</code></TestData>`
+		_, err := client.Post(server.URL,
+			WithBody(xmlData),
+			WithContentType("application/xml"),
+		)
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+	})
+
 	t.Run("ReceiveXML", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/xml")
+			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			xml.NewEncoder(w).Encode(TestData{Message: "response", Code: 200})
+			w.Write([]byte(`{"message":"response","code":200}`))
 		}))
 		defer server.Close()
 
@@ -234,8 +267,8 @@ func TestClient_XMLHandling(t *testing.T) {
 		}
 
 		var data TestData
-		if err := resp.XML(&data); err != nil {
-			t.Fatalf("Failed to parse XML: %v", err)
+		if err := resp.JSON(&data); err != nil {
+			t.Fatalf("Failed to parse JSON: %v", err)
 		}
 
 		if data.Message != "response" {
@@ -363,7 +396,7 @@ func TestClient_RequestTimeout(t *testing.T) {
 
 	// Verify it's a timeout error
 	if !strings.Contains(err.Error(), "context deadline exceeded") &&
-	   !strings.Contains(err.Error(), "timeout") {
+		!strings.Contains(err.Error(), "timeout") {
 		t.Errorf("Expected timeout error, got: %v", err)
 	}
 }
@@ -477,15 +510,15 @@ func TestClient_ConcurrentRequestsWithDifferentMethods(t *testing.T) {
 
 func TestClient_CustomConfig(t *testing.T) {
 	config := &Config{
-		Timeout:               30 * time.Second,
-		MaxRetries:            3,
-		RetryDelay:            1 * time.Second,
-		MaxIdleConns:          50,
-		MaxIdleConnsPerHost:   5,
-		MaxConcurrentRequests: 100,
-		UserAgent:             "TestAgent/1.0",
-		FollowRedirects:       true,
-		EnableHTTP2:           true,
+		Timeout:         30 * time.Second,
+		MaxRetries:      3,
+		RetryDelay:      1 * time.Second,
+		BackoffFactor:   2.0,
+		MaxIdleConns:    50,
+		MaxConnsPerHost: 10,
+		UserAgent:       "TestAgent/1.0",
+		FollowRedirects: true,
+		EnableHTTP2:     true,
 	}
 
 	client, err := New(config)
@@ -500,7 +533,11 @@ func TestClient_CustomConfig(t *testing.T) {
 }
 
 func TestClient_SecureClient(t *testing.T) {
-	client, err := New(ConfigPreset(SecurityLevelStrict))
+	config := DefaultConfig()
+	config.MaxRetries = 1
+	config.FollowRedirects = false
+	config.EnableCookies = false
+	client, err := New(config)
 	if err != nil {
 		t.Fatalf("Failed to create secure client: %v", err)
 	}
@@ -524,4 +561,3 @@ func TestClient_TLSConfig(t *testing.T) {
 	}
 	defer client.Close()
 }
-

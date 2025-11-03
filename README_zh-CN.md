@@ -1,4 +1,4 @@
-# HTTPC - 现代化的 Go HTTP 客户端
+﻿# HTTPC - 现代化的 Go HTTP 客户端
 
 [![Go Version](https://img.shields.io/badge/Go-1.24+-blue.svg)](https://golang.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -749,7 +749,7 @@ HTTPC 提供强大的文件下载功能，支持进度跟踪、断点续传和�
 ### 简单文件下载
 
 ```go
-// 下载文件到磁盘
+// 使用包级别函数下载文件到磁盘
 result, err := httpc.DownloadFile(
     "https://example.com/file.zip",
     "downloads/file.zip",
@@ -762,7 +762,29 @@ fmt.Printf("已下载: %s\n", httpc.FormatBytes(result.BytesWritten))
 fmt.Printf("速度: %s\n", httpc.FormatSpeed(result.AverageSpeed))
 ```
 
-### 带进度跟踪的下载
+### 带进度跟踪的下载（包级别函数）
+
+```go
+// 配置下载选项
+opts := httpc.DefaultDownloadOptions("downloads/large-file.zip")
+opts.Overwrite = true
+opts.ProgressCallback = func(downloaded, total int64, speed float64) {
+    percentage := float64(downloaded) / float64(total) * 100
+    fmt.Printf("\r进度: %.1f%% - %s",
+        percentage,
+        httpc.FormatSpeed(speed),
+    )
+}
+
+// 使用包级别函数带进度的下载
+result, err := httpc.DownloadWithOptions(
+    "https://example.com/large-file.zip",
+    opts,
+    httpc.WithTimeout(10*time.Minute),
+)
+```
+
+### 带进度跟踪的下载（客户端实例）
 
 ```go
 client, _ := httpc.New()
@@ -779,8 +801,8 @@ opts.ProgressCallback = func(downloaded, total int64, speed float64) {
     )
 }
 
-// 带进度的下载
-result, err := client.DownloadFileWithOptions(
+// 使用客户端实例带进度的下载
+result, err := client.DownloadWithOptions(
     "https://example.com/large-file.zip",
     opts,
     httpc.WithTimeout(10*time.Minute),
@@ -795,7 +817,8 @@ opts := httpc.DefaultDownloadOptions("downloads/file.zip")
 opts.ResumeDownload = true  // 从中断处继续
 opts.Overwrite = false      // 不覆盖，而是追加
 
-result, err := client.DownloadFileWithOptions(url, opts)
+// 包级别函数和客户端实例都支持
+result, err := httpc.DownloadWithOptions(url, opts)
 if result.Resumed {
     fmt.Println("下载已成功续传")
 }
@@ -828,7 +851,7 @@ opts := &httpc.DownloadOptions{
     FileMode:         0644,                  // 文件权限
 }
 
-result, err := client.DownloadFileWithOptions(url, opts)
+result, err := client.DownloadWithOptions(url, opts)
 ```
 
 ### 带认证的下载
@@ -865,13 +888,13 @@ client, err := httpc.New()
 
 ```go
 // 宽松（开发/测试）
-client, err := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelPermissive))
+client, err := httpc.New(httpc.TestingConfig())
 
 // 平衡（生产 - 默认）
-client, err := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelBalanced))
+client, err := httpc.New(httpc.DefaultConfig())
 
 // 严格（高安全性）
-client, err := httpc.New(httpc.ConfigPreset(httpc.SecurityLevelStrict))
+client, err := httpc.New(httpc.SecureConfig())
 ```
 
 ### 自定义配置
@@ -1043,6 +1066,52 @@ config := httpc.DefaultConfig()
 config.CookieJar = jar
 client, err := httpc.New(config)
 ```
+
+### 资源管理
+
+**v1.0.0 新增**：为长期运行的应用程序提供正确的资源清理。
+
+```go
+package main
+
+import (
+    "github.com/cybergodev/httpc"
+)
+
+func main() {
+    // 确保在应用程序关闭时清理默认客户端
+    defer httpc.CloseDefaultClient()
+
+    // 使用包级函数
+    resp, err := httpc.Get("https://api.example.com/data")
+    // ...
+}
+```
+
+**设置自定义默认客户端**：
+
+```go
+// 创建自定义客户端
+config := httpc.DefaultConfig()
+config.Timeout = 60 * time.Second
+client, err := httpc.New(config)
+if err != nil {
+    log.Fatal(err)
+}
+
+// 设置为默认客户端（如果之前的客户端关闭失败会返回错误）
+if err := httpc.SetDefaultClient(client); err != nil {
+    log.Printf("警告：关闭之前的客户端失败：%v", err)
+}
+
+// 在关闭时清理
+defer httpc.CloseDefaultClient()
+```
+
+**重要说明**：
+- `CloseDefaultClient()` 释放所有资源（连接、goroutine 等）
+- 关闭后，默认客户端将在下次使用时重新初始化
+- `SetDefaultClient()` 现在返回错误（与之前版本的破坏性变更）
 
 ### Context 支持
 
