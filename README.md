@@ -1069,7 +1069,7 @@ client, err := httpc.New(config)
 
 ### Resource Management
 
-**New in v1.0.0**: Proper resource cleanup for long-running applications.
+Proper resource cleanup for long-running applications.
 
 ```go
 package main
@@ -1170,8 +1170,6 @@ resp, err := client.Get(url, httpc.WithContext(ctx))
 - **[🔧 Request Options](docs/request-options.md)** - Customizing HTTP requests
 - **[❗ Error Handling](docs/error-handling.md)** - Comprehensive error handling
 - **[📥 File Download](docs/file-download.md)** - File downloads with progress
-- **[🔄 Circuit Breaker](docs/circuit-breaker.md)** - Automatic fault protection
-- **[✅ Best Practices](docs/best-practices.md)** - Recommended usage patterns
 - **[🔒 Security](docs/security.md)** - Security features and compliance
 - **[💡 Examples](examples)** - Code examples and tutorials
 
