@@ -188,7 +188,7 @@ func TestConfigPresets_TLSVersions(t *testing.T) {
 		{
 			name:           "TestingConfig",
 			configFunc:     TestingConfig,
-			expectedMinTLS: tls.VersionTLS10,
+			expectedMinTLS: tls.VersionTLS12, // Updated: now uses TLS 1.2 minimum for better security
 			expectedMaxTLS: tls.VersionTLS13,
 		},
 		{

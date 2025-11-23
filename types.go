@@ -45,51 +45,18 @@ func (r *Response) IsServerError() bool {
 }
 
 // JSON unmarshals the response body into the provided interface
+// JSON unmarshals the response body into the provided interface.
 func (r *Response) JSON(v any) error {
 	if r.RawBody == nil {
 		return fmt.Errorf("response body is empty")
 	}
 
-	const maxJSONSize = 50 * 1024 * 1024 // 50MB
+	const maxJSONSize = 50 * 1024 * 1024
 	if len(r.RawBody) > maxJSONSize {
 		return fmt.Errorf("response body too large for JSON parsing (%d bytes, max 50MB)", len(r.RawBody))
 	}
 
-	if err := validateJSONComplexity(r.RawBody); err != nil {
-		return err
-	}
-
 	return json.Unmarshal(r.RawBody, v)
-}
-
-func validateJSONComplexity(data []byte) error {
-	const maxDepth = 100
-	const maxBrackets = 10000
-
-	depth := 0
-	maxDepthSeen := 0
-	bracketCount := 0
-
-	for _, ch := range data {
-		switch ch {
-		case '{', '[':
-			depth++
-			bracketCount++
-			if depth > maxDepthSeen {
-				maxDepthSeen = depth
-			}
-			if depth > maxDepth {
-				return fmt.Errorf("JSON nesting too deep (max depth %d)", maxDepth)
-			}
-			if bracketCount > maxBrackets {
-				return fmt.Errorf("JSON structure too complex (too many nested structures)")
-			}
-		case '}', ']':
-			depth--
-		}
-	}
-
-	return nil
 }
 
 // GetCookie returns the named cookie from the response or nil if not found
@@ -132,7 +99,7 @@ type Config struct {
 	EnableCookies   bool
 }
 
-type RequestOption func(*Request)
+type RequestOption func(*Request) error
 
 type Request struct {
 	Method      string
@@ -197,11 +164,13 @@ func NewCookieJar() (http.CookieJar, error) {
 }
 
 // ValidateConfig validates the configuration with reasonable limits
+// ValidateConfig validates the configuration with reasonable limits
 func ValidateConfig(cfg *Config) error {
 	if cfg == nil {
 		return fmt.Errorf("config cannot be nil")
 	}
 
+	// Validate timeout settings
 	if cfg.Timeout < 0 {
 		return fmt.Errorf("timeout cannot be negative, got %v", cfg.Timeout)
 	}
@@ -209,6 +178,7 @@ func ValidateConfig(cfg *Config) error {
 		return fmt.Errorf("timeout too large (max 30 minutes), got %v", cfg.Timeout)
 	}
 
+	// Validate connection pool settings
 	if cfg.MaxIdleConns < 0 {
 		return fmt.Errorf("MaxIdleConns cannot be negative, got %d", cfg.MaxIdleConns)
 	}
@@ -222,10 +192,15 @@ func ValidateConfig(cfg *Config) error {
 		return fmt.Errorf("MaxConnsPerHost too large (max 1000), got %d", cfg.MaxConnsPerHost)
 	}
 
+	// Validate response size limit
 	if cfg.MaxResponseBodySize < 0 {
 		return fmt.Errorf("MaxResponseBodySize cannot be negative, got %d", cfg.MaxResponseBodySize)
 	}
+	if cfg.MaxResponseBodySize > 1024*1024*1024 { // 1GB max
+		return fmt.Errorf("MaxResponseBodySize too large (max 1GB), got %d", cfg.MaxResponseBodySize)
+	}
 
+	// Validate retry settings
 	if cfg.MaxRetries < 0 {
 		return fmt.Errorf("MaxRetries cannot be negative, got %d", cfg.MaxRetries)
 	}
@@ -238,11 +213,19 @@ func ValidateConfig(cfg *Config) error {
 	if cfg.BackoffFactor < 1.0 {
 		return fmt.Errorf("BackoffFactor must be at least 1.0, got %f", cfg.BackoffFactor)
 	}
+	if cfg.BackoffFactor > 10.0 {
+		return fmt.Errorf("BackoffFactor too large (max 10.0), got %f", cfg.BackoffFactor)
+	}
 
+	// Validate User-Agent
 	if strings.ContainsAny(cfg.UserAgent, "\r\n\x00") {
 		return fmt.Errorf("UserAgent contains invalid control characters")
 	}
+	if len(cfg.UserAgent) > 512 {
+		return fmt.Errorf("UserAgent too long (max 512 characters)")
+	}
 
+	// Validate headers
 	if cfg.Headers != nil {
 		for key, value := range cfg.Headers {
 			if err := validateHeaderKeyValue(key, value); err != nil {

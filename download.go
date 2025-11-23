@@ -163,21 +163,70 @@ func prepareFilePath(filePath string) error {
 		return fmt.Errorf("file path too long (max 4096 characters)")
 	}
 
+	// Clean and normalize the path
 	cleanPath := filepath.Clean(filePath)
 
-	if strings.Contains(cleanPath, "..") {
-		return fmt.Errorf("path traversal detected")
+	// Convert to absolute path for consistent validation
+	absPath, err := filepath.Abs(cleanPath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve absolute path: %w", err)
 	}
 
-	if filepath.IsAbs(cleanPath) && isSystemPath(cleanPath) {
+	// Check for system path access
+	if isSystemPath(absPath) {
 		return fmt.Errorf("access to system path denied")
 	}
 
-	dir := filepath.Dir(cleanPath)
+	// For relative paths, ensure they stay within working directory
+	if !filepath.IsAbs(filePath) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("failed to get working directory: %w", err)
+		}
+
+		wdAbs, err := filepath.Abs(wd)
+		if err != nil {
+			return fmt.Errorf("failed to resolve working directory: %w", err)
+		}
+		
+		// Ensure the absolute path starts with working directory
+		// Use volume-aware comparison for Windows compatibility
+		if !isPathWithinDirectory(absPath, wdAbs) {
+			return fmt.Errorf("path traversal detected: path escapes working directory")
+		}
+	}
+
+	// Create parent directories
+	dir := filepath.Dir(absPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create directories: %w", err)
 	}
 	return nil
+}
+
+// isPathWithinDirectory checks if path is within baseDir, handling Windows volumes correctly
+func isPathWithinDirectory(path, baseDir string) bool {
+	// Normalize paths for comparison
+	path = filepath.Clean(path)
+	baseDir = filepath.Clean(baseDir)
+	
+	// On Windows, ensure both paths are on the same volume
+	pathVol := filepath.VolumeName(path)
+	baseDirVol := filepath.VolumeName(baseDir)
+	if pathVol != baseDirVol {
+		return false
+	}
+	
+	// Check if path starts with baseDir
+	// Add separator to prevent partial matches
+	if path == baseDir {
+		return true
+	}
+	
+	baseDirWithSep := baseDir + string(filepath.Separator)
+	pathWithSep := path + string(filepath.Separator)
+	
+	return strings.HasPrefix(pathWithSep, baseDirWithSep)
 }
 
 func isSystemPath(path string) bool {

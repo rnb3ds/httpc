@@ -14,70 +14,55 @@ import (
 
 // PoolManager provides intelligent connection pool management with monitoring
 type PoolManager struct {
-	// Configuration
 	config *Config
 
-	// Transport with optimized settings
 	transport *http.Transport
 
-	// Connection tracking
 	activeConns   int64
 	idleConns     int64
 	totalConns    int64
 	rejectedConns int64
 
-	// Per-host connection tracking
-	hostConns sync.Map // map[string]*HostStats
+	hostConns sync.Map
 
-	// Metrics and monitoring
 	metrics *Metrics
 
-	// Lifecycle management
 	closed int32
-	done   chan struct{} // Channel to signal shutdown
+	done   chan struct{}
 	mu     sync.RWMutex
 }
 
 // Config defines connection pool configuration
 type Config struct {
-	// Connection limits
-	MaxIdleConns        int // Total idle connections across all hosts
-	MaxIdleConnsPerHost int // Idle connections per host
-	MaxConnsPerHost     int // Total connections per host
-	MaxTotalConns       int // Global connection limit
+	MaxIdleConns        int
+	MaxIdleConnsPerHost int
+	MaxConnsPerHost     int
+	MaxTotalConns       int
 
-	// Timeouts
-	DialTimeout           time.Duration // Connection establishment timeout
-	KeepAlive             time.Duration // TCP keep-alive interval
-	TLSHandshakeTimeout   time.Duration // TLS handshake timeout
-	ResponseHeaderTimeout time.Duration // Response header read timeout
-	IdleConnTimeout       time.Duration // Idle connection timeout
-	ExpectContinueTimeout time.Duration // Expect: 100-continue timeout
+	DialTimeout           time.Duration
+	KeepAlive             time.Duration
+	TLSHandshakeTimeout   time.Duration
+	ResponseHeaderTimeout time.Duration
+	IdleConnTimeout       time.Duration
+	ExpectContinueTimeout time.Duration
 
-	// TLS configuration
 	TLSConfig          *tls.Config
 	MinTLSVersion      uint16
 	MaxTLSVersion      uint16
 	InsecureSkipVerify bool
 
-	// HTTP/2 settings
 	EnableHTTP2     bool
 	HTTP2MaxStreams int
 
-	// Proxy settings
 	ProxyURL string
 
-	// Advanced settings
+	AllowPrivateIPs bool
+
 	DisableCompression bool
 	DisableKeepAlives  bool
 	ForceAttemptHTTP2  bool
 
-	// Cookie settings
-	CookieJar interface{} // http.CookieJar
-
-	// Monitoring
-	EnableMetrics   bool
-	MetricsInterval time.Duration
+	CookieJar interface{}
 }
 
 // HostStats tracks per-host connection statistics
@@ -93,40 +78,22 @@ type HostStats struct {
 
 // Metrics provides connection pool performance metrics
 type Metrics struct {
-	// Connection counts
 	ActiveConnections   int64
 	IdleConnections     int64
 	TotalConnections    int64
 	RejectedConnections int64
-
-	// Per-host metrics
-	HostCount           int64
-	AverageConnsPerHost float64
-	MaxConnsPerHost     int64
-
-	// Performance metrics
-	AverageConnTime   int64 // Nanoseconds
-	MaxConnTime       int64 // Nanoseconds
-	ConnectionHitRate float64
-
-	// Health metrics
-	HealthyHosts   int64
-	UnhealthyHosts int64
-
-	// Timestamps
-	LastUpdate int64
+	ConnectionHitRate   float64
+	LastUpdate          int64
 }
 
 // DefaultConfig returns optimized default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		// Optimized connection limits for high concurrency
 		MaxIdleConns:        200,
 		MaxIdleConnsPerHost: 20,
-		MaxConnsPerHost:     50,   // Increased for better parallelism
-		MaxTotalConns:       1000, // Global limit to prevent resource exhaustion
+		MaxConnsPerHost:     50,
+		MaxTotalConns:       1000,
 
-		// Optimized timeouts
 		DialTimeout:           10 * time.Second,
 		KeepAlive:             30 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
@@ -134,23 +101,18 @@ func DefaultConfig() *Config {
 		IdleConnTimeout:       90 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 
-		// Secure TLS defaults
 		MinTLSVersion:      tls.VersionTLS12,
 		MaxTLSVersion:      tls.VersionTLS13,
 		InsecureSkipVerify: false,
 
-		// HTTP/2 optimization
 		EnableHTTP2:     true,
 		HTTP2MaxStreams: 100,
 
-		// Performance optimizations
 		DisableCompression: false,
 		DisableKeepAlives:  false,
 		ForceAttemptHTTP2:  true,
 
-		// Monitoring
-		EnableMetrics:   true,
-		MetricsInterval: 30 * time.Second,
+		AllowPrivateIPs: false,
 	}
 }
 
@@ -190,10 +152,6 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 	pm.transport = transport
 	pm.done = make(chan struct{})
 
-	if config.EnableMetrics {
-		go pm.metricsLoop()
-	}
-
 	return pm, nil
 }
 
@@ -205,6 +163,26 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		startTime := time.Now()
+
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			host = address
+		}
+
+		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			atomic.AddInt64(&pm.rejectedConns, 1)
+			return nil, fmt.Errorf("failed to resolve host: %w", err)
+		}
+
+		if !pm.config.AllowPrivateIPs {
+			for _, ip := range ips {
+				if err := pm.validateResolvedIP(ip.IP); err != nil {
+					atomic.AddInt64(&pm.rejectedConns, 1)
+					return nil, fmt.Errorf("SSRF protection: %w", err)
+				}
+			}
+		}
 
 		conn, err := dialer.DialContext(ctx, network, address)
 
@@ -225,6 +203,53 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 			host: address,
 		}, nil
 	}
+}
+
+// validateResolvedIP checks if the resolved IP is safe to connect to
+func (pm *PoolManager) validateResolvedIP(ip net.IP) error {
+	// Skip validation if private IPs are explicitly allowed (for testing/development)
+	if pm.config.AllowPrivateIPs {
+		return nil
+	}
+
+	// Check for loopback addresses
+	if ip.IsLoopback() {
+		return fmt.Errorf("connection to loopback address blocked: %s", ip.String())
+	}
+
+	// Check for private IP ranges
+	if ip.IsPrivate() {
+		return fmt.Errorf("connection to private IP blocked: %s", ip.String())
+	}
+
+	// Check for link-local addresses
+	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return fmt.Errorf("connection to link-local address blocked: %s", ip.String())
+	}
+
+	// Check for multicast addresses
+	if ip.IsMulticast() {
+		return fmt.Errorf("connection to multicast address blocked: %s", ip.String())
+	}
+
+	// Check for unspecified addresses (0.0.0.0, ::)
+	if ip.IsUnspecified() {
+		return fmt.Errorf("connection to unspecified address blocked: %s", ip.String())
+	}
+
+	// Check for reserved IPv4 ranges
+	if ip4 := ip.To4(); ip4 != nil {
+		// Class E (240.0.0.0/4) - Reserved
+		if ip4[0] >= 240 {
+			return fmt.Errorf("connection to reserved IP blocked: %s", ip.String())
+		}
+		// 0.0.0.0/8 - Current network
+		if ip4[0] == 0 {
+			return fmt.Errorf("connection to reserved IP blocked: %s", ip.String())
+		}
+	}
+
+	return nil
 }
 
 func (pm *PoolManager) createTLSConfig() *tls.Config {
@@ -303,96 +328,24 @@ func (pm *PoolManager) updateConnectionMetrics(host string, connTime int64, succ
 }
 
 func (pm *PoolManager) GetTransport() *http.Transport {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
 	return pm.transport
 }
 
-func (pm *PoolManager) metricsLoop() {
-	ticker := time.NewTicker(pm.config.MetricsInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			if atomic.LoadInt32(&pm.closed) == 1 {
-				return
-			}
-			pm.updateMetrics()
-		case <-pm.done:
-			return
-		}
-	}
-}
-
-func (pm *PoolManager) updateMetrics() {
-	atomic.StoreInt64(&pm.metrics.ActiveConnections, atomic.LoadInt64(&pm.activeConns))
-	atomic.StoreInt64(&pm.metrics.IdleConnections, atomic.LoadInt64(&pm.idleConns))
-	atomic.StoreInt64(&pm.metrics.TotalConnections, atomic.LoadInt64(&pm.totalConns))
-	atomic.StoreInt64(&pm.metrics.RejectedConnections, atomic.LoadInt64(&pm.rejectedConns))
-
-	var hostCount int64
-	var totalConnsPerHost int64
-	var maxConnsPerHost int64
-	var healthyHosts int64
-
-	pm.hostConns.Range(func(key, value interface{}) bool {
-		stats := value.(*HostStats)
-		hostCount++
-
-		conns := atomic.LoadInt64(&stats.ActiveConns)
-		totalConnsPerHost += conns
-
-		if conns > maxConnsPerHost {
-			maxConnsPerHost = conns
-		}
-
-		lastUsed := atomic.LoadInt64(&stats.LastUsed)
-		totalConns := atomic.LoadInt64(&stats.TotalConns)
-		failedConns := atomic.LoadInt64(&stats.FailedConns)
-
-		if time.Now().Unix()-lastUsed < 300 {
-			if totalConns == 0 || float64(failedConns)/float64(totalConns) < 0.1 {
-				healthyHosts++
-			}
-		}
-
-		return true
-	})
-
-	atomic.StoreInt64(&pm.metrics.HostCount, hostCount)
-	atomic.StoreInt64(&pm.metrics.MaxConnsPerHost, maxConnsPerHost)
-	atomic.StoreInt64(&pm.metrics.HealthyHosts, healthyHosts)
-	atomic.StoreInt64(&pm.metrics.UnhealthyHosts, hostCount-healthyHosts)
-
-	if hostCount > 0 {
-		pm.metrics.AverageConnsPerHost = float64(totalConnsPerHost) / float64(hostCount)
-	}
-
+func (pm *PoolManager) GetMetrics() Metrics {
 	total := atomic.LoadInt64(&pm.totalConns)
 	rejected := atomic.LoadInt64(&pm.rejectedConns)
+	hitRate := 0.0
 	if total+rejected > 0 {
-		pm.metrics.ConnectionHitRate = float64(total) / float64(total+rejected)
+		hitRate = float64(total) / float64(total+rejected)
 	}
-
-	atomic.StoreInt64(&pm.metrics.LastUpdate, time.Now().Unix())
-}
-
-func (pm *PoolManager) GetMetrics() Metrics {
+	
 	return Metrics{
-		ActiveConnections:   atomic.LoadInt64(&pm.metrics.ActiveConnections),
-		IdleConnections:     atomic.LoadInt64(&pm.metrics.IdleConnections),
-		TotalConnections:    atomic.LoadInt64(&pm.metrics.TotalConnections),
-		RejectedConnections: atomic.LoadInt64(&pm.metrics.RejectedConnections),
-		HostCount:           atomic.LoadInt64(&pm.metrics.HostCount),
-		AverageConnsPerHost: pm.metrics.AverageConnsPerHost,
-		MaxConnsPerHost:     atomic.LoadInt64(&pm.metrics.MaxConnsPerHost),
-		AverageConnTime:     atomic.LoadInt64(&pm.metrics.AverageConnTime),
-		MaxConnTime:         atomic.LoadInt64(&pm.metrics.MaxConnTime),
-		ConnectionHitRate:   pm.metrics.ConnectionHitRate,
-		HealthyHosts:        atomic.LoadInt64(&pm.metrics.HealthyHosts),
-		UnhealthyHosts:      atomic.LoadInt64(&pm.metrics.UnhealthyHosts),
-		LastUpdate:          atomic.LoadInt64(&pm.metrics.LastUpdate),
+		ActiveConnections:   atomic.LoadInt64(&pm.activeConns),
+		IdleConnections:     atomic.LoadInt64(&pm.idleConns),
+		TotalConnections:    total,
+		RejectedConnections: rejected,
+		ConnectionHitRate:   hitRate,
+		LastUpdate:          time.Now().Unix(),
 	}
 }
 
@@ -416,12 +369,8 @@ func (pm *PoolManager) Close() error {
 
 func (pm *PoolManager) IsHealthy() bool {
 	metrics := pm.GetMetrics()
-
-	if metrics.ConnectionHitRate < 0.9 {
-		return false
-	}
-
-	if metrics.HostCount > 0 && metrics.HealthyHosts == 0 {
+	
+	if metrics.ConnectionHitRate < 0.9 && metrics.TotalConnections > 10 {
 		return false
 	}
 

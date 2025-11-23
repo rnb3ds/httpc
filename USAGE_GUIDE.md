@@ -825,7 +825,7 @@ client, err := httpc.New(config)
 ### Q: How to limit concurrent requests?
 ```go
 config := httpc.DefaultConfig()
-config.MaxConcurrentRequests = 100 // Limit maximum concurrency
+config.MaxConnsPerHost = 10 // Limit connections per host
 client, err := httpc.New(config)
 ```
 

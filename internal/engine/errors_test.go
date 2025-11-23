@@ -332,63 +332,7 @@ func TestClassifyError_NilError(t *testing.T) {
 	}
 }
 
-func TestIsNetworkRelated(t *testing.T) {
-	tests := []struct {
-		name     string
-		err      error
-		expected bool
-	}{
-		{
-			name:     "Nil error",
-			err:      nil,
-			expected: false,
-		},
-		{
-			name:     "OpError",
-			err:      &net.OpError{Op: "dial"},
-			expected: true,
-		},
-		{
-			name:     "DNSError",
-			err:      &net.DNSError{Name: "example.com"},
-			expected: true,
-		},
-		{
-			name:     "Connection keyword",
-			err:      errors.New("connection reset by peer"),
-			expected: true,
-		},
-		{
-			name:     "Network keyword",
-			err:      errors.New("network unreachable"),
-			expected: true,
-		},
-		{
-			name:     "Timeout keyword",
-			err:      errors.New("operation timeout"),
-			expected: true,
-		},
-		{
-			name:     "DNS keyword",
-			err:      errors.New("dns lookup failed"),
-			expected: true,
-		},
-		{
-			name:     "Non-network error",
-			err:      errors.New("invalid JSON"),
-			expected: false,
-		},
-	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := isNetworkRelated(tt.err)
-			if result != tt.expected {
-				t.Errorf("Expected %v, got %v", tt.expected, result)
-			}
-		})
-	}
-}
 
 // mockNetError implements net.Error for testing
 type mockNetError struct {

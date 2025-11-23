@@ -57,7 +57,7 @@ defer client.Close()
 - TLS: 1.0+ (allows older versions)
 - Timeout: 120 seconds
 - MaxRetries: 5
-- MaxConcurrentRequests: 1000
+- MaxConnsPerHost: 50
 - MaxResponseBodySize: 100 MB
 - AllowPrivateIPs: true
 - ValidateHeaders: false
@@ -82,7 +82,7 @@ client, err := httpc.New()  // Uses balanced by default
 - TLS: 1.2-1.3 (modern security)
 - Timeout: 60 seconds
 - MaxRetries: 2
-- MaxConcurrentRequests: 500
+- MaxConnsPerHost: 20
 - MaxResponseBodySize: 50 MB
 - AllowPrivateIPs: false
 - ValidateHeaders: true
@@ -111,7 +111,7 @@ defer client.Close()
 - TLS: 1.3 only (maximum security)
 - Timeout: 30 seconds
 - MaxRetries: 1
-- MaxConcurrentRequests: 100
+- MaxConnsPerHost: 5
 - MaxResponseBodySize: 10 MB
 - AllowPrivateIPs: false
 - ValidateHeaders: true
@@ -162,7 +162,6 @@ config := &httpc.Config{
     MaxTLSVersion:         tls.VersionTLS13,
     InsecureSkipVerify:    false,
     MaxResponseBodySize:   50 * 1024 * 1024, // 50 MB
-    MaxConcurrentRequests: 500,
     ValidateURL:           true,
     ValidateHeaders:       true,
 
@@ -302,7 +301,7 @@ client, err := httpc.New(config)
 | `MaxTLSVersion`         | `uint16`      | TLS 1.3 | Maximum TLS version                |
 | `InsecureSkipVerify`    | `bool`        | false   | Skip TLS verification (dangerous)  |
 | `MaxResponseBodySize`   | `int64`       | 50 MB   | Max response body size             |
-| `MaxConcurrentRequests` | `int`         | 500     | Max concurrent requests            |
+| `MaxConnsPerHost`       | `int`         | 10      | Max connections per host           |
 | `ValidateURL`           | `bool`        | true    | Validate URL format                |
 | `ValidateHeaders`       | `bool`        | true    | Validate headers (CRLF protection) |
 | `TLSConfig`             | `*tls.Config` | nil     | Custom TLS configuration           |

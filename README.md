@@ -14,18 +14,14 @@ An elegant, high-performance HTTP client library for Go, engineered for producti
 
 ## ✨ Why HTTPC?
 
-- 🛡️ **Secure by Default** - TLS 1.2+, input validation, CRLF protection, SSRF prevention
-- ⚡ **High Performance** - Goroutine-safe operations, zero-allocation buffer pooling (90% less GC pressure), intelligent connection reuse
-- 🚀 **Massive Concurrency** - Handle concurrent requests with adaptive semaphore control and per-host connection limits
-- 🔒 **Thread-Safe** - All operations are goroutine-safe with lock-free atomic counters and synchronized state management
-- 🔄 **Built-in Resilience** - Circuit breaker, intelligent retry with exponential backoff, graceful degradation
-- 🎯 **Developer Friendly** - Simple API, rich options, comprehensive error handling
-- 📊 **Observable** - Real-time metrics, structured logging, health checks
+- 🛡️ **Secure by Default** - TLS 1.2+, input validation, CRLF protection, SSRF prevention with DNS rebinding protection
+- ⚡ **High Performance** - Goroutine-safe operations, efficient connection pooling, intelligent connection reuse
+- 🚀 **Massive Concurrency** - Handle thousands of concurrent requests with per-host connection limits
+- 🔒 **Thread-Safe** - All operations are goroutine-safe with atomic operations and proper synchronization
+- 🔄 **Built-in Resilience** - Intelligent retry with exponential backoff and jitter
+- 🎯 **Developer Friendly** - Simple API, functional options pattern, comprehensive error handling
+- 📊 **Observable** - Real-time metrics, health checks, request tracking
 - 🔧 **Zero Config** - Secure defaults, works out of the box
-
-## 📋 Quick Reference
-
-- **[Quick Reference Guide](QUICK_REFERENCE.md)** - Cheat sheet for common tasks
 
 ---
 
@@ -919,7 +915,6 @@ config := &httpc.Config{
     MaxTLSVersion:         tls.VersionTLS13,
     InsecureSkipVerify:    false,
     MaxResponseBodySize:   50 * 1024 * 1024, // 50 MB
-    MaxConcurrentRequests: 500,
     ValidateURL:           true,
     ValidateHeaders:       true,
     AllowPrivateIPs:       false,
@@ -959,9 +954,9 @@ if err != nil {
         fmt.Printf("Method: %s\n", httpErr.Method)
     }
 
-    // Check for circuit breaker
-    if strings.Contains(err.Error(), "circuit breaker is open") {
-        // Service is down, use fallback
+    // Check for timeout
+    if strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "deadline exceeded") {
+        // Request timed out, use fallback
         return fallbackData, nil
     }
 
@@ -984,27 +979,11 @@ if !resp.IsSuccess() {
 
 - **HTTPError**: HTTP error responses (4xx, 5xx)
 - **Timeout errors**: Request timeout exceeded
-- **Circuit breaker errors**: Service temporarily unavailable
 - **Validation errors**: Invalid URL or headers
 - **Network errors**: Connection failures
+- **SSRF Protection errors**: Blocked private IP access
 
 ## 🎯 Advanced Features
-
-### Circuit Breaker
-
-Automatically prevents cascading failures by temporarily blocking requests to failing services.
-
-```go
-// Circuit breaker is enabled by default
-// It opens after consecutive failures and closes after recovery
-client, err := httpc.New()
-
-resp, err := client.Get(url)
-if err != nil && strings.Contains(err.Error(), "circuit breaker is open") {
-    // Use fallback or cached data
-    return getCachedData()
-}
-```
 
 ### Automatic Retries
 
@@ -1156,7 +1135,7 @@ resp, err := client.Get(url, httpc.WithContext(ctx))
 
 ### Reliability
 - **Panic Recovery**: Comprehensive error handling prevents crashes
-- **Circuit Breaker**: Automatic failure detection and recovery
+- **Intelligent Retry**: Exponential backoff with jitter for transient failures
 - **Graceful Degradation**: Continues operation under partial failures
 - **Resource Limits**: Prevents resource exhaustion with configurable bounds
 

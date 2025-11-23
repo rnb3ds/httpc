@@ -7,10 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/cybergodev/httpc/internal/memory"
-)
+	"time")
 
 // ============================================================================
 // REQUEST BUILDER TESTS
@@ -19,15 +16,12 @@ import (
 func TestRequestProcessor_BuildHTTPRequest(t *testing.T) {
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		MaxResponseBodySize:   50 * 1024 * 1024,
 		UserAgent:             "test-client/1.0",
 	}
 
-	memManager := memory.NewManager(memory.DefaultConfig())
-	defer memManager.Close()
-
-	processor := NewRequestProcessor(config, memManager)
+	processor := NewRequestProcessor(config)
 
 	tests := []struct {
 		name        string
@@ -224,14 +218,11 @@ func TestRequestProcessor_BuildHTTPRequest(t *testing.T) {
 func TestRequestProcessor_BodySerializationComprehensive(t *testing.T) {
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		MaxResponseBodySize:   50 * 1024 * 1024,
 	}
 
-	memManager := memory.NewManager(memory.DefaultConfig())
-	defer memManager.Close()
-
-	processor := NewRequestProcessor(config, memManager)
+	processor := NewRequestProcessor(config)
 
 	tests := []struct {
 		name        string
@@ -334,7 +325,7 @@ func TestRequestProcessor_BodySerializationComprehensive(t *testing.T) {
 func TestRequestProcessor_HeaderHandlingComprehensive(t *testing.T) {
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		MaxResponseBodySize:   50 * 1024 * 1024,
 		UserAgent:             "test-client/1.0",
 		Headers: map[string]string{
@@ -342,10 +333,7 @@ func TestRequestProcessor_HeaderHandlingComprehensive(t *testing.T) {
 		},
 	}
 
-	memManager := memory.NewManager(memory.DefaultConfig())
-	defer memManager.Close()
-
-	processor := NewRequestProcessor(config, memManager)
+	processor := NewRequestProcessor(config)
 
 	request := &Request{
 		Method:  "GET",
@@ -381,14 +369,11 @@ func TestRequestProcessor_HeaderHandlingComprehensive(t *testing.T) {
 func TestRequestProcessor_QueryParameterHandlingComprehensive(t *testing.T) {
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		MaxResponseBodySize:   50 * 1024 * 1024,
 	}
 
-	memManager := memory.NewManager(memory.DefaultConfig())
-	defer memManager.Close()
-
-	processor := NewRequestProcessor(config, memManager)
+	processor := NewRequestProcessor(config)
 
 	tests := []struct {
 		name     string
@@ -467,14 +452,11 @@ func TestRequestProcessor_QueryParameterHandlingComprehensive(t *testing.T) {
 func TestRequestProcessor_EdgeCases(t *testing.T) {
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		MaxResponseBodySize:   50 * 1024 * 1024,
 	}
 
-	memManager := memory.NewManager(memory.DefaultConfig())
-	defer memManager.Close()
-
-	processor := NewRequestProcessor(config, memManager)
+	processor := NewRequestProcessor(config)
 
 	t.Run("Very long URL", func(t *testing.T) {
 		longPath := strings.Repeat("a", 2000)

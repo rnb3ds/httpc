@@ -4,19 +4,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-
-	"github.com/cybergodev/httpc/internal/memory"
 )
 
 type ResponseProcessor struct {
-	config        *Config
-	memoryManager *memory.Manager
+	config *Config
 }
 
-func NewResponseProcessor(config *Config, memManager *memory.Manager) *ResponseProcessor {
+func NewResponseProcessor(config *Config) *ResponseProcessor {
 	return &ResponseProcessor{
-		config:        config,
-		memoryManager: memManager,
+		config: config,
 	}
 }
 
@@ -65,8 +61,9 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 	}
 
 	var reader io.Reader = httpResp.Body
-	if p.config.MaxResponseBodySize > 0 {
-		reader = io.LimitReader(httpResp.Body, p.config.MaxResponseBodySize)
+	maxSize := p.config.MaxResponseBodySize
+	if maxSize > 0 {
+		reader = io.LimitReader(httpResp.Body, maxSize+1)
 	}
 
 	body, err := io.ReadAll(reader)
@@ -74,8 +71,8 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	if p.config.MaxResponseBodySize > 0 && int64(len(body)) >= p.config.MaxResponseBodySize {
-		return nil, fmt.Errorf("response body too large (limit: %d bytes)", p.config.MaxResponseBodySize)
+	if maxSize > 0 && int64(len(body)) > maxSize {
+		return nil, fmt.Errorf("response body exceeds limit of %d bytes", maxSize)
 	}
 
 	return body, nil

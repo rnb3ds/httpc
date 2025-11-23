@@ -299,7 +299,7 @@ client, err := httpc.New(config)
 
 ```go
 config := httpc.DefaultConfig()
-config.MaxConcurrentRequests = 500  // Limit concurrent requests
+config.MaxConnsPerHost = 20  // Limit connections per host
 
 client, err := httpc.New(config)
 ```

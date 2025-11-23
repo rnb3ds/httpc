@@ -12,19 +12,15 @@ import (
 	"net/textproto"
 	"net/url"
 	"strings"
-
-	"github.com/cybergodev/httpc/internal/memory"
 )
 
 type RequestProcessor struct {
-	config        *Config
-	memoryManager *memory.Manager
+	config *Config
 }
 
-func NewRequestProcessor(config *Config, memManager *memory.Manager) *RequestProcessor {
+func NewRequestProcessor(config *Config) *RequestProcessor {
 	return &RequestProcessor{
-		config:        config,
-		memoryManager: memManager,
+		config: config,
 	}
 }
 

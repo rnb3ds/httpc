@@ -77,12 +77,20 @@ func TestSecurity_HeaderValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Unsafe headers should be silently filtered, request should succeed
+			// Invalid headers now fail fast with errors (better security)
 			_, err := client.Get(server.URL, WithHeader(tt.key, tt.value))
-			if err != nil {
-				t.Errorf("Request failed: %v", err)
+			
+			if tt.shouldBlock {
+				// Dangerous headers should cause an error
+				if err == nil {
+					t.Error("Expected error for dangerous header, got nil")
+				}
+			} else {
+				// Valid headers should succeed
+				if err != nil {
+					t.Errorf("Request with valid header failed: %v", err)
+				}
 			}
-			// Security enhancement: dangerous headers are silently filtered instead of generating errors
 		})
 	}
 }

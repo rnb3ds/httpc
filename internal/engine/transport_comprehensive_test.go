@@ -28,7 +28,7 @@ func TestTransport_BasicFunctionality(t *testing.T) {
 		MaxRetries:      1,
 	}
 
-	poolManager, err := connection.NewPoolManager(connection.DefaultConfig())
+	poolManager, err := connection.NewPoolManager(testConnectionConfig())
 	if err != nil {
 		t.Fatalf("Failed to create pool manager: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestTransport_TLSConfigurationComprehensive(t *testing.T) {
 				TLSConfig:       tt.tlsConfig,
 			}
 
-			connConfig := connection.DefaultConfig()
+			connConfig := testConnectionConfig()
 			connConfig.TLSConfig = tt.tlsConfig
 
 			poolManager, err := connection.NewPoolManager(connConfig)
@@ -161,7 +161,7 @@ func TestTransport_ConnectionPooling(t *testing.T) {
 		MaxRetries:      1,
 	}
 
-	connConfig := connection.DefaultConfig()
+	connConfig := testConnectionConfig()
 	connConfig.MaxIdleConns = 10
 	connConfig.MaxIdleConnsPerHost = 5
 
@@ -230,7 +230,7 @@ func TestTransport_Timeouts(t *testing.T) {
 				MaxRetries:      0, // Disable retry to test pure timeout
 			}
 
-			connConfig := connection.DefaultConfig()
+			connConfig := testConnectionConfig()
 
 			poolManager, err := connection.NewPoolManager(connConfig)
 			if err != nil {
@@ -290,7 +290,7 @@ func TestTransport_ErrorHandling(t *testing.T) {
 		MaxRetries:      0,
 	}
 
-	connConfig := connection.DefaultConfig()
+	connConfig := testConnectionConfig()
 
 	poolManager, err := connection.NewPoolManager(connConfig)
 	if err != nil {

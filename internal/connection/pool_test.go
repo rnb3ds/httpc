@@ -131,7 +131,9 @@ func TestPoolManager_HTTPRequest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	pm, err := NewPoolManager(nil)
+	config := DefaultConfig()
+	config.AllowPrivateIPs = true // Allow localhost for testing
+	pm, err := NewPoolManager(config)
 	if err != nil {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
@@ -165,7 +167,9 @@ func TestPoolManager_MultipleRequests(t *testing.T) {
 	}))
 	defer server.Close()
 
-	pm, err := NewPoolManager(nil)
+	config := DefaultConfig()
+	config.AllowPrivateIPs = true
+	pm, err := NewPoolManager(config)
 	if err != nil {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
@@ -218,9 +222,6 @@ func TestPoolManager_IsHealthy(t *testing.T) {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
 	defer pm.Close()
-
-	// Update metrics first
-	pm.updateMetrics()
 
 	// Initially should be healthy (or may not be if no connections yet)
 	// Just verify the method doesn't panic

@@ -16,7 +16,7 @@ func TestNewClient(t *testing.T) {
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   10,
 		MaxConnsPerHost:       20,
-		MaxConcurrentRequests: 500,
+
 		MaxResponseBodySize:   50 * 1024 * 1024,
 		ValidateURL:           true,
 		ValidateHeaders:       true,
@@ -135,11 +135,12 @@ func TestClient_RequestWithOptions(t *testing.T) {
 	defer client.Close()
 
 	// Create a request option that adds a header
-	headerOption := func(req *Request) {
+	headerOption := func(req *Request) error {
 		if req.Headers == nil {
 			req.Headers = make(map[string]string)
 		}
 		req.Headers["X-Test"] = "test-value"
+		return nil
 	}
 
 	resp, err := client.Get(server.URL, headerOption)
@@ -211,7 +212,7 @@ func TestClient_ConcurrentRequests(t *testing.T) {
 		Timeout:               30 * time.Second,
 		AllowPrivateIPs:       true,
 		MaxRetries:            1,
-		MaxConcurrentRequests: 10,
+
 		UserAgent:             "test-client/1.0",
 	}
 

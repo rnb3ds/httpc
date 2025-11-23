@@ -152,14 +152,23 @@ func TestErrorHandling_InvalidHeaders(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Our design silently filters dangerous headers instead of erroring
-			// This is a security feature to prevent header injection attacks
+			// Invalid headers now return errors immediately (fail-fast approach)
+			// This prevents header injection attacks at the source
 			resp, err := client.Get(server.URL, WithHeader(tt.key, tt.value))
-			if err != nil {
-				t.Errorf("Request should succeed even with filtered headers: %v", err)
-			}
-			if resp != nil && !resp.IsSuccess() {
-				t.Errorf("Expected successful response, got status: %d", resp.StatusCode)
+			
+			if tt.shouldBeFiltered {
+				// Invalid headers should cause an error
+				if err == nil {
+					t.Error("Expected error for invalid header, got nil")
+				}
+			} else {
+				// Valid headers should succeed
+				if err != nil {
+					t.Errorf("Request should succeed with valid headers: %v", err)
+				}
+				if resp != nil && !resp.IsSuccess() {
+					t.Errorf("Expected successful response, got status: %d", resp.StatusCode)
+				}
 			}
 		})
 	}

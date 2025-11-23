@@ -23,10 +23,6 @@
 - 📊 **可观测性** - 实时指标、结构化日志、健康检查
 - 🔧 **零配置** - 安全的默认设置，开箱即用
 
-## 📋 快速参考
-
-- **[快速参考指南](QUICK_REFERENCE.md)** - 常见任务速查表
-
 ---
 
 ## 📑 目录
@@ -919,7 +915,6 @@ config := &httpc.Config{
     MaxTLSVersion:         tls.VersionTLS13,
     InsecureSkipVerify:    false,
     MaxResponseBodySize:   50 * 1024 * 1024, // 50 MB
-    MaxConcurrentRequests: 500,
     ValidateURL:           true,
     ValidateHeaders:       true,
     AllowPrivateIPs:       false,

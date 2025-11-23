@@ -12,11 +12,10 @@ type Validator struct {
 }
 
 type Config struct {
-	ValidateURL           bool
-	ValidateHeaders       bool
-	MaxResponseBodySize   int64
-	MaxConcurrentRequests int
-	AllowPrivateIPs       bool
+	ValidateURL         bool
+	ValidateHeaders     bool
+	MaxResponseBodySize int64
+	AllowPrivateIPs     bool
 }
 
 type Request struct {
@@ -29,11 +28,10 @@ type Request struct {
 
 func NewValidator() *Validator {
 	secConfig := &Config{
-		ValidateURL:           true,
-		ValidateHeaders:       true,
-		MaxResponseBodySize:   50 * 1024 * 1024,
-		MaxConcurrentRequests: 1000,
-		AllowPrivateIPs:       false,
+		ValidateURL:         true,
+		ValidateHeaders:     true,
+		MaxResponseBodySize: 50 * 1024 * 1024,
+		AllowPrivateIPs:     false,
 	}
 
 	return &Validator{
@@ -141,19 +139,11 @@ func (v *Validator) validateHost(host string) error {
 		return nil
 	}
 
-	// For domain names, perform DNS lookup
-	ips, err := net.LookupIP(hostname)
-	if err != nil {
-		// DNS lookup failed, but we don't block the request
-		// The actual request will fail with a proper DNS error
-		return nil
-	}
-
-	for _, ip := range ips {
-		if isPrivateOrReservedIP(ip) {
-			return fmt.Errorf("private or reserved IP addresses are not allowed")
-		}
-	}
+	// For domain names, DNS resolution happens at connection time.
+	// IMPORTANT: The primary SSRF protection is in internal/connection/pool.go
+	// where we validate resolved IPs AFTER DNS lookup but BEFORE connection.
+	// This pre-validation only catches obvious cases (localhost, direct IPs).
+	// The post-resolution validation is the critical security boundary.
 
 	return nil
 }
