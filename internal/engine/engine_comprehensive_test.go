@@ -27,12 +27,13 @@ func TestEngine_RequestProcessing(t *testing.T) {
 			method: "GET",
 			url:    "https://api.example.com/users",
 			options: []RequestOption{
-				func(r *Request) {
+				func(r *Request) error {
 					if r.Headers == nil {
 						r.Headers = make(map[string]string)
 					}
 					r.Headers["Authorization"] = "Bearer token"
 					r.Headers["Accept"] = "application/json"
+					return nil
 				},
 			},
 			validate: func(t *testing.T, req *Request) {
@@ -49,12 +50,13 @@ func TestEngine_RequestProcessing(t *testing.T) {
 			method: "POST",
 			url:    "https://api.example.com/users",
 			options: []RequestOption{
-				func(r *Request) {
+				func(r *Request) error {
 					if r.QueryParams == nil {
 						r.QueryParams = make(map[string]any)
 					}
 					r.QueryParams["page"] = 1
 					r.QueryParams["limit"] = 10
+					return nil
 				},
 			},
 			validate: func(t *testing.T, req *Request) {
@@ -71,11 +73,12 @@ func TestEngine_RequestProcessing(t *testing.T) {
 			method: "PUT",
 			url:    "https://api.example.com/users/123",
 			options: []RequestOption{
-				func(r *Request) {
+				func(r *Request) error {
 					r.Body = map[string]any{
 						"name":  "John Doe",
 						"email": "john@example.com",
 					}
+					return nil
 				},
 			},
 			validate: func(t *testing.T, req *Request) {
@@ -89,8 +92,9 @@ func TestEngine_RequestProcessing(t *testing.T) {
 			method: "DELETE",
 			url:    "https://api.example.com/users/123",
 			options: []RequestOption{
-				func(r *Request) {
+				func(r *Request) error {
 					r.Timeout = 30 * time.Second
+					return nil
 				},
 			},
 			validate: func(t *testing.T, req *Request) {
@@ -105,7 +109,7 @@ func TestEngine_RequestProcessing(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			config := &Config{
 				Timeout:               60 * time.Second,
-				MaxConcurrentRequests: 100,
+
 				ValidateURL:           true,
 				ValidateHeaders:       true,
 			}
@@ -244,7 +248,7 @@ func TestEngine_ResponseProcessing(t *testing.T) {
 
 			config := &Config{
 				Timeout:               60 * time.Second,
-				MaxConcurrentRequests: 100,
+
 				ValidateURL:           true,
 				ValidateHeaders:       true,
 				AllowPrivateIPs:       true, // Allow test server access
@@ -333,7 +337,7 @@ func TestEngine_ErrorHandling(t *testing.T) {
 
 			config := &Config{
 				Timeout:               1 * time.Second, // Short timeout for testing
-				MaxConcurrentRequests: 100,
+
 				ValidateURL:           true,
 				ValidateHeaders:       true,
 				AllowPrivateIPs:       true, // Allow test server access
@@ -373,7 +377,7 @@ func TestEngine_ConcurrentRequests(t *testing.T) {
 
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 50,
+
 		ValidateURL:           true,
 		ValidateHeaders:       true,
 		AllowPrivateIPs:       true, // Allow test server access
@@ -449,7 +453,7 @@ func TestEngine_ContextCancellation(t *testing.T) {
 
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		ValidateURL:           true,
 		ValidateHeaders:       true,
 		AllowPrivateIPs:       true, // Allow test server access
@@ -494,7 +498,7 @@ func TestEngine_RetryMechanism(t *testing.T) {
 
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		ValidateURL:           true,
 		ValidateHeaders:       true,
 		AllowPrivateIPs:       true, // Allow test server access
@@ -531,7 +535,7 @@ func TestEngine_RetryMechanism(t *testing.T) {
 func TestEngine_ClientLifecycle(t *testing.T) {
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		ValidateURL:           true,
 		ValidateHeaders:       true,
 		AllowPrivateIPs:       true, // Allow test server access
@@ -586,7 +590,7 @@ func TestEngine_ConfigValidation(t *testing.T) {
 			name: "Valid config",
 			config: &Config{
 				Timeout:               30 * time.Second,
-				MaxConcurrentRequests: 100,
+
 				ValidateURL:           true,
 				ValidateHeaders:       true,
 				AllowPrivateIPs:       true, // Allow test server access
@@ -597,7 +601,7 @@ func TestEngine_ConfigValidation(t *testing.T) {
 			name: "Zero timeout",
 			config: &Config{
 				Timeout:               0,
-				MaxConcurrentRequests: 100,
+
 				ValidateURL:           true,
 				ValidateHeaders:       true,
 				AllowPrivateIPs:       true, // Allow test server access

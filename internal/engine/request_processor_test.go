@@ -9,10 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/cybergodev/httpc/internal/memory"
-)
+	"time")
 
 // ============================================================================
 // REQUEST PROCESSOR TESTS
@@ -21,16 +18,13 @@ import (
 func TestRequestProcessor_Build(t *testing.T) {
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		ValidateURL:           true,
 		ValidateHeaders:       true,
 		UserAgent:             "TestClient/1.0",
 	}
 
-	memManager := memory.NewManager(memory.DefaultConfig())
-	defer memManager.Close()
-
-	processor := NewRequestProcessor(config, memManager)
+	processor := NewRequestProcessor(config)
 
 	tests := []struct {
 		name     string
@@ -231,15 +225,12 @@ func TestRequestProcessor_Build(t *testing.T) {
 func TestRequestProcessor_BuildErrors(t *testing.T) {
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		ValidateURL:           true,
 		ValidateHeaders:       true,
 	}
 
-	memManager := memory.NewManager(memory.DefaultConfig())
-	defer memManager.Close()
-
-	processor := NewRequestProcessor(config, memManager)
+	processor := NewRequestProcessor(config)
 
 	tests := []struct {
 		name        string
@@ -293,15 +284,12 @@ func TestRequestProcessor_BuildErrors(t *testing.T) {
 func TestRequestProcessor_BodySerialization(t *testing.T) {
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		ValidateURL:           true,
 		ValidateHeaders:       true,
 	}
 
-	memManager := memory.NewManager(memory.DefaultConfig())
-	defer memManager.Close()
-
-	processor := NewRequestProcessor(config, memManager)
+	processor := NewRequestProcessor(config)
 
 	tests := []struct {
 		name         string
@@ -402,7 +390,7 @@ func TestRequestProcessor_BodySerialization(t *testing.T) {
 func TestRequestProcessor_HeaderHandling(t *testing.T) {
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		ValidateURL:           true,
 		ValidateHeaders:       true,
 		UserAgent:             "TestClient/1.0",
@@ -411,10 +399,7 @@ func TestRequestProcessor_HeaderHandling(t *testing.T) {
 		},
 	}
 
-	memManager := memory.NewManager(memory.DefaultConfig())
-	defer memManager.Close()
-
-	processor := NewRequestProcessor(config, memManager)
+	processor := NewRequestProcessor(config)
 
 	request := &Request{
 		Method:  "GET",
@@ -454,15 +439,12 @@ func TestRequestProcessor_HeaderHandling(t *testing.T) {
 func TestRequestProcessor_QueryParameterHandling(t *testing.T) {
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		ValidateURL:           true,
 		ValidateHeaders:       true,
 	}
 
-	memManager := memory.NewManager(memory.DefaultConfig())
-	defer memManager.Close()
-
-	processor := NewRequestProcessor(config, memManager)
+	processor := NewRequestProcessor(config)
 
 	tests := []struct {
 		name        string

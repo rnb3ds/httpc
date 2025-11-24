@@ -7,10 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/cybergodev/httpc/internal/memory"
-)
+	"time")
 
 // ============================================================================
 // RESPONSE PROCESSOR TESTS
@@ -19,14 +16,11 @@ import (
 func TestResponseProcessor_Process(t *testing.T) {
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		MaxResponseBodySize:   50 * 1024 * 1024, // 50MB
 	}
 
-	memManager := memory.NewManager(memory.DefaultConfig())
-	defer memManager.Close()
-
-	processor := NewResponseProcessor(config, memManager)
+	processor := NewResponseProcessor(config)
 
 	tests := []struct {
 		name         string
@@ -185,14 +179,11 @@ func TestResponseProcessor_Process(t *testing.T) {
 func TestResponseProcessor_LargeResponse(t *testing.T) {
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		MaxResponseBodySize:   1024, // 1KB limit for testing
 	}
 
-	memManager := memory.NewManager(memory.DefaultConfig())
-	defer memManager.Close()
-
-	processor := NewResponseProcessor(config, memManager)
+	processor := NewResponseProcessor(config)
 
 	// Create response exceeding the limit
 	largeData := strings.Repeat("A", 2048) // 2KB data
@@ -211,22 +202,19 @@ func TestResponseProcessor_LargeResponse(t *testing.T) {
 		t.Error("Expected error for large response, got nil")
 	}
 
-	if !strings.Contains(err.Error(), "response body too large") {
-		t.Errorf("Expected 'response body too large' error, got: %v", err)
+	if !strings.Contains(err.Error(), "response body exceeds limit") && !strings.Contains(err.Error(), "response body too large") {
+		t.Errorf("Expected response body size error, got: %v", err)
 	}
 }
 
 func TestResponseProcessor_HeaderProcessing(t *testing.T) {
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		MaxResponseBodySize:   50 * 1024 * 1024,
 	}
 
-	memManager := memory.NewManager(memory.DefaultConfig())
-	defer memManager.Close()
-
-	processor := NewResponseProcessor(config, memManager)
+	processor := NewResponseProcessor(config)
 
 	httpResponse := &http.Response{
 		StatusCode:    200,
@@ -270,14 +258,11 @@ func TestResponseProcessor_HeaderProcessing(t *testing.T) {
 func TestResponseProcessor_CookieProcessing(t *testing.T) {
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		MaxResponseBodySize:   50 * 1024 * 1024,
 	}
 
-	memManager := memory.NewManager(memory.DefaultConfig())
-	defer memManager.Close()
-
-	processor := NewResponseProcessor(config, memManager)
+	processor := NewResponseProcessor(config)
 
 	tests := []struct {
 		name       string
@@ -412,14 +397,11 @@ func TestResponseProcessor_CookieProcessing(t *testing.T) {
 func TestResponseProcessor_ErrorHandling(t *testing.T) {
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		MaxResponseBodySize:   50 * 1024 * 1024,
 	}
 
-	memManager := memory.NewManager(memory.DefaultConfig())
-	defer memManager.Close()
-
-	processor := NewResponseProcessor(config, memManager)
+	processor := NewResponseProcessor(config)
 
 	tests := []struct {
 		name         string
@@ -462,14 +444,11 @@ func TestResponseProcessor_ErrorHandling(t *testing.T) {
 func TestResponseProcessor_ContentLengthHandling(t *testing.T) {
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		MaxResponseBodySize:   50 * 1024 * 1024,
 	}
 
-	memManager := memory.NewManager(memory.DefaultConfig())
-	defer memManager.Close()
-
-	processor := NewResponseProcessor(config, memManager)
+	processor := NewResponseProcessor(config)
 
 	tests := []struct {
 		name           string

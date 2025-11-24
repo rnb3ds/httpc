@@ -5,12 +5,14 @@ import (
 	"crypto/tls"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cybergodev/httpc/internal/engine"
 )
 
-// Client represents the HTTP client interface
+// Client represents the HTTP client interface.
+// All methods are safe for concurrent use by multiple goroutines.
 type Client interface {
 	// HTTP methods
 	Get(url string, options ...RequestOption) (*Response, error)
@@ -124,69 +126,54 @@ func (c *clientImpl) Close() error {
 
 // Default client instance for package-level functions
 var (
-	defaultClient     Client
-	defaultClientErr  error
-	defaultClientOnce sync.Once
-	defaultClientMu   sync.RWMutex
+	defaultClient   atomic.Pointer[clientImpl]
+	defaultClientMu sync.Mutex
 )
 
 // getDefaultClient returns the default client, creating it if necessary
 func getDefaultClient() (Client, error) {
 	// Fast path: check if client already exists
-	defaultClientMu.RLock()
-	client := defaultClient
-	err := defaultClientErr
-	defaultClientMu.RUnlock()
-
-	if client != nil {
-		return client, err
+	if client := defaultClient.Load(); client != nil {
+		return client, nil
 	}
 
-	// Slow path: initialize client
-	defaultClientOnce.Do(func() {
-		defaultClientMu.Lock()
-		defer defaultClientMu.Unlock()
+	// Slow path: acquire lock and initialize
+	defaultClientMu.Lock()
+	defer defaultClientMu.Unlock()
 
-		// Double-check in case another goroutine initialized it
-		if defaultClient != nil {
-			return
-		}
+	// Double-check after acquiring lock
+	if client := defaultClient.Load(); client != nil {
+		return client, nil
+	}
 
-		// Create new client with error handling
-		newClient, initErr := New()
-		if initErr != nil {
-			defaultClientErr = initErr
-			return
-		}
+	// Create new client
+	newClient, err := New()
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize default client: %w", err)
+	}
 
-		defaultClient = newClient
-		defaultClientErr = nil
-	})
+	impl, ok := newClient.(*clientImpl)
+	if !ok {
+		return nil, fmt.Errorf("unexpected client type")
+	}
 
-	defaultClientMu.RLock()
-	client = defaultClient
-	err = defaultClientErr
-	defaultClientMu.RUnlock()
-
-	return client, err
+	defaultClient.Store(impl)
+	return impl, nil
 }
 
 // CloseDefaultClient closes the default client and resets it.
-// This should be called when the application is shutting down to prevent resource leaks.
+// After calling this, the next package-level function call will create a new client.
 func CloseDefaultClient() error {
 	defaultClientMu.Lock()
 	defer defaultClientMu.Unlock()
 
-	if defaultClient == nil {
+	client := defaultClient.Load()
+	if client == nil {
 		return nil
 	}
 
-	err := defaultClient.Close()
-	defaultClient = nil
-	defaultClientErr = nil
-	// Reset sync.Once to allow re-initialization if needed
-	defaultClientOnce = sync.Once{}
-
+	err := client.Close()
+	defaultClient.Store(nil)
 	return err
 }
 
@@ -258,18 +245,20 @@ func SetDefaultClient(client Client) error {
 		return fmt.Errorf("cannot set nil client as default")
 	}
 
+	impl, ok := client.(*clientImpl)
+	if !ok {
+		return fmt.Errorf("client must be created with httpc.New()")
+	}
+
 	defaultClientMu.Lock()
 	defer defaultClientMu.Unlock()
 
 	var closeErr error
-	if defaultClient != nil {
-		closeErr = defaultClient.Close()
+	if oldClient := defaultClient.Load(); oldClient != nil {
+		closeErr = oldClient.Close()
 	}
 
-	defaultClient = client
-	defaultClientErr = nil
-	defaultClientOnce = sync.Once{}
-
+	defaultClient.Store(impl)
 	return closeErr
 }
 
@@ -278,52 +267,43 @@ func convertToEngineConfig(cfg *Config) *engine.Config {
 		cfg = DefaultConfig()
 	}
 
-	// Simplified connection pool calculations
 	maxIdleConnsPerHost := calculateOptimalIdleConnsPerHost(cfg.MaxIdleConns, cfg.MaxConnsPerHost)
 
-	// Reasonable concurrent request limits
-	maxConcurrent := calculateOptimalConcurrency(cfg.MaxConnsPerHost, cfg.MaxIdleConns)
-
-	// Standard timeout settings
-	timeouts := calculateOptimalTimeouts(cfg.Timeout)
-
-	// Determine TLS version settings
 	minTLSVersion := cfg.MinTLSVersion
 	if minTLSVersion == 0 {
-		minTLSVersion = tls.VersionTLS12 // Default to TLS 1.2
+		minTLSVersion = tls.VersionTLS12
 	}
 
 	maxTLSVersion := cfg.MaxTLSVersion
 	if maxTLSVersion == 0 {
-		maxTLSVersion = tls.VersionTLS13 // Default to TLS 1.3
+		maxTLSVersion = tls.VersionTLS13
 	}
 
 	return &engine.Config{
 		Timeout:               cfg.Timeout,
-		DialTimeout:           timeouts.Dial,
-		KeepAlive:             timeouts.KeepAlive,
-		TLSHandshakeTimeout:   timeouts.TLS,
-		ResponseHeaderTimeout: timeouts.ResponseHeader,
-		IdleConnTimeout:       timeouts.IdleConn,
+		DialTimeout:           10 * time.Second,
+		KeepAlive:             30 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
 		MaxIdleConns:          cfg.MaxIdleConns,
 		MaxIdleConnsPerHost:   maxIdleConnsPerHost,
 		MaxConnsPerHost:       cfg.MaxConnsPerHost,
 		ProxyURL:              cfg.ProxyURL,
 		TLSConfig:             cfg.TLSConfig,
-		MinTLSVersion:         minTLSVersion,
-		MaxTLSVersion:         maxTLSVersion,
-		InsecureSkipVerify:    cfg.InsecureSkipVerify,
-		MaxResponseBodySize:   cfg.MaxResponseBodySize,
-		MaxConcurrentRequests: maxConcurrent,
-		ValidateURL:           true, // Force enable URL validation
-		ValidateHeaders:       true, // Force enable header validation
-		AllowPrivateIPs:       cfg.AllowPrivateIPs,
+		MinTLSVersion:       minTLSVersion,
+		MaxTLSVersion:       maxTLSVersion,
+		InsecureSkipVerify:  cfg.InsecureSkipVerify,
+		MaxResponseBodySize: cfg.MaxResponseBodySize,
+		ValidateURL:         true,
+		ValidateHeaders:     true,
+		AllowPrivateIPs:     cfg.AllowPrivateIPs,
 		StrictContentLength:   cfg.StrictContentLength,
 		MaxRetries:            cfg.MaxRetries,
 		RetryDelay:            cfg.RetryDelay,
 		MaxRetryDelay:         calculateMaxRetryDelay(cfg.RetryDelay, cfg.BackoffFactor),
 		BackoffFactor:         cfg.BackoffFactor,
-		Jitter:                true, // Enable jitter to prevent thundering herd
+		Jitter:                true,
 		UserAgent:             cfg.UserAgent,
 		Headers:               cfg.Headers,
 		FollowRedirects:       cfg.FollowRedirects,
@@ -333,59 +313,30 @@ func convertToEngineConfig(cfg *Config) *engine.Config {
 	}
 }
 
-type timeoutConfig struct {
-	Dial           time.Duration
-	TLS            time.Duration
-	ResponseHeader time.Duration
-	KeepAlive      time.Duration
-	IdleConn       time.Duration
-}
+
 
 func calculateOptimalIdleConnsPerHost(maxIdleConns, maxConnsPerHost int) int {
-	if maxConnsPerHost <= 0 {
-		if maxIdleConns/2 < 10 {
-			return maxIdleConns / 2
-		}
+	var result int
+	if maxConnsPerHost > 0 {
+		result = maxConnsPerHost / 2
+	} else {
+		result = maxIdleConns / 2
+	}
+	
+	if result < 2 {
+		return 2
+	}
+	if result > 10 {
 		return 10
 	}
-	if maxConnsPerHost/2 < 10 {
-		return maxConnsPerHost / 2
-	}
-	return 10
-}
-
-func calculateOptimalConcurrency(maxConnsPerHost, maxIdleConns int) int {
-	var concurrent int
-	if maxConnsPerHost > 0 {
-		concurrent = maxConnsPerHost * 2
-	} else {
-		concurrent = maxIdleConns
-	}
-
-	if concurrent > 500 {
-		return 500
-	}
-	if concurrent < 100 {
-		return 100
-	}
-	return concurrent
-}
-
-func calculateOptimalTimeouts(overallTimeout time.Duration) timeoutConfig {
-	return timeoutConfig{
-		Dial:           10 * time.Second,
-		TLS:            10 * time.Second,
-		ResponseHeader: 30 * time.Second,
-		KeepAlive:      30 * time.Second,
-		IdleConn:       90 * time.Second,
-	}
+	return result
 }
 
 func calculateMaxRetryDelay(baseDelay time.Duration, backoffFactor float64) time.Duration {
 	if baseDelay <= 0 {
 		return 5 * time.Second
 	}
-	maxDelay := baseDelay * time.Duration(backoffFactor*3)
+	maxDelay := time.Duration(float64(baseDelay) * backoffFactor * 3)
 	if maxDelay > 30*time.Second {
 		return 30 * time.Second
 	}
@@ -402,8 +353,8 @@ func convertRequestOptions(options []RequestOption) []engine.RequestOption {
 		if opt == nil {
 			continue
 		}
-		option := opt
-		engineOptions = append(engineOptions, func(req *engine.Request) {
+		currentOpt := opt
+		engineOptions = append(engineOptions, func(req *engine.Request) error {
 			publicReq := &Request{
 				Method:      req.Method,
 				URL:         req.URL,
@@ -413,11 +364,13 @@ func convertRequestOptions(options []RequestOption) []engine.RequestOption {
 				Context:     req.Context,
 				Timeout:     req.Timeout,
 				MaxRetries:  req.MaxRetries,
-				Cookies:     req.Cookies, // Preserve existing cookies
+				Cookies:     req.Cookies,
 			}
-
-			option(publicReq)
-
+			
+			if err := currentOpt(publicReq); err != nil {
+				return err
+			}
+			
 			req.Method = publicReq.Method
 			req.URL = publicReq.URL
 			req.Headers = publicReq.Headers
@@ -427,9 +380,10 @@ func convertRequestOptions(options []RequestOption) []engine.RequestOption {
 			req.Timeout = publicReq.Timeout
 			req.MaxRetries = publicReq.MaxRetries
 			req.Cookies = publicReq.Cookies
+			
+			return nil
 		})
 	}
-
 	return engineOptions
 }
 
@@ -451,16 +405,13 @@ func convertEngineResponse(engineResp *engine.Response) *Response {
 	}
 }
 
-// createCookieJar creates a cookie jar if cookies are enabled
 func createCookieJar(enableCookies bool) any {
 	if !enableCookies {
 		return nil
 	}
-
 	jar, err := NewCookieJar()
 	if err != nil {
 		return nil
 	}
-
 	return jar
 }

@@ -4,19 +4,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-
-	"github.com/cybergodev/httpc/internal/memory"
 )
 
 type ResponseProcessor struct {
-	config        *Config
-	memoryManager *memory.Manager
+	config *Config
 }
 
-func NewResponseProcessor(config *Config, memManager *memory.Manager) *ResponseProcessor {
+func NewResponseProcessor(config *Config) *ResponseProcessor {
 	return &ResponseProcessor{
-		config:        config,
-		memoryManager: memManager,
+		config: config,
 	}
 }
 
@@ -33,20 +29,23 @@ func (p *ResponseProcessor) Process(httpResp *http.Response) (*Response, error) 
 	contentLength := httpResp.ContentLength
 
 	if contentLength > 0 && contentLength != int64(len(body)) {
-		isHeadRequest := false
-		if httpResp.Request != nil && httpResp.Request.Method == "HEAD" {
-			isHeadRequest = true
-		}
-
+		isHeadRequest := httpResp.Request != nil && httpResp.Request.Method == "HEAD"
 		if !isHeadRequest && p.config.StrictContentLength {
 			return nil, fmt.Errorf("content-length mismatch: expected %d bytes, got %d bytes", contentLength, len(body))
 		}
 	}
 
+	headers := make(http.Header, len(httpResp.Header))
+	for k, v := range httpResp.Header {
+		headerCopy := make([]string, len(v))
+		copy(headerCopy, v)
+		headers[k] = headerCopy
+	}
+
 	resp := &Response{
 		StatusCode:    httpResp.StatusCode,
 		Status:        httpResp.Status,
-		Headers:       httpResp.Header,
+		Headers:       headers,
 		Body:          string(body),
 		RawBody:       body,
 		ContentLength: contentLength,
@@ -65,8 +64,9 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 	}
 
 	var reader io.Reader = httpResp.Body
-	if p.config.MaxResponseBodySize > 0 {
-		reader = io.LimitReader(httpResp.Body, p.config.MaxResponseBodySize)
+	maxSize := p.config.MaxResponseBodySize
+	if maxSize > 0 {
+		reader = io.LimitReader(httpResp.Body, maxSize+1)
 	}
 
 	body, err := io.ReadAll(reader)
@@ -74,8 +74,8 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	if p.config.MaxResponseBodySize > 0 && int64(len(body)) >= p.config.MaxResponseBodySize {
-		return nil, fmt.Errorf("response body too large (limit: %d bytes)", p.config.MaxResponseBodySize)
+	if maxSize > 0 && int64(len(body)) > maxSize {
+		return nil, fmt.Errorf("response body exceeds limit of %d bytes", maxSize)
 	}
 
 	return body, nil

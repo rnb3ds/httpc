@@ -47,14 +47,11 @@ func (r *RetryEngine) GetDelayWithResponse(attempt int, resp *Response) time.Dur
 	if resp != nil && resp.Headers != nil {
 		if retryAfterValues, exists := resp.Headers["Retry-After"]; exists && len(retryAfterValues) > 0 {
 			retryAfter := retryAfterValues[0]
-
 			if seconds, err := strconv.Atoi(retryAfter); err == nil && seconds > 0 {
 				return time.Duration(seconds) * time.Second
 			}
-
 			if retryTime, err := time.Parse(time.RFC1123, retryAfter); err == nil {
-				delay := time.Until(retryTime)
-				if delay > 0 {
+				if delay := time.Until(retryTime); delay > 0 {
 					return delay
 				}
 			}
@@ -90,78 +87,66 @@ func (r *RetryEngine) MaxRetries() int {
 }
 
 func (r *RetryEngine) isRetryableError(err error) bool {
-	if errors.Is(err, context.Canceled) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 
-	// Context deadline exceeded should not be retried (indicates overall timeout)
-	if errors.Is(err, context.DeadlineExceeded) {
+	errMsg := strings.ToLower(err.Error())
+	if strings.Contains(errMsg, "context canceled") || strings.Contains(errMsg, "context deadline exceeded") {
 		return false
 	}
 
-	// Check for context cancellation in error message
-	errMsg := err.Error()
-	if strings.Contains(errMsg, "context canceled") ||
-		strings.Contains(errMsg, "request context canceled") {
-		return false
-	}
-
-	if dnsErr, ok := err.(*net.DNSError); ok {
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
 		return dnsErr.IsTimeout || dnsErr.Temporary()
 	}
 
-	if opErr, ok := err.(*net.OpError); ok {
-		if strings.Contains(errMsg, "context") {
-			return false
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		if opErr.Err != nil {
+			if errors.Is(opErr.Err, context.Canceled) || errors.Is(opErr.Err, context.DeadlineExceeded) {
+				return false
+			}
 		}
 		return opErr.Temporary()
 	}
 
-	if netErr, ok := err.(net.Error); ok {
-		if strings.Contains(errMsg, "context") {
-			return false
-		}
-		return netErr.Timeout()
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return netErr.Timeout() || netErr.Temporary()
 	}
 
-	// Check for common network error patterns in error messages
-	networkPatterns := []string{
-		"connection refused",
-		"no such host",
-		"timeout",
-		"connection reset by peer",
-		"broken pipe",
-		"network unreachable",
-		"host unreachable",
+	retryablePatterns := []string{
+		"connection refused", "connection reset", "broken pipe",
+		"network unreachable", "host unreachable", "no route to host", "no such host",
 	}
-
-	for _, pattern := range networkPatterns {
+	for _, pattern := range retryablePatterns {
 		if strings.Contains(errMsg, pattern) {
 			return true
 		}
 	}
 
+	if strings.Contains(errMsg, "timeout") && !strings.Contains(errMsg, "context") {
+		return true
+	}
+
 	return false
 }
 
-// getSecureJitter generates cryptographically secure random jitter
 func (r *RetryEngine) getSecureJitter(maxJitter time.Duration) time.Duration {
 	if maxJitter <= 0 {
 		return 0
 	}
 
-	// Use crypto/rand for secure random number generation
 	maxInt := big.NewInt(int64(maxJitter))
 	n, err := rand.Int(rand.Reader, maxInt)
 	if err != nil {
-		// Fallback to a simple calculation if crypto/rand fails
-		return maxJitter / 4
+		return time.Duration(time.Now().UnixNano() % int64(maxJitter))
 	}
 
 	return time.Duration(n.Int64())
 }
 
-// isRetryableStatus checks if an HTTP status code is retryable
 func (r *RetryEngine) isRetryableStatus(statusCode int) bool {
 	switch statusCode {
 	case http.StatusRequestTimeout, // 408

@@ -18,14 +18,14 @@ import (
 func TestTransport_Creation(t *testing.T) {
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		ValidateURL:           true,
 		ValidateHeaders:       true,
 		AllowPrivateIPs:       true, // Allow test server access
 		EnableHTTP2:           true,
 	}
 
-	connConfig := connection.DefaultConfig()
+	connConfig := testConnectionConfig()
 	poolManager, err := connection.NewPoolManager(connConfig)
 	if err != nil {
 		t.Fatalf("Failed to create pool manager: %v", err)
@@ -53,12 +53,12 @@ func TestTransport_HTTPRequest(t *testing.T) {
 
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		ValidateURL:           true,
 		ValidateHeaders:       true,
 	}
 
-	connConfig := connection.DefaultConfig()
+	connConfig := testConnectionConfig()
 	poolManager, err := connection.NewPoolManager(connConfig)
 	if err != nil {
 		t.Fatalf("Failed to create pool manager: %v", err)
@@ -97,7 +97,7 @@ func TestTransport_TLSConfiguration(t *testing.T) {
 
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		ValidateURL:           true,
 		ValidateHeaders:       true,
 		MinTLSVersion:         tls.VersionTLS12,
@@ -105,7 +105,7 @@ func TestTransport_TLSConfiguration(t *testing.T) {
 		InsecureSkipVerify:    true, // For testing
 	}
 
-	connConfig := connection.DefaultConfig()
+	connConfig := testConnectionConfig()
 	connConfig.InsecureSkipVerify = true // For testing
 	poolManager, err := connection.NewPoolManager(connConfig)
 	if err != nil {
@@ -144,12 +144,12 @@ func TestTransport_Timeout(t *testing.T) {
 
 	config := &Config{
 		Timeout:               500 * time.Millisecond, // Short timeout
-		MaxConcurrentRequests: 100,
+
 		ValidateURL:           true,
 		ValidateHeaders:       true,
 	}
 
-	connConfig := connection.DefaultConfig()
+	connConfig := testConnectionConfig()
 	connConfig.DialTimeout = 500 * time.Millisecond
 	connConfig.ResponseHeaderTimeout = 500 * time.Millisecond
 	poolManager, err := connection.NewPoolManager(connConfig)
@@ -196,12 +196,12 @@ func TestTransport_ConnectionReuse(t *testing.T) {
 
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		ValidateURL:           true,
 		ValidateHeaders:       true,
 	}
 
-	connConfig := connection.DefaultConfig()
+	connConfig := testConnectionConfig()
 	connConfig.MaxIdleConns = 10
 	connConfig.MaxIdleConnsPerHost = 5
 	poolManager, err := connection.NewPoolManager(connConfig)
@@ -242,12 +242,12 @@ func TestTransport_ConnectionReuse(t *testing.T) {
 func TestTransport_Close(t *testing.T) {
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		ValidateURL:           true,
 		ValidateHeaders:       true,
 	}
 
-	connConfig := connection.DefaultConfig()
+	connConfig := testConnectionConfig()
 	poolManager, err := connection.NewPoolManager(connConfig)
 	if err != nil {
 		t.Fatalf("Failed to create pool manager: %v", err)
@@ -282,13 +282,13 @@ func TestTransport_UserAgent(t *testing.T) {
 
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		ValidateURL:           true,
 		ValidateHeaders:       true,
 		UserAgent:             "TestClient/1.0",
 	}
 
-	connConfig := connection.DefaultConfig()
+	connConfig := testConnectionConfig()
 	poolManager, err := connection.NewPoolManager(connConfig)
 	if err != nil {
 		t.Fatalf("Failed to create pool manager: %v", err)
@@ -332,12 +332,12 @@ func TestTransport_Headers(t *testing.T) {
 
 	config := &Config{
 		Timeout:               30 * time.Second,
-		MaxConcurrentRequests: 100,
+
 		ValidateURL:           true,
 		ValidateHeaders:       true,
 	}
 
-	connConfig := connection.DefaultConfig()
+	connConfig := testConnectionConfig()
 	poolManager, err := connection.NewPoolManager(connConfig)
 	if err != nil {
 		t.Fatalf("Failed to create pool manager: %v", err)

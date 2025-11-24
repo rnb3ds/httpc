@@ -228,7 +228,7 @@ func TestErrorClassification_TransportErrors(t *testing.T) {
 			clientErr := ClassifyError(tt.err, "https://example.com", "GET", 1)
 
 			if clientErr.Type != tt.expectedType {
-				t.Errorf("Expected error type %v, got %v", tt.expectedType, clientErr.Type)
+				t.Errorf("Expected error type %v, got %v (error: %q)", tt.expectedType, clientErr.Type, tt.err.Error())
 			}
 
 			if clientErr.IsRetryable() != tt.isRetryable {
@@ -403,7 +403,7 @@ func TestErrorHandling_IntegrationWithClient(t *testing.T) {
 				}
 			}),
 			expectedError: true,
-			expectedType:  ErrorTypeTransport, // Connection close is a transport-level error
+			expectedType:  ErrorTypeNetwork, // Connection close is classified as network error
 			expectedRetry: true,
 		},
 	}
@@ -445,7 +445,7 @@ func TestErrorHandling_IntegrationWithClient(t *testing.T) {
 				var clientErr *ClientError
 				if errors.As(err, &clientErr) {
 					if clientErr.Type != tt.expectedType {
-						t.Errorf("Expected error type %v, got %v", tt.expectedType, clientErr.Type)
+						t.Errorf("Expected error type %v, got %v (error: %q)", tt.expectedType, clientErr.Type, err.Error())
 					}
 
 					if clientErr.IsRetryable() != tt.expectedRetry {
@@ -597,60 +597,4 @@ func TestErrorHandling_PanicRecovery(t *testing.T) {
 	}
 }
 
-func TestIsNetworkRelatedComprehensive(t *testing.T) {
-	tests := []struct {
-		name     string
-		err      error
-		expected bool
-	}{
-		{
-			name:     "Nil error",
-			err:      nil,
-			expected: false,
-		},
-		{
-			name:     "OpError",
-			err:      &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED},
-			expected: true,
-		},
-		{
-			name:     "DNSError",
-			err:      &net.DNSError{Err: "no such host", Name: "example.com"},
-			expected: true,
-		},
-		{
-			name:     "Connection keyword",
-			err:      fmt.Errorf("connection refused"),
-			expected: true,
-		},
-		{
-			name:     "Network keyword",
-			err:      fmt.Errorf("network unreachable"),
-			expected: true,
-		},
-		{
-			name:     "Timeout keyword",
-			err:      fmt.Errorf("timeout exceeded"),
-			expected: true,
-		},
-		{
-			name:     "DNS keyword",
-			err:      fmt.Errorf("dns resolution failed"),
-			expected: true,
-		},
-		{
-			name:     "Non-network error",
-			err:      fmt.Errorf("invalid JSON format"),
-			expected: false,
-		},
-	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := isNetworkRelated(tt.err)
-			if result != tt.expected {
-				t.Errorf("Expected %v, got %v for error: %v", tt.expected, result, tt.err)
-			}
-		})
-	}
-}

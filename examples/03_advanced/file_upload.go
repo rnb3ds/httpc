@@ -25,6 +25,9 @@ func main() {
 	// Example 4: Large file upload with timeout
 	demonstrateLargeFile()
 
+	// Example 5: Files with explicit content types
+	demonstrateFileWithContentType()
+
 	fmt.Println("\n=== All Examples Completed ===")
 }
 
@@ -118,8 +121,9 @@ func demonstrateFileWithFields() {
 		},
 		Files: map[string]*httpc.FileData{
 			"file": {
-				Filename: "document.pdf",
-				Content:  fileContent,
+				Filename:    "document.pdf",
+				Content:     fileContent,
+				ContentType: "application/pdf", // Explicit content type
 			},
 		},
 	}
@@ -138,6 +142,61 @@ func demonstrateFileWithFields() {
 	fmt.Printf("  Title: %s\n", formData.Fields["title"])
 	fmt.Printf("  Description: %s\n", formData.Fields["description"])
 	fmt.Printf("  File: document.pdf (%d bytes)\n\n", len(fileContent))
+}
+
+// demonstrateFileWithContentType shows explicit content type setting
+func demonstrateFileWithContentType() {
+	fmt.Println("--- Example 5: Files with Explicit Content Types ---")
+
+	client, err := httpc.New()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer client.Close()
+
+	// Multiple files with different content types
+	pdfContent := []byte("%PDF-1.4 document")
+	jpegContent := []byte{0xFF, 0xD8, 0xFF, 0xE0}
+	jsonContent := []byte(`{"data": "value"}`)
+
+	formData := &httpc.FormData{
+		Fields: map[string]string{
+			"category": "mixed-documents",
+		},
+		Files: map[string]*httpc.FileData{
+			"document": {
+				Filename:    "report.pdf",
+				Content:     pdfContent,
+				ContentType: "application/pdf",
+			},
+			"image": {
+				Filename:    "photo.jpg",
+				Content:     jpegContent,
+				ContentType: "image/jpeg",
+			},
+			"data": {
+				Filename:    "config.json",
+				Content:     jsonContent,
+				ContentType: "application/json",
+			},
+		},
+	}
+
+	resp, err := client.Post("https://echo.hoppscotch.io/upload",
+		httpc.WithFormData(formData),
+	)
+	if err != nil {
+		log.Printf("Error: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Println("Files with explicit content types uploaded successfully")
+	fmt.Println("Common MIME types:")
+	fmt.Println("  - application/pdf, application/json, application/xml")
+	fmt.Println("  - image/jpeg, image/png, image/gif")
+	fmt.Println("  - text/plain, text/html, text/csv")
+	fmt.Println("  - application/zip, application/octet-stream\n ")
 }
 
 // demonstrateLargeFile shows large file upload with proper timeout

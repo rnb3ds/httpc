@@ -57,13 +57,27 @@ Build URLs with query parameters:
 - Single parameters
 - Multiple parameters using maps
 - Different value types (strings, numbers, booleans)
+- Real-world patterns (pagination, filtering, sorting, search)
 - URL encoding
 
 **Key Functions:**
 - `WithQuery(key, value)` - Single parameter
 - `WithQueryMap(params)` - Multiple parameters (recommended)
 
-### 4. Response Parsing (`response_parsing.go`)
+### 4. Query Parameters (`query_params.go`)
+
+Build URLs with query parameters:
+
+- Single parameters
+- Multiple parameters using maps
+- Different value types (strings, numbers, booleans)
+- URL encoding
+
+**Key Functions:**
+- `WithQuery(key, value)` - Single parameter
+- `WithQueryMap(params)` - Multiple parameters (recommended)
+
+### 5. Response Parsing (`response_parsing.go`)
 
 Handle and parse responses:
 
@@ -81,7 +95,16 @@ Handle and parse responses:
 - `resp.IsServerError()` - Check 5xx status
 - `resp.Headers.Get(key)` - Get header value
 
-### 5. Error Handling (`error_handling.go`)
+### 6. Cookies (`cookies.go`)
+
+Cookie handling patterns:
+
+- Setting request cookies
+- Reading response cookies
+- Automatic cookie management with Cookie Jar
+- Advanced cookie attributes
+
+### 7. Error Handling (`error_handling.go`)
 
 Proper error handling patterns:
 
@@ -233,7 +256,7 @@ resp.Attempts         // Number of attempts
 ## Next Steps
 
 After mastering these core features, move on to:
-- **[Advanced Usage](../03_advanced)** - Timeouts, retries, file uploads, concurrent requests
+- **[Advanced Usage](../03_advanced)** - Client configuration, HTTP methods, timeouts, retries, file operations, concurrent requests
 - **[Real-World Examples](../04_real_world)** - Complete API client implementations
 
 ## Tips

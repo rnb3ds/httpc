@@ -15,7 +15,71 @@ This directory demonstrates advanced features for production-grade HTTP client u
 
 ## Examples Overview
 
-### 1. Timeout and Retry (`timeout_retry.go`)
+### 1. Client Configuration (`client_configuration.go`)
+
+Master client configuration for different scenarios:
+
+- **Default Configuration**: Balanced settings for most use cases
+- **Secure Configuration**: Enhanced security with TLS 1.3+, SSRF protection
+- **Performance Configuration**: Optimized for high throughput
+- **Custom Configuration**: Tailor settings to your needs
+- **Configuration Comparison**: Different scenarios and best practices
+
+**Quick Example:**
+```go
+// Default client
+client, err := httpc.New()
+
+// Secure client
+client, err := httpc.NewSecure()
+
+// Performance client
+client, err := httpc.NewPerformance()
+
+// Custom configuration
+config := httpc.DefaultConfig()
+config.Timeout = 15 * time.Second
+config.MaxRetries = 5
+client, err := httpc.New(config)
+```
+
+### 2. HTTP Methods (`http_methods.go`)
+
+Complete coverage of all HTTP methods:
+
+- **GET**: Retrieve data
+- **POST**: Create new resource
+- **PUT**: Replace entire resource
+- **PATCH**: Partial update
+- **DELETE**: Remove resource
+- **HEAD**: Get headers only (no body)
+- **OPTIONS**: Discover allowed methods (CORS preflight)
+
+**Quick Example:**
+```go
+// GET - Retrieve
+resp, err := client.Get(url)
+
+// POST - Create
+resp, err := client.Post(url, httpc.WithJSON(data))
+
+// PUT - Replace
+resp, err := client.Put(url, httpc.WithJSON(fullData))
+
+// PATCH - Update
+resp, err := client.Patch(url, httpc.WithJSON(partialData))
+
+// DELETE - Remove
+resp, err := client.Delete(url)
+
+// HEAD - Metadata only
+resp, err := client.Head(url)
+
+// OPTIONS - Allowed methods
+resp, err := client.Options(url)
+```
+
+### 3. Timeout and Retry (`timeout_retry.go`)
 
 Master timeout and retry strategies for resilient applications:
 
@@ -54,7 +118,7 @@ resp, err := client.Get(url,
 )
 ```
 
-### 2. File Upload (`file_upload.go`)
+### 4. File Upload (`file_upload.go`)
 
 Handle file uploads efficiently:
 
@@ -101,7 +165,7 @@ resp, err := client.Post(url,
 )
 ```
 
-### 3. File Download (`file_download.go`)
+### 5. File Download (`file_download.go`)
 
 Learn how to download files efficiently with comprehensive examples:
 
@@ -147,30 +211,40 @@ opts.ResumeDownload = true
 result, err := client.DownloadWithOptions(url, opts)
 ```
 
-## Client Configuration
+### 6. Concurrent Requests (`concurrent_requests.go`)
 
-The httpc library provides flexible configuration options. While these examples focus on request-level options, you can also configure the client globally.
+Handle multiple requests efficiently:
 
-### Creating Clients
+- **Parallel Requests**: Execute multiple requests simultaneously
+- **Worker Pool**: Limit concurrency with worker pool pattern
+- **Error Handling**: Robust error handling in concurrent scenarios
+- **Rate Limiting**: Control request rate with semaphores
 
+**Quick Example:**
 ```go
-// Default configuration (recommended for most use cases)
-client, err := httpc.New()
+// Parallel requests
+var wg sync.WaitGroup
+for _, url := range urls {
+    wg.Add(1)
+    go func(u string) {
+        defer wg.Done()
+        resp, err := client.Get(u)
+        // Handle response
+    }(url)
+}
+wg.Wait()
 
-// Secure client with enhanced security settings
-client, err := httpc.NewSecure()
-
-// Performance-optimized client
-client, err := httpc.NewPerformance()
-
-// Custom configuration
-config := httpc.DefaultConfig()
-config.Timeout = 30 * time.Second
-config.MaxRetries = 3
-client, err := httpc.New(config)
+// Worker pool with rate limiting
+sem := make(chan struct{}, maxConcurrent)
+for _, url := range urls {
+    sem <- struct{}{}
+    go func(u string) {
+        defer func() { <-sem }()
+        resp, err := client.Get(u)
+        // Handle response
+    }(url)
+}
 ```
-
-For detailed configuration options, see the main [USAGE_GUIDE.md](../../USAGE_GUIDE.md).
 
 ## Timeout Strategies
 
@@ -339,7 +413,8 @@ close(jobs)
 ## Next Steps
 
 After mastering advanced usage:
-- **[Real-World Examples](../04_real_world)** - See complete implementations
+- **[Real-World Examples](../04_real_world)** - Complete REST API client implementation
+- Review the main documentation for comprehensive API reference
 
 ## Tips
 

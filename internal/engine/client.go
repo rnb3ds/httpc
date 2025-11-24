@@ -2,19 +2,14 @@ package engine
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/cybergodev/httpc/internal/concurrency"
 	"github.com/cybergodev/httpc/internal/connection"
-	"github.com/cybergodev/httpc/internal/memory"
-	"github.com/cybergodev/httpc/internal/monitoring"
 	"github.com/cybergodev/httpc/internal/security"
 )
 
@@ -27,11 +22,8 @@ type Client struct {
 	retryEngine       *RetryEngine
 	validator         *security.Validator
 
-	concurrencyManager *concurrency.Manager
-	memoryManager      *memory.Manager
-	connectionPool     *connection.PoolManager
-	healthChecker      *monitoring.HealthChecker
-
+	connectionPool *connection.PoolManager
+	
 	closed             int32
 	totalRequests      int64
 	successfulRequests int64
@@ -42,6 +34,8 @@ type Client struct {
 	mu        sync.RWMutex
 }
 
+// Config defines the HTTP client configuration.
+// Config should be treated as immutable after creation.
 type Config struct {
 	Timeout               time.Duration
 	DialTimeout           time.Duration
@@ -54,16 +48,15 @@ type Config struct {
 	MaxConnsPerHost       int
 	ProxyURL              string
 
-	TLSConfig             interface{}
-	MinTLSVersion         uint16
-	MaxTLSVersion         uint16
-	InsecureSkipVerify    bool
-	MaxResponseBodySize   int64
-	MaxConcurrentRequests int
-	ValidateURL           bool
-	ValidateHeaders       bool
-	AllowPrivateIPs       bool
-	StrictContentLength   bool
+	TLSConfig           interface{}
+	MinTLSVersion       uint16
+	MaxTLSVersion       uint16
+	InsecureSkipVerify  bool
+	MaxResponseBodySize int64
+	ValidateURL         bool
+	ValidateHeaders     bool
+	AllowPrivateIPs     bool
+	StrictContentLength bool
 
 	MaxRetries    int
 	RetryDelay    time.Duration
@@ -92,6 +85,8 @@ type Request struct {
 	Cookies     []*http.Cookie
 }
 
+// Response represents an HTTP response.
+// Response objects are safe to read from multiple goroutines after they are returned.
 type Response struct {
 	StatusCode    int
 	Status        string
@@ -112,13 +107,19 @@ func NewClient(config *Config) (*Client, error) {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
 
+	safeCfg := *config
+	if config.Headers != nil {
+		safeCfg.Headers = make(map[string]string, len(config.Headers))
+		for k, v := range config.Headers {
+			safeCfg.Headers[k] = v
+		}
+	}
+
 	client := &Client{
-		config: config,
+		config: &safeCfg,
 	}
 
 	var err error
-
-	client.memoryManager = memory.NewManager(memory.DefaultConfig())
 
 	connConfig := connection.DefaultConfig()
 	connConfig.MaxIdleConns = config.MaxIdleConns
@@ -135,36 +136,29 @@ func NewClient(config *Config) (*Client, error) {
 	connConfig.EnableHTTP2 = config.EnableHTTP2
 	connConfig.ProxyURL = config.ProxyURL
 	connConfig.CookieJar = config.CookieJar
+	connConfig.AllowPrivateIPs = config.AllowPrivateIPs
 
 	client.connectionPool, err = connection.NewPoolManager(connConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create connection pool: %w", err)
 	}
 
-	maxConcurrent := config.MaxConcurrentRequests
-	if maxConcurrent <= 0 {
-		maxConcurrent = 500
-	}
-	client.concurrencyManager = concurrency.NewManager(maxConcurrent, maxConcurrent*2)
-
 	client.transport, err = NewTransport(config, client.connectionPool)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transport: %w", err)
 	}
 
-	client.requestProcessor = NewRequestProcessor(config, client.memoryManager)
-	client.responseProcessor = NewResponseProcessor(config, client.memoryManager)
+	client.requestProcessor = NewRequestProcessor(config)
+	client.responseProcessor = NewResponseProcessor(config)
 	client.retryEngine = NewRetryEngine(config)
 
 	validatorConfig := &security.Config{
-		ValidateURL:           config.ValidateURL,
-		ValidateHeaders:       config.ValidateHeaders,
-		MaxResponseBodySize:   config.MaxResponseBodySize,
-		MaxConcurrentRequests: config.MaxConcurrentRequests,
-		AllowPrivateIPs:       config.AllowPrivateIPs,
+		ValidateURL:         config.ValidateURL,
+		ValidateHeaders:     config.ValidateHeaders,
+		MaxResponseBodySize: config.MaxResponseBodySize,
+		AllowPrivateIPs:     config.AllowPrivateIPs,
 	}
 	client.validator = security.NewValidatorWithConfig(validatorConfig)
-	client.healthChecker = monitoring.NewHealthChecker()
 
 	return client, nil
 }
@@ -177,20 +171,20 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 	atomic.AddInt64(&c.totalRequests, 1)
 	startTime := time.Now()
 
-	headers := c.memoryManager.GetHeaders()
-	defer c.memoryManager.PutHeaders(headers)
-
 	req := &Request{
 		Method:      method,
 		URL:         url,
 		Context:     ctx,
-		Headers:     headers,
+		Headers:     make(map[string]string, 8),
 		QueryParams: make(map[string]any, 4),
 	}
 
 	for _, option := range options {
 		if option != nil {
-			option(req)
+			if err := option(req); err != nil {
+				atomic.AddInt64(&c.failedRequests, 1)
+				return nil, fmt.Errorf("failed to apply request option: %w", err)
+			}
 		}
 	}
 
@@ -208,13 +202,6 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 	response, err := c.executeWithRetry(req)
 	duration := time.Since(startTime)
 	c.updateLatencyMetrics(duration.Nanoseconds())
-
-	isTimeout := err != nil && (errors.Is(err, context.DeadlineExceeded) ||
-		strings.Contains(err.Error(), "timeout") ||
-		strings.Contains(err.Error(), "deadline exceeded"))
-
-	success := err == nil
-	c.healthChecker.RecordRequest(success, duration, isTimeout)
 
 	if err != nil {
 		atomic.AddInt64(&c.failedRequests, 1)
@@ -415,7 +402,11 @@ func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
 	defer func() {
 		if httpResp != nil && httpResp.Body != nil {
 			if resp == nil || resp.RawBody == nil {
-				io.Copy(io.Discard, io.LimitReader(httpResp.Body, 64*1024))
+				maxDrain := int64(10 * 1024 * 1024)
+				if c.config.MaxResponseBodySize > 0 && c.config.MaxResponseBodySize < maxDrain {
+					maxDrain = c.config.MaxResponseBodySize
+				}
+				io.Copy(io.Discard, io.LimitReader(httpResp.Body, maxDrain))
 			}
 			httpResp.Body.Close()
 		}
@@ -430,18 +421,41 @@ func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
 	return resp, nil
 }
 
-func (c *Client) GetHealthStatus() monitoring.HealthStatus {
-	if c.connectionPool != nil {
-		metrics := c.connectionPool.GetMetrics()
-		poolUtil := float64(metrics.ActiveConnections) / float64(metrics.TotalConnections+1)
-		c.healthChecker.UpdateResourceMetrics(metrics.ActiveConnections, poolUtil, 0)
-	}
+// HealthStatus represents basic health metrics
+type HealthStatus struct {
+	Healthy            bool
+	TotalRequests      int64
+	SuccessfulRequests int64
+	FailedRequests     int64
+	AverageLatency     time.Duration
+	ErrorRate          float64
+}
 
-	return c.healthChecker.CheckHealth()
+func (c *Client) GetHealthStatus() HealthStatus {
+	total := atomic.LoadInt64(&c.totalRequests)
+	success := atomic.LoadInt64(&c.successfulRequests)
+	failed := atomic.LoadInt64(&c.failedRequests)
+	avgLatNs := atomic.LoadInt64(&c.averageLatency)
+	
+	var errorRate float64
+	if total > 0 {
+		errorRate = float64(failed) / float64(total)
+	}
+	
+	healthy := errorRate < 0.1
+	
+	return HealthStatus{
+		Healthy:            healthy,
+		TotalRequests:      total,
+		SuccessfulRequests: success,
+		FailedRequests:     failed,
+		AverageLatency:     time.Duration(avgLatNs),
+		ErrorRate:          errorRate,
+	}
 }
 
 func (c *Client) IsHealthy() bool {
-	return c.healthChecker.IsHealthy()
+	return c.GetHealthStatus().Healthy
 }
 
 func (c *Client) Close() error {
@@ -450,21 +464,9 @@ func (c *Client) Close() error {
 	c.closeOnce.Do(func() {
 		atomic.StoreInt32(&c.closed, 1)
 
-		if c.concurrencyManager != nil {
-			if err := c.concurrencyManager.Close(); err != nil {
-				closeErr = fmt.Errorf("failed to close concurrency manager: %w", err)
-			}
-		}
-
 		if c.connectionPool != nil {
 			if err := c.connectionPool.Close(); err != nil {
 				closeErr = fmt.Errorf("failed to close connection pool: %w", err)
-			}
-		}
-
-		if c.memoryManager != nil {
-			if err := c.memoryManager.Close(); err != nil {
-				closeErr = fmt.Errorf("failed to close memory manager: %w", err)
 			}
 		}
 
@@ -478,4 +480,4 @@ func (c *Client) Close() error {
 	return closeErr
 }
 
-type RequestOption func(*Request)
+type RequestOption func(*Request) error

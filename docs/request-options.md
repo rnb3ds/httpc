@@ -377,6 +377,14 @@ resp, err := client.Get(url,
 )
 ```
 
+### Simple Cookie (Name/Value)
+
+```go
+resp, err := client.Get(url,
+    httpc.WithCookieValue("session_id", "abc123"),
+)
+```
+
 ## Complete Reference
 
 ### All Request Options
@@ -407,6 +415,7 @@ resp, err := client.Get(url,
 | `WithMaxRetries(n)`              | Max retry attempts   | `WithMaxRetries(3)`                     |
 | `WithCookie(cookie)`             | Add cookie           | `WithCookie(&http.Cookie{...})`         |
 | `WithCookies(cookies)`           | Add multiple cookies | `WithCookies([]*http.Cookie{...})`      |
+| `WithCookieValue(name, value)`   | Add simple cookie    | `WithCookieValue("session", "abc123")`  |
 
 ## Best Practices
 

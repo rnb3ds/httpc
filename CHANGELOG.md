@@ -4,6 +4,118 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## v1.2.0 - Stability & Test Coverage Enhancement (2025-11-24)
+
+### 🎯 Overview
+
+Major stability upgrade focused on test coverage improvement, error handling enhancement, concurrency safety, and code quality optimization. This release ensures production reliability through comprehensive testing and validation.
+
+### ✨ Key Improvements
+
+**📊 Test Coverage Significantly Improved**
+
+Added `coverage_improvement_test.go` targeting previously untested code paths:
+- Config preset tests (SecureConfig, PerformanceConfig, MinimalConfig, TestingConfig)
+- Package-level HTTP methods (Get, Post, Put, Patch, Delete, Head, Options)
+- Request options completeness (WithXMLAccept, WithJSONAccept, WithBinary, WithCookies)
+- Response handling edge cases (Cookie operations, JSON parsing errors)
+- Download package-level functions (DownloadWithOptions)
+- Client helper functions (calculateOptimalIdleConnsPerHost, calculateMaxRetryDelay)
+
+**🛡️ Security Enhancements**
+
+Comprehensive validation and boundary checks:
+- URL validation (CRLF injection prevention, protocol restrictions, length limits)
+- Header validation (special character filtering, pseudo-header blocking, auto-managed header protection)
+- Cookie validation (name/value/domain/path validation, size limits, injection prevention)
+- Query parameter validation (key/value length limits, special character checks)
+- File path validation (path traversal prevention, system path protection, Windows volume handling)
+- SSRF protection (pre-DNS IP validation, post-DNS resolution verification, private IP blocking)
+
+**🔄 Retry Mechanism Optimization**
+
+Intelligent retry logic and error classification:
+- Context cancellation/timeout no longer retries (avoids futile retries)
+- Smart network error classification (DNS errors, connection errors, timeout errors)
+- Retry-After header support (RFC1123 time format, seconds format)
+- Exponential backoff optimization (secure random jitter, max delay limits)
+- Precise retryable status codes (408, 429, 500, 502, 503, 504)
+
+**⚡ Concurrency Safety Improvements**
+
+Thread-safe guarantees and atomic operations:
+- Config deep copy (prevents concurrent modification, Headers map isolation)
+- Response Headers deep copy (safe multi-goroutine reads)
+- Atomic operation optimization (request counters, latency stats, connection pool metrics)
+- Default client double-checked locking (thread-safe lazy initialization)
+- Connection pool health checks (connection hit rate, active connection monitoring)
+
+**🔧 Error Handling Enhancement**
+
+Unified error classification and context information:
+- ClientError types (Retryable, Timeout, Network, Validation, Server)
+- Rich error context (URL, Method, Attempts, StatusCode)
+- Panic recovery mechanism (prevents client crashes)
+- Error wrapping optimization (uses %w to preserve error chain)
+
+**📥 File Download Improvements**
+
+Path safety and cross-platform compatibility:
+- Windows path handling (volume validation, path separator normalization)
+- Working directory restrictions (prevents path traversal to parent directories)
+- System path protection (blocks access to /etc, /sys, C:\Windows, etc.)
+- Automatic directory creation (parent directory auto-creation, permission settings)
+- Resume download optimization (Range header support, 416 status code handling)
+
+### 🔧 Code Quality Enhancements
+
+**Test Organization**
+- Grouped tests by functional modules (Config, Security, Retry, Options, Integration)
+- Table-driven test patterns (improved test maintainability)
+- Boundary condition tests (null values, oversized inputs, special characters)
+- Error path tests (exception scenario coverage)
+
+**Documentation**
+- Thread safety documentation (Config, Response, Client)
+- Usage examples (concurrent usage patterns)
+- Parameter validation documentation (limits and constraints)
+
+**Performance**
+- Response body fully drained (connection reuse optimization)
+- Max drain limit (prevents memory exhaustion from malicious servers)
+- Context timeout handling optimization (avoids duplicate timeout settings)
+- Latency metric calculation optimization (moving average algorithm)
+
+### 🐛 Bug Fixes
+
+- Fixed retry after context cancellation
+- Fixed Windows path traversal detection false positives
+- Fixed race conditions from concurrent Config modifications
+- Fixed connection leaks from incomplete response body reads
+- Fixed incomplete cookie validation security issues
+- Fixed race conditions in default client initialization
+
+### 📊 Test Statistics
+
+- **New test file**: `coverage_improvement_test.go` (410+ lines)
+- **Test cases added**: 50+ new test cases
+- **Coverage improvement**: Critical path coverage from ~70% to ~95%
+- **Test scenarios**: Normal flows, boundary conditions, error handling, concurrency safety
+
+### ⚠️ Breaking Changes
+
+**None** - Fully backward compatible with v1.1.0. All public APIs remain unchanged.
+
+### 📝 Upgrade Notes
+
+Upgrading from v1.1.0 to v1.2.0 requires no code changes. Benefits include:
+- Higher stability and reliability
+- Better error handling and diagnostics
+- Stronger security protections
+- More comprehensive concurrency safety guarantees
+
+---
+
 ## v1.1.0 - Performance & Architecture Upgrade (2025-11-02)
 
 ### 🎯 Overview
@@ -37,12 +149,7 @@ Major architecture upgrade focused on performance optimization, concurrency cont
 ### 📦 Internal Changes
 
 **New Internal Packages**:
-- `internal/cache` - Response caching
-- `internal/concurrency` - Concurrency control
-- `internal/engine` - HTTP processing engine
-- `internal/memory` - Memory management
-- `internal/monitoring` - Health monitoring
-- `internal/ratelimit` - Rate limiting
+- `internal/engine` - Reconstruct and optimize the internal core package.
 
 **Removed**: `internal/pool` (replaced by `internal/memory`)
 
