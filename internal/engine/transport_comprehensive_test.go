@@ -18,7 +18,7 @@ import (
 func TestTransport_BasicFunctionality(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer server.Close()
 
@@ -60,7 +60,7 @@ func TestTransport_TLSConfigurationComprehensive(t *testing.T) {
 	// Create HTTPS test server
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Secure OK"))
+		_, _ = w.Write([]byte("Secure OK"))
 	}))
 	defer server.Close()
 
@@ -151,7 +151,7 @@ func TestTransport_TLSConfigurationComprehensive(t *testing.T) {
 func TestTransport_ConnectionPooling(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer server.Close()
 
@@ -201,7 +201,7 @@ func TestTransport_Timeouts(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(2 * time.Second) // 2 second delay
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Slow OK"))
+		_, _ = w.Write([]byte("Slow OK"))
 	}))
 	defer server.Close()
 

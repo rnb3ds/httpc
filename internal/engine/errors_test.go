@@ -368,7 +368,7 @@ func TestClassifyError_NetError(t *testing.T) {
 				msg:       "temporary failure",
 			},
 			expectedType: ErrorTypeNetwork,
-			expectedMsg:  "temporary network error occurred",
+			expectedMsg:  "network error occurred",
 		},
 		{
 			name: "Permanent network error",

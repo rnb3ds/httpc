@@ -98,7 +98,7 @@ func (r *RetryEngine) isRetryableError(err error) bool {
 
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
-		return dnsErr.IsTimeout || dnsErr.Temporary()
+		return dnsErr.IsTimeout || dnsErr.IsTemporary
 	}
 
 	var opErr *net.OpError
@@ -108,12 +108,12 @@ func (r *RetryEngine) isRetryableError(err error) bool {
 				return false
 			}
 		}
-		return opErr.Temporary()
+		return opErr.Timeout()
 	}
 
 	var netErr net.Error
 	if errors.As(err, &netErr) {
-		return netErr.Timeout() || netErr.Temporary()
+		return netErr.Timeout()
 	}
 
 	retryablePatterns := []string{

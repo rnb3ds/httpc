@@ -21,7 +21,7 @@ func TestDownload_Basic(t *testing.T) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
 		w.WriteHeader(http.StatusOK)
-		w.Write(content)
+		_, _ = w.Write(content)
 	}))
 	defer server.Close()
 
@@ -65,7 +65,7 @@ func TestDownload_LargeFile(t *testing.T) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(largeContent)))
 		w.WriteHeader(http.StatusOK)
-		w.Write(largeContent)
+		_, _ = w.Write(largeContent)
 	}))
 	defer server.Close()
 
@@ -96,7 +96,7 @@ func TestDownload_WithProgress(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
 		w.WriteHeader(http.StatusOK)
-		w.Write(content)
+		_, _ = w.Write(content)
 	}))
 	defer server.Close()
 
@@ -136,7 +136,7 @@ func TestDownload_WithTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(200 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("slow response"))
+		_, _ = w.Write([]byte("slow response"))
 	}))
 	defer server.Close()
 
@@ -161,7 +161,7 @@ func TestDownload_ResumeNotSupported(t *testing.T) {
 		// Server doesn't support range requests
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
 		w.WriteHeader(http.StatusOK)
-		w.Write(content)
+		_, _ = w.Write(content)
 	}))
 	defer server.Close()
 
@@ -174,7 +174,7 @@ func TestDownload_ResumeNotSupported(t *testing.T) {
 	filePath := filepath.Join(tempDir, "resume-test.txt")
 
 	// Create partial file
-	os.WriteFile(filePath, []byte("partial"), 0644)
+	_ = os.WriteFile(filePath, []byte("partial"), 0644)
 
 	opts := &DownloadOptions{
 		FilePath:       filePath,
@@ -202,11 +202,11 @@ func TestDownload_PartialContent(t *testing.T) {
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes 7-%d/%d", len(fullContent)-1, len(fullContent)))
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(fullContent)-7))
 			w.WriteHeader(http.StatusPartialContent)
-			w.Write(fullContent[7:])
+			_, _ = w.Write(fullContent[7:])
 		} else {
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(fullContent)))
 			w.WriteHeader(http.StatusOK)
-			w.Write(fullContent)
+			_, _ = w.Write(fullContent)
 		}
 	}))
 	defer server.Close()
@@ -220,7 +220,7 @@ func TestDownload_PartialContent(t *testing.T) {
 	filePath := filepath.Join(tempDir, "partial-test.txt")
 
 	// Create partial file
-	os.WriteFile(filePath, []byte("partial"), 0644)
+	_ = os.WriteFile(filePath, []byte("partial"), 0644)
 
 	opts := &DownloadOptions{
 		FilePath:       filePath,
@@ -240,7 +240,7 @@ func TestDownload_PartialContent(t *testing.T) {
 func TestDownload_InvalidPath(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("content"))
+		_, _ = w.Write([]byte("content"))
 	}))
 	defer server.Close()
 
@@ -260,7 +260,7 @@ func TestDownload_FileAlreadyExists(t *testing.T) {
 	content := []byte("new content")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write(content)
+		_, _ = w.Write(content)
 	}))
 	defer server.Close()
 
@@ -273,7 +273,7 @@ func TestDownload_FileAlreadyExists(t *testing.T) {
 	filePath := filepath.Join(tempDir, "existing.txt")
 
 	// Create existing file
-	os.WriteFile(filePath, []byte("old content"), 0644)
+	_ = os.WriteFile(filePath, []byte("old content"), 0644)
 
 	// Try download without overwrite
 	opts := &DownloadOptions{
@@ -299,7 +299,7 @@ func TestDownload_FileAlreadyExists(t *testing.T) {
 func TestDownload_HTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("Not Found"))
+		_, _ = w.Write([]byte("Not Found"))
 	}))
 	defer server.Close()
 
@@ -321,7 +321,7 @@ func TestDownload_CreateDirectories(t *testing.T) {
 	content := []byte("test content")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write(content)
+		_, _ = w.Write(content)
 	}))
 	defer server.Close()
 
@@ -354,7 +354,7 @@ func TestDownload_PackageLevel(t *testing.T) {
 	content := []byte("package level download")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write(content)
+		_, _ = w.Write(content)
 	}))
 	defer server.Close()
 
@@ -375,7 +375,7 @@ func TestResponse_SaveToFile(t *testing.T) {
 	content := []byte("response content")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write(content)
+		_, _ = w.Write(content)
 	}))
 	defer server.Close()
 

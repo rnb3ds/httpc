@@ -206,8 +206,6 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 		clientErr.Type = ErrorTypeNetwork
 		if opErr.Timeout() {
 			clientErr.Message = "network operation timed out"
-		} else if opErr.Temporary() {
-			clientErr.Message = "temporary network operation failed"
 		} else {
 			clientErr.Message = "network operation failed"
 		}
@@ -219,9 +217,6 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 		if netErr.Timeout() {
 			clientErr.Type = ErrorTypeTimeout
 			clientErr.Message = "network timeout occurred"
-		} else if netErr.Temporary() {
-			clientErr.Type = ErrorTypeNetwork
-			clientErr.Message = "temporary network error occurred"
 		} else {
 			clientErr.Type = ErrorTypeNetwork
 			clientErr.Message = "network error occurred"

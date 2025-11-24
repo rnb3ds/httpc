@@ -1,4 +1,4 @@
-﻿package httpc
+package httpc
 
 import (
 	"encoding/json"
@@ -34,13 +34,13 @@ func TestIntegration_RESTfulAPI(t *testing.T) {
 				id := strings.TrimPrefix(r.URL.Path, "/users/")
 				if user, ok := users[id]; ok {
 					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(user)
+					_ = json.NewEncoder(w).Encode(user)
 				} else {
 					w.WriteHeader(http.StatusNotFound)
 				}
 			} else if r.URL.Path == "/users" {
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(users)
+				_ = json.NewEncoder(w).Encode(users)
 			}
 
 		case "POST":
@@ -55,7 +55,7 @@ func TestIntegration_RESTfulAPI(t *testing.T) {
 				users[id] = user
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusCreated)
-				json.NewEncoder(w).Encode(user)
+				_ = json.NewEncoder(w).Encode(user)
 			}
 
 		case "PUT":
@@ -69,7 +69,7 @@ func TestIntegration_RESTfulAPI(t *testing.T) {
 				user["id"] = id
 				users[id] = user
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(user)
+				_ = json.NewEncoder(w).Encode(user)
 			}
 
 		case "DELETE":
@@ -177,7 +177,7 @@ func TestIntegration_Authentication(t *testing.T) {
 		}
 
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"authenticated":true}`))
+		_, _ = w.Write([]byte(`{"authenticated":true}`))
 	}))
 	defer server.Close()
 
@@ -231,7 +231,7 @@ func TestIntegration_Pagination(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"page":  page,
 			"limit": limit,
 			"data":  []string{"item1", "item2", "item3"},
@@ -382,7 +382,7 @@ func TestStress_MemoryUsage(t *testing.T) {
 		// Send 1KB response
 		data := make([]byte, 1024)
 		w.WriteHeader(http.StatusOK)
-		w.Write(data)
+		_, _ = w.Write(data)
 	}))
 	defer server.Close()
 

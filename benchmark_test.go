@@ -18,7 +18,7 @@ import (
 func BenchmarkClient_SimpleGET(b *testing.B) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer server.Close()
 
@@ -38,10 +38,10 @@ func BenchmarkClient_SimpleGET(b *testing.B) {
 
 func BenchmarkClient_POST_JSON(b *testing.B) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.Copy(io.Discard, r.Body)
+		_, _ = io.Copy(io.Discard, r.Body)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}))
 	defer server.Close()
 
@@ -68,7 +68,7 @@ func BenchmarkClient_POST_JSON(b *testing.B) {
 func BenchmarkClient_Concurrent_Requests(b *testing.B) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer server.Close()
 
@@ -100,7 +100,7 @@ func BenchmarkClient_Concurrent_Requests(b *testing.B) {
 
 func BenchmarkClient_MemoryAllocation_SmallResponse(b *testing.B) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("Small response"))
+		_, _ = w.Write([]byte("Small response"))
 	}))
 	defer server.Close()
 
@@ -123,7 +123,7 @@ func BenchmarkClient_MemoryAllocation_LargeResponse(b *testing.B) {
 	largeBody := strings.Repeat("x", 64*1024) // 64KB
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(largeBody))
+		_, _ = w.Write([]byte(largeBody))
 	}))
 	defer server.Close()
 
@@ -170,7 +170,7 @@ func BenchmarkClient_WithRetry(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		client.Get(server.URL)
+		_, _ = client.Get(server.URL)
 	}
 }
 
@@ -214,7 +214,7 @@ func BenchmarkClient_ContextCancellation(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-		client.Request(ctx, "GET", server.URL)
+		_, _ = client.Request(ctx, "GET", server.URL)
 		cancel()
 	}
 }
@@ -226,7 +226,7 @@ func BenchmarkClient_ContextCancellation(b *testing.B) {
 func BenchmarkDefaultClient_Get(b *testing.B) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer server.Close()
 
