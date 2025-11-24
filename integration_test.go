@@ -333,6 +333,7 @@ func TestStress_HighConcurrency(t *testing.T) {
 					case errors <- err:
 					default:
 						// Error channel is full, ignore
+						//
 					}
 				}
 			}
