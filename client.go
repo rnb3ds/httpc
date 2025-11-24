@@ -12,25 +12,7 @@ import (
 )
 
 // Client represents the HTTP client interface.
-//
-// Thread Safety: All Client methods are safe for concurrent use by multiple
-// goroutines. A single Client instance can be shared across your application.
-//
-// Example concurrent usage:
-//
-//	client, _ := httpc.New()
-//	defer client.Close()
-//
-//	var wg sync.WaitGroup
-//	for i := 0; i < 100; i++ {
-//		wg.Add(1)
-//		go func() {
-//			defer wg.Done()
-//			resp, _ := client.Get("https://api.example.com")
-//			// ... process response
-//		}()
-//	}
-//	wg.Wait()
+// All methods are safe for concurrent use by multiple goroutines.
 type Client interface {
 	// HTTP methods
 	Get(url string, options ...RequestOption) (*Response, error)
@@ -287,15 +269,14 @@ func convertToEngineConfig(cfg *Config) *engine.Config {
 
 	maxIdleConnsPerHost := calculateOptimalIdleConnsPerHost(cfg.MaxIdleConns, cfg.MaxConnsPerHost)
 
-	// Determine TLS version settings
 	minTLSVersion := cfg.MinTLSVersion
 	if minTLSVersion == 0 {
-		minTLSVersion = tls.VersionTLS12 // Default to TLS 1.2
+		minTLSVersion = tls.VersionTLS12
 	}
 
 	maxTLSVersion := cfg.MaxTLSVersion
 	if maxTLSVersion == 0 {
-		maxTLSVersion = tls.VersionTLS13 // Default to TLS 1.3
+		maxTLSVersion = tls.VersionTLS13
 	}
 
 	return &engine.Config{
@@ -314,15 +295,15 @@ func convertToEngineConfig(cfg *Config) *engine.Config {
 		MaxTLSVersion:       maxTLSVersion,
 		InsecureSkipVerify:  cfg.InsecureSkipVerify,
 		MaxResponseBodySize: cfg.MaxResponseBodySize,
-		ValidateURL:         true, // Force enable URL validation
-		ValidateHeaders:     true, // Force enable header validation
+		ValidateURL:         true,
+		ValidateHeaders:     true,
 		AllowPrivateIPs:     cfg.AllowPrivateIPs,
 		StrictContentLength:   cfg.StrictContentLength,
 		MaxRetries:            cfg.MaxRetries,
 		RetryDelay:            cfg.RetryDelay,
 		MaxRetryDelay:         calculateMaxRetryDelay(cfg.RetryDelay, cfg.BackoffFactor),
 		BackoffFactor:         cfg.BackoffFactor,
-		Jitter:                true, // Enable jitter to prevent thundering herd
+		Jitter:                true,
 		UserAgent:             cfg.UserAgent,
 		Headers:               cfg.Headers,
 		FollowRedirects:       cfg.FollowRedirects,
@@ -335,18 +316,13 @@ func convertToEngineConfig(cfg *Config) *engine.Config {
 
 
 func calculateOptimalIdleConnsPerHost(maxIdleConns, maxConnsPerHost int) int {
+	var result int
 	if maxConnsPerHost > 0 {
-		result := maxConnsPerHost / 2
-		if result < 2 {
-			return 2
-		}
-		if result > 10 {
-			return 10
-		}
-		return result
+		result = maxConnsPerHost / 2
+	} else {
+		result = maxIdleConns / 2
 	}
 	
-	result := maxIdleConns / 2
 	if result < 2 {
 		return 2
 	}
@@ -379,7 +355,6 @@ func convertRequestOptions(options []RequestOption) []engine.RequestOption {
 		}
 		currentOpt := opt
 		engineOptions = append(engineOptions, func(req *engine.Request) error {
-			// Convert engine.Request to public Request
 			publicReq := &Request{
 				Method:      req.Method,
 				URL:         req.URL,
@@ -392,12 +367,10 @@ func convertRequestOptions(options []RequestOption) []engine.RequestOption {
 				Cookies:     req.Cookies,
 			}
 			
-			// Apply the option
 			if err := currentOpt(publicReq); err != nil {
 				return err
 			}
 			
-			// Copy back the modified values
 			req.Method = publicReq.Method
 			req.URL = publicReq.URL
 			req.Headers = publicReq.Headers
@@ -432,16 +405,13 @@ func convertEngineResponse(engineResp *engine.Response) *Response {
 	}
 }
 
-// createCookieJar creates a cookie jar if cookies are enabled
 func createCookieJar(enableCookies bool) any {
 	if !enableCookies {
 		return nil
 	}
-
 	jar, err := NewCookieJar()
 	if err != nil {
 		return nil
 	}
-
 	return jar
 }

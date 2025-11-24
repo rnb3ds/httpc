@@ -370,48 +370,38 @@ func WithCookie(cookie *http.Cookie) RequestOption {
 	}
 }
 
-// validateCookie performs comprehensive cookie validation
 func validateCookie(cookie *http.Cookie) error {
 	if strings.TrimSpace(cookie.Name) == "" {
 		return fmt.Errorf("cookie name cannot be empty")
 	}
-
-	// Check for invalid characters that could enable header injection
 	if strings.ContainsAny(cookie.Name, "\r\n\x00;,") {
 		return fmt.Errorf("cookie name contains invalid characters")
 	}
 	if strings.ContainsAny(cookie.Value, "\r\n\x00") {
 		return fmt.Errorf("cookie value contains invalid characters")
 	}
-
-	// Check size limits to prevent DoS
 	if len(cookie.Name) > 256 {
-		return fmt.Errorf("cookie name too long (max 256 characters)")
+		return fmt.Errorf("cookie name too long")
 	}
 	if len(cookie.Value) > 4096 {
-		return fmt.Errorf("cookie value too long (max 4096 characters)")
+		return fmt.Errorf("cookie value too long")
 	}
-
-	// Validate Domain if present
 	if cookie.Domain != "" {
 		if strings.ContainsAny(cookie.Domain, "\r\n\x00;,") {
 			return fmt.Errorf("cookie domain contains invalid characters")
 		}
 		if len(cookie.Domain) > 255 {
-			return fmt.Errorf("cookie domain too long (max 255 characters)")
+			return fmt.Errorf("cookie domain too long")
 		}
 	}
-
-	// Validate Path if present
 	if cookie.Path != "" {
 		if strings.ContainsAny(cookie.Path, "\r\n\x00;") {
 			return fmt.Errorf("cookie path contains invalid characters")
 		}
 		if len(cookie.Path) > 1024 {
-			return fmt.Errorf("cookie path too long (max 1024 characters)")
+			return fmt.Errorf("cookie path too long")
 		}
 	}
-
 	return nil
 }
 

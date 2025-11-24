@@ -94,38 +94,28 @@ func (e *ClientError) IsRetryable() bool {
 	case ErrorTypeNetwork, ErrorTypeTimeout, ErrorTypeTransport, ErrorTypeDNS:
 		return true
 	case ErrorTypeTLS, ErrorTypeCertificate:
-		return false // TLS/cert errors are usually not transient
+		return false
 	case ErrorTypeResponseRead:
-		// Response read errors are retryable if they have a network-related cause
-		// or if they appear to be transient (like EOF, connection issues)
 		if e.Cause != nil {
 			var netErr *net.OpError
 			if errors.As(e.Cause, &netErr) {
 				return true
 			}
-			// Check if the error message suggests a transient issue
 			errMsg := e.Cause.Error()
-			if strings.Contains(errMsg, "EOF") ||
-				strings.Contains(errMsg, "connection") ||
-				strings.Contains(errMsg, "timeout") {
+			if strings.Contains(errMsg, "EOF") || strings.Contains(errMsg, "connection") || strings.Contains(errMsg, "timeout") {
 				return true
 			}
-			// Other response read errors (like parse errors) are not retryable
 			return false
 		}
-		// If no specific cause, assume it's a transient response read issue
 		return true
 	case ErrorTypeHTTP:
-		// Parse status code from error message to determine retryability
 		errMsg := e.Message
-		if strings.Contains(errMsg, "HTTP 429") || // Too Many Requests
-			strings.Contains(errMsg, "HTTP 500") || // Internal Server Error
-			strings.Contains(errMsg, "HTTP 502") || // Bad Gateway
-			strings.Contains(errMsg, "HTTP 503") || // Service Unavailable
-			strings.Contains(errMsg, "HTTP 504") { // Gateway Timeout
+		if strings.Contains(errMsg, "HTTP 429") || strings.Contains(errMsg, "HTTP 500") ||
+			strings.Contains(errMsg, "HTTP 502") || strings.Contains(errMsg, "HTTP 503") ||
+			strings.Contains(errMsg, "HTTP 504") {
 			return true
 		}
-		return false // Other HTTP errors (4xx client errors) are not retryable
+		return false
 	default:
 		return false
 	}
@@ -188,7 +178,6 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 		return clientErr
 	}
 
-	// Check for url.Error first (before net errors)
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {
 		errMsg := strings.ToLower(urlErr.Error())
@@ -199,7 +188,6 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 		}
 	}
 
-	// Check for typed errors using errors.As (more efficient than type assertion)
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
 		clientErr.Type = ErrorTypeNetwork
@@ -241,9 +229,7 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 		return clientErr
 	}
 
-	// Pattern-based classification for wrapped errors (single pass)
 	errMsg := strings.ToLower(err.Error())
-	
 	switch {
 	case strings.Contains(errMsg, "context canceled"):
 		clientErr.Type = ErrorTypeContextCanceled

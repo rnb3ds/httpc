@@ -95,17 +95,7 @@ func (v *Validator) validateURL(urlStr string) error {
 		return fmt.Errorf("URL host is required")
 	}
 
-	// Only allow HTTP schemes
-	validSchemes := []string{"http", "https"}
-	schemeValid := false
-	for _, scheme := range validSchemes {
-		if parsedURL.Scheme == scheme {
-			schemeValid = true
-			break
-		}
-	}
-
-	if !schemeValid {
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
 		return fmt.Errorf("unsupported URL scheme: %s (only http/https allowed)", parsedURL.Scheme)
 	}
 
@@ -126,69 +116,38 @@ func (v *Validator) validateHost(host string) error {
 		hostname = h
 	}
 
-	// Check for localhost patterns first
 	if isLocalhost(hostname) {
-		return fmt.Errorf("localhost and loopback addresses are not allowed")
+		return fmt.Errorf("localhost and loopback addresses not allowed")
 	}
 
-	// Check if hostname is already an IP address
 	if ip := net.ParseIP(hostname); ip != nil {
 		if isPrivateOrReservedIP(ip) {
-			return fmt.Errorf("private or reserved IP addresses are not allowed: %s", ip.String())
+			return fmt.Errorf("private or reserved IP not allowed: %s", ip.String())
 		}
 		return nil
 	}
-
-	// For domain names, DNS resolution happens at connection time.
-	// IMPORTANT: The primary SSRF protection is in internal/connection/pool.go
-	// where we validate resolved IPs AFTER DNS lookup but BEFORE connection.
-	// This pre-validation only catches obvious cases (localhost, direct IPs).
-	// The post-resolution validation is the critical security boundary.
 
 	return nil
 }
 
 func isLocalhost(hostname string) bool {
 	hostname = strings.ToLower(hostname)
-	return hostname == "localhost" ||
-		hostname == "127.0.0.1" ||
-		hostname == "::1" ||
-		hostname == "0.0.0.0" ||
-		hostname == "::" ||
-		strings.HasPrefix(hostname, "127.") ||
-		strings.HasPrefix(hostname, "localhost.")
+	return hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" ||
+		hostname == "0.0.0.0" || hostname == "::" ||
+		strings.HasPrefix(hostname, "127.") || strings.HasPrefix(hostname, "localhost.")
 }
 
 func isPrivateOrReservedIP(ip net.IP) bool {
-	if ip.IsLoopback() {
-		return true
-	}
-
-	if ip.IsPrivate() {
-		return true
-	}
-
-	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-		return true
-	}
-
-	if ip.IsMulticast() {
-		return true
-	}
-
-	if ip.IsUnspecified() {
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || 
+		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
 		return true
 	}
 
 	if ip4 := ip.To4(); ip4 != nil {
-		if ip4[0] >= 240 {
-			return true
-		}
-		if ip4[0] == 0 {
+		if ip4[0] >= 240 || ip4[0] == 0 {
 			return true
 		}
 	}
-
 	return false
 }
 
@@ -196,35 +155,27 @@ func (v *Validator) validateHeader(key, value string) error {
 	if strings.TrimSpace(key) == "" {
 		return fmt.Errorf("header key cannot be empty")
 	}
-
 	if len(key) > 256 {
-		return fmt.Errorf("header key too long (max 256 characters)")
+		return fmt.Errorf("header key too long")
 	}
-
 	if strings.ContainsAny(key, "\r\n\x00") || strings.ContainsAny(value, "\r\n\x00") {
 		return fmt.Errorf("header contains invalid characters")
 	}
-
 	if len(value) > 8192 {
-		return fmt.Errorf("header value too long (max 8KB)")
+		return fmt.Errorf("header value too long")
 	}
-
 	for _, r := range key {
 		if !isValidHeaderChar(r) {
 			return fmt.Errorf("invalid character in header key")
 		}
 	}
-
 	if strings.HasPrefix(key, ":") {
-		return fmt.Errorf("pseudo-headers are not allowed")
+		return fmt.Errorf("pseudo-headers not allowed")
 	}
-
 	keyLower := strings.ToLower(key)
-	switch keyLower {
-	case "content-length", "transfer-encoding":
-		return fmt.Errorf("header is managed automatically")
+	if keyLower == "content-length" || keyLower == "transfer-encoding" {
+		return fmt.Errorf("header managed automatically")
 	}
-
 	return nil
 }
 

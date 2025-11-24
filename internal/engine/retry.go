@@ -47,14 +47,11 @@ func (r *RetryEngine) GetDelayWithResponse(attempt int, resp *Response) time.Dur
 	if resp != nil && resp.Headers != nil {
 		if retryAfterValues, exists := resp.Headers["Retry-After"]; exists && len(retryAfterValues) > 0 {
 			retryAfter := retryAfterValues[0]
-
 			if seconds, err := strconv.Atoi(retryAfter); err == nil && seconds > 0 {
 				return time.Duration(seconds) * time.Second
 			}
-
 			if retryTime, err := time.Parse(time.RFC1123, retryAfter); err == nil {
-				delay := time.Until(retryTime)
-				if delay > 0 {
+				if delay := time.Until(retryTime); delay > 0 {
 					return delay
 				}
 			}
@@ -90,26 +87,20 @@ func (r *RetryEngine) MaxRetries() int {
 }
 
 func (r *RetryEngine) isRetryableError(err error) bool {
-	// Never retry context cancellation or deadline exceeded
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 
 	errMsg := strings.ToLower(err.Error())
-	
-	// Check for context-related errors in message (for wrapped errors)
-	if strings.Contains(errMsg, "context canceled") ||
-		strings.Contains(errMsg, "context deadline exceeded") {
+	if strings.Contains(errMsg, "context canceled") || strings.Contains(errMsg, "context deadline exceeded") {
 		return false
 	}
 
-	// DNS errors - retry only if temporary or timeout
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
 		return dnsErr.IsTimeout || dnsErr.Temporary()
 	}
 
-	// Network operation errors - check for context first
 	var opErr *net.OpError
 	if errors.As(err, &opErr) {
 		if opErr.Err != nil {
@@ -120,30 +111,21 @@ func (r *RetryEngine) isRetryableError(err error) bool {
 		return opErr.Temporary()
 	}
 
-	// Generic network errors
 	var netErr net.Error
 	if errors.As(err, &netErr) {
 		return netErr.Timeout() || netErr.Temporary()
 	}
 
-	// Pattern-based classification for wrapped errors
 	retryablePatterns := []string{
-		"connection refused",
-		"connection reset",
-		"broken pipe",
-		"network unreachable",
-		"host unreachable",
-		"no route to host",
-		"no such host",
+		"connection refused", "connection reset", "broken pipe",
+		"network unreachable", "host unreachable", "no route to host", "no such host",
 	}
-
 	for _, pattern := range retryablePatterns {
 		if strings.Contains(errMsg, pattern) {
 			return true
 		}
 	}
 
-	// Only retry network timeouts, not context timeouts
 	if strings.Contains(errMsg, "timeout") && !strings.Contains(errMsg, "context") {
 		return true
 	}
@@ -151,7 +133,6 @@ func (r *RetryEngine) isRetryableError(err error) bool {
 	return false
 }
 
-// getSecureJitter generates random jitter for retry delays
 func (r *RetryEngine) getSecureJitter(maxJitter time.Duration) time.Duration {
 	if maxJitter <= 0 {
 		return 0
@@ -166,7 +147,6 @@ func (r *RetryEngine) getSecureJitter(maxJitter time.Duration) time.Duration {
 	return time.Duration(n.Int64())
 }
 
-// isRetryableStatus checks if an HTTP status code is retryable
 func (r *RetryEngine) isRetryableStatus(statusCode int) bool {
 	switch statusCode {
 	case http.StatusRequestTimeout, // 408

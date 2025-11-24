@@ -68,11 +68,9 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	if opts == nil {
 		return nil, fmt.Errorf("download options cannot be nil")
 	}
-
 	if opts.FilePath == "" {
 		return nil, fmt.Errorf("file path cannot be empty")
 	}
-
 	if err := prepareFilePath(opts.FilePath); err != nil {
 		return nil, fmt.Errorf("failed to prepare file path: %w", err)
 	}
@@ -82,7 +80,6 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 		if !opts.Overwrite && !opts.ResumeDownload {
 			return nil, fmt.Errorf("file already exists: %s", opts.FilePath)
 		}
-
 		if opts.ResumeDownload {
 			resumeOffset = fileInfo.Size()
 			options = append(options, WithHeader("Range", fmt.Sprintf("bytes=%d-", resumeOffset)))
@@ -95,7 +92,6 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	}
 
 	resumed := resumeOffset > 0 && resp.StatusCode == http.StatusPartialContent
-
 	if resumeOffset > 0 && resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
 		return &DownloadResult{
 			FilePath:      opts.FilePath,
@@ -137,13 +133,11 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 		opts.ProgressCallback(resumeOffset+bytesWritten, totalSize, speed)
 	}
 
-	averageSpeed := float64(bytesWritten) / resp.Duration.Seconds()
-
 	return &DownloadResult{
 		FilePath:      opts.FilePath,
 		BytesWritten:  bytesWritten,
 		Duration:      resp.Duration,
-		AverageSpeed:  averageSpeed,
+		AverageSpeed:  float64(bytesWritten) / resp.Duration.Seconds(),
 		StatusCode:    resp.StatusCode,
 		ContentLength: resp.ContentLength,
 		Resumed:       resumed,
@@ -163,40 +157,30 @@ func prepareFilePath(filePath string) error {
 		return fmt.Errorf("file path too long (max 4096 characters)")
 	}
 
-	// Clean and normalize the path
 	cleanPath := filepath.Clean(filePath)
-
-	// Convert to absolute path for consistent validation
 	absPath, err := filepath.Abs(cleanPath)
 	if err != nil {
 		return fmt.Errorf("failed to resolve absolute path: %w", err)
 	}
 
-	// Check for system path access
 	if isSystemPath(absPath) {
 		return fmt.Errorf("access to system path denied")
 	}
 
-	// For relative paths, ensure they stay within working directory
 	if !filepath.IsAbs(filePath) {
 		wd, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("failed to get working directory: %w", err)
 		}
-
 		wdAbs, err := filepath.Abs(wd)
 		if err != nil {
 			return fmt.Errorf("failed to resolve working directory: %w", err)
 		}
-		
-		// Ensure the absolute path starts with working directory
-		// Use volume-aware comparison for Windows compatibility
 		if !isPathWithinDirectory(absPath, wdAbs) {
-			return fmt.Errorf("path traversal detected: path escapes working directory")
+			return fmt.Errorf("path traversal detected")
 		}
 	}
 
-	// Create parent directories
 	dir := filepath.Dir(absPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create directories: %w", err)
@@ -204,28 +188,20 @@ func prepareFilePath(filePath string) error {
 	return nil
 }
 
-// isPathWithinDirectory checks if path is within baseDir, handling Windows volumes correctly
 func isPathWithinDirectory(path, baseDir string) bool {
-	// Normalize paths for comparison
 	path = filepath.Clean(path)
 	baseDir = filepath.Clean(baseDir)
 	
-	// On Windows, ensure both paths are on the same volume
-	pathVol := filepath.VolumeName(path)
-	baseDirVol := filepath.VolumeName(baseDir)
-	if pathVol != baseDirVol {
+	if filepath.VolumeName(path) != filepath.VolumeName(baseDir) {
 		return false
 	}
 	
-	// Check if path starts with baseDir
-	// Add separator to prevent partial matches
 	if path == baseDir {
 		return true
 	}
 	
 	baseDirWithSep := baseDir + string(filepath.Separator)
 	pathWithSep := path + string(filepath.Separator)
-	
 	return strings.HasPrefix(pathWithSep, baseDirWithSep)
 }
 

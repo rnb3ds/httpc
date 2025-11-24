@@ -12,18 +12,8 @@ import (
 )
 
 // Response represents an HTTP response.
-//
-// Thread Safety: Response objects are safe to read from multiple goroutines
-// after they are returned. The Headers map is deep-copied from the underlying
-// http.Response to prevent concurrent access issues. However, Response objects
-// should not be modified concurrently.
-//
-// Example safe usage:
-//
-//	resp, _ := httpc.Get("https://api.example.com")
-//	// Safe: multiple goroutines can read resp.Headers concurrently
-//	go func() { fmt.Println(resp.Headers.Get("Content-Type")) }()
-//	go func() { fmt.Println(resp.StatusCode) }()
+// Response objects are safe to read from multiple goroutines after they are returned.
+// The Headers map is deep-copied to prevent concurrent access issues.
 type Response struct {
 	StatusCode    int
 	Status        string
@@ -56,7 +46,6 @@ func (r *Response) IsServerError() bool {
 	return r.StatusCode >= 500 && r.StatusCode < 600
 }
 
-// JSON unmarshals the response body into the provided interface
 // JSON unmarshals the response body into the provided interface.
 func (r *Response) JSON(v any) error {
 	if r.RawBody == nil {
@@ -87,18 +76,7 @@ func (r *Response) HasCookie(name string) bool {
 }
 
 // Config defines the HTTP client configuration.
-//
-// Thread Safety: Config should be treated as immutable after passing it to New().
-// Do not modify Config fields after client creation. The client makes internal
-// copies of mutable fields (like Headers map) to ensure thread safety.
-//
-// Example safe usage:
-//
-//	cfg := httpc.DefaultConfig()
-//	cfg.Timeout = 10 * time.Second
-//	cfg.Headers = map[string]string{"X-API-Key": "secret"}
-//	client, _ := httpc.New(cfg)
-//	// Do NOT modify cfg.Headers after this point
+// Config should be treated as immutable after passing it to New().
 type Config struct {
 	Timeout         time.Duration
 	MaxIdleConns    int
@@ -118,7 +96,7 @@ type Config struct {
 	BackoffFactor float64
 
 	UserAgent       string
-	Headers         map[string]string // Copied internally for thread safety
+	Headers         map[string]string
 	FollowRedirects bool
 	EnableHTTP2     bool
 	EnableCookies   bool
@@ -188,8 +166,7 @@ func NewCookieJar() (http.CookieJar, error) {
 	})
 }
 
-// ValidateConfig validates the configuration with reasonable limits
-// ValidateConfig validates the configuration with reasonable limits
+// ValidateConfig validates the configuration with reasonable limits.
 func ValidateConfig(cfg *Config) error {
 	if cfg == nil {
 		return fmt.Errorf("config cannot be nil")

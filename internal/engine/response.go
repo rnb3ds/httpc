@@ -29,18 +29,12 @@ func (p *ResponseProcessor) Process(httpResp *http.Response) (*Response, error) 
 	contentLength := httpResp.ContentLength
 
 	if contentLength > 0 && contentLength != int64(len(body)) {
-		isHeadRequest := false
-		if httpResp.Request != nil && httpResp.Request.Method == "HEAD" {
-			isHeadRequest = true
-		}
-
+		isHeadRequest := httpResp.Request != nil && httpResp.Request.Method == "HEAD"
 		if !isHeadRequest && p.config.StrictContentLength {
 			return nil, fmt.Errorf("content-length mismatch: expected %d bytes, got %d bytes", contentLength, len(body))
 		}
 	}
 
-	// Deep copy headers to prevent concurrent access issues
-	// http.Header is a map[string][]string which is not safe for concurrent access
 	headers := make(http.Header, len(httpResp.Header))
 	for k, v := range httpResp.Header {
 		headerCopy := make([]string, len(v))

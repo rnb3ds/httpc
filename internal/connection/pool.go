@@ -205,47 +205,34 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 	}
 }
 
-// validateResolvedIP checks if the resolved IP is safe to connect to
 func (pm *PoolManager) validateResolvedIP(ip net.IP) error {
-	// Skip validation if private IPs are explicitly allowed (for testing/development)
 	if pm.config.AllowPrivateIPs {
 		return nil
 	}
 
-	// Check for loopback addresses
 	if ip.IsLoopback() {
-		return fmt.Errorf("connection to loopback address blocked: %s", ip.String())
+		return fmt.Errorf("loopback address blocked: %s", ip.String())
 	}
 
-	// Check for private IP ranges
 	if ip.IsPrivate() {
-		return fmt.Errorf("connection to private IP blocked: %s", ip.String())
+		return fmt.Errorf("private IP blocked: %s", ip.String())
 	}
 
-	// Check for link-local addresses
 	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-		return fmt.Errorf("connection to link-local address blocked: %s", ip.String())
+		return fmt.Errorf("link-local address blocked: %s", ip.String())
 	}
 
-	// Check for multicast addresses
 	if ip.IsMulticast() {
-		return fmt.Errorf("connection to multicast address blocked: %s", ip.String())
+		return fmt.Errorf("multicast address blocked: %s", ip.String())
 	}
 
-	// Check for unspecified addresses (0.0.0.0, ::)
 	if ip.IsUnspecified() {
-		return fmt.Errorf("connection to unspecified address blocked: %s", ip.String())
+		return fmt.Errorf("unspecified address blocked: %s", ip.String())
 	}
 
-	// Check for reserved IPv4 ranges
 	if ip4 := ip.To4(); ip4 != nil {
-		// Class E (240.0.0.0/4) - Reserved
-		if ip4[0] >= 240 {
-			return fmt.Errorf("connection to reserved IP blocked: %s", ip.String())
-		}
-		// 0.0.0.0/8 - Current network
-		if ip4[0] == 0 {
-			return fmt.Errorf("connection to reserved IP blocked: %s", ip.String())
+		if ip4[0] >= 240 || ip4[0] == 0 {
+			return fmt.Errorf("reserved IP blocked: %s", ip.String())
 		}
 	}
 
@@ -289,15 +276,11 @@ type trackedConn struct {
 }
 
 func (tc *trackedConn) Close() error {
-	// Update connection metrics
 	atomic.AddInt64(&tc.pm.activeConns, -1)
-
-	// Update host-specific metrics
 	if value, ok := tc.pm.hostConns.Load(tc.host); ok {
 		stats := value.(*HostStats)
 		atomic.AddInt64(&stats.ActiveConns, -1)
 	}
-
 	return tc.Conn.Close()
 }
 
@@ -354,7 +337,6 @@ func (pm *PoolManager) Close() error {
 		return nil
 	}
 
-	// Signal metrics goroutine to stop
 	close(pm.done)
 
 	pm.mu.Lock()
@@ -363,20 +345,16 @@ func (pm *PoolManager) Close() error {
 	if pm.transport != nil {
 		pm.transport.CloseIdleConnections()
 	}
-
 	return nil
 }
 
 func (pm *PoolManager) IsHealthy() bool {
 	metrics := pm.GetMetrics()
-	
 	if metrics.ConnectionHitRate < 0.9 && metrics.TotalConnections > 10 {
 		return false
 	}
-
 	if metrics.ActiveConnections >= int64(pm.config.MaxTotalConns)*9/10 {
 		return false
 	}
-
 	return true
 }
