@@ -19,8 +19,17 @@ type RequestProcessor struct {
 }
 
 func NewRequestProcessor(config *Config) *RequestProcessor {
+	// Deep copy config to ensure thread safety
+	safeCfg := *config
+	if config.Headers != nil {
+		safeCfg.Headers = make(map[string]string, len(config.Headers))
+		for k, v := range config.Headers {
+			safeCfg.Headers[k] = v
+		}
+	}
+	
 	return &RequestProcessor{
-		config: config,
+		config: &safeCfg,
 	}
 }
 

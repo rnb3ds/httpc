@@ -93,7 +93,7 @@ result, err := client.DownloadFile(
 
 Track download completion:
 
-**Note**: The current implementation loads the entire response into memory before writing to disk, so the progress callback is called once at the end with final statistics. This is suitable for most files but may not be ideal for very large files.
+**Note**: The current implementation loads the entire response into memory before writing to disk, so the progress callback is called once at the end with final statistics. This is suitable for most files but may not provide real-time progress updates during the download.
 
 ```go
 opts := httpc.DefaultDownloadOptions("downloads/large-file.zip")
@@ -102,17 +102,17 @@ opts.Overwrite = true
 opts.ProgressCallback = func(downloaded, total int64, speed float64) {
     if total > 0 {
         percentage := float64(downloaded) / float64(total) * 100
-        fmt.Printf("\r[%.1f%%] %s / %s - %s    ",
+        fmt.Printf("\r[%.1f%%] %s / %s - %s/s    ",
             percentage,
             httpc.FormatBytes(downloaded),
             httpc.FormatBytes(total),
-            httpc.FormatSpeed(speed),
+            httpc.FormatBytes(int64(speed)),
         )
     } else {
         // Total size unknown
-        fmt.Printf("\rDownloaded: %s - %s    ",
+        fmt.Printf("\rDownloaded: %s - %s/s    ",
             httpc.FormatBytes(downloaded),
-            httpc.FormatSpeed(speed),
+            httpc.FormatBytes(int64(speed)),
         )
     }
 }
@@ -133,10 +133,10 @@ opts.ProgressCallback = func(downloaded, total int64, speed float64) {
         filled := int(percentage * float64(barWidth))
         
         bar := strings.Repeat("=", filled) + strings.Repeat(" ", barWidth-filled)
-        fmt.Printf("\r[%s] %.1f%% - %s",
+        fmt.Printf("\r[%s] %.1f%% - %s/s",
             bar,
             percentage*100,
-            httpc.FormatSpeed(speed),
+            httpc.FormatBytes(int64(speed)),
         )
     }
 }
@@ -153,16 +153,22 @@ opts := httpc.DefaultDownloadOptions("downloads/large-video.mp4")
 opts.Overwrite = true
 
 opts.ProgressCallback = func(downloaded, total int64, speed float64) {
-    percentage := float64(downloaded) / float64(total) * 100
-    eta := time.Duration(float64(total-downloaded)/speed) * time.Second
-    
-    fmt.Printf("\r%.1f%% - %s/%s - %s - ETA: %v    ",
-        percentage,
-        httpc.FormatBytes(downloaded),
-        httpc.FormatBytes(total),
-        httpc.FormatSpeed(speed),
-        eta.Round(time.Second),
-    )
+    if total > 0 {
+        percentage := float64(downloaded) / float64(total) * 100
+        remaining := total - downloaded
+        var eta time.Duration
+        if speed > 0 {
+            eta = time.Duration(float64(remaining)/speed) * time.Second
+        }
+        
+        fmt.Printf("\r%.1f%% - %s/%s - %s/s - ETA: %v    ",
+            percentage,
+            httpc.FormatBytes(downloaded),
+            httpc.FormatBytes(total),
+            httpc.FormatBytes(int64(speed)),
+            eta.Round(time.Second),
+        )
+    }
 }
 
 result, err := client.DownloadWithOptions(
@@ -360,7 +366,12 @@ size := httpc.FormatBytes(1048576)  // "1.00 MB"
 ### Format Speed
 
 ```go
-speed := httpc.FormatSpeed(1048576.0)  // "1.00 MB/s" (note: float64 parameter)
+// FormatSpeed expects bytes per second as float64
+speed := httpc.FormatSpeed(1048576.0)  // "1.00 MB/s"
+
+// Or convert from int64
+bytesPerSec := int64(1048576)
+speedStr := httpc.FormatBytes(bytesPerSec) + "/s"  // "1.00 MB/s"
 ```
 
 ## Examples

@@ -1,7 +1,6 @@
 package httpc
 
 import (
-	"bytes"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,370 +11,397 @@ import (
 	"time"
 )
 
-func TestDownloadFile(t *testing.T) {
-	client, err := New()
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
+// ============================================================================
+// DOWNLOAD TESTS - File downloads, resume, progress tracking
+// ============================================================================
+
+func TestDownload_Basic(t *testing.T) {
+	content := []byte("test file content")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+		w.WriteHeader(http.StatusOK)
+		w.Write(content)
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.AllowPrivateIPs = true
+	client, _ := New(config)
 	defer client.Close()
 
-	// Create temp directory for test downloads
 	tempDir := t.TempDir()
-	filePath := filepath.Join(tempDir, "test-download.txt")
+	filePath := filepath.Join(tempDir, "test.txt")
 
-	// DownloadFile a small file
-	result, err := client.DownloadFile(
-		"https://raw.githubusercontent.com/golang/go/master/README.md",
-		filePath,
-	)
+	result, err := client.DownloadFile(server.URL, filePath)
 	if err != nil {
-		t.Fatalf("DownloadFile failed: %v", err)
+		t.Fatalf("Download failed: %v", err)
 	}
 
-	// Verify result
 	if result.FilePath != filePath {
 		t.Errorf("Expected file path %s, got %s", filePath, result.FilePath)
 	}
-
-	if result.BytesWritten <= 0 {
-		t.Errorf("Expected bytes written > 0, got %d", result.BytesWritten)
+	if result.BytesWritten != int64(len(content)) {
+		t.Errorf("Expected %d bytes, got %d", len(content), result.BytesWritten)
 	}
-
 	if result.StatusCode != 200 {
-		t.Errorf("Expected status code 200, got %d", result.StatusCode)
+		t.Errorf("Expected status 200, got %d", result.StatusCode)
 	}
 
-	// Verify file exists and has content
+	// Verify file exists
 	fileInfo, err := os.Stat(filePath)
 	if err != nil {
 		t.Fatalf("File not created: %v", err)
 	}
-
 	if fileInfo.Size() != result.BytesWritten {
 		t.Errorf("File size mismatch: expected %d, got %d", result.BytesWritten, fileInfo.Size())
 	}
 }
 
-func TestDownloadFileWithProgress(t *testing.T) {
-	client, err := New()
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
-	defer client.Close()
-
-	tempDir := t.TempDir()
-	filePath := filepath.Join(tempDir, "test-progress.bin")
-
-	progressCalled := false
-	opts := &DownloadOptions{
-		FilePath: filePath,
-	}
-	opts.ProgressCallback = func(downloaded, total int64, speed float64) {
-		progressCalled = true
-		if total > 0 {
-			t.Logf("Progress: %d/%d bytes (%.2f%%)", downloaded, total, float64(downloaded)/float64(total)*100)
-		} else {
-			t.Logf("Progress: %d bytes downloaded", downloaded)
-		}
-	}
-
-	// Use a more reliable test URL - GitHub's raw content
-	// This file is large enough to trigger progress callbacks
-	result, err := client.DownloadWithOptions(
-		"https://raw.githubusercontent.com/golang/go/master/src/go/parser/parser.go",
-		opts,
-		WithTimeout(60*time.Second),
-	)
-	if err != nil {
-		t.Fatalf("DownloadFile failed: %v", err)
-	}
-
-	if !progressCalled {
-		t.Error("Progress callback was not called")
-	}
-
-	if result.BytesWritten <= 0 {
-		t.Errorf("Expected bytes written > 0, got %d", result.BytesWritten)
-	}
-
-	// Verify file exists
-	if _, err := os.Stat(filePath); err != nil {
-		t.Errorf("File not created: %v", err)
-	}
-
-	t.Logf("Downloaded %d bytes in %v (avg speed: %.2f KB/s)",
-		result.BytesWritten,
-		result.Duration,
-		result.AverageSpeed/1024)
-}
-
-func TestDownloadFileOverwrite(t *testing.T) {
-	client, err := New()
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
-	defer client.Close()
-
-	tempDir := t.TempDir()
-	filePath := filepath.Join(tempDir, "test-overwrite.txt")
-
-	// Create an existing file
-	if err := os.WriteFile(filePath, []byte("existing content"), 0644); err != nil {
-		t.Fatalf("Failed to create test file: %v", err)
-	}
-
-	// Try to download without overwrite (should fail)
-	_, err = client.DownloadFile(
-		"https://raw.githubusercontent.com/golang/go/master/README.md",
-		filePath,
-	)
-	if err == nil {
-		t.Error("Expected error when file exists without overwrite option")
-	}
-
-	// DownloadFile with overwrite
-	opts := &DownloadOptions{
-		FilePath:  filePath,
-		Overwrite: true,
-	}
-
-	result, err := client.DownloadWithOptions(
-		"https://raw.githubusercontent.com/golang/go/master/README.md",
-		opts,
-	)
-	if err != nil {
-		t.Fatalf("DownloadFile with overwrite failed: %v", err)
-	}
-
-	// Verify file was overwritten
-	content, err := os.ReadFile(filePath)
-	if err != nil {
-		t.Fatalf("Failed to read file: %v", err)
-	}
-
-	if string(content) == "existing content" {
-		t.Error("File was not overwritten")
-	}
-
-	if int64(len(content)) != result.BytesWritten {
-		t.Errorf("Content size mismatch: expected %d, got %d", result.BytesWritten, len(content))
-	}
-}
-
-func TestDownloadFileCreateDirs(t *testing.T) {
-	client, err := New()
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
-	defer client.Close()
-
-	tempDir := t.TempDir()
-	filePath := filepath.Join(tempDir, "subdir1", "subdir2", "test-file.txt")
-
-	// DownloadFile with CreateDirs enabled (default)
-	result, err := client.DownloadFile(
-		"https://raw.githubusercontent.com/golang/go/master/README.md",
-		filePath,
-	)
-	if err != nil {
-		t.Fatalf("DownloadFile failed: %v", err)
-	}
-
-	// Verify directories were created
-	if _, err := os.Stat(filepath.Dir(filePath)); err != nil {
-		t.Errorf("Parent directories not created: %v", err)
-	}
-
-	// Verify file exists
-	if _, err := os.Stat(filePath); err != nil {
-		t.Errorf("File not created: %v", err)
-	}
-
-	if result.BytesWritten <= 0 {
-		t.Errorf("Expected bytes written > 0, got %d", result.BytesWritten)
-	}
-}
-
-func TestResponseSaveToFile(t *testing.T) {
-	client, err := New()
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
-	defer client.Close()
-
-	// Make a regular GET request
-	resp, err := client.Get("https://raw.githubusercontent.com/golang/go/master/LICENSE")
-	if err != nil {
-		t.Fatalf("GET request failed: %v", err)
-	}
-
-	tempDir := t.TempDir()
-	filePath := filepath.Join(tempDir, "license.txt")
-
-	// Save response to file
-	if err := resp.SaveToFile(filePath); err != nil {
-		t.Fatalf("SaveToFile failed: %v", err)
-	}
-
-	// Verify file exists and has correct content
-	content, err := os.ReadFile(filePath)
-	if err != nil {
-		t.Fatalf("Failed to read file: %v", err)
-	}
-
-	if len(content) != len(resp.RawBody) {
-		t.Errorf("File size mismatch: expected %d, got %d", len(resp.RawBody), len(content))
-	}
-
-	if string(content) != string(resp.RawBody) {
-		t.Error("File content does not match response body")
-	}
-}
-
-func TestDownloadWithAuthentication(t *testing.T) {
-	// Create a local test server that requires authentication
-	expectedToken := "test-secret-token"
-	testContent := []byte(`{"authenticated": true, "token": "valid"}`)
+func TestDownload_LargeFile(t *testing.T) {
+	largeContent := []byte(strings.Repeat("x", 1024*1024)) // 1MB
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check for Bearer token
-		authHeader := r.Header.Get("Authorization")
-		expectedAuth := "Bearer " + expectedToken
-
-		if authHeader != expectedAuth {
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"error": "unauthorized"}`))
-			return
-		}
-
-		// Valid authentication
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(testContent)))
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(largeContent)))
 		w.WriteHeader(http.StatusOK)
-		w.Write(testContent)
+		w.Write(largeContent)
 	}))
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true // Allow localhost for testing
-	client, err := New(config)
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
+	config.AllowPrivateIPs = true
+	client, _ := New(config)
 	defer client.Close()
 
 	tempDir := t.TempDir()
-	filePath := filepath.Join(tempDir, "auth-test.json")
+	filePath := filepath.Join(tempDir, "large-file.bin")
 
-	opts := &DownloadOptions{
-		FilePath:  filePath,
-		Overwrite: true,
-	}
-
-	// Test 1: Download with correct authentication
-	result, err := client.DownloadWithOptions(
-		server.URL,
-		opts,
-		WithBearerToken(expectedToken),
-	)
+	result, err := client.DownloadFile(server.URL, filePath)
 	if err != nil {
-		t.Fatalf("Authenticated download failed: %v", err)
+		t.Fatalf("Large file download failed: %v", err)
 	}
 
-	if result.BytesWritten != int64(len(testContent)) {
-		t.Errorf("Expected bytes written %d, got %d", len(testContent), result.BytesWritten)
+	if result.BytesWritten != int64(len(largeContent)) {
+		t.Errorf("Expected %d bytes, got %d", len(largeContent), result.BytesWritten)
 	}
-
-	// Verify file exists and content is correct
-	content, err := os.ReadFile(filePath)
-	if err != nil {
-		t.Fatalf("Failed to read downloaded file: %v", err)
-	}
-
-	if !bytes.Equal(content, testContent) {
-		t.Errorf("Downloaded content mismatch.\nExpected: %s\nGot: %s", testContent, content)
-	}
-
-	// Test 2: Download without authentication should fail
-	filePath2 := filepath.Join(tempDir, "auth-test-fail.json")
-	opts2 := &DownloadOptions{
-		FilePath:  filePath2,
-		Overwrite: true,
-	}
-
-	_, err = client.DownloadWithOptions(
-		server.URL,
-		opts2,
-		// No authentication header
-	)
-	if err == nil {
-		t.Error("Expected download to fail without authentication, but it succeeded")
-	}
-	if err != nil && !strings.Contains(err.Error(), "401") {
-		t.Logf("Got expected error: %v", err)
+	if result.AverageSpeed <= 0 {
+		t.Error("Average speed should be positive")
 	}
 }
 
-func TestPackageLevelDownload(t *testing.T) {
+func TestDownload_WithProgress(t *testing.T) {
+	content := []byte(strings.Repeat("x", 10240)) // 10KB
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+		w.WriteHeader(http.StatusOK)
+		w.Write(content)
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.AllowPrivateIPs = true
+	client, _ := New(config)
+	defer client.Close()
+
 	tempDir := t.TempDir()
-	filePath := filepath.Join(tempDir, "package-level-download.txt")
+	filePath := filepath.Join(tempDir, "progress-test.bin")
 
-	// Test package-level DownloadFile function
-	result, err := DownloadFile(
-		"https://raw.githubusercontent.com/golang/go/master/README.md",
-		filePath,
-	)
-	if err != nil {
-		t.Fatalf("Package-level DownloadFile failed: %v", err)
-	}
-
-	if result.BytesWritten <= 0 {
-		t.Errorf("Expected bytes written > 0, got %d", result.BytesWritten)
-	}
-
-	// Verify file exists
-	if _, err := os.Stat(filePath); err != nil {
-		t.Errorf("File not created: %v", err)
-	}
-}
-
-func TestPackageLevelDownloadWithOptions(t *testing.T) {
-	tempDir := t.TempDir()
-	filePath := filepath.Join(tempDir, "package-level-download-with-options.txt")
-
-	// Test package-level DownloadWithOptions function
 	progressCalled := false
-	opts := DefaultDownloadOptions(filePath)
-	opts.Overwrite = true
-	opts.ProgressCallback = func(downloaded, total int64, speed float64) {
-		progressCalled = true
-		t.Logf("Progress: %d/%d bytes (%.2f KB/s)", downloaded, total, speed/1024)
+	opts := &DownloadOptions{
+		FilePath: filePath,
+		ProgressCallback: func(downloaded, total int64, speed float64) {
+			progressCalled = true
+			if total > 0 {
+				t.Logf("Progress: %d/%d bytes (%.2f%%)", downloaded, total, float64(downloaded)/float64(total)*100)
+			}
+		},
 	}
 
-	result, err := DownloadWithOptions(
-		"https://raw.githubusercontent.com/golang/go/master/LICENSE",
-		opts,
-		WithTimeout(60*time.Second),
-	)
+	result, err := client.DownloadWithOptions(server.URL, opts)
 	if err != nil {
-		t.Fatalf("Package-level DownloadWithOptions failed: %v", err)
+		t.Fatalf("Download failed: %v", err)
 	}
 
-	if result.BytesWritten <= 0 {
-		t.Errorf("Expected bytes written > 0, got %d", result.BytesWritten)
+	if result.BytesWritten != int64(len(content)) {
+		t.Errorf("Expected %d bytes, got %d", len(content), result.BytesWritten)
 	}
-
 	if !progressCalled {
 		t.Error("Progress callback was not called")
 	}
+}
 
-	// Verify file exists
-	if _, err := os.Stat(filePath); err != nil {
-		t.Errorf("File not created: %v", err)
+func TestDownload_WithTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("slow response"))
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.AllowPrivateIPs = true
+	config.Timeout = 100 * time.Millisecond
+	client, _ := New(config)
+	defer client.Close()
+
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "timeout-test.txt")
+
+	_, err := client.DownloadFile(server.URL, filePath)
+	if err == nil {
+		t.Error("Expected timeout error")
+	}
+}
+
+func TestDownload_ResumeNotSupported(t *testing.T) {
+	content := []byte("test content")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Server doesn't support range requests
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+		w.WriteHeader(http.StatusOK)
+		w.Write(content)
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.AllowPrivateIPs = true
+	client, _ := New(config)
+	defer client.Close()
+
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "resume-test.txt")
+
+	// Create partial file
+	os.WriteFile(filePath, []byte("partial"), 0644)
+
+	opts := &DownloadOptions{
+		FilePath:       filePath,
+		ResumeDownload: true,
 	}
 
-	t.Logf("Downloaded %d bytes in %v (avg speed: %.2f KB/s)",
-		result.BytesWritten,
-		result.Duration,
-		result.AverageSpeed/1024)
+	result, err := client.DownloadWithOptions(server.URL, opts)
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	// Should download full file since resume not supported
+	if result.BytesWritten != int64(len(content)) {
+		t.Errorf("Expected %d bytes, got %d", len(content), result.BytesWritten)
+	}
+}
+
+func TestDownload_PartialContent(t *testing.T) {
+	fullContent := []byte("full file content here")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rangeHeader := r.Header.Get("Range")
+		if rangeHeader != "" {
+			// Support range requests
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes 7-%d/%d", len(fullContent)-1, len(fullContent)))
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(fullContent)-7))
+			w.WriteHeader(http.StatusPartialContent)
+			w.Write(fullContent[7:])
+		} else {
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(fullContent)))
+			w.WriteHeader(http.StatusOK)
+			w.Write(fullContent)
+		}
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.AllowPrivateIPs = true
+	client, _ := New(config)
+	defer client.Close()
+
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "partial-test.txt")
+
+	// Create partial file
+	os.WriteFile(filePath, []byte("partial"), 0644)
+
+	opts := &DownloadOptions{
+		FilePath:       filePath,
+		ResumeDownload: true,
+	}
+
+	result, err := client.DownloadWithOptions(server.URL, opts)
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	if result.StatusCode != http.StatusPartialContent {
+		t.Errorf("Expected status 206, got %d", result.StatusCode)
+	}
+}
+
+func TestDownload_InvalidPath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("content"))
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.AllowPrivateIPs = true
+	client, _ := New(config)
+	defer client.Close()
+
+	// Invalid path with directory traversal attempt
+	_, err := client.DownloadFile(server.URL, "../../../etc/passwd")
+	if err == nil {
+		t.Error("Expected error for invalid path")
+	}
+}
+
+func TestDownload_FileAlreadyExists(t *testing.T) {
+	content := []byte("new content")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write(content)
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.AllowPrivateIPs = true
+	client, _ := New(config)
+	defer client.Close()
+
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "existing.txt")
+
+	// Create existing file
+	os.WriteFile(filePath, []byte("old content"), 0644)
+
+	// Try download without overwrite
+	opts := &DownloadOptions{
+		FilePath:  filePath,
+		Overwrite: false,
+	}
+	_, err := client.DownloadWithOptions(server.URL, opts)
+	if err == nil {
+		t.Error("Expected error when file exists and overwrite is false")
+	}
+
+	// Try with overwrite
+	opts.Overwrite = true
+	result, err := client.DownloadWithOptions(server.URL, opts)
+	if err != nil {
+		t.Fatalf("Download with overwrite failed: %v", err)
+	}
+	if result.BytesWritten != int64(len(content)) {
+		t.Errorf("Expected %d bytes, got %d", len(content), result.BytesWritten)
+	}
+}
+
+func TestDownload_HTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte("Not Found"))
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.AllowPrivateIPs = true
+	client, _ := New(config)
+	defer client.Close()
+
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "error-test.txt")
+
+	_, err := client.DownloadFile(server.URL, filePath)
+	if err == nil {
+		t.Error("Expected error for 404 response")
+	}
+}
+
+func TestDownload_CreateDirectories(t *testing.T) {
+	content := []byte("test content")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write(content)
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.AllowPrivateIPs = true
+	client, _ := New(config)
+	defer client.Close()
+
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "subdir1", "subdir2", "file.txt")
+
+	result, err := client.DownloadFile(server.URL, filePath)
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	if result.BytesWritten != int64(len(content)) {
+		t.Errorf("Expected %d bytes, got %d", len(content), result.BytesWritten)
+	}
+
+	// Verify directories were created
+	if _, err := os.Stat(filepath.Dir(filePath)); os.IsNotExist(err) {
+		t.Error("Directories were not created")
+	}
+}
+
+func TestDownload_PackageLevel(t *testing.T) {
+	setupPackageLevelTests()
+
+	content := []byte("package level download")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write(content)
+	}))
+	defer server.Close()
+
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "package-download.txt")
+
+	result, err := DownloadFile(server.URL, filePath)
+	if err != nil {
+		t.Fatalf("Package level download failed: %v", err)
+	}
+
+	if result.BytesWritten != int64(len(content)) {
+		t.Errorf("Expected %d bytes, got %d", len(content), result.BytesWritten)
+	}
+}
+
+func TestResponse_SaveToFile(t *testing.T) {
+	content := []byte("response content")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write(content)
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.AllowPrivateIPs = true
+	client, _ := New(config)
+	defer client.Close()
+
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "response-save.txt")
+
+	if err := resp.SaveToFile(filePath); err != nil {
+		t.Fatalf("SaveToFile failed: %v", err)
+	}
+
+	// Verify file content
+	savedContent, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("Failed to read saved file: %v", err)
+	}
+	if string(savedContent) != string(content) {
+		t.Errorf("Content mismatch: expected %s, got %s", string(content), string(savedContent))
+	}
 }

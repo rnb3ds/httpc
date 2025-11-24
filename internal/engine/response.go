@@ -39,10 +39,19 @@ func (p *ResponseProcessor) Process(httpResp *http.Response) (*Response, error) 
 		}
 	}
 
+	// Deep copy headers to prevent concurrent access issues
+	// http.Header is a map[string][]string which is not safe for concurrent access
+	headers := make(http.Header, len(httpResp.Header))
+	for k, v := range httpResp.Header {
+		headerCopy := make([]string, len(v))
+		copy(headerCopy, v)
+		headers[k] = headerCopy
+	}
+
 	resp := &Response{
 		StatusCode:    httpResp.StatusCode,
 		Status:        httpResp.Status,
-		Headers:       httpResp.Header,
+		Headers:       headers,
 		Body:          string(body),
 		RawBody:       body,
 		ContentLength: contentLength,

@@ -11,11 +11,23 @@ import (
 	"time"
 )
 
-// Response represents an HTTP response
+// Response represents an HTTP response.
+//
+// Thread Safety: Response objects are safe to read from multiple goroutines
+// after they are returned. The Headers map is deep-copied from the underlying
+// http.Response to prevent concurrent access issues. However, Response objects
+// should not be modified concurrently.
+//
+// Example safe usage:
+//
+//	resp, _ := httpc.Get("https://api.example.com")
+//	// Safe: multiple goroutines can read resp.Headers concurrently
+//	go func() { fmt.Println(resp.Headers.Get("Content-Type")) }()
+//	go func() { fmt.Println(resp.StatusCode) }()
 type Response struct {
 	StatusCode    int
 	Status        string
-	Headers       http.Header
+	Headers       http.Header // Deep-copied for thread safety
 	Body          string
 	RawBody       []byte
 	ContentLength int64
@@ -74,6 +86,19 @@ func (r *Response) HasCookie(name string) bool {
 	return r.GetCookie(name) != nil
 }
 
+// Config defines the HTTP client configuration.
+//
+// Thread Safety: Config should be treated as immutable after passing it to New().
+// Do not modify Config fields after client creation. The client makes internal
+// copies of mutable fields (like Headers map) to ensure thread safety.
+//
+// Example safe usage:
+//
+//	cfg := httpc.DefaultConfig()
+//	cfg.Timeout = 10 * time.Second
+//	cfg.Headers = map[string]string{"X-API-Key": "secret"}
+//	client, _ := httpc.New(cfg)
+//	// Do NOT modify cfg.Headers after this point
 type Config struct {
 	Timeout         time.Duration
 	MaxIdleConns    int
@@ -93,7 +118,7 @@ type Config struct {
 	BackoffFactor float64
 
 	UserAgent       string
-	Headers         map[string]string
+	Headers         map[string]string // Copied internally for thread safety
 	FollowRedirects bool
 	EnableHTTP2     bool
 	EnableCookies   bool

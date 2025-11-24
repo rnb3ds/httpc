@@ -11,7 +11,26 @@ import (
 	"github.com/cybergodev/httpc/internal/engine"
 )
 
-// Client represents the HTTP client interface
+// Client represents the HTTP client interface.
+//
+// Thread Safety: All Client methods are safe for concurrent use by multiple
+// goroutines. A single Client instance can be shared across your application.
+//
+// Example concurrent usage:
+//
+//	client, _ := httpc.New()
+//	defer client.Close()
+//
+//	var wg sync.WaitGroup
+//	for i := 0; i < 100; i++ {
+//		wg.Add(1)
+//		go func() {
+//			defer wg.Done()
+//			resp, _ := client.Get("https://api.example.com")
+//			// ... process response
+//		}()
+//	}
+//	wg.Wait()
 type Client interface {
 	// HTTP methods
 	Get(url string, options ...RequestOption) (*Response, error)

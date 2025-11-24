@@ -34,6 +34,13 @@ type Client struct {
 	mu        sync.RWMutex
 }
 
+// Config defines the HTTP client configuration.
+//
+// Thread Safety: Config should be treated as immutable after creation.
+// Do not modify Config fields after passing it to NewClient().
+// The client makes internal copies of mutable fields (like Headers map)
+// to ensure thread safety, but modifying the original Config concurrently
+// with client operations may lead to undefined behavior.
 type Config struct {
 	Timeout               time.Duration
 	DialTimeout           time.Duration
@@ -63,7 +70,7 @@ type Config struct {
 	Jitter        bool
 
 	UserAgent       string
-	Headers         map[string]string
+	Headers         map[string]string // Copied internally for thread safety
 	FollowRedirects bool
 	EnableHTTP2     bool
 
@@ -83,10 +90,16 @@ type Request struct {
 	Cookies     []*http.Cookie
 }
 
+// Response represents an HTTP response.
+//
+// Thread Safety: Response objects are safe to read from multiple goroutines
+// after they are returned from a request. The Headers map is deep-copied
+// to prevent concurrent access issues with the underlying http.Response.
+// However, Response objects should not be modified concurrently.
 type Response struct {
 	StatusCode    int
 	Status        string
-	Headers       map[string][]string
+	Headers       map[string][]string // Deep-copied for thread safety
 	Body          string
 	RawBody       []byte
 	ContentLength int64
@@ -103,8 +116,17 @@ func NewClient(config *Config) (*Client, error) {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
 
+	// Deep copy config to prevent concurrent modification issues
+	safeCfg := *config
+	if config.Headers != nil {
+		safeCfg.Headers = make(map[string]string, len(config.Headers))
+		for k, v := range config.Headers {
+			safeCfg.Headers[k] = v
+		}
+	}
+
 	client := &Client{
-		config: config,
+		config: &safeCfg,
 	}
 
 	var err error

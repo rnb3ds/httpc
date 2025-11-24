@@ -39,8 +39,17 @@ func TestNewClient(t *testing.T) {
 	}
 
 	// Test that client is properly initialized
-	if client.config != config {
+	// Note: Config is deep-copied for thread safety, so pointer comparison won't work
+	if client.config == nil {
 		t.Error("Config not properly set")
+	}
+	
+	// Verify config values are copied correctly
+	if client.config.Timeout != config.Timeout {
+		t.Error("Timeout not properly copied")
+	}
+	if client.config.MaxRetries != config.MaxRetries {
+		t.Error("MaxRetries not properly copied")
 	}
 }
 

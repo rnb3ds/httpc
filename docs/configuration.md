@@ -30,7 +30,8 @@ defer client.Close()
 - MaxIdleConns: 50
 - MaxConnsPerHost: 10
 - MaxResponseBodySize: 10 MB
-- TLS: 1.2-1.3 (via TLSConfig if set)
+- MinTLSVersion: TLS 1.2
+- MaxTLSVersion: TLS 1.3
 - HTTP/2: Enabled
 - FollowRedirects: true
 - EnableCookies: false
@@ -54,19 +55,21 @@ defer client.Close()
 ```
 
 **Settings:**
-- TLS: 1.0+ (allows older versions)
-- Timeout: 120 seconds
-- MaxRetries: 5
-- MaxConnsPerHost: 50
-- MaxResponseBodySize: 100 MB
+- TLS: 1.2-1.3 (InsecureSkipVerify: true)
+- Timeout: 30 seconds
+- MaxRetries: 1
+- MaxConnsPerHost: 5
+- MaxResponseBodySize: 10 MB
 - AllowPrivateIPs: true
-- ValidateHeaders: false
+- HTTP/2: Disabled
 
 **Use Cases:**
 - Development environments
-- Internal APIs with legacy systems
-- High-throughput testing scenarios
+- Testing with localhost/127.0.0.1
 - Local development
+- Testing with self-signed certificates
+
+**⚠️ WARNING:** This config disables security features and should NEVER be used in production.
 
 ### Balanced (Default)
 
@@ -80,12 +83,13 @@ client, err := httpc.New()  // Uses balanced by default
 
 **Settings:**
 - TLS: 1.2-1.3 (modern security)
-- Timeout: 60 seconds
-- MaxRetries: 2
-- MaxConnsPerHost: 20
-- MaxResponseBodySize: 50 MB
+- Timeout: 30 seconds
+- MaxRetries: 3
+- MaxConnsPerHost: 10
+- MaxResponseBodySize: 10 MB
 - AllowPrivateIPs: false
-- ValidateHeaders: true
+- HTTP/2: Enabled
+- FollowRedirects: true
 
 **Use Cases:**
 - Most applications
@@ -108,13 +112,13 @@ defer client.Close()
 ```
 
 **Settings:**
-- TLS: 1.3 only (maximum security)
-- Timeout: 30 seconds
+- TLS: 1.2-1.3 (modern security)
+- Timeout: 15 seconds
 - MaxRetries: 1
 - MaxConnsPerHost: 5
-- MaxResponseBodySize: 10 MB
+- MaxResponseBodySize: 5 MB
 - AllowPrivateIPs: false
-- ValidateHeaders: true
+- HTTP/2: Enabled
 - FollowRedirects: false
 
 **Use Cases:**
@@ -126,20 +130,6 @@ defer client.Close()
 
 **🔒 Security:** Maximum security with minimal attack surface.
 
-### Comparison Table
-
-| Setting                 | Permissive | Balanced  | Strict    |
-|-------------------------|------------|-----------|-----------|
-| **TLS Version**         | 1.0+       | 1.2-1.3   | 1.3 only  |
-| **Timeout**             | 120s       | 60s       | 30s       |
-| **Max Retries**         | 5          | 2         | 1         |
-| **Max Body Size**       | 100 MB     | 50 MB     | 10 MB     |
-| **Concurrent Requests** | 1000       | 500       | 100       |
-| **Private IPs**         | ✅ Allowed  | ❌ Blocked | ❌ Blocked |
-| **Header Validation**   | ❌ Disabled | ✅ Enabled | ✅ Enabled |
-| **Follow Redirects**    | ✅ Yes      | ✅ Yes     | ❌ No      |
-| **HTTP/2**              | ✅ Yes      | ✅ Yes     | ✅ Yes     |
-
 ## Custom Configuration
 
 For fine-grained control, create a custom configuration:
@@ -147,35 +137,28 @@ For fine-grained control, create a custom configuration:
 ```go
 config := &httpc.Config{
     // Network settings
-    Timeout:               30 * time.Second,
-    DialTimeout:           15 * time.Second,
-    KeepAlive:             30 * time.Second,
-    TLSHandshakeTimeout:   15 * time.Second,
-    ResponseHeaderTimeout: 30 * time.Second,
-    IdleConnTimeout:       90 * time.Second,
-    MaxIdleConns:          100,
-    MaxIdleConnsPerHost:   10,
-    MaxConnsPerHost:       20,
+    Timeout:         30 * time.Second,
+    MaxIdleConns:    100,
+    MaxConnsPerHost: 20,
 
     // Security settings
-    MinTLSVersion:         tls.VersionTLS12,
-    MaxTLSVersion:         tls.VersionTLS13,
-    InsecureSkipVerify:    false,
-    MaxResponseBodySize:   50 * 1024 * 1024, // 50 MB
-    ValidateURL:           true,
-    ValidateHeaders:       true,
+    MinTLSVersion:       tls.VersionTLS12,
+    MaxTLSVersion:       tls.VersionTLS13,
+    InsecureSkipVerify:  false,
+    MaxResponseBodySize: 50 * 1024 * 1024, // 50 MB
+    AllowPrivateIPs:     false,
+    StrictContentLength: true,
 
     // Retry settings
-    MaxRetries:    2,
-    RetryDelay:    2 * time.Second,
-    MaxRetryDelay: 60 * time.Second,
+    MaxRetries:    3,
+    RetryDelay:    1 * time.Second,
     BackoffFactor: 2.0,
-    Jitter:        true,
 
     // Headers and features
     UserAgent:       "MyApp/1.0",
     FollowRedirects: true,
     EnableHTTP2:     true,
+    EnableCookies:   false,
     Headers: map[string]string{
         "Accept": "application/json",
     },
@@ -283,15 +266,11 @@ client, err := httpc.New(config)
 
 | Field                   | Type            | Default | Description                      |
 |-------------------------|-----------------|---------|----------------------------------|
-| `Timeout`               | `time.Duration` | 60s     | Overall request timeout          |
-| `DialTimeout`           | `time.Duration` | 30s     | TCP connection timeout           |
-| `KeepAlive`             | `time.Duration` | 30s     | Keep-alive probe interval        |
-| `TLSHandshakeTimeout`   | `time.Duration` | 10s     | TLS handshake timeout            |
-| `ResponseHeaderTimeout` | `time.Duration` | 30s     | Response header timeout          |
-| `IdleConnTimeout`       | `time.Duration` | 90s     | Idle connection timeout          |
-| `MaxIdleConns`          | `int`           | 100     | Max idle connections (all hosts) |
-| `MaxIdleConnsPerHost`   | `int`           | 10      | Max idle connections per host    |
-| `MaxConnsPerHost`       | `int`           | 20      | Max connections per host         |
+| `Timeout`               | `time.Duration` | 30s     | Overall request timeout          |
+| `MaxIdleConns`          | `int`           | 50      | Max idle connections (all hosts) |
+| `MaxConnsPerHost`       | `int`           | 10      | Max connections per host         |
+
+**Note:** Advanced timeout settings (DialTimeout, KeepAlive, TLSHandshakeTimeout, etc.) are managed internally and not exposed in the public Config.
 
 ### Security Settings
 
@@ -300,21 +279,22 @@ client, err := httpc.New(config)
 | `MinTLSVersion`         | `uint16`      | TLS 1.2 | Minimum TLS version                |
 | `MaxTLSVersion`         | `uint16`      | TLS 1.3 | Maximum TLS version                |
 | `InsecureSkipVerify`    | `bool`        | false   | Skip TLS verification (dangerous)  |
-| `MaxResponseBodySize`   | `int64`       | 50 MB   | Max response body size             |
-| `MaxConnsPerHost`       | `int`         | 10      | Max connections per host           |
-| `ValidateURL`           | `bool`        | true    | Validate URL format                |
-| `ValidateHeaders`       | `bool`        | true    | Validate headers (CRLF protection) |
+| `MaxResponseBodySize`   | `int64`       | 10 MB   | Max response body size             |
+| `AllowPrivateIPs`       | `bool`        | false   | Allow private IP addresses         |
+| `StrictContentLength`   | `bool`        | true    | Enforce Content-Length validation  |
 | `TLSConfig`             | `*tls.Config` | nil     | Custom TLS configuration           |
+
+**Note:** URL and header validation are always enabled internally for security.
 
 ### Retry Settings
 
 | Field           | Type            | Default | Description                |
 |-----------------|-----------------|---------|----------------------------|
-| `MaxRetries`    | `int`           | 2       | Maximum retry attempts     |
-| `RetryDelay`    | `time.Duration` | 2s      | Initial retry delay        |
-| `MaxRetryDelay` | `time.Duration` | 60s     | Maximum retry delay        |
+| `MaxRetries`    | `int`           | 3       | Maximum retry attempts     |
+| `RetryDelay`    | `time.Duration` | 1s      | Initial retry delay        |
 | `BackoffFactor` | `float64`       | 2.0     | Exponential backoff factor |
-| `Jitter`        | `bool`          | true    | Add jitter to retry delays |
+
+**Note:** MaxRetryDelay and Jitter are calculated internally based on RetryDelay and BackoffFactor.
 
 ### Feature Settings
 

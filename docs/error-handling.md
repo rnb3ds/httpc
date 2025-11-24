@@ -8,7 +8,6 @@ This guide covers comprehensive error handling patterns and best practices for H
 - [Error Types](#error-types)
 - [Response Status Checking](#response-status-checking)
 - [Error Handling Patterns](#error-handling-patterns)
-- [Circuit Breaker Errors](#circuit-breaker-errors)
 - [Timeout Errors](#timeout-errors)
 - [Network Errors](#network-errors)
 - [Best Practices](#best-practices)
@@ -262,42 +261,45 @@ func fetchWithFallback(client httpc.Client, primaryURL, fallbackURL string) ([]b
 }
 ```
 
-## Circuit Breaker Errors
+## Retry Behavior
 
-### Detecting Circuit Breaker Errors
+HTTPC automatically retries failed requests based on the configuration. The retry logic handles:
+- Network errors (connection refused, timeout, DNS failures)
+- Retryable HTTP status codes (429, 500, 502, 503, 504)
+- Exponential backoff with jitter
+
+### Configuring Retry Behavior
+
+```go
+// Client-level retry configuration
+config := httpc.DefaultConfig()
+config.MaxRetries = 3
+config.RetryDelay = 1 * time.Second
+config.BackoffFactor = 2.0
+
+client, err := httpc.New(config)
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Close()
+
+// Request-level retry override
+resp, err := client.Get(url,
+    httpc.WithMaxRetries(5),
+)
+```
+
+### Understanding Retry Attempts
 
 ```go
 resp, err := client.Get(url)
 if err != nil {
-    if strings.Contains(err.Error(), "circuit breaker is open") {
-        // Circuit is open - service is down
-        log.Printf("Circuit breaker open for %s", url)
-        return useCachedData()
-    }
-    return nil, err
+    log.Printf("Request failed after retries: %v", err)
+    return err
 }
-```
 
-### Handling Circuit Breaker State
-
-```go
-func fetchWithCircuitBreaker(client httpc.Client, url string) ([]byte, error) {
-    resp, err := client.Get(url)
-    
-    if err != nil {
-        // Check for circuit breaker
-        if strings.Contains(err.Error(), "circuit breaker is open") {
-            log.Printf("[CIRCUIT OPEN] Service unavailable: %s", url)
-            
-            // Use fallback strategy
-            return getFallbackData(), nil
-        }
-        
-        return nil, fmt.Errorf("request failed: %w", err)
-    }
-    
-    return resp.RawBody, nil
-}
+// Check how many attempts were made
+log.Printf("Request succeeded after %d attempt(s)", resp.Attempts)
 ```
 
 ## Timeout Errors
@@ -478,19 +480,14 @@ func fetchUser(ctx context.Context, client httpc.Client, userID int) (*User, err
     resp, err := client.Get(url,
         httpc.WithContext(ctx),
         httpc.WithTimeout(10*time.Second),
-        httpc.WithMaxRetries(2),
+        httpc.WithMaxRetries(3),
     )
     
     // Handle network errors
     if err != nil {
-        // Check for circuit breaker
-        if strings.Contains(err.Error(), "circuit breaker is open") {
-            log.Printf("Circuit breaker open for user service")
-            return nil, fmt.Errorf("user service unavailable: %w", err)
-        }
-        
         // Check for timeout
-        if strings.Contains(err.Error(), "timeout") {
+        if strings.Contains(err.Error(), "timeout") ||
+           strings.Contains(err.Error(), "deadline exceeded") {
             return nil, fmt.Errorf("request timed out: %w", err)
         }
         
