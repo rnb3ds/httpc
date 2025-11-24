@@ -80,7 +80,7 @@ func TestClient_HTTPMethods(t *testing.T) {
 					t.Errorf("Expected method %s, got %s", tt.method, r.Method)
 				}
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(`{"message":"success"}`))
+				_, _ = w.Write([]byte(`{"message":"success"}`))
 			}))
 			defer server.Close()
 
@@ -300,7 +300,7 @@ func TestPackage_HTTPMethods(t *testing.T) {
 				t.Errorf("Expected GET, got %s", r.Method)
 			}
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"status":"ok"}`))
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
 		}))
 		defer server.Close()
 
@@ -320,7 +320,7 @@ func TestPackage_HTTPMethods(t *testing.T) {
 			}
 			body, _ := io.ReadAll(r.Body)
 			var data map[string]interface{}
-			json.Unmarshal(body, &data)
+			_ = json.Unmarshal(body, &data)
 			if data["test"] != "value" {
 				t.Error("Expected test=value")
 			}
@@ -407,7 +407,7 @@ func TestPackage_DefaultClient(t *testing.T) {
 	if err := SetDefaultClient(defaultClient); err != nil {
 		t.Fatalf("Failed to reset default client: %v", err)
 	}
-	customClient.Close()
+	_ = customClient.Close()
 }
 
 func TestPackage_Concurrency(t *testing.T) {

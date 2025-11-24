@@ -19,7 +19,7 @@ import (
 func TestClient_HTTPMethodShortcuts(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}))
 	defer server.Close()
 
@@ -33,7 +33,7 @@ func TestClient_HTTPMethodShortcuts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	t.Run("Post", func(t *testing.T) {
 		resp, err := client.Post(server.URL)
@@ -116,7 +116,7 @@ func TestClient_HealthStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	t.Run("GetHealthStatus", func(t *testing.T) {
 		status := client.GetHealthStatus()
@@ -136,7 +136,7 @@ func TestClient_HealthStatus(t *testing.T) {
 	})
 
 	// Make some requests to update health metrics
-	client.Get(server.URL)
+	_, _ = client.Get(server.URL)
 
 	t.Run("HealthStatusAfterRequests", func(t *testing.T) {
 		status := client.GetHealthStatus()

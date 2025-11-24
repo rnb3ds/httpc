@@ -270,11 +270,11 @@ func TestRetryEngine_IntegrationWithClient(t *testing.T) {
 		if attempt < successAfterAttempts {
 			// Return server error for first few attempts
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte("Server Error"))
+			_, _ = w.Write([]byte("Server Error"))
 		} else {
 			// Finally succeed
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("Success"))
+			_, _ = w.Write([]byte("Success"))
 		}
 	}))
 	defer server.Close()
@@ -330,7 +330,7 @@ func TestRetryEngine_ContextCancellation(t *testing.T) {
 		atomic.AddInt32(&attemptCount, 1)
 		// Always return error to trigger retry
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("Error"))
+		_, _ = w.Write([]byte("Error"))
 	}))
 	defer server.Close()
 
@@ -390,11 +390,11 @@ func TestRetryEngine_RetryAfterHeader(t *testing.T) {
 			// First request returns 429 and sets Retry-After header
 			w.Header().Set("Retry-After", "1") // Retry after 1 second
 			w.WriteHeader(http.StatusTooManyRequests)
-			w.Write([]byte("Rate Limited"))
+			_, _ = w.Write([]byte("Rate Limited"))
 		} else {
 			// Subsequent requests succeed
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("Success"))
+			_, _ = w.Write([]byte("Success"))
 		}
 	}))
 	defer server.Close()

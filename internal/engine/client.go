@@ -31,7 +31,6 @@ type Client struct {
 	averageLatency     int64
 
 	closeOnce sync.Once
-	mu        sync.RWMutex
 }
 
 // Config defines the HTTP client configuration.
@@ -406,9 +405,9 @@ func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
 				if c.config.MaxResponseBodySize > 0 && c.config.MaxResponseBodySize < maxDrain {
 					maxDrain = c.config.MaxResponseBodySize
 				}
-				io.Copy(io.Discard, io.LimitReader(httpResp.Body, maxDrain))
+				_, _ = io.Copy(io.Discard, io.LimitReader(httpResp.Body, maxDrain))
 			}
-			httpResp.Body.Close()
+			_ = httpResp.Body.Close()
 		}
 	}()
 

@@ -117,7 +117,7 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	bytesWritten := int64(len(resp.RawBody))
 	if _, err := file.Write(resp.RawBody); err != nil {

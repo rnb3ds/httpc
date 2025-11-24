@@ -51,7 +51,7 @@ func TestJSON_Handling(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(TestData{Message: "response", Code: 200})
+			_ = json.NewEncoder(w).Encode(TestData{Message: "response", Code: 200})
 		}))
 		defer server.Close()
 
@@ -76,7 +76,7 @@ func TestJSON_Handling(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{invalid json}`))
+			_, _ = w.Write([]byte(`{invalid json}`))
 		}))
 		defer server.Close()
 
@@ -176,7 +176,7 @@ func TestMultipart_Handling(t *testing.T) {
 			if err != nil {
 				t.Errorf("Failed to get file: %v", err)
 			}
-			defer file.Close()
+			defer func() { _ = file.Close() }()
 			if header.Filename != "test.txt" {
 				t.Errorf("Expected filename test.txt, got %s", header.Filename)
 			}

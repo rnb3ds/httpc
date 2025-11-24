@@ -19,7 +19,7 @@ func TestPoolManager_New(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected no error, got: %v", err)
 		}
-		defer pm.Close()
+		defer func() { _ = pm.Close() }()
 
 		if pm.config == nil {
 			t.Error("Config should not be nil")
@@ -47,7 +47,7 @@ func TestPoolManager_New(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected no error, got: %v", err)
 		}
-		defer pm.Close()
+		defer func() { _ = pm.Close() }()
 
 		if pm.config.MaxIdleConns != 100 {
 			t.Errorf("Expected MaxIdleConns 100, got %d", pm.config.MaxIdleConns)
@@ -67,7 +67,7 @@ func TestPoolManager_New(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected no error, got: %v", err)
 		}
-		defer pm.Close()
+		defer func() { _ = pm.Close() }()
 
 		if pm.transport.Proxy == nil {
 			t.Error("Proxy should be configured")
@@ -91,7 +91,7 @@ func TestPoolManager_GetTransport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
-	defer pm.Close()
+	defer func() { _ = pm.Close() }()
 
 	transport := pm.GetTransport()
 
@@ -109,7 +109,7 @@ func TestPoolManager_GetMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
-	defer pm.Close()
+	defer func() { _ = pm.Close() }()
 
 	metrics := pm.GetMetrics()
 
@@ -127,7 +127,7 @@ func TestPoolManager_HTTPRequest(t *testing.T) {
 	// Create test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer server.Close()
 
@@ -137,7 +137,7 @@ func TestPoolManager_HTTPRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
-	defer pm.Close()
+	defer func() { _ = pm.Close() }()
 
 	// Create HTTP client with our pool manager
 	client := &http.Client{
@@ -150,7 +150,7 @@ func TestPoolManager_HTTPRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("Expected status 200, got %d", resp.StatusCode)
@@ -173,7 +173,7 @@ func TestPoolManager_MultipleRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
-	defer pm.Close()
+	defer func() { _ = pm.Close() }()
 
 	client := &http.Client{
 		Transport: pm.GetTransport(),
@@ -188,7 +188,7 @@ func TestPoolManager_MultipleRequests(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Request %d failed: %v", i, err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		successCount++
 	}
 
@@ -221,7 +221,7 @@ func TestPoolManager_IsHealthy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
-	defer pm.Close()
+	defer func() { _ = pm.Close() }()
 
 	// Initially should be healthy (or may not be if no connections yet)
 	// Just verify the method doesn't panic
@@ -234,7 +234,7 @@ func TestPoolManager_TLSConfig(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected no error, got: %v", err)
 		}
-		defer pm.Close()
+		defer func() { _ = pm.Close() }()
 
 		tlsConfig := pm.transport.TLSClientConfig
 
@@ -269,7 +269,7 @@ func TestPoolManager_TLSConfig(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected no error, got: %v", err)
 		}
-		defer pm.Close()
+		defer func() { _ = pm.Close() }()
 
 		tlsConfig := pm.transport.TLSClientConfig
 
@@ -296,7 +296,7 @@ func TestPoolManager_Timeouts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
-	defer pm.Close()
+	defer func() { _ = pm.Close() }()
 
 	transport := pm.transport
 
@@ -328,7 +328,7 @@ func TestPoolManager_ConnectionLimits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
-	defer pm.Close()
+	defer func() { _ = pm.Close() }()
 
 	transport := pm.transport
 
@@ -385,7 +385,7 @@ func TestPoolManager_ContextCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
-	defer pm.Close()
+	defer func() { _ = pm.Close() }()
 
 	client := &http.Client{
 		Transport: pm.GetTransport(),

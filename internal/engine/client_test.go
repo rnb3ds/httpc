@@ -32,7 +32,7 @@ func TestNewClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient failed: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if client == nil {
 		t.Fatal("Client should not be nil")
@@ -75,7 +75,7 @@ func TestNewClient_InvalidConfig(t *testing.T) {
 			client, err := NewClient(tt.config)
 			// Should handle gracefully or return error
 			if client != nil {
-				client.Close()
+				_ = client.Close()
 			}
 			// We don't expect specific error behavior, just that it doesn't panic
 			_ = err
@@ -88,7 +88,7 @@ func TestNewClient_InvalidConfig(t *testing.T) {
 func TestClient_Request(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer server.Close()
 
@@ -103,7 +103,7 @@ func TestClient_Request(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient failed: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Use a context with timeout to ensure the request doesn't hang
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -126,7 +126,7 @@ func TestClient_RequestWithOptions(t *testing.T) {
 			t.Errorf("Expected X-Test header, got: %s", r.Header.Get("X-Test"))
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer server.Close()
 
@@ -141,7 +141,7 @@ func TestClient_RequestWithOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient failed: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Create a request option that adds a header
 	headerOption := func(req *Request) error {
@@ -200,7 +200,7 @@ func TestClient_Statistics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient failed: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Test that client tracks basic statistics
 	if client.totalRequests < 0 {
@@ -213,7 +213,7 @@ func TestClient_ConcurrentRequests(t *testing.T) {
 		// Add small delay to test concurrency
 		time.Sleep(10 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer server.Close()
 
@@ -229,7 +229,7 @@ func TestClient_ConcurrentRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient failed: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Make concurrent requests
 	const numRequests = 5
@@ -254,7 +254,7 @@ func TestClient_TLSConfig(t *testing.T) {
 	// Create HTTPS test server
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer server.Close()
 
@@ -273,7 +273,7 @@ func TestClient_TLSConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient failed: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	resp, err := client.Get(server.URL)
 	if err != nil {
@@ -290,7 +290,7 @@ func TestClient_ContextCancellation(t *testing.T) {
 		// Long delay to test cancellation
 		time.Sleep(1 * time.Second)
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer server.Close()
 
@@ -305,7 +305,7 @@ func TestClient_ContextCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient failed: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -329,7 +329,7 @@ func TestClient_InvalidURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient failed: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	tests := []string{
 		"",
@@ -355,7 +355,7 @@ func TestClient_LargeResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(largeContent))
+		_, _ = w.Write([]byte(largeContent))
 	}))
 	defer server.Close()
 
@@ -371,7 +371,7 @@ func TestClient_LargeResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient failed: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	resp, err := client.Get(server.URL)
 	if err != nil {

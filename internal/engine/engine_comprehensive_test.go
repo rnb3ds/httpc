@@ -131,7 +131,7 @@ func TestEngine_RequestProcessing(t *testing.T) {
 
 			// Apply options
 			for _, opt := range tt.options {
-				opt(req)
+				_ = opt(req)
 			}
 
 			// Validate request
@@ -151,7 +151,7 @@ func TestEngine_ResponseProcessing(t *testing.T) {
 			serverResponse: func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(`{"message":"success","code":200}`))
+				_, _ = w.Write([]byte(`{"message":"success","code":200}`))
 			},
 			validate: func(t *testing.T, resp *Response) {
 				if resp.StatusCode != 200 {
@@ -170,7 +170,7 @@ func TestEngine_ResponseProcessing(t *testing.T) {
 			serverResponse: func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadRequest)
-				w.Write([]byte(`{"error":"invalid request"}`))
+				_, _ = w.Write([]byte(`{"error":"invalid request"}`))
 			},
 			validate: func(t *testing.T, resp *Response) {
 				if resp.StatusCode != 400 {
@@ -188,7 +188,7 @@ func TestEngine_ResponseProcessing(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 				// Write large amount of data
 				data := strings.Repeat("A", 1024*1024) // 1MB
-				w.Write([]byte(data))
+				_, _ = w.Write([]byte(data))
 			},
 			validate: func(t *testing.T, resp *Response) {
 				if resp.StatusCode != 200 {
@@ -213,7 +213,7 @@ func TestEngine_ResponseProcessing(t *testing.T) {
 					Path:  "/",
 				})
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte("OK"))
+				_, _ = w.Write([]byte("OK"))
 			},
 			validate: func(t *testing.T, resp *Response) {
 				if len(resp.Cookies) != 2 {
@@ -316,7 +316,7 @@ func TestEngine_ErrorHandling(t *testing.T) {
 					// Send invalid HTTP response
 					w.Header().Set("Content-Length", "100")
 					w.WriteHeader(http.StatusOK)
-					w.Write([]byte("short")) // Content length mismatch
+					_, _ = w.Write([]byte("short")) // Content length mismatch
 				}))
 			},
 			expectError: true, // Our enhanced security now detects this
@@ -371,7 +371,7 @@ func TestEngine_ConcurrentRequests(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(10 * time.Millisecond) // Simulate processing time
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer server.Close()
 
@@ -492,7 +492,7 @@ func TestEngine_RetryMechanism(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Success"))
+		_, _ = w.Write([]byte("Success"))
 	}))
 	defer server.Close()
 
@@ -550,7 +550,7 @@ func TestEngine_ClientLifecycle(t *testing.T) {
 	// Test client usage
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer server.Close()
 

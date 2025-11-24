@@ -75,7 +75,7 @@ func TestPackageLevel_UncoveredMethods(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}))
 	defer server.Close()
 
@@ -105,7 +105,7 @@ func TestCloseDefaultClient(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.AllowPrivateIPs = true
 	client, _ := New(cfg)
-	SetDefaultClient(client)
+	_ = SetDefaultClient(client)
 
 	// Close it
 	if err := CloseDefaultClient(); err != nil {
@@ -114,7 +114,7 @@ func TestCloseDefaultClient(t *testing.T) {
 
 	// Reset to a new client for other tests
 	newClient, _ := newTestClient()
-	SetDefaultClient(newClient)
+	_ = SetDefaultClient(newClient)
 }
 
 // ----------------------------------------------------------------------------
@@ -275,7 +275,7 @@ func TestDownload_PackageLevelWithOptions(t *testing.T) {
 	content := []byte("download with options")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write(content)
+		_, _ = w.Write(content)
 	}))
 	defer server.Close()
 
@@ -304,7 +304,7 @@ func TestDownload_PackageLevelWithOptions(t *testing.T) {
 func TestResponse_JSONError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("invalid json"))
+		_, _ = w.Write([]byte("invalid json"))
 	}))
 	defer server.Close()
 
