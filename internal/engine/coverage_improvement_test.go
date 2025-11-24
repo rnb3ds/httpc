@@ -33,7 +33,7 @@ func TestClient_HTTPMethodShortcuts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	t.Run("Post", func(t *testing.T) {
 		resp, err := client.Post(server.URL)
@@ -116,7 +116,7 @@ func TestClient_HealthStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	t.Run("GetHealthStatus", func(t *testing.T) {
 		status := client.GetHealthStatus()

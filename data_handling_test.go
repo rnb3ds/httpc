@@ -176,7 +176,7 @@ func TestMultipart_Handling(t *testing.T) {
 			if err != nil {
 				t.Errorf("Failed to get file: %v", err)
 			}
-			defer file.Close()
+			defer func() { _ = file.Close() }()
 			if header.Filename != "test.txt" {
 				t.Errorf("Expected filename test.txt, got %s", header.Filename)
 			}

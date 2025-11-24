@@ -407,7 +407,7 @@ func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
 				}
 				_, _ = io.Copy(io.Discard, io.LimitReader(httpResp.Body, maxDrain))
 			}
-			httpResp.Body.Close()
+			_ = httpResp.Body.Close()
 		}
 	}()
 

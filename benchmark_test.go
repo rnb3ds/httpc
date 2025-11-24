@@ -23,7 +23,7 @@ func BenchmarkClient_SimpleGET(b *testing.B) {
 	defer server.Close()
 
 	client, _ := newBenchmarkClient()
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -46,7 +46,7 @@ func BenchmarkClient_POST_JSON(b *testing.B) {
 	defer server.Close()
 
 	client, _ := newBenchmarkClient()
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	payload := map[string]interface{}{
 		"name":  "test",
@@ -73,7 +73,7 @@ func BenchmarkClient_Concurrent_Requests(b *testing.B) {
 	defer server.Close()
 
 	client, _ := newBenchmarkClient()
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	concurrency := []int{1, 10, 50, 100}
 
@@ -234,8 +234,8 @@ func BenchmarkDefaultClient_Get(b *testing.B) {
 	config := DefaultConfig()
 	config.AllowPrivateIPs = true
 	client, _ := New(config)
-	SetDefaultClient(client)
-	defer CloseDefaultClient()
+	_ = SetDefaultClient(client)
+	defer func() { _ = CloseDefaultClient() }()
 
 	b.ResetTimer()
 	b.ReportAllocs()

@@ -30,13 +30,13 @@ func TestTransport_Creation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create pool manager: %v", err)
 	}
-	defer poolManager.Close()
+	defer func() { _ = poolManager.Close() }()
 
 	transport, err := NewTransport(config, poolManager)
 	if err != nil {
 		t.Fatalf("Failed to create transport: %v", err)
 	}
-	defer transport.Close()
+	defer func() { _ = transport.Close() }()
 
 	if transport == nil {
 		t.Error("Transport should not be nil")
@@ -63,13 +63,13 @@ func TestTransport_HTTPRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create pool manager: %v", err)
 	}
-	defer poolManager.Close()
+	defer func() { _ = poolManager.Close() }()
 
 	transport, err := NewTransport(config, poolManager)
 	if err != nil {
 		t.Fatalf("Failed to create transport: %v", err)
 	}
-	defer transport.Close()
+	defer func() { _ = transport.Close() }()
 
 	req, err := http.NewRequest("GET", server.URL, nil)
 	if err != nil {
@@ -111,13 +111,13 @@ func TestTransport_TLSConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create pool manager: %v", err)
 	}
-	defer poolManager.Close()
+	defer func() { _ = poolManager.Close() }()
 
 	transport, err := NewTransport(config, poolManager)
 	if err != nil {
 		t.Fatalf("Failed to create transport: %v", err)
 	}
-	defer transport.Close()
+	defer func() { _ = transport.Close() }()
 
 	req, err := http.NewRequest("GET", server.URL, nil)
 	if err != nil {
@@ -156,13 +156,13 @@ func TestTransport_Timeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create pool manager: %v", err)
 	}
-	defer poolManager.Close()
+	defer func() { _ = poolManager.Close() }()
 
 	transport, err := NewTransport(config, poolManager)
 	if err != nil {
 		t.Fatalf("Failed to create transport: %v", err)
 	}
-	defer transport.Close()
+	defer func() { _ = transport.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -208,13 +208,13 @@ func TestTransport_ConnectionReuse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create pool manager: %v", err)
 	}
-	defer poolManager.Close()
+	defer func() { _ = poolManager.Close() }()
 
 	transport, err := NewTransport(config, poolManager)
 	if err != nil {
 		t.Fatalf("Failed to create transport: %v", err)
 	}
-	defer transport.Close()
+	defer func() { _ = transport.Close() }()
 
 	// Send multiple requests to the same server
 	for i := range 5 {
@@ -252,7 +252,7 @@ func TestTransport_Close(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create pool manager: %v", err)
 	}
-	defer poolManager.Close()
+	defer func() { _ = poolManager.Close() }()
 
 	transport, err := NewTransport(config, poolManager)
 	if err != nil {
@@ -293,13 +293,13 @@ func TestTransport_UserAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create pool manager: %v", err)
 	}
-	defer poolManager.Close()
+	defer func() { _ = poolManager.Close() }()
 
 	transport, err := NewTransport(config, poolManager)
 	if err != nil {
 		t.Fatalf("Failed to create transport: %v", err)
 	}
-	defer transport.Close()
+	defer func() { _ = transport.Close() }()
 
 	req, err := http.NewRequest("GET", server.URL, nil)
 	if err != nil {
@@ -342,13 +342,13 @@ func TestTransport_Headers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create pool manager: %v", err)
 	}
-	defer poolManager.Close()
+	defer func() { _ = poolManager.Close() }()
 
 	transport, err := NewTransport(config, poolManager)
 	if err != nil {
 		t.Fatalf("Failed to create transport: %v", err)
 	}
-	defer transport.Close()
+	defer func() { _ = transport.Close() }()
 
 	req, err := http.NewRequest("GET", server.URL, nil)
 	if err != nil {

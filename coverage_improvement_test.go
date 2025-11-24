@@ -105,7 +105,7 @@ func TestCloseDefaultClient(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.AllowPrivateIPs = true
 	client, _ := New(cfg)
-	SetDefaultClient(client)
+	_ = SetDefaultClient(client)
 
 	// Close it
 	if err := CloseDefaultClient(); err != nil {
@@ -114,7 +114,7 @@ func TestCloseDefaultClient(t *testing.T) {
 
 	// Reset to a new client for other tests
 	newClient, _ := newTestClient()
-	SetDefaultClient(newClient)
+	_ = SetDefaultClient(newClient)
 }
 
 // ----------------------------------------------------------------------------

@@ -407,7 +407,7 @@ func TestPackage_DefaultClient(t *testing.T) {
 	if err := SetDefaultClient(defaultClient); err != nil {
 		t.Fatalf("Failed to reset default client: %v", err)
 	}
-	customClient.Close()
+	_ = customClient.Close()
 }
 
 func TestPackage_Concurrency(t *testing.T) {

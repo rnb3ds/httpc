@@ -131,7 +131,7 @@ func TestEngine_RequestProcessing(t *testing.T) {
 
 			// Apply options
 			for _, opt := range tt.options {
-				opt(req)
+				_ = opt(req)
 			}
 
 			// Validate request
