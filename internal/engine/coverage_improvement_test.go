@@ -19,7 +19,7 @@ import (
 func TestClient_HTTPMethodShortcuts(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}))
 	defer server.Close()
 
@@ -136,7 +136,7 @@ func TestClient_HealthStatus(t *testing.T) {
 	})
 
 	// Make some requests to update health metrics
-	client.Get(server.URL)
+	_, _ = client.Get(server.URL)
 
 	t.Run("HealthStatusAfterRequests", func(t *testing.T) {
 		status := client.GetHealthStatus()

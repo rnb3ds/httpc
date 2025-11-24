@@ -376,7 +376,7 @@ func TestErrorHandling_IntegrationWithClient(t *testing.T) {
 			name: "Server returns 500 error",
 			serverHandler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte("Internal Server Error"))
+				_, _ = w.Write([]byte("Internal Server Error"))
 			}),
 			expectedError: false, // 500 errors will be retried, may eventually succeed or fail
 			expectedType:  ErrorTypeHTTP,
@@ -386,7 +386,7 @@ func TestErrorHandling_IntegrationWithClient(t *testing.T) {
 			name: "Server returns 404 error",
 			serverHandler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusNotFound)
-				w.Write([]byte("Not Found"))
+				_, _ = w.Write([]byte("Not Found"))
 			}),
 			expectedError: false, // 404 will not retry, returns response directly
 			expectedType:  ErrorTypeHTTP,
@@ -497,7 +497,7 @@ func TestErrorHandling_TimeoutScenarios(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				time.Sleep(tt.serverDelay)
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte("OK"))
+				_, _ = w.Write([]byte("OK"))
 			}))
 			defer server.Close()
 
@@ -562,7 +562,7 @@ func TestErrorHandling_PanicRecovery(t *testing.T) {
 	// This test verifies that the client can recover from internal panics
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer server.Close()
 
