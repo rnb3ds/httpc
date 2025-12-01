@@ -123,10 +123,10 @@ func TestRetry_StatusCodes(t *testing.T) {
 	t.Run("RetryableStatusCodes", func(t *testing.T) {
 		retryableStatuses := []int{
 			http.StatusInternalServerError, // 500
-			http.StatusBadGateway,           // 502
-			http.StatusServiceUnavailable,   // 503
-			http.StatusGatewayTimeout,       // 504
-			http.StatusTooManyRequests,      // 429
+			http.StatusBadGateway,          // 502
+			http.StatusServiceUnavailable,  // 503
+			http.StatusGatewayTimeout,      // 504
+			http.StatusTooManyRequests,     // 429
 		}
 
 		for _, status := range retryableStatuses {

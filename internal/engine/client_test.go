@@ -12,20 +12,20 @@ import (
 
 func TestNewClient(t *testing.T) {
 	config := &Config{
-		Timeout:               30 * time.Second,
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   10,
-		MaxConnsPerHost:       20,
+		Timeout:             30 * time.Second,
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		MaxConnsPerHost:     20,
 
-		MaxResponseBodySize:   50 * 1024 * 1024,
-		ValidateURL:           true,
-		ValidateHeaders:       true,
-		AllowPrivateIPs:       true,
-		MaxRetries:            3,
-		RetryDelay:            100 * time.Millisecond,
-		BackoffFactor:         2.0,
-		UserAgent:             "test-client/1.0",
-		EnableCookies:         true,
+		MaxResponseBodySize: 50 * 1024 * 1024,
+		ValidateURL:         true,
+		ValidateHeaders:     true,
+		AllowPrivateIPs:     true,
+		MaxRetries:          3,
+		RetryDelay:          100 * time.Millisecond,
+		BackoffFactor:       2.0,
+		UserAgent:           "test-client/1.0",
+		EnableCookies:       true,
 	}
 
 	client, err := NewClient(config)
@@ -43,7 +43,7 @@ func TestNewClient(t *testing.T) {
 	if client.config == nil {
 		t.Error("Config not properly set")
 	}
-	
+
 	// Verify config values are copied correctly
 	if client.config.Timeout != config.Timeout {
 		t.Error("Timeout not properly copied")
@@ -218,11 +218,11 @@ func TestClient_ConcurrentRequests(t *testing.T) {
 	defer server.Close()
 
 	config := &Config{
-		Timeout:               30 * time.Second,
-		AllowPrivateIPs:       true,
-		MaxRetries:            1,
+		Timeout:         30 * time.Second,
+		AllowPrivateIPs: true,
+		MaxRetries:      1,
 
-		UserAgent:             "test-client/1.0",
+		UserAgent: "test-client/1.0",
 	}
 
 	client, err := NewClient(config)

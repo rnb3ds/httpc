@@ -290,4 +290,3 @@ func newBenchmarkClient() (Client, error) {
 	config.MaxRetries = 0
 	return New(config)
 }
-

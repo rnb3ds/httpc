@@ -1,105 +1,61 @@
 package httpc
 
 import (
-	"crypto/tls"
 	"time"
 )
 
 func SecureConfig() *Config {
-	return &Config{
-		Timeout:             15 * time.Second,
-		MaxIdleConns:        20,
-		MaxConnsPerHost:     5,
-		MinTLSVersion:       tls.VersionTLS12,
-		MaxTLSVersion:       tls.VersionTLS13,
-		InsecureSkipVerify:  false,
-		MaxResponseBodySize: 5 * 1024 * 1024,
-		AllowPrivateIPs:     false,
-		MaxRetries:          1,
-		RetryDelay:          2 * time.Second,
-		BackoffFactor:       2.0,
-		UserAgent:           "httpc/1.0",
-		Headers:             make(map[string]string),
-		FollowRedirects:     false,
-		EnableHTTP2:         true,
-		EnableCookies:       false,
-		TLSConfig: &tls.Config{
-			MinVersion: tls.VersionTLS12,
-			MaxVersion: tls.VersionTLS13,
-		},
-	}
+	cfg := DefaultConfig()
+	cfg.Timeout = 15 * time.Second
+	cfg.MaxIdleConns = 20
+	cfg.MaxConnsPerHost = 5
+	cfg.MaxResponseBodySize = 5 * 1024 * 1024
+	cfg.MaxRetries = 1
+	cfg.RetryDelay = 2 * time.Second
+	cfg.FollowRedirects = false
+	return cfg
 }
 
 func PerformanceConfig() *Config {
-	return &Config{
-		Timeout:             60 * time.Second,
-		MaxIdleConns:        100,
-		MaxConnsPerHost:     20,
-		MinTLSVersion:       tls.VersionTLS12,
-		MaxTLSVersion:       tls.VersionTLS13,
-		InsecureSkipVerify:  false,
-		MaxResponseBodySize: 50 * 1024 * 1024,
-		AllowPrivateIPs:     false,
-		MaxRetries:          3,
-		RetryDelay:          500 * time.Millisecond,
-		BackoffFactor:       1.5,
-		UserAgent:           "httpc/1.0",
-		Headers:             make(map[string]string),
-		FollowRedirects:     true,
-		EnableHTTP2:         true,
-		EnableCookies:       true,
-	}
+	cfg := DefaultConfig()
+	cfg.Timeout = 60 * time.Second
+	cfg.MaxIdleConns = 100
+	cfg.MaxConnsPerHost = 20
+	cfg.MaxResponseBodySize = 50 * 1024 * 1024
+	cfg.StrictContentLength = false
+	cfg.RetryDelay = 500 * time.Millisecond
+	cfg.BackoffFactor = 1.5
+	cfg.EnableCookies = true
+	return cfg
 }
 
 // TestingConfig returns a configuration optimized for testing environments.
 // WARNING: This config disables security features and should NEVER be used in production.
 // Use this ONLY for local development and testing with localhost/private networks.
 func TestingConfig() *Config {
-	return &Config{
-		Timeout:             30 * time.Second,
-		MaxIdleConns:        10,
-		MaxConnsPerHost:     5,
-		MinTLSVersion:       tls.VersionTLS12,
-		MaxTLSVersion:       tls.VersionTLS13,
-		InsecureSkipVerify:  true, // TESTING ONLY
-		MaxResponseBodySize: 10 * 1024 * 1024,
-		AllowPrivateIPs:     true, // TESTING ONLY - allows localhost/127.0.0.1
-		StrictContentLength: true,
-		MaxRetries:          1,
-		RetryDelay:          100 * time.Millisecond,
-		BackoffFactor:       2.0,
-		UserAgent:           "httpc-test/1.0",
-		Headers:             make(map[string]string),
-		FollowRedirects:     true,
-		EnableHTTP2:         false,
-		EnableCookies:       true,
-		TLSConfig: &tls.Config{
-			MinVersion:         tls.VersionTLS12,
-			InsecureSkipVerify: true,
-		},
-	}
+	cfg := DefaultConfig()
+	cfg.InsecureSkipVerify = true
+	cfg.AllowPrivateIPs = true
+	cfg.MaxIdleConns = 10
+	cfg.MaxConnsPerHost = 5
+	cfg.MaxRetries = 1
+	cfg.RetryDelay = 100 * time.Millisecond
+	cfg.UserAgent = "httpc-test/1.0"
+	cfg.EnableHTTP2 = false
+	cfg.EnableCookies = true
+	return cfg
 }
 
 // MinimalConfig returns a lightweight configuration with minimal features.
 // Use this for simple, one-off requests where you don't need retries or advanced features.
 func MinimalConfig() *Config {
-	return &Config{
-		Timeout:             30 * time.Second,
-		MaxIdleConns:        10,
-		MaxConnsPerHost:     2,
-		MinTLSVersion:       tls.VersionTLS12,
-		MaxTLSVersion:       tls.VersionTLS13,
-		InsecureSkipVerify:  false,
-		MaxResponseBodySize: 1 * 1024 * 1024,
-		AllowPrivateIPs:     false,
-		StrictContentLength: true,
-		MaxRetries:          0,
-		RetryDelay:          0,
-		BackoffFactor:       1.0,
-		UserAgent:           "httpc/1.0",
-		Headers:             make(map[string]string),
-		FollowRedirects:     false,
-		EnableHTTP2:         true, // Enable HTTP/2 for better performance
-		EnableCookies:       false,
-	}
+	cfg := DefaultConfig()
+	cfg.MaxIdleConns = 10
+	cfg.MaxConnsPerHost = 2
+	cfg.MaxResponseBodySize = 1 * 1024 * 1024
+	cfg.MaxRetries = 0
+	cfg.RetryDelay = 0
+	cfg.BackoffFactor = 1.0
+	cfg.FollowRedirects = false
+	return cfg
 }

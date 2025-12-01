@@ -7,7 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-	"time")
+	"time"
+)
 
 // ============================================================================
 // REQUEST BUILDER TESTS
@@ -15,10 +16,10 @@ import (
 
 func TestRequestProcessor_BuildHTTPRequest(t *testing.T) {
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		MaxResponseBodySize:   50 * 1024 * 1024,
-		UserAgent:             "test-client/1.0",
+		MaxResponseBodySize: 50 * 1024 * 1024,
+		UserAgent:           "test-client/1.0",
 	}
 
 	processor := NewRequestProcessor(config)
@@ -217,9 +218,9 @@ func TestRequestProcessor_BuildHTTPRequest(t *testing.T) {
 
 func TestRequestProcessor_BodySerializationComprehensive(t *testing.T) {
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		MaxResponseBodySize:   50 * 1024 * 1024,
+		MaxResponseBodySize: 50 * 1024 * 1024,
 	}
 
 	processor := NewRequestProcessor(config)
@@ -324,10 +325,10 @@ func TestRequestProcessor_BodySerializationComprehensive(t *testing.T) {
 
 func TestRequestProcessor_HeaderHandlingComprehensive(t *testing.T) {
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		MaxResponseBodySize:   50 * 1024 * 1024,
-		UserAgent:             "test-client/1.0",
+		MaxResponseBodySize: 50 * 1024 * 1024,
+		UserAgent:           "test-client/1.0",
 		Headers: map[string]string{
 			"X-Default-Header": "default-value",
 		},
@@ -368,9 +369,9 @@ func TestRequestProcessor_HeaderHandlingComprehensive(t *testing.T) {
 
 func TestRequestProcessor_QueryParameterHandlingComprehensive(t *testing.T) {
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		MaxResponseBodySize:   50 * 1024 * 1024,
+		MaxResponseBodySize: 50 * 1024 * 1024,
 	}
 
 	processor := NewRequestProcessor(config)
@@ -451,9 +452,9 @@ func TestRequestProcessor_QueryParameterHandlingComprehensive(t *testing.T) {
 
 func TestRequestProcessor_EdgeCases(t *testing.T) {
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		MaxResponseBodySize:   50 * 1024 * 1024,
+		MaxResponseBodySize: 50 * 1024 * 1024,
 	}
 
 	processor := NewRequestProcessor(config)

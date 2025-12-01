@@ -7,10 +7,11 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
+// WithHeader adds a custom header to the request.
+// Returns an error if the header key or value is invalid.
 func WithHeader(key, value string) RequestOption {
 	return func(r *Request) error {
 		if err := validateHeaderKeyValue(key, value); err != nil {
@@ -25,6 +26,8 @@ func WithHeader(key, value string) RequestOption {
 	}
 }
 
+// WithHeaderMap adds multiple headers to the request.
+// Returns an error if any header key or value is invalid.
 func WithHeaderMap(headers map[string]string) RequestOption {
 	return func(r *Request) error {
 		if r.Headers == nil {
@@ -40,79 +43,72 @@ func WithHeaderMap(headers map[string]string) RequestOption {
 	}
 }
 
+// WithUserAgent sets the User-Agent header for the request.
 func WithUserAgent(userAgent string) RequestOption {
 	return WithHeader("User-Agent", userAgent)
 }
 
+// WithContentType sets the Content-Type header for the request.
 func WithContentType(contentType string) RequestOption {
 	return WithHeader("Content-Type", contentType)
 }
 
+// WithAccept sets the Accept header for the request.
 func WithAccept(accept string) RequestOption {
 	return WithHeader("Accept", accept)
 }
 
+// WithJSONAccept sets the Accept header to application/json.
 func WithJSONAccept() RequestOption {
-	return func(r *Request) error {
-		if r.Headers == nil {
-			r.Headers = make(map[string]string)
-		}
-		r.Headers["Accept"] = "application/json"
-		return nil
-	}
+	return WithAccept("application/json")
 }
 
+// WithXMLAccept sets the Accept header to application/xml.
 func WithXMLAccept() RequestOption {
-	return func(r *Request) error {
-		if r.Headers == nil {
-			r.Headers = make(map[string]string)
-		}
-		r.Headers["Accept"] = "application/xml"
-		return nil
-	}
+	return WithAccept("application/xml")
 }
 
+const (
+	maxCredLen     = 255
+	maxTokenLen    = 2048
+	maxKeyLen      = 256
+	maxValueLen    = 8192
+	maxFilenameLen = 256
+)
+
+// WithBasicAuth adds HTTP Basic Authentication to the request.
+// The credentials are base64-encoded and added to the Authorization header.
+// Returns an error if username is empty or credentials contain invalid characters.
 func WithBasicAuth(username, password string) RequestOption {
 	return func(r *Request) error {
-		if strings.TrimSpace(username) == "" {
+		if username == "" {
 			return fmt.Errorf("username cannot be empty")
 		}
-
-		if strings.ContainsAny(username, "\r\n\x00:") {
-			return fmt.Errorf("username contains invalid characters")
+		if err := validateCredential(username, maxCredLen, true); err != nil {
+			return fmt.Errorf("invalid username: %w", err)
 		}
-		if strings.ContainsAny(password, "\r\n\x00") {
-			return fmt.Errorf("password contains invalid characters")
-		}
-		if len(username) > 255 {
-			return fmt.Errorf("username too long (max 255 characters)")
-		}
-		if len(password) > 255 {
-			return fmt.Errorf("password too long (max 255 characters)")
+		if err := validateCredential(password, maxCredLen, false); err != nil {
+			return fmt.Errorf("invalid password: %w", err)
 		}
 
 		if r.Headers == nil {
 			r.Headers = make(map[string]string)
 		}
 
-		auth := fmt.Sprintf("%s:%s", username, password)
-		encoded := base64.StdEncoding.EncodeToString([]byte(auth))
-		r.Headers["Authorization"] = "Basic " + encoded
+		r.Headers["Authorization"] = "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+password))
 		return nil
 	}
 }
 
+// WithBearerToken adds a Bearer token to the Authorization header.
+// Returns an error if token is empty, too long, or contains invalid characters.
 func WithBearerToken(token string) RequestOption {
 	return func(r *Request) error {
-		if strings.TrimSpace(token) == "" {
+		if token == "" {
 			return fmt.Errorf("token cannot be empty")
 		}
-
-		if strings.ContainsAny(token, "\r\n\x00") {
-			return fmt.Errorf("token contains invalid characters")
-		}
-		if len(token) > 2048 {
-			return fmt.Errorf("token too long (max 2048 characters)")
+		if err := validateToken(token); err != nil {
+			return err
 		}
 
 		if r.Headers == nil {
@@ -123,25 +119,21 @@ func WithBearerToken(token string) RequestOption {
 	}
 }
 
+// WithQuery adds a single query parameter to the request URL.
+// Returns an error if key is empty, too long, or contains invalid characters.
 func WithQuery(key string, value any) RequestOption {
 	return func(r *Request) error {
-		if strings.TrimSpace(key) == "" {
-			return fmt.Errorf("query key cannot be empty")
+		if err := validateQueryKey(key); err != nil {
+			return err
 		}
-		if len(key) > 256 {
-			return fmt.Errorf("query key too long (max 256 characters)")
-		}
-		if strings.ContainsAny(key, "\r\n\x00&=") {
-			return fmt.Errorf("query key contains invalid characters")
-		}
-		
+
 		if value != nil {
 			valueStr := fmt.Sprintf("%v", value)
-			if len(valueStr) > 8192 {
-				return fmt.Errorf("query value too long (max 8192 characters)")
+			if len(valueStr) > maxValueLen {
+				return fmt.Errorf("query value too long (max %d)", maxValueLen)
 			}
 		}
-		
+
 		if r.QueryParams == nil {
 			r.QueryParams = make(map[string]any)
 		}
@@ -150,26 +142,22 @@ func WithQuery(key string, value any) RequestOption {
 	}
 }
 
+// WithQueryMap adds multiple query parameters to the request URL.
+// Returns an error if any key is empty, too long, or contains invalid characters.
 func WithQueryMap(params map[string]any) RequestOption {
 	return func(r *Request) error {
 		if r.QueryParams == nil {
-			r.QueryParams = make(map[string]any)
+			r.QueryParams = make(map[string]any, len(params))
 		}
 		for k, v := range params {
-			if strings.TrimSpace(k) == "" {
-				return fmt.Errorf("query key cannot be empty")
+			if err := validateQueryKey(k); err != nil {
+				return fmt.Errorf("invalid key %s: %w", k, err)
 			}
-			if len(k) > 256 {
-				return fmt.Errorf("query key '%s' too long (max 256 characters)", k)
-			}
-			if strings.ContainsAny(k, "\r\n\x00&=") {
-				return fmt.Errorf("query key '%s' contains invalid characters", k)
-			}
-			
+
 			if v != nil {
 				valueStr := fmt.Sprintf("%v", v)
-				if len(valueStr) > 8192 {
-					return fmt.Errorf("query value for key '%s' too long (max 8192 characters)", k)
+				if len(valueStr) > maxValueLen {
+					return fmt.Errorf("query value too long for key %s (max %d)", k, maxValueLen)
 				}
 			}
 			r.QueryParams[k] = v
@@ -178,6 +166,7 @@ func WithQueryMap(params map[string]any) RequestOption {
 	}
 }
 
+// WithJSON sets the request body to JSON-encoded data and sets Content-Type to application/json.
 func WithJSON(data any) RequestOption {
 	return func(r *Request) error {
 		if data == nil {
@@ -192,6 +181,7 @@ func WithJSON(data any) RequestOption {
 	}
 }
 
+// WithXML sets the request body to XML-encoded data and sets Content-Type to application/xml.
 func WithXML(data any) RequestOption {
 	return func(r *Request) error {
 		if data == nil {
@@ -248,27 +238,21 @@ func WithFormData(data *FormData) RequestOption {
 	}
 }
 
+// WithFile adds a file upload to the request.
+// Returns an error if fieldName or filename is empty or contains invalid characters.
 func WithFile(fieldName, filename string, content []byte) RequestOption {
 	return func(r *Request) error {
-		if strings.TrimSpace(fieldName) == "" {
+		if fieldName == "" {
 			return fmt.Errorf("field name cannot be empty")
 		}
-		if strings.TrimSpace(filename) == "" {
+		if filename == "" {
 			return fmt.Errorf("filename cannot be empty")
 		}
-
-		if len(fieldName) > 256 {
-			return fmt.Errorf("field name too long (max 256 characters)")
+		if err := validateFieldName(fieldName); err != nil {
+			return fmt.Errorf("invalid field name: %w", err)
 		}
-		if len(filename) > 256 {
-			return fmt.Errorf("filename too long (max 256 characters)")
-		}
-
-		if strings.ContainsAny(fieldName, "\r\n\x00\"'<>&") {
-			return fmt.Errorf("field name contains invalid characters")
-		}
-		if strings.ContainsAny(filename, "\r\n\x00\"'<>&") {
-			return fmt.Errorf("filename contains invalid characters")
+		if err := validateFieldName(filename); err != nil {
+			return fmt.Errorf("invalid filename: %w", err)
 		}
 
 		cleanFilename := filepath.Base(filename)
@@ -276,7 +260,7 @@ func WithFile(fieldName, filename string, content []byte) RequestOption {
 			return fmt.Errorf("invalid filename")
 		}
 
-		formData := &FormData{
+		r.Body = &FormData{
 			Fields: make(map[string]string),
 			Files: map[string]*FileData{
 				fieldName: {
@@ -285,18 +269,19 @@ func WithFile(fieldName, filename string, content []byte) RequestOption {
 				},
 			},
 		}
-		r.Body = formData
 		return nil
 	}
 }
 
+// WithTimeout sets the request timeout.
+// Returns ErrInvalidTimeout if timeout is negative or exceeds 30 minutes.
 func WithTimeout(timeout time.Duration) RequestOption {
 	return func(r *Request) error {
 		if timeout < 0 {
-			return fmt.Errorf("timeout cannot be negative")
+			return fmt.Errorf("%w: cannot be negative", ErrInvalidTimeout)
 		}
 		if timeout > 30*time.Minute {
-			return fmt.Errorf("timeout too large (max 30 minutes)")
+			return fmt.Errorf("%w: exceeds 30 minutes", ErrInvalidTimeout)
 		}
 		r.Timeout = timeout
 		return nil
@@ -313,13 +298,12 @@ func WithContext(ctx context.Context) RequestOption {
 	}
 }
 
+// WithMaxRetries sets the maximum number of retry attempts.
+// Returns ErrInvalidRetry if maxRetries is not between 0 and 10.
 func WithMaxRetries(maxRetries int) RequestOption {
 	return func(r *Request) error {
-		if maxRetries < 0 {
-			return fmt.Errorf("max retries cannot be negative")
-		}
-		if maxRetries > 10 {
-			return fmt.Errorf("max retries too large (max 10)")
+		if maxRetries < 0 || maxRetries > 10 {
+			return fmt.Errorf("%w: must be 0-10, got %d", ErrInvalidRetry, maxRetries)
 		}
 		r.MaxRetries = maxRetries
 		return nil
@@ -352,6 +336,13 @@ func WithBinary(data []byte, contentType ...string) RequestOption {
 	}
 }
 
+const (
+	maxCookieNameLen   = 256
+	maxCookieValueLen  = 4096
+	maxCookieDomainLen = 255
+	maxCookiePathLen   = 1024
+)
+
 func WithCookie(cookie *http.Cookie) RequestOption {
 	return func(r *Request) error {
 		if cookie == nil {
@@ -370,51 +361,16 @@ func WithCookie(cookie *http.Cookie) RequestOption {
 	}
 }
 
-func validateCookie(cookie *http.Cookie) error {
-	if strings.TrimSpace(cookie.Name) == "" {
-		return fmt.Errorf("cookie name cannot be empty")
-	}
-	if strings.ContainsAny(cookie.Name, "\r\n\x00;,") {
-		return fmt.Errorf("cookie name contains invalid characters")
-	}
-	if strings.ContainsAny(cookie.Value, "\r\n\x00") {
-		return fmt.Errorf("cookie value contains invalid characters")
-	}
-	if len(cookie.Name) > 256 {
-		return fmt.Errorf("cookie name too long")
-	}
-	if len(cookie.Value) > 4096 {
-		return fmt.Errorf("cookie value too long")
-	}
-	if cookie.Domain != "" {
-		if strings.ContainsAny(cookie.Domain, "\r\n\x00;,") {
-			return fmt.Errorf("cookie domain contains invalid characters")
-		}
-		if len(cookie.Domain) > 255 {
-			return fmt.Errorf("cookie domain too long")
-		}
-	}
-	if cookie.Path != "" {
-		if strings.ContainsAny(cookie.Path, "\r\n\x00;") {
-			return fmt.Errorf("cookie path contains invalid characters")
-		}
-		if len(cookie.Path) > 1024 {
-			return fmt.Errorf("cookie path too long")
-		}
-	}
-	return nil
-}
-
 func WithCookies(cookies []*http.Cookie) RequestOption {
 	return func(r *Request) error {
 		if len(cookies) == 0 {
 			return nil
 		}
-		
+
 		if r.Cookies == nil {
 			r.Cookies = make([]*http.Cookie, 0, len(cookies))
 		}
-		
+
 		for i, cookie := range cookies {
 			if cookie == nil {
 				return fmt.Errorf("cookie at index %d is nil", i)
@@ -428,29 +384,22 @@ func WithCookies(cookies []*http.Cookie) RequestOption {
 	}
 }
 
+// WithCookieValue adds a cookie with the given name and value to the request.
+// The cookie is created with secure defaults: HttpOnly=true, SameSite=Lax.
+// For HTTPS requests, consider using WithCookie with Secure=true.
+// Returns an error if name is empty or contains invalid characters.
 func WithCookieValue(name, value string) RequestOption {
 	return func(r *Request) error {
-		if strings.TrimSpace(name) == "" {
-			return fmt.Errorf("cookie name cannot be empty")
-		}
-		if strings.ContainsAny(name, "\r\n\x00;,") {
-			return fmt.Errorf("cookie name contains invalid characters")
-		}
-		if strings.ContainsAny(value, "\r\n\x00") {
-			return fmt.Errorf("cookie value contains invalid characters")
-		}
-		if len(name) > 256 {
-			return fmt.Errorf("cookie name too long (max 256 characters)")
-		}
-		if len(value) > 4096 {
-			return fmt.Errorf("cookie value too long (max 4096 characters)")
-		}
-
 		cookie := &http.Cookie{
 			Name:     name,
 			Value:    value,
 			HttpOnly: true,
+			Secure:   false,
 			SameSite: http.SameSiteLaxMode,
+		}
+
+		if err := validateCookie(cookie); err != nil {
+			return err
 		}
 
 		if r.Cookies == nil {
@@ -459,4 +408,129 @@ func WithCookieValue(name, value string) RequestOption {
 		r.Cookies = append(r.Cookies, cookie)
 		return nil
 	}
+}
+
+func validateCredential(cred string, maxLen int, checkColon bool) error {
+	credLen := len(cred)
+	if credLen > maxLen {
+		return fmt.Errorf("too long (max %d)", maxLen)
+	}
+
+	for i := range credLen {
+		c := cred[i]
+		if c == '\r' || c == '\n' || c == 0 || (checkColon && c == ':') {
+			return fmt.Errorf("contains invalid characters")
+		}
+	}
+	return nil
+}
+
+func validateToken(token string) error {
+	tokenLen := len(token)
+	if tokenLen > maxTokenLen {
+		return fmt.Errorf("token too long (max %d)", maxTokenLen)
+	}
+
+	for i := range tokenLen {
+		c := token[i]
+		if c == '\r' || c == '\n' || c == 0 {
+			return fmt.Errorf("token contains invalid characters")
+		}
+	}
+	return nil
+}
+
+func validateQueryKey(key string) error {
+	if key == "" {
+		return fmt.Errorf("query key cannot be empty")
+	}
+	keyLen := len(key)
+	if keyLen > maxKeyLen {
+		return fmt.Errorf("query key too long (max %d)", maxKeyLen)
+	}
+
+	for i := range keyLen {
+		c := key[i]
+		if c == '\r' || c == '\n' || c == 0 || c == '&' || c == '=' {
+			return fmt.Errorf("query key contains invalid characters")
+		}
+	}
+	return nil
+}
+
+func validateFieldName(name string) error {
+	nameLen := len(name)
+	if nameLen > maxFilenameLen {
+		return fmt.Errorf("too long (max %d)", maxFilenameLen)
+	}
+
+	for i := range nameLen {
+		c := name[i]
+		if c == '\r' || c == '\n' || c == 0 || c == '"' || c == '\'' || c == '<' || c == '>' || c == '&' {
+			return fmt.Errorf("contains invalid characters")
+		}
+	}
+	return nil
+}
+
+func validateCookie(cookie *http.Cookie) error {
+	if cookie.Name == "" {
+		return fmt.Errorf("cookie name cannot be empty")
+	}
+	nameLen := len(cookie.Name)
+	if nameLen > maxCookieNameLen {
+		return fmt.Errorf("cookie name too long (max %d)", maxCookieNameLen)
+	}
+
+	for i := range nameLen {
+		c := cookie.Name[i]
+		if c == '\r' || c == '\n' || c == 0 || c == ';' || c == ',' {
+			return fmt.Errorf("cookie name contains invalid characters")
+		}
+	}
+
+	valueLen := len(cookie.Value)
+	if valueLen > maxCookieValueLen {
+		return fmt.Errorf("cookie value too long (max %d)", maxCookieValueLen)
+	}
+
+	for i := range valueLen {
+		c := cookie.Value[i]
+		if c == '\r' || c == '\n' || c == 0 {
+			return fmt.Errorf("cookie value contains invalid characters")
+		}
+	}
+
+	if cookie.Domain != "" {
+		domainLen := len(cookie.Domain)
+		if domainLen > maxCookieDomainLen {
+			return fmt.Errorf("cookie domain too long (max %d)", maxCookieDomainLen)
+		}
+		if cookie.Domain == "." {
+			return fmt.Errorf("cookie domain cannot be just a dot")
+		}
+		for i := range domainLen {
+			c := cookie.Domain[i]
+			if c == '\r' || c == '\n' || c == 0 || c == ';' || c == ',' {
+				return fmt.Errorf("cookie domain contains invalid characters")
+			}
+		}
+	}
+
+	if cookie.Path != "" {
+		pathLen := len(cookie.Path)
+		if pathLen == 0 || cookie.Path[0] != '/' {
+			return fmt.Errorf("cookie path must start with /")
+		}
+		if pathLen > maxCookiePathLen {
+			return fmt.Errorf("cookie path too long (max %d)", maxCookiePathLen)
+		}
+		for i := range pathLen {
+			c := cookie.Path[i]
+			if c == '\r' || c == '\n' || c == 0 || c == ';' {
+				return fmt.Errorf("cookie path contains invalid characters")
+			}
+		}
+	}
+	return nil
 }

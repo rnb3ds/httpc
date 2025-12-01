@@ -332,8 +332,6 @@ func TestClassifyError_NilError(t *testing.T) {
 	}
 }
 
-
-
 // mockNetError implements net.Error for testing
 type mockNetError struct {
 	timeout   bool

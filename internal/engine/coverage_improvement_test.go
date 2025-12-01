@@ -166,7 +166,6 @@ func TestClientError_Code(t *testing.T) {
 		{"Certificate", ErrorTypeCertificate, "CERTIFICATE_ERROR"},
 		{"DNS", ErrorTypeDNS, "DNS_ERROR"},
 		{"Validation", ErrorTypeValidation, "VALIDATION_ERROR"},
-		{"CircuitBreaker", ErrorTypeCircuitBreaker, "CIRCUIT_BREAKER_OPEN"},
 		{"HTTP", ErrorTypeHTTP, "HTTP_ERROR"},
 	}
 
@@ -183,8 +182,6 @@ func TestClientError_Code(t *testing.T) {
 		})
 	}
 }
-
-
 
 // ----------------------------------------------------------------------------
 // Context Timeout in Sleep
@@ -217,8 +214,6 @@ func TestClient_SleepWithContext(t *testing.T) {
 	})
 }
 
-
-
 // ----------------------------------------------------------------------------
 // Retry Engine Edge Cases
 // ----------------------------------------------------------------------------
@@ -231,7 +226,7 @@ func TestRetryEngine_EdgeCases(t *testing.T) {
 			BackoffFactor: 2.0,
 		}
 		engine := NewRetryEngine(cfg)
-		
+
 		shouldRetry := engine.ShouldRetry(nil, nil, 1)
 		if shouldRetry {
 			t.Error("Should not retry when MaxRetries is 0")
@@ -257,5 +252,3 @@ func TestRetryEngine_EdgeCases(t *testing.T) {
 		}
 	})
 }
-
-

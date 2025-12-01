@@ -12,12 +12,15 @@ import (
 )
 
 // Response represents an HTTP response.
-// Response objects are safe to read from multiple goroutines after they are returned.
-// The Headers map is deep-copied to prevent concurrent access issues.
+//
+// Thread Safety:
+// Response objects are immutable after creation and safe to read from
+// multiple goroutines concurrently. All methods are goroutine-safe.
+// Do not modify Response fields directly.
 type Response struct {
 	StatusCode    int
 	Status        string
-	Headers       http.Header // Deep-copied for thread safety
+	Headers       http.Header
 	Body          string
 	RawBody       []byte
 	ContentLength int64
@@ -46,21 +49,35 @@ func (r *Response) IsServerError() bool {
 	return r.StatusCode >= 500 && r.StatusCode < 600
 }
 
+const (
+	maxJSONSize         = 50 * 1024 * 1024
+	maxTimeout          = 30 * time.Minute
+	maxIdleConns        = 1000
+	maxConnsPerHost     = 1000
+	maxResponseBodySize = 1024 * 1024 * 1024
+	maxRetries          = 10
+	minBackoffFactor    = 1.0
+	maxBackoffFactor    = 10.0
+	maxUserAgentLen     = 512
+	maxHeaderKeyLen     = 256
+	maxHeaderValueLen   = 8192
+)
+
 // JSON unmarshals the response body into the provided interface.
+// Returns ErrResponseBodyEmpty if the body is nil or empty.
+// Returns ErrResponseBodyTooLarge if the body exceeds 50MB.
 func (r *Response) JSON(v any) error {
-	if r.RawBody == nil {
-		return fmt.Errorf("response body is empty")
+	if len(r.RawBody) == 0 {
+		return ErrResponseBodyEmpty
 	}
 
-	const maxJSONSize = 50 * 1024 * 1024
 	if len(r.RawBody) > maxJSONSize {
-		return fmt.Errorf("response body too large for JSON parsing (%d bytes, max 50MB)", len(r.RawBody))
+		return fmt.Errorf("%w: %d bytes exceeds 50MB", ErrResponseBodyTooLarge, len(r.RawBody))
 	}
 
 	return json.Unmarshal(r.RawBody, v)
 }
 
-// GetCookie returns the named cookie from the response or nil if not found
 func (r *Response) GetCookie(name string) *http.Cookie {
 	for _, cookie := range r.Cookies {
 		if cookie.Name == name {
@@ -70,13 +87,16 @@ func (r *Response) GetCookie(name string) *http.Cookie {
 	return nil
 }
 
-// HasCookie returns true if the response contains a cookie with the given name
 func (r *Response) HasCookie(name string) bool {
 	return r.GetCookie(name) != nil
 }
 
 // Config defines the HTTP client configuration.
-// Config should be treated as immutable after passing it to New().
+//
+// Thread Safety:
+// Config must be treated as immutable after passing it to New().
+// Do not modify Config fields after client creation.
+// Create a new Config for each client with different settings.
 type Config struct {
 	Timeout         time.Duration
 	MaxIdleConns    int
@@ -127,17 +147,6 @@ type FileData struct {
 	ContentType string
 }
 
-type HTTPError struct {
-	StatusCode int
-	Status     string
-	URL        string
-	Method     string
-}
-
-func (e *HTTPError) Error() string {
-	return fmt.Sprintf("HTTP %d: %s %s", e.StatusCode, e.Method, e.URL)
-}
-
 func DefaultConfig() *Config {
 	return &Config{
 		Timeout:             30 * time.Second,
@@ -167,72 +176,57 @@ func NewCookieJar() (http.CookieJar, error) {
 }
 
 // ValidateConfig validates the configuration with reasonable limits.
+// Returns ErrNilConfig if cfg is nil.
+// Returns ErrInvalidTimeout if timeout is negative or exceeds 30 minutes.
+// Returns ErrInvalidRetry if retry configuration is invalid.
+// Returns ErrInvalidHeader if any header is invalid.
 func ValidateConfig(cfg *Config) error {
 	if cfg == nil {
-		return fmt.Errorf("config cannot be nil")
+		return ErrNilConfig
 	}
 
-	// Validate timeout settings
 	if cfg.Timeout < 0 {
-		return fmt.Errorf("timeout cannot be negative, got %v", cfg.Timeout)
+		return fmt.Errorf("%w: cannot be negative", ErrInvalidTimeout)
 	}
-	if cfg.Timeout > 30*time.Minute {
-		return fmt.Errorf("timeout too large (max 30 minutes), got %v", cfg.Timeout)
-	}
-
-	// Validate connection pool settings
-	if cfg.MaxIdleConns < 0 {
-		return fmt.Errorf("MaxIdleConns cannot be negative, got %d", cfg.MaxIdleConns)
-	}
-	if cfg.MaxIdleConns > 1000 {
-		return fmt.Errorf("MaxIdleConns too large (max 1000), got %d", cfg.MaxIdleConns)
-	}
-	if cfg.MaxConnsPerHost < 0 {
-		return fmt.Errorf("MaxConnsPerHost cannot be negative, got %d", cfg.MaxConnsPerHost)
-	}
-	if cfg.MaxConnsPerHost > 1000 {
-		return fmt.Errorf("MaxConnsPerHost too large (max 1000), got %d", cfg.MaxConnsPerHost)
+	if cfg.Timeout > maxTimeout {
+		return fmt.Errorf("%w: exceeds %v", ErrInvalidTimeout, maxTimeout)
 	}
 
-	// Validate response size limit
+	if cfg.MaxIdleConns < 0 || cfg.MaxIdleConns > maxIdleConns {
+		return fmt.Errorf("MaxIdleConns must be 0-%d, got %d", maxIdleConns, cfg.MaxIdleConns)
+	}
+	if cfg.MaxConnsPerHost < 0 || cfg.MaxConnsPerHost > maxConnsPerHost {
+		return fmt.Errorf("MaxConnsPerHost must be 0-%d, got %d", maxConnsPerHost, cfg.MaxConnsPerHost)
+	}
+
 	if cfg.MaxResponseBodySize < 0 {
-		return fmt.Errorf("MaxResponseBodySize cannot be negative, got %d", cfg.MaxResponseBodySize)
+		return fmt.Errorf("MaxResponseBodySize cannot be negative")
 	}
-	if cfg.MaxResponseBodySize > 1024*1024*1024 { // 1GB max
-		return fmt.Errorf("MaxResponseBodySize too large (max 1GB), got %d", cfg.MaxResponseBodySize)
+	if cfg.MaxResponseBodySize > maxResponseBodySize {
+		return fmt.Errorf("MaxResponseBodySize exceeds 1GB")
 	}
 
-	// Validate retry settings
-	if cfg.MaxRetries < 0 {
-		return fmt.Errorf("MaxRetries cannot be negative, got %d", cfg.MaxRetries)
-	}
-	if cfg.MaxRetries > 10 {
-		return fmt.Errorf("MaxRetries too large (max 10), got %d", cfg.MaxRetries)
+	if cfg.MaxRetries < 0 || cfg.MaxRetries > maxRetries {
+		return fmt.Errorf("%w: must be 0-%d, got %d", ErrInvalidRetry, maxRetries, cfg.MaxRetries)
 	}
 	if cfg.RetryDelay < 0 {
-		return fmt.Errorf("RetryDelay cannot be negative, got %v", cfg.RetryDelay)
+		return fmt.Errorf("%w: cannot be negative", ErrInvalidRetry)
 	}
-	if cfg.BackoffFactor < 1.0 {
-		return fmt.Errorf("BackoffFactor must be at least 1.0, got %f", cfg.BackoffFactor)
-	}
-	if cfg.BackoffFactor > 10.0 {
-		return fmt.Errorf("BackoffFactor too large (max 10.0), got %f", cfg.BackoffFactor)
+	if cfg.BackoffFactor < minBackoffFactor || cfg.BackoffFactor > maxBackoffFactor {
+		return fmt.Errorf("%w: must be %.1f-%.1f, got %.1f", ErrInvalidRetry, minBackoffFactor, maxBackoffFactor, cfg.BackoffFactor)
 	}
 
-	// Validate User-Agent
-	if strings.ContainsAny(cfg.UserAgent, "\r\n\x00") {
-		return fmt.Errorf("UserAgent contains invalid control characters")
-	}
-	if len(cfg.UserAgent) > 512 {
-		return fmt.Errorf("UserAgent too long (max 512 characters)")
+	if len(cfg.UserAgent) > maxUserAgentLen {
+		return fmt.Errorf("UserAgent exceeds %d characters", maxUserAgentLen)
 	}
 
-	// Validate headers
-	if cfg.Headers != nil {
-		for key, value := range cfg.Headers {
-			if err := validateHeaderKeyValue(key, value); err != nil {
-				return fmt.Errorf("invalid header %s: %w", key, err)
-			}
+	if !isValidHeaderString(cfg.UserAgent) {
+		return fmt.Errorf("UserAgent contains invalid characters")
+	}
+
+	for key, value := range cfg.Headers {
+		if err := validateHeaderKeyValue(key, value); err != nil {
+			return fmt.Errorf("%w: %s: %v", ErrInvalidHeader, key, err)
 		}
 	}
 
@@ -240,64 +234,48 @@ func ValidateConfig(cfg *Config) error {
 }
 
 func validateHeaderKeyValue(key, value string) error {
-	if strings.TrimSpace(key) == "" {
-		return fmt.Errorf("header key cannot be empty")
+	if key == "" {
+		return fmt.Errorf("key cannot be empty")
 	}
-	if len(key) > 256 {
-		return fmt.Errorf("header key too long (max 256 characters)")
+	keyLen := len(key)
+	if keyLen > maxHeaderKeyLen {
+		return fmt.Errorf("key too long (max %d)", maxHeaderKeyLen)
 	}
-	if len(value) > 8192 {
-		return fmt.Errorf("header value too long (max 8KB)")
+	if len(value) > maxHeaderValueLen {
+		return fmt.Errorf("value too long (max %d)", maxHeaderValueLen)
 	}
-	if strings.ContainsAny(key, "\r\n\x00") {
-		return fmt.Errorf("header key contains invalid characters")
-	}
-	if strings.ContainsAny(value, "\r\n\x00") {
-		return fmt.Errorf("header value contains invalid characters")
+	if key[0] == ':' {
+		return fmt.Errorf("pseudo-headers not allowed")
 	}
 
-	if strings.HasPrefix(key, ":") {
-		return fmt.Errorf("pseudo-headers are not allowed")
+	if !isValidHeaderString(key) || !isValidHeaderString(value) {
+		return fmt.Errorf("invalid characters")
 	}
 
-	keyLower := strings.ToLower(key)
-	switch keyLower {
-	case "content-length", "transfer-encoding", "connection", "upgrade":
-		return fmt.Errorf("header '%s' is managed automatically", key)
+	// Fast path: check for managed headers without allocation
+	if keyLen >= 7 && keyLen <= 17 {
+		firstChar := key[0] | 0x20 // Convert to lowercase
+		if firstChar == 'c' || firstChar == 't' || firstChar == 'u' {
+			// Only allocate if we have a potential match
+			lower := strings.ToLower(key)
+			switch lower {
+			case "connection", "content-length", "transfer-encoding", "upgrade":
+				return fmt.Errorf("managed automatically")
+			}
+		}
 	}
 
 	return nil
 }
 
-// FormatBytes formats bytes in human-readable format (e.g., "1.50 KB", "2.30 MB")
-func FormatBytes(bytes int64) string {
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
+func isValidHeaderString(s string) bool {
+	for i := range len(s) {
+		c := s[i]
+		// Reject control characters (0x00-0x1F) except tab (0x09) and DEL (0x7F)
+		// Tab is allowed in header values per RFC 7230
+		if (c < 0x20 && c != 0x09) || c == 0x7F {
+			return false
+		}
 	}
-	div, exp := int64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.2f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
-}
-
-// FormatSpeed formats speed in human-readable format (e.g., "1.50 KB/s", "2.30 MB/s")
-func FormatSpeed(bytesPerSecond float64) string {
-	const unit = 1024.0
-	if bytesPerSecond < unit {
-		return fmt.Sprintf("%.0f B/s", bytesPerSecond)
-	}
-
-	units := []string{"KB/s", "MB/s", "GB/s", "TB/s", "PB/s", "EB/s"}
-	div := unit
-	exp := 0
-
-	for bytesPerSecond >= div*unit && exp < len(units)-1 {
-		div *= unit
-		exp++
-	}
-
-	return fmt.Sprintf("%.2f %s", bytesPerSecond/div, units[exp])
+	return true
 }

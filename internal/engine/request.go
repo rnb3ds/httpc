@@ -19,16 +19,8 @@ type RequestProcessor struct {
 }
 
 func NewRequestProcessor(config *Config) *RequestProcessor {
-	safeCfg := *config
-	if config.Headers != nil {
-		safeCfg.Headers = make(map[string]string, len(config.Headers))
-		for k, v := range config.Headers {
-			safeCfg.Headers[k] = v
-		}
-	}
-	
 	return &RequestProcessor{
-		config: &safeCfg,
+		config: config,
 	}
 }
 
@@ -74,7 +66,7 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 
 				for key, value := range formData.Fields {
 					if err := writer.WriteField(key, value); err != nil {
-						return nil, fmt.Errorf("failed to write form field: %w", err)
+						return nil, fmt.Errorf("write form field failed: %w", err)
 					}
 				}
 
@@ -94,16 +86,16 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 					}
 
 					if err != nil {
-						return nil, fmt.Errorf("failed to create form file: %w", err)
+						return nil, fmt.Errorf("create form file failed: %w", err)
 					}
 
 					if _, err := part.Write(fileData.Content); err != nil {
-						return nil, fmt.Errorf("failed to write file content: %w", err)
+						return nil, fmt.Errorf("write file content failed: %w", err)
 					}
 				}
 
 				if err := writer.Close(); err != nil {
-					return nil, fmt.Errorf("failed to close multipart writer: %w", err)
+					return nil, fmt.Errorf("close multipart writer failed: %w", err)
 				}
 
 				body = &buf
@@ -117,14 +109,14 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 				if existingContentType == "application/xml" {
 					xmlData, err := xml.Marshal(v)
 					if err != nil {
-						return nil, fmt.Errorf("failed to marshal request body as XML: %w", err)
+						return nil, fmt.Errorf("marshal XML failed: %w", err)
 					}
 					body = bytes.NewReader(xmlData)
 					contentType = "application/xml"
 				} else {
 					jsonData, err := json.Marshal(v)
 					if err != nil {
-						return nil, fmt.Errorf("failed to marshal request body as JSON: %w", err)
+						return nil, fmt.Errorf("marshal JSON failed: %w", err)
 					}
 					body = bytes.NewReader(jsonData)
 					contentType = "application/json"
@@ -135,7 +127,7 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 
 	httpReq, err := http.NewRequest(req.Method, parsedURL.String(), body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+		return nil, fmt.Errorf("create HTTP request failed: %w", err)
 	}
 
 	httpReq = httpReq.WithContext(req.Context)
@@ -176,7 +168,14 @@ type FileDataExtractor struct {
 	ContentType string
 }
 
-func extractFormData(v interface{}) (*FormDataExtractor, bool) {
+func extractFormData(v any) (*FormDataExtractor, bool) {
+	// Try direct type assertion first (more efficient)
+	type formDataLike interface {
+		GetFields() map[string]string
+		GetFiles() map[string]*FileDataExtractor
+	}
+
+	// Use JSON marshaling as fallback for compatibility
 	jsonData, err := json.Marshal(v)
 	if err != nil {
 		return nil, false

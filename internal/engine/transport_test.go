@@ -17,12 +17,12 @@ import (
 
 func TestTransport_Creation(t *testing.T) {
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		ValidateURL:           true,
-		ValidateHeaders:       true,
-		AllowPrivateIPs:       true, // Allow test server access
-		EnableHTTP2:           true,
+		ValidateURL:     true,
+		ValidateHeaders: true,
+		AllowPrivateIPs: true, // Allow test server access
+		EnableHTTP2:     true,
 	}
 
 	connConfig := testConnectionConfig()
@@ -52,10 +52,10 @@ func TestTransport_HTTPRequest(t *testing.T) {
 	defer server.Close()
 
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		ValidateURL:           true,
-		ValidateHeaders:       true,
+		ValidateURL:     true,
+		ValidateHeaders: true,
 	}
 
 	connConfig := testConnectionConfig()
@@ -96,13 +96,13 @@ func TestTransport_TLSConfiguration(t *testing.T) {
 	defer server.Close()
 
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		ValidateURL:           true,
-		ValidateHeaders:       true,
-		MinTLSVersion:         tls.VersionTLS12,
-		MaxTLSVersion:         tls.VersionTLS13,
-		InsecureSkipVerify:    true, // For testing
+		ValidateURL:        true,
+		ValidateHeaders:    true,
+		MinTLSVersion:      tls.VersionTLS12,
+		MaxTLSVersion:      tls.VersionTLS13,
+		InsecureSkipVerify: true, // For testing
 	}
 
 	connConfig := testConnectionConfig()
@@ -143,10 +143,10 @@ func TestTransport_Timeout(t *testing.T) {
 	defer server.Close()
 
 	config := &Config{
-		Timeout:               500 * time.Millisecond, // Short timeout
+		Timeout: 500 * time.Millisecond, // Short timeout
 
-		ValidateURL:           true,
-		ValidateHeaders:       true,
+		ValidateURL:     true,
+		ValidateHeaders: true,
 	}
 
 	connConfig := testConnectionConfig()
@@ -195,10 +195,10 @@ func TestTransport_ConnectionReuse(t *testing.T) {
 	defer server.Close()
 
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		ValidateURL:           true,
-		ValidateHeaders:       true,
+		ValidateURL:     true,
+		ValidateHeaders: true,
 	}
 
 	connConfig := testConnectionConfig()
@@ -241,10 +241,10 @@ func TestTransport_ConnectionReuse(t *testing.T) {
 
 func TestTransport_Close(t *testing.T) {
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		ValidateURL:           true,
-		ValidateHeaders:       true,
+		ValidateURL:     true,
+		ValidateHeaders: true,
 	}
 
 	connConfig := testConnectionConfig()
@@ -281,11 +281,11 @@ func TestTransport_UserAgent(t *testing.T) {
 	defer server.Close()
 
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		ValidateURL:           true,
-		ValidateHeaders:       true,
-		UserAgent:             "TestClient/1.0",
+		ValidateURL:     true,
+		ValidateHeaders: true,
+		UserAgent:       "TestClient/1.0",
 	}
 
 	connConfig := testConnectionConfig()
@@ -331,10 +331,10 @@ func TestTransport_Headers(t *testing.T) {
 	defer server.Close()
 
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		ValidateURL:           true,
-		ValidateHeaders:       true,
+		ValidateURL:     true,
+		ValidateHeaders: true,
 	}
 
 	connConfig := testConnectionConfig()

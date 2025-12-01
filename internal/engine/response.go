@@ -31,27 +31,19 @@ func (p *ResponseProcessor) Process(httpResp *http.Response) (*Response, error) 
 	if contentLength > 0 && contentLength != int64(len(body)) {
 		isHeadRequest := httpResp.Request != nil && httpResp.Request.Method == "HEAD"
 		if !isHeadRequest && p.config.StrictContentLength {
-			return nil, fmt.Errorf("content-length mismatch: expected %d bytes, got %d bytes", contentLength, len(body))
+			return nil, fmt.Errorf("content-length mismatch: expected %d, got %d", contentLength, len(body))
 		}
 	}
 
-	headers := make(http.Header, len(httpResp.Header))
-	for k, v := range httpResp.Header {
-		headerCopy := make([]string, len(v))
-		copy(headerCopy, v)
-		headers[k] = headerCopy
-	}
-
+	// Shallow copy headers - they won't be modified
 	resp := &Response{
 		StatusCode:    httpResp.StatusCode,
 		Status:        httpResp.Status,
-		Headers:       headers,
+		Headers:       httpResp.Header,
 		Body:          string(body),
 		RawBody:       body,
 		ContentLength: contentLength,
 		Proto:         httpResp.Proto,
-		Request:       httpResp.Request,
-		Response:      httpResp,
 		Cookies:       httpResp.Cookies(),
 	}
 
@@ -63,9 +55,12 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 		return nil, nil
 	}
 
-	var reader io.Reader = httpResp.Body
 	maxSize := p.config.MaxResponseBodySize
+	var reader io.Reader = httpResp.Body
+
+	// Apply size limit if configured
 	if maxSize > 0 {
+		// Read one extra byte to detect size violations
 		reader = io.LimitReader(httpResp.Body, maxSize+1)
 	}
 
@@ -74,6 +69,7 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
+	// Check if body exceeds limit
 	if maxSize > 0 && int64(len(body)) > maxSize {
 		return nil, fmt.Errorf("response body exceeds limit of %d bytes", maxSize)
 	}

@@ -151,8 +151,6 @@ func TestValidateHeader_EdgeCases(t *testing.T) {
 	}
 }
 
-
-
 // ----------------------------------------------------------------------------
 // validateURL with AllowPrivateIPs
 // ----------------------------------------------------------------------------
@@ -223,6 +221,5 @@ func TestValidateRequest_Complex(t *testing.T) {
 			t.Error("Expected error for invalid header")
 		}
 	})
-
 
 }

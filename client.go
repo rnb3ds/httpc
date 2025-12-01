@@ -14,7 +14,6 @@ import (
 // Client represents the HTTP client interface.
 // All methods are safe for concurrent use by multiple goroutines.
 type Client interface {
-	// HTTP methods
 	Get(url string, options ...RequestOption) (*Response, error)
 	Post(url string, options ...RequestOption) (*Response, error)
 	Put(url string, options ...RequestOption) (*Response, error)
@@ -23,14 +22,11 @@ type Client interface {
 	Head(url string, options ...RequestOption) (*Response, error)
 	Options(url string, options ...RequestOption) (*Response, error)
 
-	// Generic request method
 	Request(ctx context.Context, method, url string, options ...RequestOption) (*Response, error)
 
-	// File download
 	DownloadFile(url string, filePath string, options ...RequestOption) (*DownloadResult, error)
 	DownloadWithOptions(url string, downloadOpts *DownloadOptions, options ...RequestOption) (*DownloadResult, error)
 
-	// Client management
 	Close() error
 }
 
@@ -50,7 +46,10 @@ func New(config ...*Config) (Client, error) {
 		cfg = DefaultConfig()
 	}
 
-	engineConfig := convertToEngineConfig(cfg)
+	engineConfig, err := convertToEngineConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert configuration: %w", err)
+	}
 
 	engineClient, err := engine.NewClient(engineConfig)
 	if err != nil {
@@ -60,57 +59,58 @@ func New(config ...*Config) (Client, error) {
 	return &clientImpl{engine: engineClient}, nil
 }
 
+// NewSecure creates a new client with security-focused configuration.
+// This preset prioritizes security over performance with strict validation,
+// minimal retries, and conservative connection limits.
 func NewSecure() (Client, error) {
 	return New(SecureConfig())
 }
 
+// NewPerformance creates a new client optimized for high-throughput scenarios.
+// This preset uses aggressive connection pooling, longer timeouts, and
+// faster retry intervals for maximum performance.
 func NewPerformance() (Client, error) {
 	return New(PerformanceConfig())
 }
 
+// NewMinimal creates a new client with minimal features and lightweight configuration.
+// This preset is ideal for simple, one-off requests where you don't need
+// retries or advanced features.
 func NewMinimal() (Client, error) {
 	return New(MinimalConfig())
 }
 
 func (c *clientImpl) Get(url string, options ...RequestOption) (*Response, error) {
-	engineOptions := convertRequestOptions(options)
-	resp, err := c.engine.Get(url, engineOptions...)
-	return convertEngineResponse(resp), err
+	return c.doRequest("GET", url, options)
 }
 
 func (c *clientImpl) Post(url string, options ...RequestOption) (*Response, error) {
-	engineOptions := convertRequestOptions(options)
-	resp, err := c.engine.Post(url, engineOptions...)
-	return convertEngineResponse(resp), err
+	return c.doRequest("POST", url, options)
 }
 
 func (c *clientImpl) Put(url string, options ...RequestOption) (*Response, error) {
-	engineOptions := convertRequestOptions(options)
-	resp, err := c.engine.Put(url, engineOptions...)
-	return convertEngineResponse(resp), err
+	return c.doRequest("PUT", url, options)
 }
 
 func (c *clientImpl) Patch(url string, options ...RequestOption) (*Response, error) {
-	engineOptions := convertRequestOptions(options)
-	resp, err := c.engine.Patch(url, engineOptions...)
-	return convertEngineResponse(resp), err
+	return c.doRequest("PATCH", url, options)
 }
 
 func (c *clientImpl) Delete(url string, options ...RequestOption) (*Response, error) {
-	engineOptions := convertRequestOptions(options)
-	resp, err := c.engine.Delete(url, engineOptions...)
-	return convertEngineResponse(resp), err
+	return c.doRequest("DELETE", url, options)
 }
 
 func (c *clientImpl) Head(url string, options ...RequestOption) (*Response, error) {
-	engineOptions := convertRequestOptions(options)
-	resp, err := c.engine.Head(url, engineOptions...)
-	return convertEngineResponse(resp), err
+	return c.doRequest("HEAD", url, options)
 }
 
 func (c *clientImpl) Options(url string, options ...RequestOption) (*Response, error) {
+	return c.doRequest("OPTIONS", url, options)
+}
+
+func (c *clientImpl) doRequest(method, url string, options []RequestOption) (*Response, error) {
 	engineOptions := convertRequestOptions(options)
-	resp, err := c.engine.Options(url, engineOptions...)
+	resp, err := c.engine.Request(context.Background(), method, url, engineOptions...)
 	return convertEngineResponse(resp), err
 }
 
@@ -124,29 +124,23 @@ func (c *clientImpl) Close() error {
 	return c.engine.Close()
 }
 
-// Default client instance for package-level functions
 var (
 	defaultClient   atomic.Pointer[clientImpl]
 	defaultClientMu sync.Mutex
 )
 
-// getDefaultClient returns the default client, creating it if necessary
 func getDefaultClient() (Client, error) {
-	// Fast path: check if client already exists
 	if client := defaultClient.Load(); client != nil {
 		return client, nil
 	}
 
-	// Slow path: acquire lock and initialize
 	defaultClientMu.Lock()
 	defer defaultClientMu.Unlock()
 
-	// Double-check after acquiring lock
 	if client := defaultClient.Load(); client != nil {
 		return client, nil
 	}
 
-	// Create new client
 	newClient, err := New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize default client: %w", err)
@@ -163,6 +157,7 @@ func getDefaultClient() (Client, error) {
 
 // CloseDefaultClient closes the default client and resets it.
 // After calling this, the next package-level function call will create a new client.
+// This function is safe for concurrent use.
 func CloseDefaultClient() error {
 	defaultClientMu.Lock()
 	defer defaultClientMu.Unlock()
@@ -174,6 +169,7 @@ func CloseDefaultClient() error {
 
 	err := client.Close()
 	defaultClient.Store(nil)
+
 	return err
 }
 
@@ -240,6 +236,9 @@ func Options(url string, options ...RequestOption) (*Response, error) {
 	return client.Options(url, options...)
 }
 
+// SetDefaultClient sets a custom client as the default for package-level functions.
+// The previous default client is closed automatically.
+// Returns an error if the client is nil or not created with httpc.New().
 func SetDefaultClient(client Client) error {
 	if client == nil {
 		return fmt.Errorf("cannot set nil client as default")
@@ -262,12 +261,17 @@ func SetDefaultClient(client Client) error {
 	return closeErr
 }
 
-func convertToEngineConfig(cfg *Config) *engine.Config {
+func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 	if cfg == nil {
 		cfg = DefaultConfig()
 	}
 
-	maxIdleConnsPerHost := calculateOptimalIdleConnsPerHost(cfg.MaxIdleConns, cfg.MaxConnsPerHost)
+	maxIdleConnsPerHost := cfg.MaxConnsPerHost / 2
+	if maxIdleConnsPerHost < 2 {
+		maxIdleConnsPerHost = 2
+	} else if maxIdleConnsPerHost > 10 {
+		maxIdleConnsPerHost = 10
+	}
 
 	minTLSVersion := cfg.MinTLSVersion
 	if minTLSVersion == 0 {
@@ -277,6 +281,19 @@ func convertToEngineConfig(cfg *Config) *engine.Config {
 	maxTLSVersion := cfg.MaxTLSVersion
 	if maxTLSVersion == 0 {
 		maxTLSVersion = tls.VersionTLS13
+	}
+
+	const defaultMaxRetryDelay = 5 * time.Second
+	const absoluteMaxRetryDelay = 30 * time.Second
+	maxRetryDelay := defaultMaxRetryDelay
+	if cfg.RetryDelay > 0 && cfg.BackoffFactor > 0 {
+		calculated := time.Duration(float64(cfg.RetryDelay) * cfg.BackoffFactor * 3)
+		maxRetryDelay = min(calculated, absoluteMaxRetryDelay)
+	}
+
+	cookieJar, err := createCookieJar(cfg.EnableCookies)
+	if err != nil {
+		return nil, err
 	}
 
 	return &engine.Config{
@@ -291,56 +308,26 @@ func convertToEngineConfig(cfg *Config) *engine.Config {
 		MaxConnsPerHost:       cfg.MaxConnsPerHost,
 		ProxyURL:              cfg.ProxyURL,
 		TLSConfig:             cfg.TLSConfig,
-		MinTLSVersion:       minTLSVersion,
-		MaxTLSVersion:       maxTLSVersion,
-		InsecureSkipVerify:  cfg.InsecureSkipVerify,
-		MaxResponseBodySize: cfg.MaxResponseBodySize,
-		ValidateURL:         true,
-		ValidateHeaders:     true,
-		AllowPrivateIPs:     cfg.AllowPrivateIPs,
+		MinTLSVersion:         minTLSVersion,
+		MaxTLSVersion:         maxTLSVersion,
+		InsecureSkipVerify:    cfg.InsecureSkipVerify,
+		MaxResponseBodySize:   cfg.MaxResponseBodySize,
+		ValidateURL:           true,
+		ValidateHeaders:       true,
+		AllowPrivateIPs:       cfg.AllowPrivateIPs,
 		StrictContentLength:   cfg.StrictContentLength,
 		MaxRetries:            cfg.MaxRetries,
 		RetryDelay:            cfg.RetryDelay,
-		MaxRetryDelay:         calculateMaxRetryDelay(cfg.RetryDelay, cfg.BackoffFactor),
+		MaxRetryDelay:         maxRetryDelay,
 		BackoffFactor:         cfg.BackoffFactor,
 		Jitter:                true,
 		UserAgent:             cfg.UserAgent,
 		Headers:               cfg.Headers,
 		FollowRedirects:       cfg.FollowRedirects,
 		EnableHTTP2:           cfg.EnableHTTP2,
-		CookieJar:             createCookieJar(cfg.EnableCookies),
+		CookieJar:             cookieJar,
 		EnableCookies:         cfg.EnableCookies,
-	}
-}
-
-
-
-func calculateOptimalIdleConnsPerHost(maxIdleConns, maxConnsPerHost int) int {
-	var result int
-	if maxConnsPerHost > 0 {
-		result = maxConnsPerHost / 2
-	} else {
-		result = maxIdleConns / 2
-	}
-	
-	if result < 2 {
-		return 2
-	}
-	if result > 10 {
-		return 10
-	}
-	return result
-}
-
-func calculateMaxRetryDelay(baseDelay time.Duration, backoffFactor float64) time.Duration {
-	if baseDelay <= 0 {
-		return 5 * time.Second
-	}
-	maxDelay := time.Duration(float64(baseDelay) * backoffFactor * 3)
-	if maxDelay > 30*time.Second {
-		return 30 * time.Second
-	}
-	return maxDelay
+	}, nil
 }
 
 func convertRequestOptions(options []RequestOption) []engine.RequestOption {
@@ -353,7 +340,6 @@ func convertRequestOptions(options []RequestOption) []engine.RequestOption {
 		if opt == nil {
 			continue
 		}
-		currentOpt := opt
 		engineOptions = append(engineOptions, func(req *engine.Request) error {
 			publicReq := &Request{
 				Method:      req.Method,
@@ -366,11 +352,11 @@ func convertRequestOptions(options []RequestOption) []engine.RequestOption {
 				MaxRetries:  req.MaxRetries,
 				Cookies:     req.Cookies,
 			}
-			
-			if err := currentOpt(publicReq); err != nil {
+
+			if err := opt(publicReq); err != nil {
 				return err
 			}
-			
+
 			req.Method = publicReq.Method
 			req.URL = publicReq.URL
 			req.Headers = publicReq.Headers
@@ -380,7 +366,7 @@ func convertRequestOptions(options []RequestOption) []engine.RequestOption {
 			req.Timeout = publicReq.Timeout
 			req.MaxRetries = publicReq.MaxRetries
 			req.Cookies = publicReq.Cookies
-			
+
 			return nil
 		})
 	}
@@ -405,13 +391,13 @@ func convertEngineResponse(engineResp *engine.Response) *Response {
 	}
 }
 
-func createCookieJar(enableCookies bool) any {
+func createCookieJar(enableCookies bool) (any, error) {
 	if !enableCookies {
-		return nil
+		return nil, nil
 	}
 	jar, err := NewCookieJar()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("failed to create cookie jar: %w", err)
 	}
-	return jar
+	return jar, nil
 }

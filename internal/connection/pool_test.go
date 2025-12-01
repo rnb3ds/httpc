@@ -401,4 +401,3 @@ func TestPoolManager_ContextCancellation(t *testing.T) {
 		t.Error("Expected error due to context cancellation")
 	}
 }
-

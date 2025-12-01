@@ -108,10 +108,10 @@ func TestEngine_RequestProcessing(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			config := &Config{
-				Timeout:               60 * time.Second,
+				Timeout: 60 * time.Second,
 
-				ValidateURL:           true,
-				ValidateHeaders:       true,
+				ValidateURL:     true,
+				ValidateHeaders: true,
 			}
 
 			client, err := NewClient(config)
@@ -247,11 +247,11 @@ func TestEngine_ResponseProcessing(t *testing.T) {
 			defer server.Close()
 
 			config := &Config{
-				Timeout:               60 * time.Second,
+				Timeout: 60 * time.Second,
 
-				ValidateURL:           true,
-				ValidateHeaders:       true,
-				AllowPrivateIPs:       true, // Allow test server access
+				ValidateURL:     true,
+				ValidateHeaders: true,
+				AllowPrivateIPs: true, // Allow test server access
 			}
 
 			client, err := NewClient(config)
@@ -336,12 +336,12 @@ func TestEngine_ErrorHandling(t *testing.T) {
 			}
 
 			config := &Config{
-				Timeout:               1 * time.Second, // Short timeout for testing
+				Timeout: 1 * time.Second, // Short timeout for testing
 
-				ValidateURL:           true,
-				ValidateHeaders:       true,
-				AllowPrivateIPs:       true, // Allow test server access
-				StrictContentLength:   true, // Enable strict content-length validation
+				ValidateURL:         true,
+				ValidateHeaders:     true,
+				AllowPrivateIPs:     true, // Allow test server access
+				StrictContentLength: true, // Enable strict content-length validation
 			}
 
 			client, err := NewClient(config)
@@ -376,11 +376,11 @@ func TestEngine_ConcurrentRequests(t *testing.T) {
 	defer server.Close()
 
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		ValidateURL:           true,
-		ValidateHeaders:       true,
-		AllowPrivateIPs:       true, // Allow test server access
+		ValidateURL:     true,
+		ValidateHeaders: true,
+		AllowPrivateIPs: true, // Allow test server access
 	}
 
 	client, err := NewClient(config)
@@ -452,11 +452,11 @@ func TestEngine_ContextCancellation(t *testing.T) {
 	defer server.Close()
 
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		ValidateURL:           true,
-		ValidateHeaders:       true,
-		AllowPrivateIPs:       true, // Allow test server access
+		ValidateURL:     true,
+		ValidateHeaders: true,
+		AllowPrivateIPs: true, // Allow test server access
 	}
 
 	client, err := NewClient(config)
@@ -497,14 +497,14 @@ func TestEngine_RetryMechanism(t *testing.T) {
 	defer server.Close()
 
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		ValidateURL:           true,
-		ValidateHeaders:       true,
-		AllowPrivateIPs:       true, // Allow test server access
-		MaxRetries:            3,
-		RetryDelay:            100 * time.Millisecond,
-		BackoffFactor:         2.0,
+		ValidateURL:     true,
+		ValidateHeaders: true,
+		AllowPrivateIPs: true, // Allow test server access
+		MaxRetries:      3,
+		RetryDelay:      100 * time.Millisecond,
+		BackoffFactor:   2.0,
 	}
 
 	client, err := NewClient(config)
@@ -534,11 +534,11 @@ func TestEngine_RetryMechanism(t *testing.T) {
 
 func TestEngine_ClientLifecycle(t *testing.T) {
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		ValidateURL:           true,
-		ValidateHeaders:       true,
-		AllowPrivateIPs:       true, // Allow test server access
+		ValidateURL:     true,
+		ValidateHeaders: true,
+		AllowPrivateIPs: true, // Allow test server access
 	}
 
 	// Test client creation
@@ -589,22 +589,22 @@ func TestEngine_ConfigValidation(t *testing.T) {
 		{
 			name: "Valid config",
 			config: &Config{
-				Timeout:               30 * time.Second,
+				Timeout: 30 * time.Second,
 
-				ValidateURL:           true,
-				ValidateHeaders:       true,
-				AllowPrivateIPs:       true, // Allow test server access
+				ValidateURL:     true,
+				ValidateHeaders: true,
+				AllowPrivateIPs: true, // Allow test server access
 			},
 			expectError: false,
 		},
 		{
 			name: "Zero timeout",
 			config: &Config{
-				Timeout:               0,
+				Timeout: 0,
 
-				ValidateURL:           true,
-				ValidateHeaders:       true,
-				AllowPrivateIPs:       true, // Allow test server access
+				ValidateURL:     true,
+				ValidateHeaders: true,
+				AllowPrivateIPs: true, // Allow test server access
 			},
 			expectError: false, // Zero timeout is allowed
 		},
