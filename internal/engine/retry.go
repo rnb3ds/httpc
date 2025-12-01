@@ -2,24 +2,27 @@ package engine
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"math"
-	"math/big"
+	"math/rand"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 type RetryEngine struct {
 	config *Config
+	rng    *rand.Rand
+	mu     sync.Mutex
 }
 
 func NewRetryEngine(config *Config) *RetryEngine {
 	return &RetryEngine{
 		config: config,
+		rng:    rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
 
@@ -58,13 +61,16 @@ func (r *RetryEngine) GetDelayWithResponse(attempt int, resp *Response) time.Dur
 		}
 	}
 
+	const defaultRetryDelay = time.Second
+	const defaultBackoffFactor = 2.0
+
 	delay := r.config.RetryDelay
 	if delay <= 0 {
-		delay = 1 * time.Second
+		delay = defaultRetryDelay
 	}
 	backoffFactor := r.config.BackoffFactor
 	if backoffFactor <= 0 {
-		backoffFactor = 2.0
+		backoffFactor = defaultBackoffFactor
 	}
 
 	exponentialDelay := time.Duration(float64(delay) * math.Pow(backoffFactor, float64(attempt)))
@@ -91,11 +97,6 @@ func (r *RetryEngine) isRetryableError(err error) bool {
 		return false
 	}
 
-	errMsg := strings.ToLower(err.Error())
-	if strings.Contains(errMsg, "context canceled") || strings.Contains(errMsg, "context deadline exceeded") {
-		return false
-	}
-
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
 		return dnsErr.IsTimeout || dnsErr.IsTemporary
@@ -116,21 +117,20 @@ func (r *RetryEngine) isRetryableError(err error) bool {
 		return netErr.Timeout()
 	}
 
-	retryablePatterns := []string{
-		"connection refused", "connection reset", "broken pipe",
-		"network unreachable", "host unreachable", "no route to host", "no such host",
-	}
-	for _, pattern := range retryablePatterns {
-		if strings.Contains(errMsg, pattern) {
-			return true
-		}
+	errMsgLower := strings.ToLower(err.Error())
+
+	if strings.Contains(errMsgLower, "context canceled") || strings.Contains(errMsgLower, "context deadline exceeded") {
+		return false
 	}
 
-	if strings.Contains(errMsg, "timeout") && !strings.Contains(errMsg, "context") {
-		return true
-	}
-
-	return false
+	return strings.Contains(errMsgLower, "connection refused") ||
+		strings.Contains(errMsgLower, "connection reset") ||
+		strings.Contains(errMsgLower, "broken pipe") ||
+		strings.Contains(errMsgLower, "network unreachable") ||
+		strings.Contains(errMsgLower, "host unreachable") ||
+		strings.Contains(errMsgLower, "no route to host") ||
+		strings.Contains(errMsgLower, "no such host") ||
+		(strings.Contains(errMsgLower, "timeout") && !strings.Contains(errMsgLower, "context"))
 }
 
 func (r *RetryEngine) getSecureJitter(maxJitter time.Duration) time.Duration {
@@ -138,13 +138,11 @@ func (r *RetryEngine) getSecureJitter(maxJitter time.Duration) time.Duration {
 		return 0
 	}
 
-	maxInt := big.NewInt(int64(maxJitter))
-	n, err := rand.Int(rand.Reader, maxInt)
-	if err != nil {
-		return time.Duration(time.Now().UnixNano() % int64(maxJitter))
-	}
+	r.mu.Lock()
+	jitter := r.rng.Int63n(int64(maxJitter))
+	r.mu.Unlock()
 
-	return time.Duration(n.Int64())
+	return time.Duration(jitter)
 }
 
 func (r *RetryEngine) isRetryableStatus(statusCode int) bool {

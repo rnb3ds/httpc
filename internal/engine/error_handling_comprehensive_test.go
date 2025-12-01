@@ -596,5 +596,3 @@ func TestErrorHandling_PanicRecovery(t *testing.T) {
 		t.Errorf("Expected status 200, got %d", resp.StatusCode)
 	}
 }
-
-

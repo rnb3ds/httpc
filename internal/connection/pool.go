@@ -51,10 +51,8 @@ type Config struct {
 	MaxTLSVersion      uint16
 	InsecureSkipVerify bool
 
-	EnableHTTP2     bool
-	HTTP2MaxStreams int
-
-	ProxyURL string
+	EnableHTTP2 bool
+	ProxyURL    string
 
 	AllowPrivateIPs bool
 
@@ -105,8 +103,7 @@ func DefaultConfig() *Config {
 		MaxTLSVersion:      tls.VersionTLS13,
 		InsecureSkipVerify: false,
 
-		EnableHTTP2:     true,
-		HTTP2MaxStreams: 100,
+		EnableHTTP2: true,
 
 		DisableCompression: false,
 		DisableKeepAlives:  false,
@@ -185,7 +182,6 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 		}
 
 		conn, err := dialer.DialContext(ctx, network, address)
-
 		connTime := time.Since(startTime).Nanoseconds()
 		pm.updateConnectionMetrics(address, connTime, err == nil)
 
@@ -321,7 +317,7 @@ func (pm *PoolManager) GetMetrics() Metrics {
 	if total+rejected > 0 {
 		hitRate = float64(total) / float64(total+rejected)
 	}
-	
+
 	return Metrics{
 		ActiveConnections:   atomic.LoadInt64(&pm.activeConns),
 		IdleConnections:     atomic.LoadInt64(&pm.idleConns),

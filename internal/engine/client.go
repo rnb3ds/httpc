@@ -23,7 +23,7 @@ type Client struct {
 	validator         *security.Validator
 
 	connectionPool *connection.PoolManager
-	
+
 	closed             int32
 	totalRequests      int64
 	successfulRequests int64
@@ -47,7 +47,7 @@ type Config struct {
 	MaxConnsPerHost       int
 	ProxyURL              string
 
-	TLSConfig           interface{}
+	TLSConfig           any
 	MinTLSVersion       uint16
 	MaxTLSVersion       uint16
 	InsecureSkipVerify  bool
@@ -68,7 +68,7 @@ type Config struct {
 	FollowRedirects bool
 	EnableHTTP2     bool
 
-	CookieJar     interface{}
+	CookieJar     any
 	EnableCookies bool
 }
 
@@ -96,8 +96,6 @@ type Response struct {
 	Proto         string
 	Duration      time.Duration
 	Attempts      int
-	Request       interface{}
-	Response      interface{}
 	Cookies       []*http.Cookie
 }
 
@@ -106,16 +104,8 @@ func NewClient(config *Config) (*Client, error) {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
 
-	safeCfg := *config
-	if config.Headers != nil {
-		safeCfg.Headers = make(map[string]string, len(config.Headers))
-		for k, v := range config.Headers {
-			safeCfg.Headers[k] = v
-		}
-	}
-
 	client := &Client{
-		config: &safeCfg,
+		config: config,
 	}
 
 	var err error
@@ -171,11 +161,14 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 	startTime := time.Now()
 
 	req := &Request{
-		Method:      method,
-		URL:         url,
-		Context:     ctx,
-		Headers:     make(map[string]string, 8),
-		QueryParams: make(map[string]any, 4),
+		Method:  method,
+		URL:     url,
+		Context: ctx,
+	}
+
+	if len(options) > 0 {
+		req.Headers = make(map[string]string, 8)
+		req.QueryParams = make(map[string]any, 4)
 	}
 
 	for _, option := range options {
@@ -296,38 +289,46 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 
 	var lastErr error
 	var lastResp *Response
-	var clientErr *ClientError
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		resp, err := c.executeRequest(req)
 
-		shouldRetry := false
-
 		if err != nil {
-			clientErr = ClassifyError(err, req.URL, req.Method, attempt+1)
+			clientErr := ClassifyError(err, req.URL, req.Method, attempt+1)
 			lastErr = clientErr
 
-			if clientErr.IsRetryable() && attempt < maxRetries {
-				shouldRetry = c.retryEngine.ShouldRetry(nil, err, attempt)
+			if !clientErr.IsRetryable() || attempt >= maxRetries {
+				clientErr.Attempts = attempt + 1
+				return nil, clientErr
 			}
-		} else if resp != nil {
+
+			if !c.retryEngine.ShouldRetry(nil, err, attempt) {
+				clientErr.Attempts = attempt + 1
+				return nil, clientErr
+			}
+
+			delay := c.retryEngine.GetDelay(attempt)
+			if err := c.sleepWithContext(req.Context, delay); err != nil {
+				return nil, ClassifyError(err, req.URL, req.Method, attempt+1)
+			}
+			continue
+		}
+
+		if resp != nil {
 			lastResp = resp
 
 			if c.retryEngine.isRetryableStatus(resp.StatusCode) && attempt < maxRetries {
-				shouldRetry = c.retryEngine.ShouldRetry(resp, nil, attempt)
-			} else {
-				resp.Attempts = attempt + 1
-				return resp, nil
+				if c.retryEngine.ShouldRetry(resp, nil, attempt) {
+					delay := c.retryEngine.GetDelayWithResponse(attempt, resp)
+					if err := c.sleepWithContext(req.Context, delay); err != nil {
+						return nil, ClassifyError(err, req.URL, req.Method, attempt+1)
+					}
+					continue
+				}
 			}
-		}
 
-		if !shouldRetry {
-			break
-		}
-
-		delay := c.retryEngine.GetDelayWithResponse(attempt, lastResp)
-		if err := c.sleepWithContext(req.Context, delay); err != nil {
-			return nil, ClassifyError(err, req.URL, req.Method, attempt+1)
+			resp.Attempts = attempt + 1
+			return resp, nil
 		}
 	}
 
@@ -336,18 +337,30 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 		return lastResp, nil
 	}
 
-	if clientErr != nil {
-		clientErr.Attempts = maxRetries + 1
-		return nil, clientErr
+	if lastErr != nil {
+		if clientErr, ok := lastErr.(*ClientError); ok {
+			clientErr.Attempts = maxRetries + 1
+			return nil, clientErr
+		}
+		return nil, fmt.Errorf("request failed after %d attempts: %w", maxRetries+1, lastErr)
 	}
 
-	return nil, fmt.Errorf("request failed after %d attempts: %w", maxRetries+1, lastErr)
+	return nil, fmt.Errorf("request failed after %d attempts", maxRetries+1)
 }
+
+const (
+	defaultMaxDrain        int64 = 10 * 1024 * 1024 // 10MB
+	defaultDialTimeout           = 10 * time.Second
+	defaultKeepAlive             = 30 * time.Second
+	defaultTLSTimeout            = 10 * time.Second
+	defaultHeaderTimeout         = 30 * time.Second
+	defaultIdleConnTimeout       = 90 * time.Second
+)
 
 func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = ClassifyError(fmt.Errorf("panic during request execution: %v", r), req.URL, req.Method, 0)
+			err = ClassifyError(fmt.Errorf("panic: %v", r), req.URL, req.Method, 0)
 		}
 	}()
 
@@ -387,7 +400,7 @@ func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
 	reqCopy.Context = execCtx
 	httpReq, err := c.requestProcessor.Build(&reqCopy)
 	if err != nil {
-		return nil, ClassifyError(fmt.Errorf("failed to build request: %w", err), req.URL, req.Method, 0)
+		return nil, ClassifyError(fmt.Errorf("build request failed: %w", err), req.URL, req.Method, 0)
 	}
 
 	start := time.Now()
@@ -395,25 +408,24 @@ func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
 	duration := time.Since(start)
 
 	if err != nil {
-		return nil, ClassifyError(fmt.Errorf("transport error: %w", err), req.URL, req.Method, 0)
+		return nil, ClassifyError(fmt.Errorf("transport failed: %w", err), req.URL, req.Method, 0)
 	}
 
 	defer func() {
 		if httpResp != nil && httpResp.Body != nil {
-			if resp == nil || resp.RawBody == nil {
-				maxDrain := int64(10 * 1024 * 1024)
-				if c.config.MaxResponseBodySize > 0 && c.config.MaxResponseBodySize < maxDrain {
-					maxDrain = c.config.MaxResponseBodySize
-				}
-				_, _ = io.Copy(io.Discard, io.LimitReader(httpResp.Body, maxDrain))
+			// Always drain and close body to enable connection reuse
+			maxDrain := defaultMaxDrain
+			if c.config.MaxResponseBodySize > 0 && c.config.MaxResponseBodySize < maxDrain {
+				maxDrain = c.config.MaxResponseBodySize
 			}
+			_, _ = io.Copy(io.Discard, io.LimitReader(httpResp.Body, maxDrain))
 			_ = httpResp.Body.Close()
 		}
 	}()
 
 	resp, err = c.responseProcessor.Process(httpResp)
 	if err != nil {
-		return nil, ClassifyError(fmt.Errorf("failed to process response: %w", err), req.URL, req.Method, 0)
+		return nil, ClassifyError(fmt.Errorf("process response failed: %w", err), req.URL, req.Method, 0)
 	}
 
 	resp.Duration = duration
@@ -435,14 +447,14 @@ func (c *Client) GetHealthStatus() HealthStatus {
 	success := atomic.LoadInt64(&c.successfulRequests)
 	failed := atomic.LoadInt64(&c.failedRequests)
 	avgLatNs := atomic.LoadInt64(&c.averageLatency)
-	
+
 	var errorRate float64
 	if total > 0 {
 		errorRate = float64(failed) / float64(total)
 	}
-	
+
 	healthy := errorRate < 0.1
-	
+
 	return HealthStatus{
 		Healthy:            healthy,
 		TotalRequests:      total,

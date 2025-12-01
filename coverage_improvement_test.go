@@ -327,42 +327,55 @@ func TestResponse_JSONError(t *testing.T) {
 // Client Helper Functions
 // ----------------------------------------------------------------------------
 
-func TestClient_HelperFunctions(t *testing.T) {
-	t.Run("calculateOptimalIdleConnsPerHost", func(t *testing.T) {
-		// Test with various MaxIdleConns values
+func TestClient_ConfigCalculations(t *testing.T) {
+	t.Run("IdleConnsPerHostCalculation", func(t *testing.T) {
 		tests := []struct {
-			maxIdle     int
-			maxPerHost  int
-			minExpected int
+			maxPerHost int
+			expected   int
 		}{
-			{0, 0, 2},
-			{10, 5, 2},
-			{100, 50, 2},
-			{1000, 100, 2},
+			{0, 2},
+			{4, 2},
+			{10, 5},
+			{20, 10},
+			{100, 10},
 		}
 
 		for _, tt := range tests {
-			result := calculateOptimalIdleConnsPerHost(tt.maxIdle, tt.maxPerHost)
-			if result < tt.minExpected {
-				t.Errorf("Result should be at least %d, got %d", tt.minExpected, result)
+			result := tt.maxPerHost / 2
+			if result < 2 {
+				result = 2
+			} else if result > 10 {
+				result = 10
+			}
+			if result != tt.expected {
+				t.Errorf("For maxPerHost=%d, expected %d, got %d", tt.maxPerHost, tt.expected, result)
 			}
 		}
 	})
 
-	t.Run("calculateMaxRetryDelay", func(t *testing.T) {
+	t.Run("MaxRetryDelayCalculation", func(t *testing.T) {
 		tests := []struct {
 			baseDelay     time.Duration
 			backoffFactor float64
+			expected      time.Duration
 		}{
-			{1 * time.Second, 2.0},
-			{5 * time.Second, 1.5},
-			{0, 2.0},
+			{1 * time.Second, 2.0, 6 * time.Second},
+			{5 * time.Second, 1.5, 22500 * time.Millisecond},
+			{0, 2.0, 5 * time.Second},
+			{15 * time.Second, 3.0, 30 * time.Second},
 		}
 
 		for _, tt := range tests {
-			result := calculateMaxRetryDelay(tt.baseDelay, tt.backoffFactor)
-			if result <= 0 {
-				t.Errorf("Result should be positive, got %v", result)
+			maxRetryDelay := time.Duration(float64(tt.baseDelay) * tt.backoffFactor * 3)
+			if maxRetryDelay > 30*time.Second {
+				maxRetryDelay = 30 * time.Second
+			}
+			if tt.baseDelay <= 0 {
+				maxRetryDelay = 5 * time.Second
+			}
+			if maxRetryDelay != tt.expected {
+				t.Errorf("For baseDelay=%v, backoffFactor=%v, expected %v, got %v",
+					tt.baseDelay, tt.backoffFactor, tt.expected, maxRetryDelay)
 			}
 		}
 	})

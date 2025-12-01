@@ -9,7 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-	"time")
+	"time"
+)
 
 // ============================================================================
 // REQUEST PROCESSOR TESTS
@@ -17,11 +18,11 @@ import (
 
 func TestRequestProcessor_Build(t *testing.T) {
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		ValidateURL:           true,
-		ValidateHeaders:       true,
-		UserAgent:             "TestClient/1.0",
+		ValidateURL:     true,
+		ValidateHeaders: true,
+		UserAgent:       "TestClient/1.0",
 	}
 
 	processor := NewRequestProcessor(config)
@@ -224,10 +225,10 @@ func TestRequestProcessor_Build(t *testing.T) {
 
 func TestRequestProcessor_BuildErrors(t *testing.T) {
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		ValidateURL:           true,
-		ValidateHeaders:       true,
+		ValidateURL:     true,
+		ValidateHeaders: true,
 	}
 
 	processor := NewRequestProcessor(config)
@@ -283,10 +284,10 @@ func TestRequestProcessor_BuildErrors(t *testing.T) {
 
 func TestRequestProcessor_BodySerialization(t *testing.T) {
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		ValidateURL:           true,
-		ValidateHeaders:       true,
+		ValidateURL:     true,
+		ValidateHeaders: true,
 	}
 
 	processor := NewRequestProcessor(config)
@@ -389,11 +390,11 @@ func TestRequestProcessor_BodySerialization(t *testing.T) {
 
 func TestRequestProcessor_HeaderHandling(t *testing.T) {
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		ValidateURL:           true,
-		ValidateHeaders:       true,
-		UserAgent:             "TestClient/1.0",
+		ValidateURL:     true,
+		ValidateHeaders: true,
+		UserAgent:       "TestClient/1.0",
 		Headers: map[string]string{
 			"X-Default-Header": "default-value",
 		},
@@ -438,10 +439,10 @@ func TestRequestProcessor_HeaderHandling(t *testing.T) {
 
 func TestRequestProcessor_QueryParameterHandling(t *testing.T) {
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		ValidateURL:           true,
-		ValidateHeaders:       true,
+		ValidateURL:     true,
+		ValidateHeaders: true,
 	}
 
 	processor := NewRequestProcessor(config)

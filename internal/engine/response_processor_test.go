@@ -7,7 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time")
+	"time"
+)
 
 // ============================================================================
 // RESPONSE PROCESSOR TESTS
@@ -15,9 +16,9 @@ import (
 
 func TestResponseProcessor_Process(t *testing.T) {
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		MaxResponseBodySize:   50 * 1024 * 1024, // 50MB
+		MaxResponseBodySize: 50 * 1024 * 1024, // 50MB
 	}
 
 	processor := NewResponseProcessor(config)
@@ -178,9 +179,9 @@ func TestResponseProcessor_Process(t *testing.T) {
 
 func TestResponseProcessor_LargeResponse(t *testing.T) {
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		MaxResponseBodySize:   1024, // 1KB limit for testing
+		MaxResponseBodySize: 1024, // 1KB limit for testing
 	}
 
 	processor := NewResponseProcessor(config)
@@ -209,9 +210,9 @@ func TestResponseProcessor_LargeResponse(t *testing.T) {
 
 func TestResponseProcessor_HeaderProcessing(t *testing.T) {
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		MaxResponseBodySize:   50 * 1024 * 1024,
+		MaxResponseBodySize: 50 * 1024 * 1024,
 	}
 
 	processor := NewResponseProcessor(config)
@@ -257,9 +258,9 @@ func TestResponseProcessor_HeaderProcessing(t *testing.T) {
 
 func TestResponseProcessor_CookieProcessing(t *testing.T) {
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		MaxResponseBodySize:   50 * 1024 * 1024,
+		MaxResponseBodySize: 50 * 1024 * 1024,
 	}
 
 	processor := NewResponseProcessor(config)
@@ -396,9 +397,9 @@ func TestResponseProcessor_CookieProcessing(t *testing.T) {
 
 func TestResponseProcessor_ErrorHandling(t *testing.T) {
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		MaxResponseBodySize:   50 * 1024 * 1024,
+		MaxResponseBodySize: 50 * 1024 * 1024,
 	}
 
 	processor := NewResponseProcessor(config)
@@ -443,9 +444,9 @@ func TestResponseProcessor_ErrorHandling(t *testing.T) {
 
 func TestResponseProcessor_ContentLengthHandling(t *testing.T) {
 	config := &Config{
-		Timeout:               30 * time.Second,
+		Timeout: 30 * time.Second,
 
-		MaxResponseBodySize:   50 * 1024 * 1024,
+		MaxResponseBodySize: 50 * 1024 * 1024,
 	}
 
 	processor := NewResponseProcessor(config)

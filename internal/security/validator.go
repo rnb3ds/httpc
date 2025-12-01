@@ -52,58 +52,57 @@ func NewValidatorWithConfig(config *Config) *Validator {
 func (v *Validator) ValidateRequest(req *Request) error {
 	if v.config.ValidateURL {
 		if err := v.validateURL(req.URL); err != nil {
-			return fmt.Errorf("URL validation failed: %w", err)
+			return err
 		}
 	}
 
 	if v.config.ValidateHeaders {
 		for key, value := range req.Headers {
 			if err := v.validateHeader(key, value); err != nil {
-				return fmt.Errorf("header validation failed for %s: %w", key, err)
+				return fmt.Errorf("invalid header %s: %w", key, err)
 			}
 		}
 	}
 
 	if req.Body != nil {
 		if err := v.validateRequestSize(req.Body); err != nil {
-			return fmt.Errorf("request size validation failed: %w", err)
+			return err
 		}
 	}
 
 	return nil
 }
 
+const (
+	maxURLLen         = 2048
+	maxHeaderKeyLen   = 256
+	maxHeaderValueLen = 8192
+)
+
 func (v *Validator) validateURL(urlStr string) error {
 	if urlStr == "" {
 		return fmt.Errorf("URL cannot be empty")
 	}
-
-	if len(urlStr) > 2048 {
-		return fmt.Errorf("URL too long (max 2048 characters)")
+	urlLen := len(urlStr)
+	if urlLen > maxURLLen {
+		return fmt.Errorf("URL too long (max %d)", maxURLLen)
 	}
 
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
-		return fmt.Errorf("invalid URL format: %w", err)
+		return fmt.Errorf("invalid URL: %w", err)
 	}
-
 	if parsedURL.Scheme == "" {
 		return fmt.Errorf("URL scheme is required")
 	}
-
 	if parsedURL.Host == "" {
 		return fmt.Errorf("URL host is required")
 	}
-
 	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		return fmt.Errorf("unsupported URL scheme: %s (only http/https allowed)", parsedURL.Scheme)
+		return fmt.Errorf("unsupported URL scheme: %s", parsedURL.Scheme)
 	}
 
-	if err := v.validateHost(parsedURL.Host); err != nil {
-		return fmt.Errorf("host validation failed: %w", err)
-	}
-
-	return nil
+	return v.validateHost(parsedURL.Host)
 }
 
 func (v *Validator) validateHost(host string) error {
@@ -117,12 +116,12 @@ func (v *Validator) validateHost(host string) error {
 	}
 
 	if isLocalhost(hostname) {
-		return fmt.Errorf("localhost and loopback addresses not allowed")
+		return fmt.Errorf("localhost not allowed")
 	}
 
 	if ip := net.ParseIP(hostname); ip != nil {
 		if isPrivateOrReservedIP(ip) {
-			return fmt.Errorf("private or reserved IP not allowed: %s", ip.String())
+			return fmt.Errorf("private IP not allowed: %s", ip.String())
 		}
 		return nil
 	}
@@ -131,14 +130,40 @@ func (v *Validator) validateHost(host string) error {
 }
 
 func isLocalhost(hostname string) bool {
-	hostname = strings.ToLower(hostname)
-	return hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" ||
-		hostname == "0.0.0.0" || hostname == "::" ||
-		strings.HasPrefix(hostname, "127.") || strings.HasPrefix(hostname, "localhost.")
+	hostnameLen := len(hostname)
+	if hostnameLen == 0 {
+		return false
+	}
+
+	// Fast path: check common cases without allocation
+	if hostname[0] == '1' && hostnameLen >= 9 {
+		if hostname == "127.0.0.1" {
+			return true
+		}
+		if hostnameLen > 4 && hostname[:4] == "127." {
+			return true
+		}
+	}
+
+	// Check exact matches case-insensitively without allocation
+	if hostnameLen == 9 && (hostname == "localhost" || hostname == "LOCALHOST" || hostname == "Localhost") {
+		return true
+	}
+	if hostname == "::1" || hostname == "0.0.0.0" || hostname == "::" {
+		return true
+	}
+
+	// Only allocate for prefix check
+	if hostnameLen > 10 {
+		lower := strings.ToLower(hostname)
+		return strings.HasPrefix(lower, "localhost.")
+	}
+
+	return false
 }
 
 func isPrivateOrReservedIP(ip net.IP) bool {
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || 
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
 		return true
 	}
@@ -152,29 +177,47 @@ func isPrivateOrReservedIP(ip net.IP) bool {
 }
 
 func (v *Validator) validateHeader(key, value string) error {
-	if strings.TrimSpace(key) == "" {
+	if key == "" || strings.TrimSpace(key) == "" {
 		return fmt.Errorf("header key cannot be empty")
 	}
-	if len(key) > 256 {
-		return fmt.Errorf("header key too long")
+
+	keyLen := len(key)
+	if keyLen > maxHeaderKeyLen {
+		return fmt.Errorf("header key too long (max %d)", maxHeaderKeyLen)
 	}
-	if strings.ContainsAny(key, "\r\n\x00") || strings.ContainsAny(value, "\r\n\x00") {
-		return fmt.Errorf("header contains invalid characters")
+	if key[0] == ':' {
+		return fmt.Errorf("pseudo-headers not allowed")
 	}
-	if len(value) > 8192 {
-		return fmt.Errorf("header value too long")
-	}
-	for _, r := range key {
-		if !isValidHeaderChar(r) {
+
+	// Validate key characters - reject control characters
+	for i := range keyLen {
+		c := key[i]
+		if c < 0x20 || c == 0x7F {
+			return fmt.Errorf("header contains invalid characters")
+		}
+		if !isValidHeaderChar(rune(c)) {
 			return fmt.Errorf("invalid character in header key")
 		}
 	}
-	if strings.HasPrefix(key, ":") {
-		return fmt.Errorf("pseudo-headers not allowed")
+
+	valueLen := len(value)
+	if valueLen > maxHeaderValueLen {
+		return fmt.Errorf("header value too long (max %d)", maxHeaderValueLen)
 	}
-	keyLower := strings.ToLower(key)
-	if keyLower == "content-length" || keyLower == "transfer-encoding" {
-		return fmt.Errorf("header managed automatically")
+
+	// Validate value characters - reject control characters except tab (0x09)
+	for i := range valueLen {
+		c := value[i]
+		if (c < 0x20 && c != 0x09) || c == 0x7F {
+			return fmt.Errorf("header contains invalid characters")
+		}
+	}
+
+	if keyLen == 14 || keyLen == 17 {
+		lower := strings.ToLower(key)
+		if lower == "content-length" || lower == "transfer-encoding" {
+			return fmt.Errorf("header managed automatically")
+		}
 	}
 	return nil
 }
@@ -190,14 +233,12 @@ func (v *Validator) validateRequestSize(body any) error {
 		size = int64(len(v))
 	case []byte:
 		size = int64(len(v))
-	case nil:
-		return nil
 	default:
 		return nil
 	}
 
 	if size > v.config.MaxResponseBodySize {
-		return fmt.Errorf("request body size %d exceeds maximum %d", size, v.config.MaxResponseBodySize)
+		return fmt.Errorf("request body exceeds %d bytes", v.config.MaxResponseBodySize)
 	}
 
 	return nil
