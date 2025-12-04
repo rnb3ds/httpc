@@ -114,6 +114,12 @@ httpc.WithJSON(data)              // JSON 格式
 httpc.WithForm(formData)          // 表单数据
 httpc.WithFile("file", "doc.pdf", content)  // 文件上传
 
+// Cookie 设置
+httpc.WithCookieString("session=abc123; token=xyz789")  // 解析 Cookie 字符串
+httpc.WithCookieValue("name", "value")                  // 单个 Cookie
+httpc.WithCookie(cookie)                                // http.Cookie 对象
+httpc.WithCookies(cookies)                              // 多个 Cookie
+
 // 超时和重试
 httpc.WithTimeout(30*time.Second)
 httpc.WithMaxRetries(3)
@@ -318,6 +324,28 @@ client.Post("https://example.com/login", httpc.WithForm(credentials))
 
 // 后续请求自动包含 Cookie
 client.Get("https://example.com/profile")
+
+// 手动 Cookie 设置
+// 解析 Cookie 字符串（来自浏览器开发者工具或服务器响应）
+resp, err := httpc.Get("https://api.example.com/data",
+    httpc.WithCookieString("PSID=4418ECBB1281B550; PSTM=1733760779; BS=kUwNTVFcEUBUItoc"),
+)
+
+// 设置单个 Cookie
+resp, err = httpc.Get("https://api.example.com/data",
+    httpc.WithCookieValue("session", "abc123"),
+    httpc.WithCookieValue("token", "xyz789"),
+)
+
+// 使用 http.Cookie 对象进行高级设置
+cookie := &http.Cookie{
+    Name:     "secure_session",
+    Value:    "encrypted_value",
+    Secure:   true,
+    HttpOnly: true,
+    SameSite: http.SameSiteStrictMode,
+}
+resp, err = httpc.Get("https://api.example.com/data", httpc.WithCookie(cookie))
 ```
 
 ## 安全性与性能

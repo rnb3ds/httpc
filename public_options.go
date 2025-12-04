@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -410,6 +411,45 @@ func WithCookieValue(name, value string) RequestOption {
 	}
 }
 
+// WithCookieString parses a cookie string and adds all cookies to the request.
+// The cookie string should be in the format: "name1=value1; name2=value2; name3=value3"
+// This is commonly used when copying cookies from browser developer tools or server responses.
+// Each cookie is created with secure defaults: HttpOnly=true, SameSite=Lax.
+// Returns an error if the cookie string is malformed or contains invalid cookie names/values.
+//
+// Example:
+//
+//	WithCookieString("BPSID=4418ECBB1281B550; PSTM=1733760779; BDS=kUwNTVFcEUBUItoc")
+func WithCookieString(cookieString string) RequestOption {
+	return func(r *Request) error {
+		if cookieString == "" {
+			return nil // Empty string is valid, just no cookies to add
+		}
+
+		cookies, err := parseCookieString(cookieString)
+		if err != nil {
+			return fmt.Errorf("failed to parse cookie string: %w", err)
+		}
+
+		if len(cookies) == 0 {
+			return nil
+		}
+
+		if r.Cookies == nil {
+			r.Cookies = make([]*http.Cookie, 0, len(cookies))
+		}
+
+		for _, cookie := range cookies {
+			if err := validateCookie(cookie); err != nil {
+				return fmt.Errorf("invalid cookie %s: %w", cookie.Name, err)
+			}
+			r.Cookies = append(r.Cookies, cookie)
+		}
+
+		return nil
+	}
+}
+
 func validateCredential(cred string, maxLen int, checkColon bool) error {
 	credLen := len(cred)
 	if credLen > maxLen {
@@ -533,4 +573,50 @@ func validateCookie(cookie *http.Cookie) error {
 		}
 	}
 	return nil
+}
+
+// parseCookieString parses a cookie string in the format "name1=value1; name2=value2"
+// and returns a slice of http.Cookie objects with secure defaults.
+func parseCookieString(cookieString string) ([]*http.Cookie, error) {
+	if cookieString == "" {
+		return nil, nil
+	}
+
+	// Split by semicolon to get individual cookie pairs
+	pairs := strings.Split(cookieString, ";")
+	cookies := make([]*http.Cookie, 0, len(pairs))
+
+	for _, pair := range pairs {
+		// Trim whitespace from each pair
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue // Skip empty pairs
+		}
+
+		// Find the first equals sign to split name and value
+		eqIndex := strings.Index(pair, "=")
+		if eqIndex == -1 {
+			return nil, fmt.Errorf("malformed cookie pair: %s (missing '=')", pair)
+		}
+
+		name := strings.TrimSpace(pair[:eqIndex])
+		value := strings.TrimSpace(pair[eqIndex+1:])
+
+		if name == "" {
+			return nil, fmt.Errorf("empty cookie name in pair: %s", pair)
+		}
+
+		// Create cookie with secure defaults
+		cookie := &http.Cookie{
+			Name:     name,
+			Value:    value,
+			HttpOnly: true,
+			Secure:   false,
+			SameSite: http.SameSiteLaxMode,
+		}
+
+		cookies = append(cookies, cookie)
+	}
+
+	return cookies, nil
 }

@@ -114,6 +114,12 @@ httpc.WithJSON(data)              // JSON body
 httpc.WithForm(formData)          // Form data
 httpc.WithFile("file", "doc.pdf", content)  // File upload
 
+// Cookies
+httpc.WithCookieString("session=abc123; token=xyz789")  // Parse cookie string
+httpc.WithCookieValue("name", "value")                  // Single cookie
+httpc.WithCookie(cookie)                                // http.Cookie object
+httpc.WithCookies(cookies)                              // Multiple cookies
+
 // Timeout & Retry
 httpc.WithTimeout(30*time.Second)
 httpc.WithMaxRetries(3)
@@ -318,6 +324,28 @@ client.Post("https://example.com/login", httpc.WithForm(credentials))
 
 // Subsequent requests include cookies automatically
 client.Get("https://example.com/profile")
+
+// Manual cookie setting
+// Parse cookie string (from browser dev tools or server response)
+resp, err := httpc.Get("https://api.example.com/data",
+    httpc.WithCookieString("PSID=4418ECBB1281B550; PSTM=1733760779; BS=kUwNTVFcEUBUItoc"),
+)
+
+// Set individual cookies
+resp, err = httpc.Get("https://api.example.com/data",
+    httpc.WithCookieValue("session", "abc123"),
+    httpc.WithCookieValue("token", "xyz789"),
+)
+
+// Use http.Cookie objects for advanced settings
+cookie := &http.Cookie{
+    Name:     "secure_session",
+    Value:    "encrypted_value",
+    Secure:   true,
+    HttpOnly: true,
+    SameSite: http.SameSiteStrictMode,
+}
+resp, err = httpc.Get("https://api.example.com/data", httpc.WithCookie(cookie))
 ```
 
 ## Security & Performance
