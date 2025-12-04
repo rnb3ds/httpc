@@ -7,6 +7,15 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ---
 
+## v1.2.2 - Response Formatting Enhancement (2025-12-04)
+
+### Added
+- String() method for Response type providing concise text representation
+- Html() method as alias for Response.Body property
+- Thread-safe formatted output with nil response handling
+
+---
+
 ## v1.2.1 - Code Quality, Security & Performance (2025-12-01)
 
 ### Security
