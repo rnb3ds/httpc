@@ -91,6 +91,88 @@ func (r *Response) HasCookie(name string) bool {
 	return r.GetCookie(name) != nil
 }
 
+// String returns a formatted string representation of the response.
+// Includes status code, status text, content length, duration, and attempts.
+func (r *Response) String() string {
+	if r == nil {
+		return "<nil Response>"
+	}
+
+	var b strings.Builder
+	b.Grow(256)
+
+	b.WriteString("Response{")
+	b.WriteString("Status: ")
+	fmt.Fprintf(&b, "%d %s", r.StatusCode, r.Status)
+	b.WriteString(", ContentLength: ")
+	fmt.Fprintf(&b, "%d", r.ContentLength)
+	b.WriteString(", Duration: ")
+	b.WriteString(r.Duration.String())
+	b.WriteString(", Attempts: ")
+	fmt.Fprintf(&b, "%d", r.Attempts)
+
+	if len(r.Headers) > 0 {
+		b.WriteString(", Headers: ")
+		fmt.Fprintf(&b, "%d", len(r.Headers))
+	}
+
+	if len(r.Cookies) > 0 {
+		b.WriteString(", Cookies: ")
+		fmt.Fprintf(&b, "%d", len(r.Cookies))
+	}
+
+	if len(r.Body) > 0 {
+		b.WriteString(", Body: ")
+		fmt.Fprintf(&b, "\n%s", r.Body)
+	}
+
+	b.WriteString("} ")
+
+	return b.String()
+}
+
+// Html is an alias method for the r.Body property
+func (r *Response) Html() string {
+	if r == nil {
+		return ""
+	}
+
+	var b strings.Builder
+	b.Grow(1024)
+
+	// Body section
+	if len(r.Body) > 0 {
+		b.WriteString(r.Body) // htmlEscape(r.Body)
+	}
+
+	return b.String()
+}
+
+// htmlEscape escapes special HTML characters to prevent XSS.
+func htmlEscape(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+
+	for i := range len(s) {
+		c := s[i]
+		switch c {
+		case '<':
+			b.WriteString("&lt;")
+		case '>':
+			b.WriteString("&gt;")
+		case '&':
+			b.WriteString("&amp;")
+		case '"':
+			b.WriteString("&quot;")
+		case '\'':
+			b.WriteString("&#39;")
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
 // Config defines the HTTP client configuration.
 //
 // Thread Safety:
