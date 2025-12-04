@@ -150,7 +150,7 @@ func demonstrateRealWorldPatterns(client httpc.Client) {
 	filterParams := map[string]any{
 		"status":     "active",
 		"role":       "admin",
-		"created_at": "2024-01-01",
+		"created_at": "2026-01-01",
 	}
 	resp, err = client.Get("https://echo.hoppscotch.io/api/users",
 		httpc.WithQueryMap(filterParams),

@@ -7,12 +7,22 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ---
 
-## v1.2.2 - Response Formatting Enhancement (2025-12-04)
+
+## v1.2.2 - Response and Cookie Enhancement (2025-12-04)
 
 ### Added
 - String() method for Response type providing concise text representation
 - Html() method as alias for Response.Body property
+- `WithCookieString()` method for automatic cookie string parsing
+- Support for browser-style cookie strings (e.g., "name1=value1; name2=value2")
+- Comprehensive cookie string validation and error handling
+- Cookie methods documentation in request options sections
+- Enhanced Cookie Management examples in both English and Chinese README
 - Thread-safe formatted output with nil response handling
+
+### Changed
+- Updated documentation with manual cookie setting examples
+- Expanded cookie usage examples for better developer experience
 
 ---
 
