@@ -66,6 +66,7 @@ type Config struct {
 	UserAgent       string
 	Headers         map[string]string
 	FollowRedirects bool
+	MaxRedirects    int
 	EnableHTTP2     bool
 
 	CookieJar     any
@@ -73,30 +74,35 @@ type Config struct {
 }
 
 type Request struct {
-	Method      string
-	URL         string
-	Headers     map[string]string
-	QueryParams map[string]any
-	Body        any
-	Timeout     time.Duration
-	MaxRetries  int
-	Context     context.Context
-	Cookies     []*http.Cookie
+	Method          string
+	URL             string
+	Headers         map[string]string
+	QueryParams     map[string]any
+	Body            any
+	Timeout         time.Duration
+	MaxRetries      int
+	Context         context.Context
+	Cookies         []*http.Cookie
+	FollowRedirects *bool
+	MaxRedirects    *int
 }
 
 // Response represents an HTTP response.
 // Response objects are safe to read from multiple goroutines after they are returned.
 type Response struct {
-	StatusCode    int
-	Status        string
-	Headers       map[string][]string
-	Body          string
-	RawBody       []byte
-	ContentLength int64
-	Proto         string
-	Duration      time.Duration
-	Attempts      int
-	Cookies       []*http.Cookie
+	StatusCode     int
+	Status         string
+	Headers        map[string][]string
+	Body           string
+	RawBody        []byte
+	ContentLength  int64
+	Proto          string
+	Duration       time.Duration
+	Attempts       int
+	Cookies        []*http.Cookie
+	RedirectChain  []string
+	RedirectCount  int
+	RequestHeaders map[string][]string // Actual headers sent with the request
 }
 
 func NewClient(config *Config) (*Client, error) {
@@ -398,9 +404,27 @@ func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
 
 	reqCopy := *req
 	reqCopy.Context = execCtx
+
+	// Apply per-request redirect settings if provided
+	followRedirects := c.config.FollowRedirects
+	maxRedirects := c.config.MaxRedirects
+	if req.FollowRedirects != nil {
+		followRedirects = *req.FollowRedirects
+	}
+	if req.MaxRedirects != nil {
+		maxRedirects = *req.MaxRedirects
+	}
+	c.transport.SetRedirectPolicy(followRedirects, maxRedirects)
+
 	httpReq, err := c.requestProcessor.Build(&reqCopy)
 	if err != nil {
 		return nil, ClassifyError(fmt.Errorf("build request failed: %w", err), req.URL, req.Method, 0)
+	}
+
+	// Capture actual request headers before sending
+	requestHeaders := make(map[string][]string, len(httpReq.Header))
+	for key, values := range httpReq.Header {
+		requestHeaders[key] = append([]string(nil), values...)
 	}
 
 	start := time.Now()
@@ -428,6 +452,15 @@ func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
 		return nil, ClassifyError(fmt.Errorf("process response failed: %w", err), req.URL, req.Method, 0)
 	}
 
+	// Get redirect chain from transport
+	redirectChain := c.transport.GetRedirectChain()
+	if len(redirectChain) > 0 {
+		resp.RedirectChain = redirectChain
+		resp.RedirectCount = len(redirectChain)
+	}
+
+	// Add captured request headers to response
+	resp.RequestHeaders = requestHeaders
 	resp.Duration = duration
 	return resp, nil
 }

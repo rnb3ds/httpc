@@ -318,6 +318,33 @@ func WithBody(body any) RequestOption {
 	}
 }
 
+// WithFollowRedirects enables or disables automatic redirect following for this request.
+// This overrides the client's FollowRedirects configuration.
+// When disabled, the client returns the redirect response (3xx) without following it.
+func WithFollowRedirects(follow bool) RequestOption {
+	return func(r *Request) error {
+		r.FollowRedirects = &follow
+		return nil
+	}
+}
+
+// WithMaxRedirects sets the maximum number of redirects to follow for this request.
+// This overrides the client's MaxRedirects configuration.
+// Set to 0 to allow unlimited redirects (not recommended).
+// Returns an error if maxRedirects is negative or exceeds 50.
+func WithMaxRedirects(maxRedirects int) RequestOption {
+	return func(r *Request) error {
+		if maxRedirects < 0 {
+			return fmt.Errorf("maxRedirects cannot be negative")
+		}
+		if maxRedirects > 50 {
+			return fmt.Errorf("maxRedirects exceeds maximum of 50")
+		}
+		r.MaxRedirects = &maxRedirects
+		return nil
+	}
+}
+
 func WithBinary(data []byte, contentType ...string) RequestOption {
 	return func(r *Request) error {
 		if data == nil {

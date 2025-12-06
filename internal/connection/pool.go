@@ -135,7 +135,7 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 		MaxIdleConnsPerHost:   config.MaxIdleConnsPerHost,
 		MaxConnsPerHost:       config.MaxConnsPerHost,
 		ForceAttemptHTTP2:     config.ForceAttemptHTTP2,
-		DisableCompression:    config.DisableCompression,
+		DisableCompression:    true, // Always disable automatic decompression - we handle it manually
 		DisableKeepAlives:     config.DisableKeepAlives,
 	}
 	if config.ProxyURL != "" {

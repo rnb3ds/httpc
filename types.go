@@ -18,15 +18,18 @@ import (
 // multiple goroutines concurrently. All methods are goroutine-safe.
 // Do not modify Response fields directly.
 type Response struct {
-	StatusCode    int
-	Status        string
-	Headers       http.Header
-	Body          string
-	RawBody       []byte
-	ContentLength int64
-	Duration      time.Duration
-	Attempts      int
-	Cookies       []*http.Cookie
+	StatusCode     int
+	Status         string
+	Headers        http.Header
+	Body           string
+	RawBody        []byte
+	ContentLength  int64
+	Duration       time.Duration
+	Attempts       int
+	Cookies        []*http.Cookie
+	RedirectChain  []string    // URLs visited during redirect chain (empty if no redirects)
+	RedirectCount  int         // Number of redirects followed
+	RequestHeaders http.Header // Actual headers sent with the request (including defaults and modifications)
 }
 
 // IsSuccess returns true if the response status code indicates success (2xx)
@@ -200,6 +203,7 @@ type Config struct {
 	UserAgent       string
 	Headers         map[string]string
 	FollowRedirects bool
+	MaxRedirects    int // Maximum number of redirects to follow (default: 10, 0 = no limit)
 	EnableHTTP2     bool
 	EnableCookies   bool
 }
@@ -207,15 +211,17 @@ type Config struct {
 type RequestOption func(*Request) error
 
 type Request struct {
-	Method      string
-	URL         string
-	Headers     map[string]string
-	QueryParams map[string]any
-	Body        any
-	Timeout     time.Duration
-	MaxRetries  int
-	Context     context.Context
-	Cookies     []*http.Cookie
+	Method          string
+	URL             string
+	Headers         map[string]string
+	QueryParams     map[string]any
+	Body            any
+	Timeout         time.Duration
+	MaxRetries      int
+	Context         context.Context
+	Cookies         []*http.Cookie
+	FollowRedirects *bool // Override client's FollowRedirects setting (nil = use client default)
+	MaxRedirects    *int  // Override client's MaxRedirects setting (nil = use client default)
 }
 
 type FormData struct {
@@ -246,6 +252,7 @@ func DefaultConfig() *Config {
 		UserAgent:           "httpc/1.0",
 		Headers:             make(map[string]string),
 		FollowRedirects:     true,
+		MaxRedirects:        10,
 		EnableHTTP2:         true,
 		EnableCookies:       false,
 	}
@@ -298,6 +305,13 @@ func ValidateConfig(cfg *Config) error {
 		return fmt.Errorf("%w: must be %.1f-%.1f, got %.1f", ErrInvalidRetry, minBackoffFactor, maxBackoffFactor, cfg.BackoffFactor)
 	}
 
+	if cfg.MaxRedirects < 0 {
+		return fmt.Errorf("MaxRedirects cannot be negative")
+	}
+	if cfg.MaxRedirects > 50 {
+		return fmt.Errorf("MaxRedirects exceeds maximum of 50")
+	}
+
 	if len(cfg.UserAgent) > maxUserAgentLen {
 		return fmt.Errorf("UserAgent exceeds %d characters", maxUserAgentLen)
 	}
@@ -332,19 +346,6 @@ func validateHeaderKeyValue(key, value string) error {
 
 	if !isValidHeaderString(key) || !isValidHeaderString(value) {
 		return fmt.Errorf("invalid characters")
-	}
-
-	// Fast path: check for managed headers without allocation
-	if keyLen >= 7 && keyLen <= 17 {
-		firstChar := key[0] | 0x20 // Convert to lowercase
-		if firstChar == 'c' || firstChar == 't' || firstChar == 'u' {
-			// Only allocate if we have a potential match
-			lower := strings.ToLower(key)
-			switch lower {
-			case "connection", "content-length", "transfer-encoding", "upgrade":
-				return fmt.Errorf("managed automatically")
-			}
-		}
 	}
 
 	return nil

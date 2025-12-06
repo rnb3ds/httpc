@@ -324,6 +324,7 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		UserAgent:             cfg.UserAgent,
 		Headers:               cfg.Headers,
 		FollowRedirects:       cfg.FollowRedirects,
+		MaxRedirects:          cfg.MaxRedirects,
 		EnableHTTP2:           cfg.EnableHTTP2,
 		CookieJar:             cookieJar,
 		EnableCookies:         cfg.EnableCookies,
@@ -366,6 +367,8 @@ func convertRequestOptions(options []RequestOption) []engine.RequestOption {
 			req.Timeout = publicReq.Timeout
 			req.MaxRetries = publicReq.MaxRetries
 			req.Cookies = publicReq.Cookies
+			req.FollowRedirects = publicReq.FollowRedirects
+			req.MaxRedirects = publicReq.MaxRedirects
 
 			return nil
 		})
@@ -379,15 +382,18 @@ func convertEngineResponse(engineResp *engine.Response) *Response {
 	}
 
 	return &Response{
-		StatusCode:    engineResp.StatusCode,
-		Status:        engineResp.Status,
-		Headers:       engineResp.Headers,
-		Body:          engineResp.Body,
-		RawBody:       engineResp.RawBody,
-		ContentLength: engineResp.ContentLength,
-		Duration:      engineResp.Duration,
-		Attempts:      engineResp.Attempts,
-		Cookies:       engineResp.Cookies,
+		StatusCode:     engineResp.StatusCode,
+		Status:         engineResp.Status,
+		Headers:        engineResp.Headers,
+		Body:           engineResp.Body,
+		RawBody:        engineResp.RawBody,
+		ContentLength:  engineResp.ContentLength,
+		Duration:       engineResp.Duration,
+		Attempts:       engineResp.Attempts,
+		Cookies:        engineResp.Cookies,
+		RedirectChain:  engineResp.RedirectChain,
+		RedirectCount:  engineResp.RedirectCount,
+		RequestHeaders: engineResp.RequestHeaders,
 	}
 }
 

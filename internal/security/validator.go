@@ -212,13 +212,7 @@ func (v *Validator) validateHeader(key, value string) error {
 			return fmt.Errorf("header contains invalid characters")
 		}
 	}
-
-	if keyLen == 14 || keyLen == 17 {
-		lower := strings.ToLower(key)
-		if lower == "content-length" || lower == "transfer-encoding" {
-			return fmt.Errorf("header managed automatically")
-		}
-	}
+	
 	return nil
 }
 

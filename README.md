@@ -2,7 +2,7 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.24+-blue.svg)](https://golang.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Security](https://img.shields.io/badge/Security-Hardened-red.svg)](docs/security.md)
+[![Security](https://img.shields.io/badge/Security-Hardened-red.svg)](SECURITY.md)
 [![Performance](https://img.shields.io/badge/performance-high%20performance-green.svg)](https://github.com/cybergodev/json)
 [![Thread Safe](https://img.shields.io/badge/thread%20safe-yes-brightgreen.svg)](https://github.com/cybergodev/json)
 
@@ -120,6 +120,10 @@ httpc.WithCookieValue("name", "value")                  // Single cookie
 httpc.WithCookie(cookie)                                // http.Cookie object
 httpc.WithCookies(cookies)                              // Multiple cookies
 
+// Redirects
+httpc.WithFollowRedirects(false)  // Disable automatic redirect following
+httpc.WithMaxRedirects(5)         // Limit maximum redirects (0-50)
+
 // Timeout & Retry
 httpc.WithTimeout(30*time.Second)
 httpc.WithMaxRetries(3)
@@ -164,6 +168,27 @@ fmt.Printf("Attempts: %d\n", resp.Attempts)
 // Work with cookies
 cookie := resp.GetCookie("session_id")
 ```
+
+### Automatic Response Decompression
+
+HTTPC automatically detects and decompresses compressed HTTP responses:
+
+```go
+// Request compressed response
+resp, err := httpc.Get("https://api.example.com/data",
+    httpc.WithHeader("Accept-Encoding", "gzip, deflate"),
+)
+
+// Response is automatically decompressed
+fmt.Printf("Decompressed body: %s\n", resp.Body)
+fmt.Printf("Original encoding: %s\n", resp.Headers.Get("Content-Encoding"))
+```
+
+**Supported Encodings:**
+- ✅ **gzip** - Fully supported (compress/gzip)
+- ✅ **deflate** - Fully supported (compress/flate)
+
+**Note:** Decompression is automatic when the server sends a `Content-Encoding` header. The library handles this transparently, so you always receive decompressed content.
 
 ### File Download
 
@@ -311,6 +336,30 @@ go func() {
 resp, err := client.Get(url, httpc.WithContext(ctx))
 ```
 
+### HTTP Redirects
+
+```go
+// Automatic redirect following (default)
+resp, err := httpc.Get("https://example.com/redirect")
+fmt.Printf("Followed %d redirects\n", resp.RedirectCount)
+
+// Disable redirects for specific request
+resp, err := httpc.Get(url, httpc.WithFollowRedirects(false))
+if resp.IsRedirect() {
+    fmt.Printf("Redirect to: %s\n", resp.Headers.Get("Location"))
+}
+
+// Limit redirects
+resp, err := httpc.Get(url, httpc.WithMaxRedirects(5))
+
+// Track redirect chain
+for i, url := range resp.RedirectChain {
+    fmt.Printf("%d. %s\n", i+1, url)
+}
+```
+
+**[📖 Redirect Guide](docs/redirects.md)**
+
 ### Cookie Management
 
 ```go
@@ -410,6 +459,7 @@ wg.Wait()
 - **[Request Options](docs/request-options.md)** - Complete options reference
 - **[Error Handling](docs/error-handling.md)** - Error handling patterns
 - **[File Download](docs/file-download.md)** - File downloads with progress
+- **[HTTP Redirects](docs/redirects.md)** - Redirect handling and tracking
 - **[Security](docs/security.md)** - Security features and best practices
 
 ### Examples
