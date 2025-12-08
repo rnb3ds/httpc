@@ -136,7 +136,7 @@ func isLocalhost(hostname string) bool {
 	}
 
 	// Fast path: check common cases without allocation
-	if hostname[0] == '1' && hostnameLen >= 9 {
+	if hostnameLen >= 9 && hostname[0] == '1' {
 		if hostname == "127.0.0.1" {
 			return true
 		}
@@ -145,12 +145,24 @@ func isLocalhost(hostname string) bool {
 		}
 	}
 
-	// Check exact matches case-insensitively without allocation
-	if hostnameLen == 9 && (hostname == "localhost" || hostname == "LOCALHOST" || hostname == "Localhost") {
-		return true
-	}
-	if hostname == "::1" || hostname == "0.0.0.0" || hostname == "::" {
-		return true
+	// Check exact matches case-insensitively
+	switch hostnameLen {
+	case 9:
+		if hostname == "localhost" || hostname == "LOCALHOST" || hostname == "Localhost" {
+			return true
+		}
+	case 3:
+		if hostname == "::1" {
+			return true
+		}
+	case 7:
+		if hostname == "0.0.0.0" {
+			return true
+		}
+	case 2:
+		if hostname == "::" {
+			return true
+		}
 	}
 
 	// Only allocate for prefix check
@@ -177,11 +189,23 @@ func isPrivateOrReservedIP(ip net.IP) bool {
 }
 
 func (v *Validator) validateHeader(key, value string) error {
-	if key == "" || strings.TrimSpace(key) == "" {
+	keyLen := len(key)
+	if keyLen == 0 {
 		return fmt.Errorf("header key cannot be empty")
 	}
 
-	keyLen := len(key)
+	// Check for whitespace-only key
+	hasNonSpace := false
+	for i := range keyLen {
+		if key[i] != ' ' && key[i] != '\t' {
+			hasNonSpace = true
+			break
+		}
+	}
+	if !hasNonSpace {
+		return fmt.Errorf("header key cannot be empty")
+	}
+
 	if keyLen > maxHeaderKeyLen {
 		return fmt.Errorf("header key too long (max %d)", maxHeaderKeyLen)
 	}
@@ -189,7 +213,7 @@ func (v *Validator) validateHeader(key, value string) error {
 		return fmt.Errorf("pseudo-headers not allowed")
 	}
 
-	// Validate key characters - reject control characters
+	// Validate key characters - reject control characters and validate allowed chars
 	for i := range keyLen {
 		c := key[i]
 		if c < 0x20 || c == 0x7F {
@@ -213,12 +237,6 @@ func (v *Validator) validateHeader(key, value string) error {
 		}
 	}
 
-	if keyLen == 14 || keyLen == 17 {
-		lower := strings.ToLower(key)
-		if lower == "content-length" || lower == "transfer-encoding" {
-			return fmt.Errorf("header managed automatically")
-		}
-	}
 	return nil
 }
 

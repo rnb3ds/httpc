@@ -248,44 +248,31 @@ Alternative method for small files:
 
 ```go
 // Make a regular GET request
-resp, err := client.Get("https://example.com/data.json")
+result, err := client.Get("https://example.com/data.json")
 if err != nil {
     log.Fatal(err)
 }
 
 // Save response to file
-err = resp.SaveToFile("data.json")
+err = result.SaveToFile("data.json")
 if err != nil {
     log.Fatal(err)
 }
 ```
 
-### Manual Streaming (for very large files)
+### Manual File Saving
 
-For maximum control over large file downloads:
+For simple file saving from response:
 
 ```go
-import (
-    "io"
-    "os"
-)
-
 // Make a regular GET request
-resp, err := client.Get("https://example.com/very-large-file.bin")
+result, err := client.Get("https://example.com/data.json")
 if err != nil {
     log.Fatal(err)
 }
 
-// Create file
-file, err := os.Create("large-file.bin")
-if err != nil {
-    log.Fatal(err)
-}
-defer file.Close()
-
-// Copy response body to file
-// Note: This requires implementing custom streaming if needed
-_, err = file.Write(resp.RawBody)
+// Save response to file
+err = result.SaveToFile("data.json")
 if err != nil {
     log.Fatal(err)
 }
@@ -368,10 +355,6 @@ size := httpc.FormatBytes(1048576)  // "1.00 MB"
 ```go
 // FormatSpeed expects bytes per second as float64
 speed := httpc.FormatSpeed(1048576.0)  // "1.00 MB/s"
-
-// Or convert from int64
-bytesPerSec := int64(1048576)
-speedStr := httpc.FormatBytes(bytesPerSec) + "/s"  // "1.00 MB/s"
 ```
 
 ## Examples

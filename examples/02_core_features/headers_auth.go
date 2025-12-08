@@ -209,7 +209,7 @@ func demonstrateRealWorldAuth() {
 		log.Printf("Error: %v\n", err)
 		return
 	}
-	fmt.Printf("Status: %d\n\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n\n", resp.StatusCode())
 
 	// Pattern 2: API Key for third-party services
 	fmt.Println("--- Pattern 2: Third-Party API Key ---")
@@ -222,7 +222,7 @@ func demonstrateRealWorldAuth() {
 		log.Printf("Error: %v\n", err)
 		return
 	}
-	fmt.Printf("Status: %d\n\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n\n", resp.StatusCode())
 
 	// Pattern 3: Basic Auth for internal services
 	fmt.Println("--- Pattern 3: Internal Service Auth ---")
@@ -234,7 +234,7 @@ func demonstrateRealWorldAuth() {
 		log.Printf("Error: %v\n", err)
 		return
 	}
-	fmt.Printf("Status: %d\n\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n\n", resp.StatusCode())
 }
 
 // Helper functions (in real app, these would load from config/env)

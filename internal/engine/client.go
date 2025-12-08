@@ -66,6 +66,7 @@ type Config struct {
 	UserAgent       string
 	Headers         map[string]string
 	FollowRedirects bool
+	MaxRedirects    int
 	EnableHTTP2     bool
 
 	CookieJar     any
@@ -73,30 +74,35 @@ type Config struct {
 }
 
 type Request struct {
-	Method      string
-	URL         string
-	Headers     map[string]string
-	QueryParams map[string]any
-	Body        any
-	Timeout     time.Duration
-	MaxRetries  int
-	Context     context.Context
-	Cookies     []*http.Cookie
+	Method          string
+	URL             string
+	Headers         map[string]string
+	QueryParams     map[string]any
+	Body            any
+	Timeout         time.Duration
+	MaxRetries      int
+	Context         context.Context
+	Cookies         []http.Cookie
+	FollowRedirects *bool
+	MaxRedirects    *int
 }
 
 // Response represents an HTTP response.
 // Response objects are safe to read from multiple goroutines after they are returned.
 type Response struct {
-	StatusCode    int
-	Status        string
-	Headers       map[string][]string
-	Body          string
-	RawBody       []byte
-	ContentLength int64
-	Proto         string
-	Duration      time.Duration
-	Attempts      int
-	Cookies       []*http.Cookie
+	StatusCode     int
+	Status         string
+	Headers        map[string][]string
+	Body           string
+	RawBody        []byte
+	ContentLength  int64
+	Proto          string
+	Duration       time.Duration
+	Attempts       int
+	Cookies        []*http.Cookie
+	RedirectChain  []string
+	RedirectCount  int
+	RequestHeaders map[string][]string // Actual headers sent with the request
 }
 
 func NewClient(config *Config) (*Client, error) {
@@ -169,13 +175,13 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 	if len(options) > 0 {
 		req.Headers = make(map[string]string, 8)
 		req.QueryParams = make(map[string]any, 4)
-	}
 
-	for _, option := range options {
-		if option != nil {
-			if err := option(req); err != nil {
-				atomic.AddInt64(&c.failedRequests, 1)
-				return nil, fmt.Errorf("failed to apply request option: %w", err)
+		for _, option := range options {
+			if option != nil {
+				if err := option(req); err != nil {
+					atomic.AddInt64(&c.failedRequests, 1)
+					return nil, fmt.Errorf("failed to apply request option: %w", err)
+				}
 			}
 		}
 	}
@@ -188,6 +194,7 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 		Body:        req.Body,
 	}
 	if err := c.validator.ValidateRequest(secReq); err != nil {
+		atomic.AddInt64(&c.failedRequests, 1)
 		return nil, fmt.Errorf("request validation failed: %w", err)
 	}
 
@@ -201,16 +208,8 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 	}
 
 	atomic.AddInt64(&c.successfulRequests, 1)
-
-	if response != nil {
-		response.Duration = duration
-		return response, nil
-	}
-
-	return &Response{
-		StatusCode: 200,
-		Duration:   duration,
-	}, nil
+	response.Duration = duration
+	return response, nil
 }
 
 func (c *Client) Get(url string, options ...RequestOption) (*Response, error) {
@@ -308,8 +307,8 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 			}
 
 			delay := c.retryEngine.GetDelay(attempt)
-			if err := c.sleepWithContext(req.Context, delay); err != nil {
-				return nil, ClassifyError(err, req.URL, req.Method, attempt+1)
+			if sleepErr := c.sleepWithContext(req.Context, delay); sleepErr != nil {
+				return nil, ClassifyError(sleepErr, req.URL, req.Method, attempt+1)
 			}
 			continue
 		}
@@ -320,8 +319,8 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 			if c.retryEngine.isRetryableStatus(resp.StatusCode) && attempt < maxRetries {
 				if c.retryEngine.ShouldRetry(resp, nil, attempt) {
 					delay := c.retryEngine.GetDelayWithResponse(attempt, resp)
-					if err := c.sleepWithContext(req.Context, delay); err != nil {
-						return nil, ClassifyError(err, req.URL, req.Method, attempt+1)
+					if sleepErr := c.sleepWithContext(req.Context, delay); sleepErr != nil {
+						return nil, ClassifyError(sleepErr, req.URL, req.Method, attempt+1)
 					}
 					continue
 				}
@@ -349,12 +348,7 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 }
 
 const (
-	defaultMaxDrain        int64 = 10 * 1024 * 1024 // 10MB
-	defaultDialTimeout           = 10 * time.Second
-	defaultKeepAlive             = 30 * time.Second
-	defaultTLSTimeout            = 10 * time.Second
-	defaultHeaderTimeout         = 30 * time.Second
-	defaultIdleConnTimeout       = 90 * time.Second
+	defaultMaxDrain int64 = 10 * 1024 * 1024 // 10MB
 )
 
 func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
@@ -398,6 +392,17 @@ func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
 
 	reqCopy := *req
 	reqCopy.Context = execCtx
+
+	followRedirects := c.config.FollowRedirects
+	maxRedirects := c.config.MaxRedirects
+	if req.FollowRedirects != nil {
+		followRedirects = *req.FollowRedirects
+	}
+	if req.MaxRedirects != nil {
+		maxRedirects = *req.MaxRedirects
+	}
+	c.transport.SetRedirectPolicy(followRedirects, maxRedirects)
+
 	httpReq, err := c.requestProcessor.Build(&reqCopy)
 	if err != nil {
 		return nil, ClassifyError(fmt.Errorf("build request failed: %w", err), req.URL, req.Method, 0)
@@ -413,7 +418,6 @@ func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
 
 	defer func() {
 		if httpResp != nil && httpResp.Body != nil {
-			// Always drain and close body to enable connection reuse
 			maxDrain := defaultMaxDrain
 			if c.config.MaxResponseBodySize > 0 && c.config.MaxResponseBodySize < maxDrain {
 				maxDrain = c.config.MaxResponseBodySize
@@ -426,6 +430,20 @@ func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
 	resp, err = c.responseProcessor.Process(httpResp)
 	if err != nil {
 		return nil, ClassifyError(fmt.Errorf("process response failed: %w", err), req.URL, req.Method, 0)
+	}
+
+	redirectChain := c.transport.GetRedirectChain()
+	if len(redirectChain) > 0 {
+		resp.RedirectChain = redirectChain
+		resp.RedirectCount = len(redirectChain)
+	}
+
+	if httpResp != nil && httpResp.Request != nil {
+		requestHeaders := make(map[string][]string, len(httpResp.Request.Header))
+		for key, values := range httpResp.Request.Header {
+			requestHeaders[key] = append([]string(nil), values...)
+		}
+		resp.RequestHeaders = requestHeaders
 	}
 
 	resp.Duration = duration

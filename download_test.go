@@ -348,29 +348,6 @@ func TestDownload_CreateDirectories(t *testing.T) {
 	}
 }
 
-func TestDownload_PackageLevel(t *testing.T) {
-	setupPackageLevelTests()
-
-	content := []byte("package level download")
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(content)
-	}))
-	defer server.Close()
-
-	tempDir := t.TempDir()
-	filePath := filepath.Join(tempDir, "package-download.txt")
-
-	result, err := DownloadFile(server.URL, filePath)
-	if err != nil {
-		t.Fatalf("Package level download failed: %v", err)
-	}
-
-	if result.BytesWritten != int64(len(content)) {
-		t.Errorf("Expected %d bytes, got %d", len(content), result.BytesWritten)
-	}
-}
-
 func TestResponse_SaveToFile(t *testing.T) {
 	content := []byte("response content")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -31,8 +31,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	fmt.Printf("Response Status: %s\n", response.Status)
-	fmt.Printf("Response Body:\n%s\n", response.Body)
+	fmt.Printf("Response Status: %s\n", response.Response.Status)
+	fmt.Printf("Response Body:\n%s\n", response.Body())
 
 	// You can also combine WithCookieString with other cookie methods
 	fmt.Println("\nCombining WithCookieString with other cookie methods:")

@@ -2,7 +2,7 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.24+-blue.svg)](https://golang.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Security](https://img.shields.io/badge/Security-Hardened-red.svg)](docs/security.md)
+[![Security](https://img.shields.io/badge/Security-Hardened-red.svg)](SECURITY.md)
 [![Performance](https://img.shields.io/badge/performance-high%20performance-green.svg)](https://github.com/cybergodev/json)
 [![Thread Safe](https://img.shields.io/badge/thread%20safe-yes-brightgreen.svg)](https://github.com/cybergodev/json)
 
@@ -43,7 +43,7 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
-    fmt.Printf("状态码: %d\n", resp.StatusCode)
+    fmt.Printf("状态码: %d\n", resp.StatusCode())
 
     // 带 JSON 和认证的 POST 请求
     user := map[string]string{"name": "张三", "email": "zhangsan@example.com"}
@@ -54,7 +54,7 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
-    fmt.Printf("已创建: %s\n", resp.Body)
+    fmt.Printf("已创建: %s\n", resp.Body())
 }
 ```
 
@@ -156,14 +156,35 @@ if err := resp.JSON(&result); err != nil {
 }
 
 // 访问响应数据
-fmt.Printf("状态码: %d\n", resp.StatusCode)
-fmt.Printf("响应体: %s\n", resp.Body)
-fmt.Printf("耗时: %v\n", resp.Duration)
-fmt.Printf("尝试次数: %d\n", resp.Attempts)
+fmt.Printf("状态码: %d\n", resp.StatusCode())
+fmt.Printf("响应体: %s\n", resp.Body())
+fmt.Printf("耗时: %v\n", resp.Meta.Duration)
+fmt.Printf("尝试次数: %d\n", resp.Meta.Attempts)
 
 // 处理 Cookie
 cookie := resp.GetCookie("session_id")
 ```
+
+### 自动响应解压缩
+
+HTTPC 自动检测并解压缩 HTTP 响应：
+
+```go
+// 请求压缩响应
+resp, err := httpc.Get("https://api.example.com/data",
+    httpc.WithHeader("Accept-Encoding", "gzip, deflate"),
+)
+
+// 响应自动解压缩
+fmt.Printf("解压后的内容: %s\n", resp.Body())
+fmt.Printf("原始编码: %s\n", resp.Response.Headers.Get("Content-Encoding"))
+```
+
+**支持的编码：**
+- ✅ **gzip** - 完全支持 (compress/gzip)
+- ✅ **deflate** - 完全支持 (compress/flate)
+
+**注意：** 当服务器发送 `Content-Encoding` 头时，解压缩是自动的。库会透明地处理这一过程，因此您始终收到解压后的内容。
 
 ### 文件下载
 
@@ -258,7 +279,7 @@ if err != nil {
 
 // 检查响应状态
 if !resp.IsSuccess() {
-    return fmt.Errorf("意外的状态码: %d", resp.StatusCode)
+    return fmt.Errorf("意外的状态码: %d", resp.StatusCode())
 }
 ```
 
@@ -311,6 +332,30 @@ go func() {
 resp, err := client.Get(url, httpc.WithContext(ctx))
 ```
 
+### HTTP 重定向
+
+```go
+// 自动跟随重定向（默认）
+resp, err := httpc.Get("https://example.com/redirect")
+fmt.Printf("跟随了 %d 次重定向\n", resp.Meta.RedirectCount)
+
+// 禁用特定请求的重定向
+resp, err := httpc.Get(url, httpc.WithFollowRedirects(false))
+if resp.IsRedirect() {
+    fmt.Printf("重定向到: %s\n", resp.Response.Headers.Get("Location"))
+}
+
+// 限制重定向次数
+resp, err := httpc.Get(url, httpc.WithMaxRedirects(5))
+
+// 跟踪重定向链
+for i, url := range resp.Meta.RedirectChain {
+    fmt.Printf("%d. %s\n", i+1, url)
+}
+```
+
+**[📖 重定向指南](docs/redirects.md)**
+
 ### Cookie 管理
 
 ```go
@@ -347,6 +392,100 @@ cookie := &http.Cookie{
 }
 resp, err = httpc.Get("https://api.example.com/data", httpc.WithCookie(cookie))
 ```
+
+**[📖 Cookie API 参考](docs/cookie-api-reference.md)**
+
+### 域客户端 - 自动状态管理
+
+对于需要向同一域发起多个请求的应用，`DomainClient` 提供自动的 Cookie 和 Header 管理：
+
+```go
+// 创建域专用客户端
+client, err := httpc.NewDomain("https://api.example.com")
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Close()
+
+// 第一个请求 - 服务器设置 Cookie
+resp1, err := client.Get("/login",
+    httpc.WithJSON(credentials),
+)
+
+// resp1 中的 Cookie 自动保存并在后续请求中发送
+resp2, err := client.Get("/profile")  // Cookie 自动包含
+
+// 设置持久化 Header（所有请求都会发送）
+client.SetHeader("Authorization", "Bearer "+token)
+client.SetHeader("X-API-Key", "your-api-key")
+
+// 所有后续请求都包含这些 Header
+resp3, err := client.Get("/data")  // Header + Cookie 自动包含
+
+// 按请求覆盖（不影响持久化状态）
+resp4, err := client.Get("/special",
+    httpc.WithHeader("Accept", "application/xml"),  // 仅此请求覆盖
+)
+
+// 手动 Cookie 管理
+client.SetCookie(&http.Cookie{Name: "session", Value: "abc123"})
+client.SetCookies([]*http.Cookie{
+    {Name: "pref", Value: "dark"},
+    {Name: "lang", Value: "zh"},
+})
+
+// 查询状态
+cookies := client.GetCookies()
+headers := client.GetHeaders()
+sessionCookie := client.GetCookie("session")
+
+// 清除状态
+client.DeleteCookie("session")
+client.DeleteHeader("X-API-Key")
+client.ClearCookies()
+client.ClearHeaders()
+```
+
+**真实场景示例 - 登录流程：**
+
+```go
+client, _ := httpc.NewDomain("https://api.example.com")
+defer client.Close()
+
+// 步骤 1：登录（服务器设置会话 Cookie）
+loginResp, _ := client.Post("/auth/login",
+    httpc.WithJSON(map[string]string{
+        "username": "user@example.com",
+        "password": "secret",
+    }),
+)
+
+// 步骤 2：提取令牌并设置为持久化 Header
+var loginData map[string]string
+loginResp.JSON(&loginData)
+client.SetHeader("Authorization", "Bearer "+loginData["token"])
+
+// 步骤 3：进行 API 调用（Cookie + 认证 Header 自动发送）
+profileResp, _ := client.Get("/api/user/profile")
+dataResp, _ := client.Get("/api/user/data")
+settingsResp, _ := client.Put("/api/user/settings",
+    httpc.WithJSON(newSettings),
+)
+
+// 所有请求自动包含：
+// - 登录响应中的会话 Cookie
+// - Authorization Header
+// - 任何其他持久化的 Header/Cookie
+```
+
+**主要特性：**
+- **自动 Cookie 持久化** - 响应中的 Cookie 被保存并在后续请求中发送
+- **自动 Header 持久化** - 设置一次 Header，在所有请求中使用
+- **按请求覆盖** - 使用 `WithCookies()` 和 `WithHeaderMap()` 覆盖特定请求
+- **线程安全** - 所有操作都是协程安全的
+- **手动控制** - 完整的 API 用于检查和修改状态
+
+**[📖 查看完整示例](examples/domain_client_example.go)**
 
 ## 安全性与性能
 
@@ -410,7 +549,8 @@ wg.Wait()
 - **[请求选项](docs/request-options.md)** - 完整选项参考
 - **[错误处理](docs/error-handling.md)** - 错误处理模式
 - **[文件下载](docs/file-download.md)** - 带进度的文件下载
-- **[安全性](docs/security.md)** - 安全特性和最佳实践
+- **[HTTP 重定向](docs/redirects.md)** - 重定向处理和跟踪
+- **[安全性](SECURITY.md)** - 安全特性和最佳实践
 
 ### 示例
 - **[快速开始](examples/01_quickstart)** - 基本用法

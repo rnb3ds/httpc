@@ -64,7 +64,7 @@ func (c *APIClient) GetUser(ctx context.Context, userID int) (*User, error) {
 	}
 
 	if !resp.IsSuccess() {
-		return nil, fmt.Errorf("API error: status %d", resp.StatusCode)
+		return nil, fmt.Errorf("API error: status %d", resp.StatusCode())
 	}
 
 	var user User
@@ -95,7 +95,7 @@ func (c *APIClient) ListUsers(ctx context.Context, page, limit int) ([]User, err
 	}
 
 	if !resp.IsSuccess() {
-		return nil, fmt.Errorf("API error: status %d", resp.StatusCode)
+		return nil, fmt.Errorf("API error: status %d", resp.StatusCode())
 	}
 
 	// Try to parse as array first (real API)
@@ -129,7 +129,7 @@ func (c *APIClient) CreateUser(ctx context.Context, user *User) (*User, error) {
 	}
 
 	if !resp.IsSuccess() {
-		return nil, fmt.Errorf("API error: status %d", resp.StatusCode)
+		return nil, fmt.Errorf("API error: status %d", resp.StatusCode())
 	}
 
 	var createdUser User
@@ -159,7 +159,7 @@ func (c *APIClient) UpdateUser(ctx context.Context, userID int, user *User) (*Us
 	}
 
 	if !resp.IsSuccess() {
-		return nil, fmt.Errorf("API error: status %d", resp.StatusCode)
+		return nil, fmt.Errorf("API error: status %d", resp.StatusCode())
 	}
 
 	var updatedUser User
@@ -188,7 +188,7 @@ func (c *APIClient) DeleteUser(ctx context.Context, userID int) error {
 	}
 
 	if !resp.IsSuccess() {
-		return fmt.Errorf("API error: status %d", resp.StatusCode)
+		return fmt.Errorf("API error: status %d", resp.StatusCode())
 	}
 
 	return nil
@@ -213,7 +213,7 @@ func (c *APIClient) SearchUsers(ctx context.Context, query string) ([]User, erro
 	}
 
 	if !resp.IsSuccess() {
-		return nil, fmt.Errorf("API error: status %d", resp.StatusCode)
+		return nil, fmt.Errorf("API error: status %d", resp.StatusCode())
 	}
 
 	// Try to parse as array first (real API)

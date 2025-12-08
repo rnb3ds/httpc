@@ -10,6 +10,62 @@ import (
 // CONFIGURATION TESTS - Config validation, presets, TLS versions
 // ============================================================================
 
+// ----------------------------------------------------------------------------
+// Config Presets
+// ----------------------------------------------------------------------------
+
+func TestConfig_Presets(t *testing.T) {
+	t.Run("NewSecure", func(t *testing.T) {
+		client, err := NewSecure()
+		if err != nil {
+			t.Fatalf("NewSecure failed: %v", err)
+		}
+		defer client.Close()
+		if client == nil {
+			t.Fatal("Client should not be nil")
+		}
+	})
+
+	t.Run("NewPerformance", func(t *testing.T) {
+		client, err := NewPerformance()
+		if err != nil {
+			t.Fatalf("NewPerformance failed: %v", err)
+		}
+		defer client.Close()
+		if client == nil {
+			t.Fatal("Client should not be nil")
+		}
+	})
+
+	t.Run("NewMinimal", func(t *testing.T) {
+		client, err := NewMinimal()
+		if err != nil {
+			t.Fatalf("NewMinimal failed: %v", err)
+		}
+		defer client.Close()
+		if client == nil {
+			t.Fatal("Client should not be nil")
+		}
+	})
+
+	t.Run("TestingConfig", func(t *testing.T) {
+		cfg := TestingConfig()
+		if cfg.Timeout != 30*time.Second {
+			t.Errorf("Expected timeout 30s, got %v", cfg.Timeout)
+		}
+		if !cfg.AllowPrivateIPs {
+			t.Error("Expected AllowPrivateIPs to be true")
+		}
+		if !cfg.InsecureSkipVerify {
+			t.Error("Expected InsecureSkipVerify to be true for testing")
+		}
+	})
+}
+
+// ----------------------------------------------------------------------------
+// Default Config
+// ----------------------------------------------------------------------------
+
 func TestConfig_Defaults(t *testing.T) {
 	config := DefaultConfig()
 
@@ -227,7 +283,7 @@ func TestConfig_Validation(t *testing.T) {
 	})
 }
 
-func TestConfig_Presets(t *testing.T) {
+func TestConfig_PresetConfigs(t *testing.T) {
 	t.Run("SecureConfig", func(t *testing.T) {
 		config := SecureConfig()
 		if config.MinTLSVersion < tls.VersionTLS12 {

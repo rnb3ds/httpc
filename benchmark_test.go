@@ -281,6 +281,100 @@ func BenchmarkClient_WithHeaders(b *testing.B) {
 }
 
 // ============================================================================
+// RESULT OBJECT BENCHMARKS
+// ============================================================================
+
+func BenchmarkResult_ConvenienceMethods(b *testing.B) {
+	result := &Result{
+		Request: &RequestInfo{
+			Cookies: []*http.Cookie{
+				{Name: "session", Value: "abc123"},
+				{Name: "token", Value: "xyz789"},
+			},
+		},
+		Response: &ResponseInfo{
+			StatusCode: 200,
+			Body:       "test body content",
+			RawBody:    []byte("test body content"),
+			Cookies: []*http.Cookie{
+				{Name: "resp1", Value: "val1"},
+				{Name: "resp2", Value: "val2"},
+			},
+		},
+		Meta: &RequestMeta{
+			Duration: 100 * time.Millisecond,
+			Attempts: 1,
+		},
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = result.Body()
+		_ = result.StatusCode()
+		_ = result.RequestCookies()
+		_ = result.ResponseCookies()
+		_ = result.IsSuccess()
+	}
+}
+
+func BenchmarkResult_CookieAccess(b *testing.B) {
+	result := &Result{
+		Response: &ResponseInfo{
+			Cookies: []*http.Cookie{
+				{Name: "cookie1", Value: "value1"},
+				{Name: "cookie2", Value: "value2"},
+				{Name: "cookie3", Value: "value3"},
+				{Name: "session", Value: "abc123"},
+			},
+		},
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = result.GetCookie("session")
+		_ = result.HasCookie("session")
+	}
+}
+
+func BenchmarkResult_JSON(b *testing.B) {
+	result := &Result{
+		Response: &ResponseInfo{
+			RawBody: []byte(`{"name":"John","age":30,"email":"john@example.com"}`),
+		},
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		var data map[string]interface{}
+		_ = result.JSON(&data)
+	}
+}
+
+func BenchmarkResult_String(b *testing.B) {
+	result := &Result{
+		Response: &ResponseInfo{
+			StatusCode:    200,
+			Status:        "200 OK",
+			ContentLength: 1024,
+			Body:          "test response body",
+		},
+		Meta: &RequestMeta{
+			Duration: 50 * time.Millisecond,
+			Attempts: 1,
+		},
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = result.String()
+	}
+}
+
+// ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
 

@@ -4,25 +4,23 @@ import (
 	"context"
 	"errors"
 	"math"
-	"math/rand"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type RetryEngine struct {
-	config *Config
-	rng    *rand.Rand
-	mu     sync.Mutex
+	config  *Config
+	counter int64 // Atomic counter for jitter variation
 }
 
 func NewRetryEngine(config *Config) *RetryEngine {
 	return &RetryEngine{
-		config: config,
-		rng:    rand.New(rand.NewSource(time.Now().UnixNano())),
+		config:  config,
+		counter: time.Now().UnixNano(),
 	}
 }
 
@@ -61,16 +59,13 @@ func (r *RetryEngine) GetDelayWithResponse(attempt int, resp *Response) time.Dur
 		}
 	}
 
-	const defaultRetryDelay = time.Second
-	const defaultBackoffFactor = 2.0
-
 	delay := r.config.RetryDelay
 	if delay <= 0 {
-		delay = defaultRetryDelay
+		delay = time.Second
 	}
 	backoffFactor := r.config.BackoffFactor
 	if backoffFactor <= 0 {
-		backoffFactor = defaultBackoffFactor
+		backoffFactor = 2.0
 	}
 
 	exponentialDelay := time.Duration(float64(delay) * math.Pow(backoffFactor, float64(attempt)))
@@ -138,9 +133,19 @@ func (r *RetryEngine) getSecureJitter(maxJitter time.Duration) time.Duration {
 		return 0
 	}
 
-	r.mu.Lock()
-	jitter := r.rng.Int63n(int64(maxJitter))
-	r.mu.Unlock()
+	// Use atomic counter with time mixing for lock-free jitter
+	// This provides variation without mutex contention
+	count := atomic.AddInt64(&r.counter, 1)
+	nanos := time.Now().UnixNano()
+
+	// Mix counter and time for better distribution
+	mixed := (count ^ nanos) * 1103515245
+	mixed = (mixed ^ (mixed >> 30)) * 1664525
+
+	jitter := mixed % int64(maxJitter)
+	if jitter < 0 {
+		jitter = -jitter
+	}
 
 	return time.Duration(jitter)
 }

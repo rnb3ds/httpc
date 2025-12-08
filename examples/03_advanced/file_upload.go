@@ -52,7 +52,7 @@ func demonstrateSingleFile() {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Printf("File uploaded: document.txt (%d bytes)\n\n", len(fileContent))
 }
 
@@ -92,7 +92,7 @@ func demonstrateMultipleFiles() {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Printf("Files uploaded:\n")
 	fmt.Printf("  - report.pdf (%d bytes)\n", len(pdfContent))
 	fmt.Printf("  - preview.jpg (%d bytes)\n\n", len(jpegContent))
@@ -137,7 +137,7 @@ func demonstrateFileWithFields() {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Printf("Uploaded with metadata:\n")
 	fmt.Printf("  Title: %s\n", formData.Fields["title"])
 	fmt.Printf("  Description: %s\n", formData.Fields["description"])
@@ -190,7 +190,7 @@ func demonstrateFileWithContentType() {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Println("Files with explicit content types uploaded successfully")
 	fmt.Println("Common MIME types:")
 	fmt.Println("  - application/pdf, application/json, application/xml")
@@ -225,7 +225,7 @@ func demonstrateLargeFile() {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Printf("Large file uploaded: %d bytes\n", len(largeFileContent))
-	fmt.Printf("Upload duration: %v\n\n", resp.Duration)
+	fmt.Printf("Upload duration: %v\n\n", resp.Meta.Duration)
 }

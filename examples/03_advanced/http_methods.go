@@ -1,4 +1,4 @@
-//go:build examples
+﻿//go:build examples
 
 package main
 
@@ -55,7 +55,7 @@ func demonstrateGET(client httpc.Client) {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Println("Use case: Retrieve user data, list resources, search\n ")
 }
 
@@ -78,7 +78,7 @@ func demonstratePOST(client httpc.Client) {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Println("Use case: Create new user, submit form, upload data\n ")
 }
 
@@ -103,7 +103,7 @@ func demonstratePUT(client httpc.Client) {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Println("Use case: Replace entire resource, full update")
 	fmt.Println("Note: PUT replaces the entire resource\n ")
 }
@@ -127,7 +127,7 @@ func demonstratePATCH(client httpc.Client) {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Println("Use case: Update specific fields, partial modification")
 	fmt.Println("Note: PATCH only updates specified fields\n ")
 }
@@ -145,9 +145,9 @@ func demonstrateDELETE(client httpc.Client) {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 	if resp.IsSuccess() {
-		fmt.Println("✓ Resource deleted successfully")
+		fmt.Println("Resource deleted successfully")
 	}
 	fmt.Println("Use case: Delete user, remove resource, cancel subscription\n ")
 }
@@ -162,10 +162,10 @@ func demonstrateHEAD(client httpc.Client) {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
-	fmt.Printf("Content-Length: %d\n", resp.ContentLength)
-	fmt.Printf("Content-Type: %s\n", resp.Headers.Get("Content-Type"))
-	fmt.Printf("Last-Modified: %s\n", resp.Headers.Get("Last-Modified"))
+	fmt.Printf("Status: %d\n", resp.StatusCode())
+	fmt.Printf("Content-Length: %d\n", resp.Response.ContentLength)
+	fmt.Printf("Content-Type: %s\n", resp.Response.Headers.Get("Content-Type"))
+	fmt.Printf("Last-Modified: %s\n", resp.Response.Headers.Get("Last-Modified"))
 	fmt.Println("Use case: Check file size, verify resource exists, get metadata")
 	fmt.Println("Note: HEAD returns headers only, no body\n ")
 }
@@ -180,9 +180,9 @@ func demonstrateOPTIONS(client httpc.Client) {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
-	fmt.Printf("Allow: %s\n", resp.Headers.Get("Allow"))
-	fmt.Printf("Access-Control-Allow-Methods: %s\n", resp.Headers.Get("Access-Control-Allow-Methods"))
+	fmt.Printf("Status: %d\n", resp.StatusCode())
+	fmt.Printf("Allow: %s\n", resp.Response.Headers.Get("Allow"))
+	fmt.Printf("Access-Control-Allow-Methods: %s\n", resp.Response.Headers.Get("Access-Control-Allow-Methods"))
 	fmt.Println("Use case: CORS preflight, discover allowed methods")
 	fmt.Println("Note: OPTIONS returns allowed HTTP methods\n ")
 }

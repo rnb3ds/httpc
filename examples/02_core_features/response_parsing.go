@@ -1,4 +1,4 @@
-//go:build examples
+﻿//go:build examples
 
 package main
 
@@ -99,8 +99,8 @@ func demonstrateXMLParsing(client httpc.Client) {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
-	fmt.Printf("Content-Type: %s\n", resp.Headers.Get("Content-Type"))
+	fmt.Printf("Status: %d\n", resp.StatusCode())
+	fmt.Printf("Content-Type: %s\n", resp.Response.Headers.Get("Content-Type"))
 	fmt.Printf("XML sent successfully\n\n")
 }
 
@@ -114,8 +114,8 @@ func demonstrateStatusChecking(client httpc.Client) {
 		return
 	}
 
-	fmt.Printf("Status Code: %d\n", resp.StatusCode)
-	fmt.Printf("Status Text: %s\n", resp.Status)
+	fmt.Printf("Status Code: %d\n", resp.StatusCode())
+	fmt.Printf("Status Text: %s\n", resp.Response.Status)
 	fmt.Printf("Is Success (2xx): %v\n", resp.IsSuccess())
 	fmt.Printf("Is Redirect (3xx): %v\n", resp.IsRedirect())
 	fmt.Printf("Is Client Error (4xx): %v\n", resp.IsClientError())
@@ -123,11 +123,11 @@ func demonstrateStatusChecking(client httpc.Client) {
 
 	// Practical status checking
 	if resp.IsSuccess() {
-		fmt.Println("✓ Request successful, safe to process response\n ")
+		fmt.Println("Request successful, safe to process response\n ")
 	} else if resp.IsClientError() {
-		fmt.Println("✗ Client error - check request parameters\n ")
+		fmt.Println("Client error - check request parameters\n ")
 	} else if resp.IsServerError() {
-		fmt.Println("✗ Server error - retry may help\n ")
+		fmt.Println("Server error - retry may help\n ")
 	}
 }
 
@@ -144,21 +144,21 @@ func demonstrateHeaderAccess(client httpc.Client) {
 	}
 
 	// Method 1: Direct map access (case-sensitive)
-	contentType := resp.Headers["Content-Type"]
+	contentType := resp.Response.Headers["Content-Type"]
 	fmt.Printf("Content-Type (direct): %s\n", contentType)
 
 	// Method 2: Get method (case-insensitive, recommended)
-	contentType2 := resp.Headers.Get("content-type")
+	contentType2 := resp.Response.Headers.Get("content-type")
 	fmt.Printf("Content-Type (Get): %s\n", contentType2)
 
 	// Check if header exists
-	if date := resp.Headers.Get("Date"); date != "" {
+	if date := resp.Response.Headers.Get("Date"); date != "" {
 		fmt.Printf("Date: %s\n", date)
 	}
 
 	// Iterate all headers
 	fmt.Println("\nAll response headers:")
-	for key, value := range resp.Headers {
+	for key, value := range resp.Response.Headers {
 		fmt.Printf("  %s: %s\n", key, value)
 	}
 	fmt.Println()
@@ -177,21 +177,21 @@ func demonstrateResponseMetadata(client httpc.Client) {
 		return
 	}
 
-	fmt.Printf("Status Code: %d\n", resp.StatusCode)
-	fmt.Printf("Status: %s\n", resp.Status)
-	fmt.Printf("Content Length: %d bytes\n", resp.ContentLength)
-	fmt.Printf("Body Length: %d bytes\n", len(resp.Body))
-	fmt.Printf("Duration: %v\n", resp.Duration)
-	fmt.Printf("Attempts: %d\n", resp.Attempts)
-	fmt.Printf("Number of Headers: %d\n", len(resp.Headers))
+	fmt.Printf("Status Code: %d\n", resp.StatusCode())
+	fmt.Printf("Status: %s\n", resp.Response.Status)
+	fmt.Printf("Content Length: %d bytes\n", resp.Response.ContentLength)
+	fmt.Printf("Body Length: %d bytes\n", len(resp.Body()))
+	fmt.Printf("Duration: %v\n", resp.Meta.Duration)
+	fmt.Printf("Attempts: %d\n", resp.Meta.Attempts)
+	fmt.Printf("Number of Headers: %d\n", len(resp.Response.Headers))
 
 	// Access raw body ([]byte)
-	fmt.Printf("Raw Body Length: %d bytes\n", len(resp.RawBody))
+	fmt.Printf("Raw Body Length: %d bytes\n", len(resp.Response.RawBody))
 
 	// Access body as string
-	if len(resp.Body) > 100 {
-		fmt.Printf("Body Preview: %s...\n\n", resp.Body[:100])
+	if len(resp.Body()) > 100 {
+		fmt.Printf("Body Preview: %s...\n\n", resp.Body()[:100])
 	} else {
-		fmt.Printf("Body: %s\n\n", resp.Body)
+		fmt.Printf("Body: %s\n\n", resp.Body())
 	}
 }

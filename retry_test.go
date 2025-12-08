@@ -84,8 +84,8 @@ func TestRetry_Behavior(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
-		if resp.StatusCode != http.StatusInternalServerError {
-			t.Errorf("Expected status 500, got %d", resp.StatusCode)
+		if resp.StatusCode() != http.StatusInternalServerError {
+			t.Errorf("Expected status 500, got %d", resp.StatusCode())
 		}
 		if atomic.LoadInt32(&attemptCount) != 3 {
 			t.Errorf("Expected 3 attempts (1 + 2 retries), got %d", atomic.LoadInt32(&attemptCount))
@@ -110,8 +110,8 @@ func TestRetry_Behavior(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
-		if resp.StatusCode != http.StatusInternalServerError {
-			t.Errorf("Expected status 500, got %d", resp.StatusCode)
+		if resp.StatusCode() != http.StatusInternalServerError {
+			t.Errorf("Expected status 500, got %d", resp.StatusCode())
 		}
 		if atomic.LoadInt32(&attemptCount) != 1 {
 			t.Errorf("Expected 1 attempt, got %d", atomic.LoadInt32(&attemptCount))
@@ -149,8 +149,8 @@ func TestRetry_StatusCodes(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Request failed: %v", err)
 				}
-				if resp.StatusCode != status {
-					t.Errorf("Expected status %d, got %d", status, resp.StatusCode)
+				if resp.StatusCode() != status {
+					t.Errorf("Expected status %d, got %d", status, resp.StatusCode())
 				}
 				if atomic.LoadInt32(&attemptCount) < 2 {
 					t.Errorf("Expected at least 2 attempts for status %d, got %d", status, atomic.LoadInt32(&attemptCount))
@@ -191,8 +191,8 @@ func TestRetry_StatusCodes(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Request failed: %v", err)
 				}
-				if resp.StatusCode != status {
-					t.Errorf("Expected status %d, got %d", status, resp.StatusCode)
+				if resp.StatusCode() != status {
+					t.Errorf("Expected status %d, got %d", status, resp.StatusCode())
 				}
 				if atomic.LoadInt32(&attemptCount) != 1 {
 					t.Errorf("Expected 1 attempt for status %d, got %d", status, atomic.LoadInt32(&attemptCount))
@@ -228,8 +228,8 @@ func TestRetry_Backoff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)
 	}
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Errorf("Expected status 500, got %d", resp.StatusCode)
+	if resp.StatusCode() != http.StatusInternalServerError {
+		t.Errorf("Expected status 500, got %d", resp.StatusCode())
 	}
 
 	mu.Lock()

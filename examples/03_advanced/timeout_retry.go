@@ -51,8 +51,8 @@ func demonstrateBasicTimeout() {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
-	fmt.Printf("Duration: %v\n", resp.Duration)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
+	fmt.Printf("Duration: %v\n", resp.Meta.Duration)
 	fmt.Printf("Timeout was set to: 10s\n\n")
 }
 
@@ -78,8 +78,8 @@ func demonstrateContextTimeout() {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
-	fmt.Printf("Duration: %v\n", resp.Duration)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
+	fmt.Printf("Duration: %v\n", resp.Meta.Duration)
 	fmt.Printf("Context timeout was: 5s\n\n")
 }
 
@@ -103,10 +103,10 @@ func demonstrateRetry() {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
-	fmt.Printf("Attempts: %d\n", resp.Attempts)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
+	fmt.Printf("Attempts: %d\n", resp.Meta.Attempts)
 	fmt.Printf("Max Retries: 3\n")
-	fmt.Printf("Duration: %v\n\n", resp.Duration)
+	fmt.Printf("Duration: %v\n\n", resp.Meta.Duration)
 }
 
 // demonstrateCombined shows combined timeout and retry
@@ -134,9 +134,9 @@ func demonstrateCombined() {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
-	fmt.Printf("Attempts: %d\n", resp.Attempts)
-	fmt.Printf("Duration: %v\n", resp.Duration)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
+	fmt.Printf("Attempts: %d\n", resp.Meta.Attempts)
+	fmt.Printf("Duration: %v\n", resp.Meta.Duration)
 	fmt.Printf("Configuration:\n")
 	fmt.Printf("  - Context timeout: 30s\n")
 	fmt.Printf("  - Request timeout: 10s\n")
@@ -164,7 +164,7 @@ func demonstrateNoRetry() {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
-	fmt.Printf("Attempts: %d (no retries)\n", resp.Attempts)
-	fmt.Printf("Duration: %v\n\n", resp.Duration)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
+	fmt.Printf("Attempts: %d (no retries)\n", resp.Meta.Attempts)
+	fmt.Printf("Duration: %v\n\n", resp.Meta.Duration)
 }

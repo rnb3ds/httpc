@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"compress/flate"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +23,9 @@ func (p *ResponseProcessor) Process(httpResp *http.Response) (*Response, error) 
 		return nil, fmt.Errorf("HTTP response is nil")
 	}
 
+	// Check if response was compressed
+	wasCompressed := httpResp.Header.Get("Content-Encoding") != ""
+
 	body, err := p.readBody(httpResp)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
@@ -28,11 +33,18 @@ func (p *ResponseProcessor) Process(httpResp *http.Response) (*Response, error) 
 
 	contentLength := httpResp.ContentLength
 
-	if contentLength > 0 && contentLength != int64(len(body)) {
+	// Only validate content-length if response was not compressed
+	// For compressed responses, Content-Length refers to compressed size, not decompressed
+	if !wasCompressed && contentLength > 0 && contentLength != int64(len(body)) {
 		isHeadRequest := httpResp.Request != nil && httpResp.Request.Method == "HEAD"
 		if !isHeadRequest && p.config.StrictContentLength {
 			return nil, fmt.Errorf("content-length mismatch: expected %d, got %d", contentLength, len(body))
 		}
+	}
+
+	// For compressed responses, update content length to reflect decompressed size
+	if wasCompressed {
+		contentLength = int64(len(body))
 	}
 
 	// Shallow copy headers - they won't be modified
@@ -58,10 +70,20 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 	maxSize := p.config.MaxResponseBodySize
 	var reader io.Reader = httpResp.Body
 
+	// Detect and decompress based on Content-Encoding header
+	encoding := httpResp.Header.Get("Content-Encoding")
+	if encoding != "" {
+		var err error
+		reader, err = p.createDecompressor(reader, encoding)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create decompressor for %s: %w", encoding, err)
+		}
+	}
+
 	// Apply size limit if configured
 	if maxSize > 0 {
 		// Read one extra byte to detect size violations
-		reader = io.LimitReader(httpResp.Body, maxSize+1)
+		reader = io.LimitReader(reader, maxSize+1)
 	}
 
 	body, err := io.ReadAll(reader)
@@ -75,4 +97,26 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 	}
 
 	return body, nil
+}
+
+// createDecompressor creates an appropriate decompressor based on the encoding type.
+// Supports gzip and deflate encodings.
+func (p *ResponseProcessor) createDecompressor(reader io.Reader, encoding string) (io.Reader, error) {
+	switch encoding {
+	case "gzip":
+		gzipReader, err := gzip.NewReader(reader)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create gzip reader: %w", err)
+		}
+		return gzipReader, nil
+
+	case "deflate":
+		return flate.NewReader(reader), nil
+
+	case "br":
+		return nil, fmt.Errorf("brotli decompression not supported (stdlib only, no external dependencies)")
+
+	default:
+		return reader, nil
+	}
 }

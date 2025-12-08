@@ -11,7 +11,8 @@ import (
 )
 
 // ============================================================================
-// DATA HANDLING TESTS - JSON, XML, multipart, cookies
+// DATA HANDLING TESTS - JSON, XML, multipart, form data
+// Consolidates: data_handling_test.go
 // ============================================================================
 
 type TestData struct {
@@ -19,7 +20,11 @@ type TestData struct {
 	Code    int    `json:"code" xml:"code"`
 }
 
-func TestJSON_Handling(t *testing.T) {
+// ----------------------------------------------------------------------------
+// JSON Handling
+// ----------------------------------------------------------------------------
+
+func TestData_JSON(t *testing.T) {
 	t.Run("SendJSON", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("Content-Type") != "application/json" {
@@ -115,7 +120,11 @@ func TestJSON_Handling(t *testing.T) {
 	})
 }
 
-func TestXML_Handling(t *testing.T) {
+// ----------------------------------------------------------------------------
+// XML Handling
+// ----------------------------------------------------------------------------
+
+func TestData_XML(t *testing.T) {
 	t.Run("SendXML", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("Content-Type") != "application/xml" {
@@ -163,7 +172,11 @@ func TestXML_Handling(t *testing.T) {
 	})
 }
 
-func TestMultipart_Handling(t *testing.T) {
+// ----------------------------------------------------------------------------
+// Multipart Form Data
+// ----------------------------------------------------------------------------
+
+func TestData_Multipart(t *testing.T) {
 	t.Run("SingleFile", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
@@ -291,74 +304,50 @@ func TestMultipart_Handling(t *testing.T) {
 	})
 }
 
-func TestCookies_Handling(t *testing.T) {
-	t.Run("BasicCookies", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			http.SetCookie(w, &http.Cookie{
-				Name:  "session",
-				Value: "abc123",
-			})
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
+// ----------------------------------------------------------------------------
+// Cookie Jar Persistence
+// ----------------------------------------------------------------------------
 
-		config := DefaultConfig()
-		config.EnableCookies = true
-		config.AllowPrivateIPs = true
-		client, _ := New(config)
-		defer client.Close()
-
-		resp, err := client.Get(server.URL)
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-
-		cookies := resp.Cookies
-		if len(cookies) != 1 {
-			t.Errorf("Expected 1 cookie, got %d", len(cookies))
-		}
-		if cookies[0].Name != "session" || cookies[0].Value != "abc123" {
-			t.Error("Cookie values don't match")
-		}
-	})
-
-	t.Run("CookiePersistence", func(t *testing.T) {
-		requestCount := 0
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			requestCount++
-			if requestCount == 1 {
-				http.SetCookie(w, &http.Cookie{Name: "session", Value: "abc123"})
-			} else {
-				cookie, err := r.Cookie("session")
-				if err != nil || cookie.Value != "abc123" {
-					t.Error("Cookie not persisted across requests")
-				}
+func TestData_CookiePersistence(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			http.SetCookie(w, &http.Cookie{Name: "session", Value: "abc123"})
+		} else {
+			cookie, err := r.Cookie("session")
+			if err != nil || cookie.Value != "abc123" {
+				t.Error("Cookie not persisted across requests")
 			}
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
-		config := DefaultConfig()
-		config.EnableCookies = true
-		config.AllowPrivateIPs = true
-		client, _ := New(config)
-		defer client.Close()
-
-		// First request sets cookie
-		_, err := client.Get(server.URL)
-		if err != nil {
-			t.Fatalf("First request failed: %v", err)
 		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
 
-		// Second request should send cookie
-		_, err = client.Get(server.URL)
-		if err != nil {
-			t.Fatalf("Second request failed: %v", err)
-		}
-	})
+	config := DefaultConfig()
+	config.EnableCookies = true
+	config.AllowPrivateIPs = true
+	client, _ := New(config)
+	defer client.Close()
+
+	// First request sets cookie
+	_, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("First request failed: %v", err)
+	}
+
+	// Second request should send cookie
+	_, err = client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("Second request failed: %v", err)
+	}
 }
 
-func TestFormData_URLEncoded(t *testing.T) {
+// ----------------------------------------------------------------------------
+// Form URL Encoded
+// ----------------------------------------------------------------------------
+
+func TestData_FormURLEncoded(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Content-Type") != "application/x-www-form-urlencoded" {
 			t.Error("Expected Content-Type: application/x-www-form-urlencoded")
