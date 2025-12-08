@@ -371,42 +371,35 @@ const (
 	maxCookiePathLen   = 1024
 )
 
-func WithCookie(cookie *http.Cookie) RequestOption {
+func WithCookie(cookie http.Cookie) RequestOption {
 	return func(r *Request) error {
-		if cookie == nil {
-			return fmt.Errorf("cookie cannot be nil")
-		}
-
-		if err := validateCookie(cookie); err != nil {
+		if err := validateCookie(&cookie); err != nil {
 			return fmt.Errorf("invalid cookie: %w", err)
 		}
 
 		if r.Cookies == nil {
-			r.Cookies = make([]*http.Cookie, 0, 1)
+			r.Cookies = make([]http.Cookie, 0, 1)
 		}
 		r.Cookies = append(r.Cookies, cookie)
 		return nil
 	}
 }
 
-func WithCookies(cookies []*http.Cookie) RequestOption {
+func WithCookies(cookies []http.Cookie) RequestOption {
 	return func(r *Request) error {
 		if len(cookies) == 0 {
 			return nil
 		}
 
 		if r.Cookies == nil {
-			r.Cookies = make([]*http.Cookie, 0, len(cookies))
+			r.Cookies = make([]http.Cookie, 0, len(cookies))
 		}
 
-		for i, cookie := range cookies {
-			if cookie == nil {
-				return fmt.Errorf("cookie at index %d is nil", i)
-			}
-			if err := validateCookie(cookie); err != nil {
+		for i := range cookies {
+			if err := validateCookie(&cookies[i]); err != nil {
 				return fmt.Errorf("invalid cookie at index %d: %w", i, err)
 			}
-			r.Cookies = append(r.Cookies, cookie)
+			r.Cookies = append(r.Cookies, cookies[i])
 		}
 		return nil
 	}
@@ -414,11 +407,12 @@ func WithCookies(cookies []*http.Cookie) RequestOption {
 
 // WithCookieValue adds a cookie with the given name and value to the request.
 // The cookie is created with secure defaults: HttpOnly=true, SameSite=Lax.
+// The domain should be set explicitly using WithCookie if needed.
 // For HTTPS requests, consider using WithCookie with Secure=true.
 // Returns an error if name is empty or contains invalid characters.
 func WithCookieValue(name, value string) RequestOption {
 	return func(r *Request) error {
-		cookie := &http.Cookie{
+		cookie := http.Cookie{
 			Name:     name,
 			Value:    value,
 			HttpOnly: true,
@@ -426,12 +420,12 @@ func WithCookieValue(name, value string) RequestOption {
 			SameSite: http.SameSiteLaxMode,
 		}
 
-		if err := validateCookie(cookie); err != nil {
+		if err := validateCookie(&cookie); err != nil {
 			return err
 		}
 
 		if r.Cookies == nil {
-			r.Cookies = make([]*http.Cookie, 0, 1)
+			r.Cookies = make([]http.Cookie, 0, 1)
 		}
 		r.Cookies = append(r.Cookies, cookie)
 		return nil
@@ -450,7 +444,7 @@ func WithCookieValue(name, value string) RequestOption {
 func WithCookieString(cookieString string) RequestOption {
 	return func(r *Request) error {
 		if cookieString == "" {
-			return nil // Empty string is valid, just no cookies to add
+			return nil
 		}
 
 		cookies, err := parseCookieString(cookieString)
@@ -463,14 +457,14 @@ func WithCookieString(cookieString string) RequestOption {
 		}
 
 		if r.Cookies == nil {
-			r.Cookies = make([]*http.Cookie, 0, len(cookies))
+			r.Cookies = make([]http.Cookie, 0, len(cookies))
 		}
 
-		for _, cookie := range cookies {
-			if err := validateCookie(cookie); err != nil {
-				return fmt.Errorf("invalid cookie %s: %w", cookie.Name, err)
+		for i := range cookies {
+			if err := validateCookie(&cookies[i]); err != nil {
+				return fmt.Errorf("invalid cookie %s: %w", cookies[i].Name, err)
 			}
-			r.Cookies = append(r.Cookies, cookie)
+			r.Cookies = append(r.Cookies, cookies[i])
 		}
 
 		return nil
@@ -485,7 +479,7 @@ func validateCredential(cred string, maxLen int, checkColon bool) error {
 
 	for i := range credLen {
 		c := cred[i]
-		if c == '\r' || c == '\n' || c == 0 || (checkColon && c == ':') {
+		if c < 0x20 || c == 0x7F || (checkColon && c == ':') {
 			return fmt.Errorf("contains invalid characters")
 		}
 	}
@@ -500,7 +494,7 @@ func validateToken(token string) error {
 
 	for i := range tokenLen {
 		c := token[i]
-		if c == '\r' || c == '\n' || c == 0 {
+		if c < 0x20 || c == 0x7F {
 			return fmt.Errorf("token contains invalid characters")
 		}
 	}
@@ -508,17 +502,17 @@ func validateToken(token string) error {
 }
 
 func validateQueryKey(key string) error {
-	if key == "" {
+	keyLen := len(key)
+	if keyLen == 0 {
 		return fmt.Errorf("query key cannot be empty")
 	}
-	keyLen := len(key)
 	if keyLen > maxKeyLen {
 		return fmt.Errorf("query key too long (max %d)", maxKeyLen)
 	}
 
 	for i := range keyLen {
 		c := key[i]
-		if c == '\r' || c == '\n' || c == 0 || c == '&' || c == '=' {
+		if c < 0x20 || c == 0x7F || c == '&' || c == '=' {
 			return fmt.Errorf("query key contains invalid characters")
 		}
 	}
@@ -533,7 +527,7 @@ func validateFieldName(name string) error {
 
 	for i := range nameLen {
 		c := name[i]
-		if c == '\r' || c == '\n' || c == 0 || c == '"' || c == '\'' || c == '<' || c == '>' || c == '&' {
+		if c < 0x20 || c == 0x7F || c == '"' || c == '\'' || c == '<' || c == '>' || c == '&' {
 			return fmt.Errorf("contains invalid characters")
 		}
 	}
@@ -541,17 +535,17 @@ func validateFieldName(name string) error {
 }
 
 func validateCookie(cookie *http.Cookie) error {
-	if cookie.Name == "" {
+	nameLen := len(cookie.Name)
+	if nameLen == 0 {
 		return fmt.Errorf("cookie name cannot be empty")
 	}
-	nameLen := len(cookie.Name)
 	if nameLen > maxCookieNameLen {
 		return fmt.Errorf("cookie name too long (max %d)", maxCookieNameLen)
 	}
 
 	for i := range nameLen {
 		c := cookie.Name[i]
-		if c == '\r' || c == '\n' || c == 0 || c == ';' || c == ',' {
+		if c < 0x20 || c == 0x7F || c == ';' || c == ',' {
 			return fmt.Errorf("cookie name contains invalid characters")
 		}
 	}
@@ -563,7 +557,7 @@ func validateCookie(cookie *http.Cookie) error {
 
 	for i := range valueLen {
 		c := cookie.Value[i]
-		if c == '\r' || c == '\n' || c == 0 {
+		if c < 0x20 || c == 0x7F {
 			return fmt.Errorf("cookie value contains invalid characters")
 		}
 	}
@@ -578,7 +572,7 @@ func validateCookie(cookie *http.Cookie) error {
 		}
 		for i := range domainLen {
 			c := cookie.Domain[i]
-			if c == '\r' || c == '\n' || c == 0 || c == ';' || c == ',' {
+			if c < 0x20 || c == 0x7F || c == ';' || c == ',' {
 				return fmt.Errorf("cookie domain contains invalid characters")
 			}
 		}
@@ -594,7 +588,7 @@ func validateCookie(cookie *http.Cookie) error {
 		}
 		for i := range pathLen {
 			c := cookie.Path[i]
-			if c == '\r' || c == '\n' || c == 0 || c == ';' {
+			if c < 0x20 || c == 0x7F || c == ';' {
 				return fmt.Errorf("cookie path contains invalid characters")
 			}
 		}
@@ -602,47 +596,43 @@ func validateCookie(cookie *http.Cookie) error {
 	return nil
 }
 
-// parseCookieString parses a cookie string in the format "name1=value1; name2=value2"
-// and returns a slice of http.Cookie objects with secure defaults.
-func parseCookieString(cookieString string) ([]*http.Cookie, error) {
+// parseCookieString parses a cookie string and returns http.Cookie objects with secure defaults.
+// Optimized to minimize allocations.
+func parseCookieString(cookieString string) ([]http.Cookie, error) {
 	if cookieString == "" {
 		return nil, nil
 	}
 
-	// Split by semicolon to get individual cookie pairs
-	pairs := strings.Split(cookieString, ";")
-	cookies := make([]*http.Cookie, 0, len(pairs))
+	cookies := make([]http.Cookie, 0, 4)
+	start := 0
 
-	for _, pair := range pairs {
-		// Trim whitespace from each pair
-		pair = strings.TrimSpace(pair)
-		if pair == "" {
-			continue // Skip empty pairs
+	for i := 0; i <= len(cookieString); i++ {
+		if i == len(cookieString) || cookieString[i] == ';' {
+			pair := trimSpace(cookieString[start:i])
+
+			if pair != "" {
+				idx := strings.IndexByte(pair, '=')
+				if idx == -1 {
+					return nil, fmt.Errorf("malformed cookie pair: %s (missing '=')", pair)
+				}
+
+				name := trimSpaceRight(pair[:idx])
+				value := trimSpaceLeft(pair[idx+1:])
+
+				if name == "" {
+					return nil, fmt.Errorf("empty cookie name in pair: %s", pair)
+				}
+
+				cookies = append(cookies, http.Cookie{
+					Name:     name,
+					Value:    value,
+					HttpOnly: true,
+					Secure:   false,
+					SameSite: http.SameSiteLaxMode,
+				})
+			}
+			start = i + 1
 		}
-
-		// Find the first equals sign to split name and value
-		eqIndex := strings.Index(pair, "=")
-		if eqIndex == -1 {
-			return nil, fmt.Errorf("malformed cookie pair: %s (missing '=')", pair)
-		}
-
-		name := strings.TrimSpace(pair[:eqIndex])
-		value := strings.TrimSpace(pair[eqIndex+1:])
-
-		if name == "" {
-			return nil, fmt.Errorf("empty cookie name in pair: %s", pair)
-		}
-
-		// Create cookie with secure defaults
-		cookie := &http.Cookie{
-			Name:     name,
-			Value:    value,
-			HttpOnly: true,
-			Secure:   false,
-			SameSite: http.SameSiteLaxMode,
-		}
-
-		cookies = append(cookies, cookie)
 	}
 
 	return cookies, nil

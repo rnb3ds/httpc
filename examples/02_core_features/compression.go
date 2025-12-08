@@ -1,4 +1,4 @@
-//go:build examples
+﻿//go:build examples
 
 package main
 
@@ -24,10 +24,10 @@ func main() {
 		log.Fatalf("Request failed: %v", err)
 	}
 
-	fmt.Printf("   Status: %d\n", resp.StatusCode)
-	fmt.Printf("   Content-Encoding: %s\n", resp.Headers.Get("Content-Encoding"))
-	fmt.Printf("   Decompressed body length: %d bytes\n", len(resp.Body))
-	fmt.Printf("   Body preview: %.100s...\n\n", resp.Body)
+	fmt.Printf("   Status: %d\n", resp.StatusCode())
+	fmt.Printf("   Content-Encoding: %s\n", resp.Response.Headers.Get("Content-Encoding"))
+	fmt.Printf("   Decompressed body length: %d bytes\n", len(resp.Body()))
+	fmt.Printf("   Body preview: %.100s...\n\n", resp.Body())
 
 	// Example 2: Deflate decompression
 	// Note: Some servers may not properly support deflate encoding
@@ -37,10 +37,10 @@ func main() {
 		log.Fatalf("Request failed: %v", err)
 	}
 
-	fmt.Printf("   Status: %d\n", resp2.StatusCode)
-	fmt.Printf("   Content-Encoding: %s\n", resp2.Headers.Get("Content-Encoding"))
-	fmt.Printf("   Decompressed body length: %d bytes\n", len(resp2.Body))
-	fmt.Printf("   Body preview: %.100s...\n\n", resp2.Body)
+	fmt.Printf("   Status: %d\n", resp2.StatusCode())
+	fmt.Printf("   Content-Encoding: %s\n", resp2.Response.Headers.Get("Content-Encoding"))
+	fmt.Printf("   Decompressed body length: %d bytes\n", len(resp2.Body()))
+	fmt.Printf("   Body preview: %.100s...\n\n", resp2.Body())
 
 	// Example 3: Without compression
 	fmt.Println("3. Without compression (no Accept-Encoding header):")
@@ -49,12 +49,12 @@ func main() {
 		log.Fatalf("Request failed: %v", err)
 	}
 
-	fmt.Printf("   Status: %d\n", resp3.StatusCode)
-	fmt.Printf("   Content-Encoding: %s\n", resp3.Headers.Get("Content-Encoding"))
-	fmt.Printf("   Body length: %d bytes\n", len(resp3.Body))
-	fmt.Printf("   Body preview: %.100s...\n\n", resp3.Body)
+	fmt.Printf("   Status: %d\n", resp3.StatusCode())
+	fmt.Printf("   Content-Encoding: %s\n", resp3.Response.Headers.Get("Content-Encoding"))
+	fmt.Printf("   Body length: %d bytes\n", len(resp3.Body()))
+	fmt.Printf("   Body preview: %.100s...\n\n", resp3.Body())
 
-	fmt.Println("\n✓ All compression examples completed successfully!")
+	fmt.Println("\n[OK] All compression examples completed successfully!")
 	fmt.Println("\nNote:")
 	fmt.Println("  - The library automatically detects and decompresses gzip and deflate responses")
 	fmt.Println("  - Decompression is based on the Content-Encoding header")

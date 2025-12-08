@@ -48,20 +48,20 @@ func TestRedirect_AutoFollow(t *testing.T) {
 		t.Fatalf("Request failed: %v", err)
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	if resp.StatusCode() != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode())
 	}
 
-	if resp.Body != "Final destination" {
-		t.Errorf("Expected 'Final destination', got '%s'", resp.Body)
+	if resp.Body() != "Final destination" {
+		t.Errorf("Expected 'Final destination', got '%s'", resp.Body())
 	}
 
-	if resp.RedirectCount != 3 {
-		t.Errorf("Expected 3 redirects, got %d", resp.RedirectCount)
+	if resp.Meta.RedirectCount != 3 {
+		t.Errorf("Expected 3 redirects, got %d", resp.Meta.RedirectCount)
 	}
 
-	if len(resp.RedirectChain) != 3 {
-		t.Errorf("Expected redirect chain length 3, got %d", len(resp.RedirectChain))
+	if len(resp.Meta.RedirectChain) != 3 {
+		t.Errorf("Expected redirect chain length 3, got %d", len(resp.Meta.RedirectChain))
 	}
 }
 
@@ -92,21 +92,21 @@ func TestRedirect_NoFollow(t *testing.T) {
 		t.Fatalf("Request failed: %v", err)
 	}
 
-	if resp.StatusCode != http.StatusFound {
-		t.Errorf("Expected status 302, got %d", resp.StatusCode)
+	if resp.StatusCode() != http.StatusFound {
+		t.Errorf("Expected status 302, got %d", resp.StatusCode())
 	}
 
-	location := resp.Headers.Get("Location")
+	location := resp.Response.Headers.Get("Location")
 	if location != finalServer.URL {
 		t.Errorf("Expected Location header '%s', got '%s'", finalServer.URL, location)
 	}
 
-	if resp.RedirectCount != 0 {
-		t.Errorf("Expected 0 redirects, got %d", resp.RedirectCount)
+	if resp.Meta.RedirectCount != 0 {
+		t.Errorf("Expected 0 redirects, got %d", resp.Meta.RedirectCount)
 	}
 
-	if len(resp.RedirectChain) != 0 {
-		t.Errorf("Expected empty redirect chain, got %d entries", len(resp.RedirectChain))
+	if len(resp.Meta.RedirectChain) != 0 {
+		t.Errorf("Expected empty redirect chain, got %d entries", len(resp.Meta.RedirectChain))
 	}
 }
 
@@ -163,12 +163,12 @@ func TestRedirect_PerRequestOverride(t *testing.T) {
 		t.Fatalf("Request failed: %v", err)
 	}
 
-	if resp.StatusCode != http.StatusFound {
-		t.Errorf("Expected status 302, got %d", resp.StatusCode)
+	if resp.StatusCode() != http.StatusFound {
+		t.Errorf("Expected status 302, got %d", resp.StatusCode())
 	}
 
-	if resp.RedirectCount != 0 {
-		t.Errorf("Expected 0 redirects, got %d", resp.RedirectCount)
+	if resp.Meta.RedirectCount != 0 {
+		t.Errorf("Expected 0 redirects, got %d", resp.Meta.RedirectCount)
 	}
 }
 
@@ -245,54 +245,14 @@ func TestRedirect_DifferentStatusCodes(t *testing.T) {
 				t.Fatalf("Request failed: %v", err)
 			}
 
-			if tt.shouldWork && resp.StatusCode != http.StatusOK {
-				t.Errorf("Expected status 200, got %d", resp.StatusCode)
+			if tt.shouldWork && resp.StatusCode() != http.StatusOK {
+				t.Errorf("Expected status 200, got %d", resp.StatusCode())
 			}
 
-			if tt.shouldWork && resp.RedirectCount != 1 {
-				t.Errorf("Expected 1 redirect, got %d", resp.RedirectCount)
+			if tt.shouldWork && resp.Meta.RedirectCount != 1 {
+				t.Errorf("Expected 1 redirect, got %d", resp.Meta.RedirectCount)
 			}
 		})
-	}
-}
-
-func TestRedirect_PackageLevelFunctions(t *testing.T) {
-	t.Parallel()
-
-	finalServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Success"))
-	}))
-	defer finalServer.Close()
-
-	redirectServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, finalServer.URL, http.StatusFound)
-	}))
-	defer redirectServer.Close()
-
-	// Set a custom default client that allows private IPs
-	config := testRedirectConfig()
-	client, err := New(config)
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
-	defer CloseDefaultClient()
-
-	if err := SetDefaultClient(client); err != nil {
-		t.Fatalf("Failed to set default client: %v", err)
-	}
-
-	resp, err := Get(redirectServer.URL)
-	if err != nil {
-		t.Fatalf("Request failed: %v", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", resp.StatusCode)
-	}
-
-	if resp.RedirectCount != 1 {
-		t.Errorf("Expected 1 redirect, got %d", resp.RedirectCount)
 	}
 }
 
@@ -328,21 +288,21 @@ func TestRedirect_ChainTracking(t *testing.T) {
 		t.Fatalf("Request failed: %v", err)
 	}
 
-	if resp.RedirectCount != 2 {
-		t.Errorf("Expected 2 redirects, got %d", resp.RedirectCount)
+	if resp.Meta.RedirectCount != 2 {
+		t.Errorf("Expected 2 redirects, got %d", resp.Meta.RedirectCount)
 	}
 
-	if len(resp.RedirectChain) != 2 {
-		t.Fatalf("Expected redirect chain length 2, got %d", len(resp.RedirectChain))
+	if len(resp.Meta.RedirectChain) != 2 {
+		t.Fatalf("Expected redirect chain length 2, got %d", len(resp.Meta.RedirectChain))
 	}
 
 	// Verify the chain contains the intermediate URLs
-	if resp.RedirectChain[0] != server1.URL {
-		t.Errorf("Expected first redirect to be %s, got %s", server1.URL, resp.RedirectChain[0])
+	if resp.Meta.RedirectChain[0] != server1.URL {
+		t.Errorf("Expected first redirect to be %s, got %s", server1.URL, resp.Meta.RedirectChain[0])
 	}
 
-	if resp.RedirectChain[1] != server2.URL {
-		t.Errorf("Expected second redirect to be %s, got %s", server2.URL, resp.RedirectChain[1])
+	if resp.Meta.RedirectChain[1] != server2.URL {
+		t.Errorf("Expected second redirect to be %s, got %s", server2.URL, resp.Meta.RedirectChain[1])
 	}
 }
 

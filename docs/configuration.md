@@ -34,9 +34,11 @@ defer client.Close()
 - MaxTLSVersion: TLS 1.3
 - HTTP/2: Enabled
 - FollowRedirects: true
+- MaxRedirects: 10
 - EnableCookies: false
 - AllowPrivateIPs: false
 - StrictContentLength: true
+- UserAgent: "httpc/1.0"
 
 ## Security Presets
 
@@ -58,10 +60,14 @@ defer client.Close()
 - TLS: 1.2-1.3 (InsecureSkipVerify: true)
 - Timeout: 30 seconds
 - MaxRetries: 1
+- RetryDelay: 100 milliseconds
+- MaxIdleConns: 10
 - MaxConnsPerHost: 5
 - MaxResponseBodySize: 10 MB
 - AllowPrivateIPs: true
 - HTTP/2: Disabled
+- EnableCookies: true
+- UserAgent: "httpc-test/1.0"
 
 **Use Cases:**
 - Development environments
@@ -85,11 +91,16 @@ client, err := httpc.New()  // Uses balanced by default
 - TLS: 1.2-1.3 (modern security)
 - Timeout: 30 seconds
 - MaxRetries: 3
+- RetryDelay: 1 second
+- BackoffFactor: 2.0
+- MaxIdleConns: 50
 - MaxConnsPerHost: 10
 - MaxResponseBodySize: 10 MB
 - AllowPrivateIPs: false
 - HTTP/2: Enabled
 - FollowRedirects: true
+- MaxRedirects: 10
+- EnableCookies: false
 
 **Use Cases:**
 - Most applications
@@ -115,11 +126,14 @@ defer client.Close()
 - TLS: 1.2-1.3 (modern security)
 - Timeout: 15 seconds
 - MaxRetries: 1
+- RetryDelay: 2 seconds
+- MaxIdleConns: 20
 - MaxConnsPerHost: 5
 - MaxResponseBodySize: 5 MB
 - AllowPrivateIPs: false
 - HTTP/2: Enabled
 - FollowRedirects: false
+- EnableCookies: false
 
 **Use Cases:**
 - Financial services (PCI DSS compliance)
@@ -302,7 +316,9 @@ client, err := httpc.New(config)
 |-------------------|---------------------|-------------|----------------------------------|
 | `UserAgent`       | `string`            | "httpc/1.0" | User-Agent header                |
 | `FollowRedirects` | `bool`              | true        | Follow HTTP redirects            |
+| `MaxRedirects`    | `int`               | 10          | Maximum redirects to follow      |
 | `EnableHTTP2`     | `bool`              | true        | Enable HTTP/2                    |
+| `EnableCookies`   | `bool`              | false       | Enable automatic cookie jar      |
 | `Headers`         | `map[string]string` | nil         | Default headers for all requests |
 
 ## Best Practices

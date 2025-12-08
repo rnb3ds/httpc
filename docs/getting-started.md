@@ -66,14 +66,14 @@ func main() {
     defer client.Close()
 
     // Make a GET request
-    resp, err := client.Get("https://api.github.com/users/octocat")
+    result, err := client.Get("https://api.github.com/users/octocat")
     if err != nil {
         log.Fatal(err)
     }
 
     // Print response
-    fmt.Printf("Status: %d\n", resp.StatusCode)
-    fmt.Printf("Body: %s\n", resp.Body)
+    fmt.Printf("Status: %d\n", result.StatusCode())
+    fmt.Printf("Body: %s\n", result.Body())
 }
 ```
 
@@ -107,15 +107,15 @@ func main() {
     }
 
     // POST JSON
-    resp, err := client.Post("https://api.example.com/users",
+    result, err := client.Post("https://api.example.com/users",
         httpc.WithJSON(user),
     )
     if err != nil {
         log.Fatal(err)
     }
 
-    fmt.Printf("Status: %d\n", resp.StatusCode)
-    fmt.Printf("Response: %s\n", resp.Body)
+    fmt.Printf("Status: %d\n", result.StatusCode())
+    fmt.Printf("Response: %s\n", result.Body())
 }
 ```
 
@@ -136,14 +136,14 @@ func main() {
     defer client.Close()
 
     // GET request
-    resp, err := client.Get("https://api.example.com/users/1")
+    result, err := client.Get("https://api.example.com/users/1")
     if err != nil {
         log.Fatal(err)
     }
 
     // Parse JSON response
     var user User
-    if err := resp.JSON(&user); err != nil {
+    if err := result.JSON(&user); err != nil {
         log.Fatal(err)
     }
 
@@ -192,20 +192,20 @@ resp, err := client.Get(url,
 Always check errors:
 
 ```go
-resp, err := client.Get(url)
+result, err := client.Get(url)
 if err != nil {
     log.Printf("Request failed: %v", err)
     return err
 }
 
 // Check response status
-if !resp.IsSuccess() {
-    log.Printf("Unexpected status: %d", resp.StatusCode)
-    return fmt.Errorf("request failed with status %d", resp.StatusCode)
+if !result.IsSuccess() {
+    log.Printf("Unexpected status: %d", result.StatusCode())
+    return fmt.Errorf("request failed with status %d", result.StatusCode())
 }
 
 // Process response
-fmt.Println(resp.Body)
+fmt.Println(result.Body())
 ```
 
 **See also:** [Error Handling Guide](error-handling.md) for comprehensive patterns.
@@ -213,25 +213,25 @@ fmt.Println(resp.Body)
 ### Response Helpers
 
 ```go
-resp, err := client.Get(url)
+result, err := client.Get(url)
 if err != nil {
     return err
 }
 
 // Status code helpers
-if resp.IsSuccess() {        // 2xx
+if result.IsSuccess() {        // 2xx
     fmt.Println("Success!")
 }
-if resp.IsClientError() {    // 4xx
+if result.IsClientError() {    // 4xx
     fmt.Println("Client error")
 }
-if resp.IsServerError() {    // 5xx
+if result.IsServerError() {    // 5xx
     fmt.Println("Server error")
 }
 
 // Parse response
 var data map[string]interface{}
-if err := resp.JSON(&data); err != nil {
+if err := result.JSON(&data); err != nil {
     return err
 }
 ```
@@ -267,7 +267,7 @@ func (c *APIClient) Close() error {
 func (c *APIClient) GetUser(id int) (*User, error) {
     url := fmt.Sprintf("%s/users/%d", c.baseURL, id)
     
-    resp, err := c.client.Get(url,
+    result, err := c.client.Get(url,
         httpc.WithBearerToken(c.token),
         httpc.WithTimeout(10*time.Second),
     )
@@ -275,12 +275,12 @@ func (c *APIClient) GetUser(id int) (*User, error) {
         return nil, err
     }
     
-    if !resp.IsSuccess() {
-        return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
+    if !result.IsSuccess() {
+        return nil, fmt.Errorf("API returned status %d", result.StatusCode())
     }
     
     var user User
-    if err := resp.JSON(&user); err != nil {
+    if err := result.JSON(&user); err != nil {
         return nil, err
     }
     
@@ -294,12 +294,12 @@ For quick one-off requests:
 
 ```go
 // No need to create a client
-resp, err := httpc.Get("https://api.example.com/data")
+result, err := httpc.Get("https://api.example.com/data")
 if err != nil {
     log.Fatal(err)
 }
 
-fmt.Println(resp.Body)
+fmt.Println(result.Body())
 ```
 
 **Note:** Package-level functions use a shared default client. For production code, prefer creating your own client instance.
@@ -314,7 +314,7 @@ func fetchData(ctx context.Context, url string) ([]byte, error) {
     }
     defer client.Close()
     
-    resp, err := client.Get(url,
+    result, err := client.Get(url,
         httpc.WithContext(ctx),
         httpc.WithTimeout(30*time.Second),
     )
@@ -322,11 +322,11 @@ func fetchData(ctx context.Context, url string) ([]byte, error) {
         return nil, err
     }
     
-    if !resp.IsSuccess() {
-        return nil, fmt.Errorf("status %d", resp.StatusCode)
+    if !result.IsSuccess() {
+        return nil, fmt.Errorf("status %d", result.StatusCode())
     }
     
-    return resp.RawBody, nil
+    return result.RawBody(), nil
 }
 
 // Usage
@@ -366,7 +366,7 @@ client, err := httpc.New(httpc.SecureConfig())
 ✅ **DO:**
 - Always close clients with `defer client.Close()`
 - Check errors from all operations
-- Use `resp.IsSuccess()` to check status codes
+- Use `result.IsSuccess()` to check status codes
 - Set appropriate timeouts for your use case
 - Reuse client instances for multiple requests
 

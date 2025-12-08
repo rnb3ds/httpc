@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"maps"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,15 +16,15 @@ import (
 // Client represents the HTTP client interface.
 // All methods are safe for concurrent use by multiple goroutines.
 type Client interface {
-	Get(url string, options ...RequestOption) (*Response, error)
-	Post(url string, options ...RequestOption) (*Response, error)
-	Put(url string, options ...RequestOption) (*Response, error)
-	Patch(url string, options ...RequestOption) (*Response, error)
-	Delete(url string, options ...RequestOption) (*Response, error)
-	Head(url string, options ...RequestOption) (*Response, error)
-	Options(url string, options ...RequestOption) (*Response, error)
+	Get(url string, options ...RequestOption) (*Result, error)
+	Post(url string, options ...RequestOption) (*Result, error)
+	Put(url string, options ...RequestOption) (*Result, error)
+	Patch(url string, options ...RequestOption) (*Result, error)
+	Delete(url string, options ...RequestOption) (*Result, error)
+	Head(url string, options ...RequestOption) (*Result, error)
+	Options(url string, options ...RequestOption) (*Result, error)
 
-	Request(ctx context.Context, method, url string, options ...RequestOption) (*Response, error)
+	Request(ctx context.Context, method, url string, options ...RequestOption) (*Result, error)
 
 	DownloadFile(url string, filePath string, options ...RequestOption) (*DownloadResult, error)
 	DownloadWithOptions(url string, downloadOpts *DownloadOptions, options ...RequestOption) (*DownloadResult, error)
@@ -38,10 +40,10 @@ type clientImpl struct {
 func New(config ...*Config) (Client, error) {
 	var cfg *Config
 	if len(config) > 0 && config[0] != nil {
-		cfg = config[0]
-		if err := ValidateConfig(cfg); err != nil {
+		if err := ValidateConfig(config[0]); err != nil {
 			return nil, fmt.Errorf("invalid configuration: %w", err)
 		}
+		cfg = deepCopyConfig(config[0])
 	} else {
 		cfg = DefaultConfig()
 	}
@@ -57,6 +59,21 @@ func New(config ...*Config) (Client, error) {
 	}
 
 	return &clientImpl{engine: engineClient}, nil
+}
+
+func deepCopyConfig(src *Config) *Config {
+	dst := *src
+
+	if src.Headers != nil {
+		dst.Headers = make(map[string]string, len(src.Headers))
+		maps.Copy(dst.Headers, src.Headers)
+	}
+
+	// TLSConfig is already immutable after client creation per guidelines
+	// No need to clone - just reference the same config
+	// This saves significant memory and CPU on client creation
+
+	return &dst
 }
 
 // NewSecure creates a new client with security-focused configuration.
@@ -80,44 +97,50 @@ func NewMinimal() (Client, error) {
 	return New(MinimalConfig())
 }
 
-func (c *clientImpl) Get(url string, options ...RequestOption) (*Response, error) {
+func (c *clientImpl) Get(url string, options ...RequestOption) (*Result, error) {
 	return c.doRequest("GET", url, options)
 }
 
-func (c *clientImpl) Post(url string, options ...RequestOption) (*Response, error) {
+func (c *clientImpl) Post(url string, options ...RequestOption) (*Result, error) {
 	return c.doRequest("POST", url, options)
 }
 
-func (c *clientImpl) Put(url string, options ...RequestOption) (*Response, error) {
+func (c *clientImpl) Put(url string, options ...RequestOption) (*Result, error) {
 	return c.doRequest("PUT", url, options)
 }
 
-func (c *clientImpl) Patch(url string, options ...RequestOption) (*Response, error) {
+func (c *clientImpl) Patch(url string, options ...RequestOption) (*Result, error) {
 	return c.doRequest("PATCH", url, options)
 }
 
-func (c *clientImpl) Delete(url string, options ...RequestOption) (*Response, error) {
+func (c *clientImpl) Delete(url string, options ...RequestOption) (*Result, error) {
 	return c.doRequest("DELETE", url, options)
 }
 
-func (c *clientImpl) Head(url string, options ...RequestOption) (*Response, error) {
+func (c *clientImpl) Head(url string, options ...RequestOption) (*Result, error) {
 	return c.doRequest("HEAD", url, options)
 }
 
-func (c *clientImpl) Options(url string, options ...RequestOption) (*Response, error) {
+func (c *clientImpl) Options(url string, options ...RequestOption) (*Result, error) {
 	return c.doRequest("OPTIONS", url, options)
 }
 
-func (c *clientImpl) doRequest(method, url string, options []RequestOption) (*Response, error) {
+func (c *clientImpl) doRequest(method, url string, options []RequestOption) (*Result, error) {
 	engineOptions := convertRequestOptions(options)
 	resp, err := c.engine.Request(context.Background(), method, url, engineOptions...)
-	return convertEngineResponse(resp), err
+	if err != nil {
+		return nil, err
+	}
+	return convertEngineResponseToResult(resp), nil
 }
 
-func (c *clientImpl) Request(ctx context.Context, method, url string, options ...RequestOption) (*Response, error) {
+func (c *clientImpl) Request(ctx context.Context, method, url string, options ...RequestOption) (*Result, error) {
 	engineOptions := convertRequestOptions(options)
 	resp, err := c.engine.Request(ctx, method, url, engineOptions...)
-	return convertEngineResponse(resp), err
+	if err != nil {
+		return nil, err
+	}
+	return convertEngineResponseToResult(resp), nil
 }
 
 func (c *clientImpl) Close() error {
@@ -127,32 +150,32 @@ func (c *clientImpl) Close() error {
 var (
 	defaultClient   atomic.Pointer[clientImpl]
 	defaultClientMu sync.Mutex
+	defaultOnce     sync.Once
+	defaultInitErr  error
 )
 
 func getDefaultClient() (Client, error) {
-	if client := defaultClient.Load(); client != nil {
-		return client, nil
+	defaultOnce.Do(func() {
+		newClient, err := New()
+		if err != nil {
+			defaultInitErr = fmt.Errorf("failed to initialize default client: %w", err)
+			return
+		}
+
+		impl, ok := newClient.(*clientImpl)
+		if !ok {
+			defaultInitErr = fmt.Errorf("unexpected client type")
+			return
+		}
+
+		defaultClient.Store(impl)
+	})
+
+	if defaultInitErr != nil {
+		return nil, defaultInitErr
 	}
 
-	defaultClientMu.Lock()
-	defer defaultClientMu.Unlock()
-
-	if client := defaultClient.Load(); client != nil {
-		return client, nil
-	}
-
-	newClient, err := New()
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize default client: %w", err)
-	}
-
-	impl, ok := newClient.(*clientImpl)
-	if !ok {
-		return nil, fmt.Errorf("unexpected client type")
-	}
-
-	defaultClient.Store(impl)
-	return impl, nil
+	return defaultClient.Load(), nil
 }
 
 // CloseDefaultClient closes the default client and resets it.
@@ -169,12 +192,14 @@ func CloseDefaultClient() error {
 
 	err := client.Close()
 	defaultClient.Store(nil)
+	defaultOnce = sync.Once{}
+	defaultInitErr = nil
 
 	return err
 }
 
-// Get executes a GET request using the default client
-func Get(url string, options ...RequestOption) (*Response, error) {
+// Get executes a GET request using the default client and returns a Result.
+func Get(url string, options ...RequestOption) (*Result, error) {
 	client, err := getDefaultClient()
 	if err != nil {
 		return nil, err
@@ -182,8 +207,8 @@ func Get(url string, options ...RequestOption) (*Response, error) {
 	return client.Get(url, options...)
 }
 
-// Post executes a POST request using the default client
-func Post(url string, options ...RequestOption) (*Response, error) {
+// Post executes a POST request using the default client and returns a Result.
+func Post(url string, options ...RequestOption) (*Result, error) {
 	client, err := getDefaultClient()
 	if err != nil {
 		return nil, err
@@ -191,8 +216,8 @@ func Post(url string, options ...RequestOption) (*Response, error) {
 	return client.Post(url, options...)
 }
 
-// Put executes a PUT request using the default client
-func Put(url string, options ...RequestOption) (*Response, error) {
+// Put executes a PUT request using the default client and returns a Result.
+func Put(url string, options ...RequestOption) (*Result, error) {
 	client, err := getDefaultClient()
 	if err != nil {
 		return nil, err
@@ -200,8 +225,8 @@ func Put(url string, options ...RequestOption) (*Response, error) {
 	return client.Put(url, options...)
 }
 
-// Patch executes a PATCH request using the default client
-func Patch(url string, options ...RequestOption) (*Response, error) {
+// Patch executes a PATCH request using the default client and returns a Result.
+func Patch(url string, options ...RequestOption) (*Result, error) {
 	client, err := getDefaultClient()
 	if err != nil {
 		return nil, err
@@ -209,8 +234,8 @@ func Patch(url string, options ...RequestOption) (*Response, error) {
 	return client.Patch(url, options...)
 }
 
-// Delete executes a DELETE request using the default client
-func Delete(url string, options ...RequestOption) (*Response, error) {
+// Delete executes a DELETE request using the default client and returns a Result.
+func Delete(url string, options ...RequestOption) (*Result, error) {
 	client, err := getDefaultClient()
 	if err != nil {
 		return nil, err
@@ -218,8 +243,8 @@ func Delete(url string, options ...RequestOption) (*Response, error) {
 	return client.Delete(url, options...)
 }
 
-// Head executes a HEAD request using the default client
-func Head(url string, options ...RequestOption) (*Response, error) {
+// Head executes a HEAD request using the default client and returns a Result.
+func Head(url string, options ...RequestOption) (*Result, error) {
 	client, err := getDefaultClient()
 	if err != nil {
 		return nil, err
@@ -227,8 +252,8 @@ func Head(url string, options ...RequestOption) (*Response, error) {
 	return client.Head(url, options...)
 }
 
-// Options executes an OPTIONS request using the default client
-func Options(url string, options ...RequestOption) (*Response, error) {
+// Options executes an OPTIONS request using the default client and returns a Result.
+func Options(url string, options ...RequestOption) (*Result, error) {
 	client, err := getDefaultClient()
 	if err != nil {
 		return nil, err
@@ -258,19 +283,34 @@ func SetDefaultClient(client Client) error {
 	}
 
 	defaultClient.Store(impl)
+	defaultOnce = sync.Once{}
+	defaultInitErr = nil
 	return closeErr
 }
+
+const (
+	minIdleConnsPerHost    = 2
+	maxIdleConnsPerHostCap = 10
+	defaultDialTimeout     = 10 * time.Second
+	defaultKeepAlive       = 30 * time.Second
+	defaultTLSHandshake    = 10 * time.Second
+	defaultResponseHeader  = 30 * time.Second
+	defaultIdleConnTimeout = 90 * time.Second
+	defaultMaxRetryDelay   = 5 * time.Second
+	absoluteMaxRetryDelay  = 30 * time.Second
+	retryDelayMultiplier   = 3
+)
 
 func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 	if cfg == nil {
 		cfg = DefaultConfig()
 	}
 
-	maxIdleConnsPerHost := cfg.MaxConnsPerHost / 2
-	if maxIdleConnsPerHost < 2 {
-		maxIdleConnsPerHost = 2
-	} else if maxIdleConnsPerHost > 10 {
-		maxIdleConnsPerHost = 10
+	idleConnsPerHost := cfg.MaxConnsPerHost / 2
+	if idleConnsPerHost < minIdleConnsPerHost {
+		idleConnsPerHost = minIdleConnsPerHost
+	} else if idleConnsPerHost > maxIdleConnsPerHostCap {
+		idleConnsPerHost = maxIdleConnsPerHostCap
 	}
 
 	minTLSVersion := cfg.MinTLSVersion
@@ -283,11 +323,9 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		maxTLSVersion = tls.VersionTLS13
 	}
 
-	const defaultMaxRetryDelay = 5 * time.Second
-	const absoluteMaxRetryDelay = 30 * time.Second
 	maxRetryDelay := defaultMaxRetryDelay
 	if cfg.RetryDelay > 0 && cfg.BackoffFactor > 0 {
-		calculated := time.Duration(float64(cfg.RetryDelay) * cfg.BackoffFactor * 3)
+		calculated := time.Duration(float64(cfg.RetryDelay) * cfg.BackoffFactor * retryDelayMultiplier)
 		maxRetryDelay = min(calculated, absoluteMaxRetryDelay)
 	}
 
@@ -298,13 +336,13 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 
 	return &engine.Config{
 		Timeout:               cfg.Timeout,
-		DialTimeout:           10 * time.Second,
-		KeepAlive:             30 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
-		IdleConnTimeout:       90 * time.Second,
+		DialTimeout:           defaultDialTimeout,
+		KeepAlive:             defaultKeepAlive,
+		TLSHandshakeTimeout:   defaultTLSHandshake,
+		ResponseHeaderTimeout: defaultResponseHeader,
+		IdleConnTimeout:       defaultIdleConnTimeout,
 		MaxIdleConns:          cfg.MaxIdleConns,
-		MaxIdleConnsPerHost:   maxIdleConnsPerHost,
+		MaxIdleConnsPerHost:   idleConnsPerHost,
 		MaxConnsPerHost:       cfg.MaxConnsPerHost,
 		ProxyURL:              cfg.ProxyURL,
 		TLSConfig:             cfg.TLSConfig,
@@ -376,25 +414,45 @@ func convertRequestOptions(options []RequestOption) []engine.RequestOption {
 	return engineOptions
 }
 
-func convertEngineResponse(engineResp *engine.Response) *Response {
+func convertEngineResponseToResult(engineResp *engine.Response) *Result {
 	if engineResp == nil {
 		return nil
 	}
 
-	return &Response{
-		StatusCode:     engineResp.StatusCode,
-		Status:         engineResp.Status,
-		Headers:        engineResp.Headers,
-		Body:           engineResp.Body,
-		RawBody:        engineResp.RawBody,
-		ContentLength:  engineResp.ContentLength,
-		Duration:       engineResp.Duration,
-		Attempts:       engineResp.Attempts,
-		Cookies:        engineResp.Cookies,
-		RedirectChain:  engineResp.RedirectChain,
-		RedirectCount:  engineResp.RedirectCount,
-		RequestHeaders: engineResp.RequestHeaders,
+	requestCookies := extractRequestCookies(engineResp.RequestHeaders)
+
+	return &Result{
+		Request: &RequestInfo{
+			Headers: engineResp.RequestHeaders,
+			Cookies: requestCookies,
+		},
+		Response: &ResponseInfo{
+			StatusCode:    engineResp.StatusCode,
+			Status:        engineResp.Status,
+			Headers:       engineResp.Headers,
+			Body:          engineResp.Body,
+			RawBody:       engineResp.RawBody,
+			ContentLength: engineResp.ContentLength,
+			Cookies:       engineResp.Cookies,
+		},
+		Meta: &RequestMeta{
+			Duration:      engineResp.Duration,
+			Attempts:      engineResp.Attempts,
+			RedirectChain: engineResp.RedirectChain,
+			RedirectCount: engineResp.RedirectCount,
+		},
 	}
+}
+
+func extractRequestCookies(headers http.Header) []*http.Cookie {
+	if headers == nil {
+		return nil
+	}
+	cookieHeader := headers.Get("Cookie")
+	if cookieHeader == "" {
+		return nil
+	}
+	return parseCookieHeader(cookieHeader)
 }
 
 func createCookieJar(enableCookies bool) (any, error) {

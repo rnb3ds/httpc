@@ -44,14 +44,14 @@ if err != nil {
 ### HTTP Status Errors
 
 ```go
-resp, err := client.Get(url)
+result, err := client.Get(url)
 if err != nil {
     return err
 }
 
 // Check HTTP status
-if !resp.IsSuccess() {
-    return fmt.Errorf("unexpected status: %d", resp.StatusCode)
+if !result.IsSuccess() {
+    return fmt.Errorf("unexpected status: %d", result.StatusCode())
 }
 ```
 
@@ -59,7 +59,7 @@ if !resp.IsSuccess() {
 
 ```go
 var data MyStruct
-if err := resp.JSON(&data); err != nil {
+if err := result.JSON(&data); err != nil {
     return fmt.Errorf("failed to parse JSON: %w", err)
 }
 ```
@@ -69,21 +69,21 @@ if err := resp.JSON(&data); err != nil {
 ### Status Helper Methods
 
 ```go
-resp, err := client.Get(url)
+result, err := client.Get(url)
 if err != nil {
     return err
 }
 
 // Check status categories
-if resp.IsSuccess() {        // 2xx
+if result.IsSuccess() {        // 2xx
     fmt.Println("Success!")
 }
 
-if resp.IsClientError() {    // 4xx
+if result.IsClientError() {    // 4xx
     fmt.Println("Client error")
 }
 
-if resp.IsServerError() {    // 5xx
+if result.IsServerError() {    // 5xx
     fmt.Println("Server error")
 }
 ```
@@ -91,7 +91,7 @@ if resp.IsServerError() {    // 5xx
 ### Specific Status Codes
 
 ```go
-switch resp.StatusCode {
+switch result.StatusCode() {
 case 200:
     // OK
 case 201:
@@ -111,18 +111,19 @@ case 500:
 case 503:
     // Service Unavailable
 default:
-    return fmt.Errorf("unexpected status: %d", resp.StatusCode)
+    return fmt.Errorf("unexpected status: %d", result.StatusCode())
 }
 ```
 
 ### Status Code Ranges
 
 ```go
-if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+statusCode := result.StatusCode()
+if statusCode >= 200 && statusCode < 300 {
     // Success
-} else if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+} else if statusCode >= 400 && statusCode < 500 {
     // Client error
-} else if resp.StatusCode >= 500 {
+} else if statusCode >= 500 {
     // Server error
 }
 ```
@@ -135,18 +136,18 @@ if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 func fetchUser(client httpc.Client, userID int) (*User, error) {
     url := fmt.Sprintf("https://api.example.com/users/%d", userID)
     
-    resp, err := client.Get(url)
+    result, err := client.Get(url)
     if err != nil {
         return nil, fmt.Errorf("request failed: %w", err)
     }
     
-    if !resp.IsSuccess() {
+    if !result.IsSuccess() {
         return nil, fmt.Errorf("API returned status %d: %s", 
-            resp.StatusCode, resp.Body)
+            result.StatusCode(), result.Body())
     }
     
     var user User
-    if err := resp.JSON(&user); err != nil {
+    if err := result.JSON(&user); err != nil {
         return nil, fmt.Errorf("failed to parse response: %w", err)
     }
     
@@ -168,28 +169,28 @@ func (e *APIError) Error() string {
 }
 
 func fetchData(client httpc.Client, url string) ([]byte, error) {
-    resp, err := client.Get(url)
+    result, err := client.Get(url)
     if err != nil {
         return nil, fmt.Errorf("request failed: %w", err)
     }
     
-    if !resp.IsSuccess() {
+    if !result.IsSuccess() {
         return nil, &APIError{
-            StatusCode: resp.StatusCode,
-            Message:    resp.Status,
-            Body:       resp.Body,
+            StatusCode: result.StatusCode(),
+            Message:    result.Response.Status,
+            Body:       result.Body(),
         }
     }
     
-    return resp.RawBody, nil
+    return result.RawBody(), nil
 }
 ```
 
 ### Pattern 3: Error with Retry Logic
 
 ```go
-func fetchWithRetry(client httpc.Client, url string) (*httpc.Response, error) {
-    resp, err := client.Get(url,
+func fetchWithRetry(client httpc.Client, url string) (*httpc.Result, error) {
+    result, err := client.Get(url,
         httpc.WithMaxRetries(3),
         httpc.WithTimeout(10*time.Second),
     )
@@ -202,7 +203,7 @@ func fetchWithRetry(client httpc.Client, url string) (*httpc.Response, error) {
         return nil, fmt.Errorf("request failed: %w", err)
     }
     
-    return resp, nil
+    return result, nil
 }
 ```
 
@@ -210,7 +211,7 @@ func fetchWithRetry(client httpc.Client, url string) (*httpc.Response, error) {
 
 ```go
 func fetchWithContext(ctx context.Context, client httpc.Client, url string) ([]byte, error) {
-    resp, err := client.Get(url,
+    result, err := client.Get(url,
         httpc.WithContext(ctx),
         httpc.WithTimeout(30*time.Second),
     )
@@ -226,11 +227,11 @@ func fetchWithContext(ctx context.Context, client httpc.Client, url string) ([]b
         return nil, fmt.Errorf("request failed: %w", err)
     }
     
-    if !resp.IsSuccess() {
-        return nil, fmt.Errorf("status %d: %s", resp.StatusCode, resp.Body)
+    if !result.IsSuccess() {
+        return nil, fmt.Errorf("status %d: %s", result.StatusCode(), result.Body())
     }
     
-    return resp.RawBody, nil
+    return result.RawBody(), nil
 }
 ```
 
@@ -239,25 +240,25 @@ func fetchWithContext(ctx context.Context, client httpc.Client, url string) ([]b
 ```go
 func fetchWithFallback(client httpc.Client, primaryURL, fallbackURL string) ([]byte, error) {
     // Try primary
-    resp, err := client.Get(primaryURL)
-    if err == nil && resp.IsSuccess() {
-        return resp.RawBody, nil
+    result, err := client.Get(primaryURL)
+    if err == nil && result.IsSuccess() {
+        return result.RawBody(), nil
     }
     
     // Log primary failure
     log.Printf("Primary failed: %v, trying fallback", err)
     
     // Try fallback
-    resp, err = client.Get(fallbackURL)
+    result, err = client.Get(fallbackURL)
     if err != nil {
         return nil, fmt.Errorf("both primary and fallback failed: %w", err)
     }
     
-    if !resp.IsSuccess() {
-        return nil, fmt.Errorf("fallback returned status %d", resp.StatusCode)
+    if !result.IsSuccess() {
+        return nil, fmt.Errorf("fallback returned status %d", result.StatusCode())
     }
     
-    return resp.RawBody, nil
+    return result.RawBody(), nil
 }
 ```
 
@@ -292,14 +293,14 @@ resp, err := client.Get(url,
 ### Understanding Retry Attempts
 
 ```go
-resp, err := client.Get(url)
+result, err := client.Get(url)
 if err != nil {
     log.Printf("Request failed after retries: %v", err)
     return err
 }
 
 // Check how many attempts were made
-log.Printf("Request succeeded after %d attempt(s)", resp.Attempts)
+log.Printf("Request succeeded after %d attempt(s)", result.Meta.Attempts)
 ```
 
 ## Timeout Errors
@@ -307,7 +308,7 @@ log.Printf("Request succeeded after %d attempt(s)", resp.Attempts)
 ### Handling Timeouts
 
 ```go
-resp, err := client.Get(url,
+result, err := client.Get(url,
     httpc.WithTimeout(10*time.Second),
 )
 
@@ -329,12 +330,12 @@ func fetchWithTimeoutRetry(client httpc.Client, url string) ([]byte, error) {
     timeout := 5 * time.Second
     
     for attempt := 1; attempt <= maxAttempts; attempt++ {
-        resp, err := client.Get(url,
+        result, err := client.Get(url,
             httpc.WithTimeout(timeout),
         )
         
-        if err == nil && resp.IsSuccess() {
-            return resp.RawBody, nil
+        if err == nil && result.IsSuccess() {
+            return result.RawBody(), nil
         }
         
         if err != nil && strings.Contains(err.Error(), "timeout") {
@@ -355,7 +356,7 @@ func fetchWithTimeoutRetry(client httpc.Client, url string) ([]byte, error) {
 ### Connection Errors
 
 ```go
-resp, err := client.Get(url)
+result, err := client.Get(url)
 if err != nil {
     if strings.Contains(err.Error(), "connection refused") {
         return nil, fmt.Errorf("service is not running: %w", err)
@@ -377,10 +378,10 @@ func fetchWithNetworkRetry(client httpc.Client, url string) ([]byte, error) {
     const maxAttempts = 3
     
     for attempt := 1; attempt <= maxAttempts; attempt++ {
-        resp, err := client.Get(url)
+        result, err := client.Get(url)
         
-        if err == nil && resp.IsSuccess() {
-            return resp.RawBody, nil
+        if err == nil && result.IsSuccess() {
+            return result.RawBody(), nil
         }
         
         // Check if it's a recoverable network error
@@ -396,8 +397,8 @@ func fetchWithNetworkRetry(client httpc.Client, url string) ([]byte, error) {
         }
         
         // HTTP error
-        if !resp.IsSuccess() {
-            return nil, fmt.Errorf("status %d", resp.StatusCode)
+        if !result.IsSuccess() {
+            return nil, fmt.Errorf("status %d", result.StatusCode())
         }
     }
     
@@ -409,7 +410,7 @@ func fetchWithNetworkRetry(client httpc.Client, url string) ([]byte, error) {
 
 1. **Always check errors**
    ```go
-   resp, err := client.Get(url)
+   result, err := client.Get(url)
    if err != nil {
        return err
    }
@@ -417,8 +418,8 @@ func fetchWithNetworkRetry(client httpc.Client, url string) ([]byte, error) {
 
 2. **Check HTTP status codes**
    ```go
-   if !resp.IsSuccess() {
-       return fmt.Errorf("status %d", resp.StatusCode)
+   if !result.IsSuccess() {
+       return fmt.Errorf("status %d", result.StatusCode())
    }
    ```
 
@@ -477,7 +478,7 @@ func fetchUser(ctx context.Context, client httpc.Client, userID int) (*User, err
     url := fmt.Sprintf("https://api.example.com/users/%d", userID)
     
     // Make request with context and timeout
-    resp, err := client.Get(url,
+    result, err := client.Get(url,
         httpc.WithContext(ctx),
         httpc.WithTimeout(10*time.Second),
         httpc.WithMaxRetries(3),
@@ -500,8 +501,8 @@ func fetchUser(ctx context.Context, client httpc.Client, userID int) (*User, err
     }
     
     // Handle HTTP errors
-    if !resp.IsSuccess() {
-        switch resp.StatusCode {
+    if !result.IsSuccess() {
+        switch result.StatusCode() {
         case 404:
             return nil, fmt.Errorf("user %d not found", userID)
         case 401:
@@ -509,16 +510,16 @@ func fetchUser(ctx context.Context, client httpc.Client, userID int) (*User, err
         case 429:
             return nil, fmt.Errorf("rate limit exceeded")
         case 500, 502, 503:
-            return nil, fmt.Errorf("server error: %d", resp.StatusCode)
+            return nil, fmt.Errorf("server error: %d", result.StatusCode())
         default:
             return nil, fmt.Errorf("unexpected status %d: %s", 
-                resp.StatusCode, resp.Body)
+                result.StatusCode(), result.Body())
         }
     }
     
     // Parse response
     var user User
-    if err := resp.JSON(&user); err != nil {
+    if err := result.JSON(&user); err != nil {
         return nil, fmt.Errorf("failed to parse user data: %w", err)
     }
     

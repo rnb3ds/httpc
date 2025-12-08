@@ -150,8 +150,12 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 		httpReq.Header.Set("User-Agent", p.config.UserAgent)
 	}
 
-	for _, cookie := range req.Cookies {
-		httpReq.AddCookie(cookie)
+	// Add cookies to the request
+	// Note: If EnableCookies is true and a CookieJar is configured,
+	// the cookies will be managed by the jar automatically.
+	// We still add them here for immediate use in this request.
+	for i := range req.Cookies {
+		httpReq.AddCookie(&req.Cookies[i])
 	}
 
 	return httpReq, nil

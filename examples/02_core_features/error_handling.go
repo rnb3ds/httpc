@@ -1,4 +1,4 @@
-//go:build examples
+﻿//go:build examples
 
 package main
 
@@ -55,11 +55,11 @@ func demonstrateBasicErrors() {
 
 	// Check if request was successful
 	if !resp.IsSuccess() {
-		log.Printf("HTTP error: %d - %s\n", resp.StatusCode, resp.Status)
+		log.Printf("HTTP error: %d - %s\n", resp.StatusCode(), resp.Response.Status)
 		return
 	}
 
-	fmt.Printf("✓ Request successful: %d\n\n", resp.StatusCode)
+	fmt.Printf("Request successful: %d\n\n", resp.StatusCode())
 }
 
 // demonstrateHTTPErrors shows HTTP status code error handling
@@ -85,14 +85,14 @@ func demonstrateHTTPErrors() {
 	switch {
 	case resp.IsSuccess():
 		// 2xx - Success
-		fmt.Println("✓ Success (2xx)")
+		fmt.Println("Success (2xx)")
 	case resp.IsRedirect():
 		// 3xx - Redirection
-		fmt.Printf("→ Redirect (3xx): %s\n", resp.Headers.Get("Location"))
+		fmt.Printf("Redirect (3xx): %s\n", resp.Response.Headers.Get("Location"))
 	case resp.IsClientError():
 		// 4xx - Client error
-		fmt.Printf("✗ Client error (4xx): %d\n", resp.StatusCode)
-		switch resp.StatusCode {
+		fmt.Printf("Client error (4xx): %d\n", resp.StatusCode())
+		switch resp.StatusCode() {
 		case 400:
 			fmt.Println("  Bad Request")
 		case 401:
@@ -106,7 +106,7 @@ func demonstrateHTTPErrors() {
 		}
 	case resp.IsServerError():
 		// 5xx - Server error
-		fmt.Printf("✗ Server error (5xx): %d\n", resp.StatusCode)
+		fmt.Printf("Server error (5xx): %d\n", resp.StatusCode())
 		fmt.Println("  Server is experiencing issues, retry may help")
 	}
 	fmt.Println()
@@ -129,16 +129,16 @@ func demonstrateTimeoutErrors() {
 	if err != nil {
 		// Check if it's a timeout error
 		if errors.Is(err, context.DeadlineExceeded) {
-			fmt.Println("✗ Request timed out")
+			fmt.Println("Request timed out")
 			fmt.Println("  Consider increasing timeout or checking network")
 		} else {
-			fmt.Printf("✗ Request failed: %v\n", err)
+			fmt.Printf("Request failed: %v\n", err)
 		}
 		fmt.Println()
 		return
 	}
 
-	fmt.Printf("✓ Request completed: %d\n\n", resp.StatusCode)
+	fmt.Printf("Request completed: %d\n\n", resp.StatusCode())
 }
 
 // demonstrateContextCancellation shows context cancellation handling
@@ -163,16 +163,16 @@ func demonstrateContextCancellation() {
 	if err != nil {
 		// Check if it's a cancellation error
 		if errors.Is(err, context.Canceled) {
-			fmt.Println("✗ Request was cancelled")
+			fmt.Println("Request was cancelled")
 			fmt.Println("  This is expected when context is cancelled")
 		} else {
-			fmt.Printf("✗ Request failed: %v\n", err)
+			fmt.Printf("Request failed: %v\n", err)
 		}
 		fmt.Println()
 		return
 	}
 
-	fmt.Printf("✓ Request completed: %d\n\n", resp.StatusCode)
+	fmt.Printf("Request completed: %d\n\n", resp.StatusCode())
 }
 
 // demonstrateParsingErrors shows JSON/XML parsing error handling
@@ -199,7 +199,7 @@ func demonstrateParsingErrors() {
 
 	var user User
 	if err := resp.JSON(&user); err != nil {
-		fmt.Println("✗ Failed to parse JSON response")
+		fmt.Println("Failed to parse JSON response")
 		fmt.Printf("  Error: %v\n", err)
 		fmt.Println("  Tip: Check if response is valid JSON")
 		fmt.Println("  Tip: Verify struct tags match response fields")
@@ -207,7 +207,7 @@ func demonstrateParsingErrors() {
 		return
 	}
 
-	fmt.Printf("✓ Successfully parsed: %+v\n\n", user)
+	fmt.Printf("Successfully parsed: %+v\n\n", user)
 }
 
 // demonstrateComprehensivePattern shows comprehensive error handling
@@ -220,7 +220,7 @@ func demonstrateComprehensivePattern() {
 		return
 	}
 
-	fmt.Printf("✓ Successfully fetched user data: %+v\n\n", result)
+	fmt.Printf("Successfully fetched user data: %+v\n\n", result)
 }
 
 // fetchUserData demonstrates a function with comprehensive error handling
@@ -257,21 +257,21 @@ func fetchUserData(userID int) (map[string]any, error) {
 	// Check HTTP status
 	if !resp.IsSuccess() {
 		switch {
-		case resp.StatusCode == 404:
+		case resp.StatusCode() == 404:
 			return nil, fmt.Errorf("user %d not found", userID)
-		case resp.StatusCode == 401:
+		case resp.StatusCode() == 401:
 			return nil, fmt.Errorf("authentication failed")
-		case resp.StatusCode == 403:
+		case resp.StatusCode() == 403:
 			return nil, fmt.Errorf("access denied")
-		case resp.StatusCode == 429:
+		case resp.StatusCode() == 429:
 			return nil, fmt.Errorf("rate limit exceeded, retry after: %s",
-				resp.Headers.Get("Retry-After"))
+				resp.Response.Headers.Get("Retry-After"))
 		case resp.IsClientError():
-			return nil, fmt.Errorf("client error: %d - %s", resp.StatusCode, resp.Status)
+			return nil, fmt.Errorf("client error: %d - %s", resp.StatusCode(), resp.Response.Status)
 		case resp.IsServerError():
-			return nil, fmt.Errorf("server error: %d - %s", resp.StatusCode, resp.Status)
+			return nil, fmt.Errorf("server error: %d - %s", resp.StatusCode(), resp.Response.Status)
 		default:
-			return nil, fmt.Errorf("unexpected status: %d", resp.StatusCode)
+			return nil, fmt.Errorf("unexpected status: %d", resp.StatusCode())
 		}
 	}
 

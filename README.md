@@ -43,7 +43,7 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
-    fmt.Printf("Status: %d\n", resp.StatusCode)
+    fmt.Printf("Status: %d\n", resp.StatusCode())
 
     // POST with JSON and authentication
     user := map[string]string{"name": "John", "email": "john@example.com"}
@@ -54,7 +54,7 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
-    fmt.Printf("Created: %s\n", resp.Body)
+    fmt.Printf("Created: %s\n", resp.Body())
 }
 ```
 
@@ -160,10 +160,10 @@ if err := resp.JSON(&result); err != nil {
 }
 
 // Access response data
-fmt.Printf("Status: %d\n", resp.StatusCode)
-fmt.Printf("Body: %s\n", resp.Body)
-fmt.Printf("Duration: %v\n", resp.Duration)
-fmt.Printf("Attempts: %d\n", resp.Attempts)
+fmt.Printf("Status: %d\n", resp.StatusCode())
+fmt.Printf("Body: %s\n", resp.Body())
+fmt.Printf("Duration: %v\n", resp.Meta.Duration)
+fmt.Printf("Attempts: %d\n", resp.Meta.Attempts)
 
 // Work with cookies
 cookie := resp.GetCookie("session_id")
@@ -180,8 +180,8 @@ resp, err := httpc.Get("https://api.example.com/data",
 )
 
 // Response is automatically decompressed
-fmt.Printf("Decompressed body: %s\n", resp.Body)
-fmt.Printf("Original encoding: %s\n", resp.Headers.Get("Content-Encoding"))
+fmt.Printf("Decompressed body: %s\n", resp.Body())
+fmt.Printf("Original encoding: %s\n", resp.Response.Headers.Get("Content-Encoding"))
 ```
 
 **Supported Encodings:**
@@ -283,7 +283,7 @@ if err != nil {
 
 // Check response status
 if !resp.IsSuccess() {
-    return fmt.Errorf("unexpected status: %d", resp.StatusCode)
+    return fmt.Errorf("unexpected status: %d", resp.StatusCode())
 }
 ```
 
@@ -341,19 +341,19 @@ resp, err := client.Get(url, httpc.WithContext(ctx))
 ```go
 // Automatic redirect following (default)
 resp, err := httpc.Get("https://example.com/redirect")
-fmt.Printf("Followed %d redirects\n", resp.RedirectCount)
+fmt.Printf("Followed %d redirects\n", resp.Meta.RedirectCount)
 
 // Disable redirects for specific request
 resp, err := httpc.Get(url, httpc.WithFollowRedirects(false))
 if resp.IsRedirect() {
-    fmt.Printf("Redirect to: %s\n", resp.Headers.Get("Location"))
+    fmt.Printf("Redirect to: %s\n", resp.Response.Headers.Get("Location"))
 }
 
 // Limit redirects
 resp, err := httpc.Get(url, httpc.WithMaxRedirects(5))
 
 // Track redirect chain
-for i, url := range resp.RedirectChain {
+for i, url := range resp.Meta.RedirectChain {
     fmt.Printf("%d. %s\n", i+1, url)
 }
 ```
@@ -396,6 +396,100 @@ cookie := &http.Cookie{
 }
 resp, err = httpc.Get("https://api.example.com/data", httpc.WithCookie(cookie))
 ```
+
+**[📖 Cookie API Reference](docs/cookie-api-reference.md)**
+
+### Domain Client - Automatic State Management
+
+For applications that make multiple requests to the same domain, `DomainClient` provides automatic Cookie and Header management:
+
+```go
+// Create domain-specific client
+client, err := httpc.NewDomain("https://api.example.com")
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Close()
+
+// First request - server sets cookies
+resp1, err := client.Get("/login",
+    httpc.WithJSON(credentials),
+)
+
+// Cookies from resp1 are automatically saved and sent in subsequent requests
+resp2, err := client.Get("/profile")  // Cookies automatically included
+
+// Set persistent headers (sent with all requests)
+client.SetHeader("Authorization", "Bearer "+token)
+client.SetHeader("X-API-Key", "your-api-key")
+
+// All subsequent requests include these headers
+resp3, err := client.Get("/data")  // Headers + Cookies automatically included
+
+// Override per-request (doesn't affect persistent state)
+resp4, err := client.Get("/special",
+    httpc.WithHeader("Accept", "application/xml"),  // Override for this request only
+)
+
+// Manual cookie management
+client.SetCookie(&http.Cookie{Name: "session", Value: "abc123"})
+client.SetCookies([]*http.Cookie{
+    {Name: "pref", Value: "dark"},
+    {Name: "lang", Value: "en"},
+})
+
+// Query state
+cookies := client.GetCookies()
+headers := client.GetHeaders()
+sessionCookie := client.GetCookie("session")
+
+// Clear state
+client.DeleteCookie("session")
+client.DeleteHeader("X-API-Key")
+client.ClearCookies()
+client.ClearHeaders()
+```
+
+**Real-World Example - Login Flow:**
+
+```go
+client, _ := httpc.NewDomain("https://api.example.com")
+defer client.Close()
+
+// Step 1: Login (server sets session cookie)
+loginResp, _ := client.Post("/auth/login",
+    httpc.WithJSON(map[string]string{
+        "username": "user@example.com",
+        "password": "secret",
+    }),
+)
+
+// Step 2: Extract token and set as persistent header
+var loginData map[string]string
+loginResp.JSON(&loginData)
+client.SetHeader("Authorization", "Bearer "+loginData["token"])
+
+// Step 3: Make API calls (cookies + auth header automatically sent)
+profileResp, _ := client.Get("/api/user/profile")
+dataResp, _ := client.Get("/api/user/data")
+settingsResp, _ := client.Put("/api/user/settings",
+    httpc.WithJSON(newSettings),
+)
+
+// All requests automatically include:
+// - Session cookies from login response
+// - Authorization header
+// - Any other persistent headers/cookies
+```
+
+**Key Features:**
+- **Automatic Cookie Persistence** - Cookies from responses are saved and sent in subsequent requests
+- **Automatic Header Persistence** - Set headers once, used in all requests
+- **Per-Request Overrides** - Use `WithCookies()` and `WithHeaderMap()` to override for specific requests
+- **Thread-Safe** - All operations are goroutine-safe
+- **Manual Control** - Full API for inspecting and modifying state
+
+**[📖 See full example](examples/domain_client_example.go)**
 
 ## Security & Performance
 
@@ -449,7 +543,7 @@ wg.Wait()
 
 **Testing:** Run `make test-race` to verify race-free operation in your code.
 
-**[📖 Security Guide](docs/security.md)**
+**[📖 Security Guide](SECURITY.md)**
 
 ## Documentation
 
@@ -460,7 +554,8 @@ wg.Wait()
 - **[Error Handling](docs/error-handling.md)** - Error handling patterns
 - **[File Download](docs/file-download.md)** - File downloads with progress
 - **[HTTP Redirects](docs/redirects.md)** - Redirect handling and tracking
-- **[Security](docs/security.md)** - Security features and best practices
+- **[Request Inspection](docs/request-inspection.md)** - Inspect request details
+- **[Security](SECURITY.md)** - Security features and best practices
 
 ### Examples
 - **[Quick Start](examples/01_quickstart)** - Basic usage

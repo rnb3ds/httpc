@@ -130,7 +130,7 @@ func TestRequest_WithQueryParams(t *testing.T) {
 }
 
 func TestRequest_WithCookies(t *testing.T) {
-	cookies := []*http.Cookie{
+	cookies := []http.Cookie{
 		{Name: "session", Value: "abc123"},
 		{Name: "theme", Value: "dark"},
 	}
@@ -202,7 +202,7 @@ func TestRequest_Clone(t *testing.T) {
 		Timeout:    10 * time.Second,
 		MaxRetries: 2,
 		Context:    context.Background(),
-		Cookies: []*http.Cookie{
+		Cookies: []http.Cookie{
 			{Name: "test", Value: "cookie"},
 		},
 	}

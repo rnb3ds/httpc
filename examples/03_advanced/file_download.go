@@ -1,4 +1,4 @@
-//go:build examples
+﻿//go:build examples
 
 package main
 
@@ -61,7 +61,7 @@ func demonstrateSimpleDownload() {
 		return
 	}
 
-	fmt.Printf("✓ Downloaded: %s\n", result.FilePath)
+	fmt.Printf("[OK] Downloaded: %s\n", result.FilePath)
 	fmt.Printf("  Size: %s\n", httpc.FormatBytes(result.BytesWritten))
 	fmt.Printf("  Duration: %v\n", result.Duration)
 	fmt.Printf("  Speed: %s\n\n", httpc.FormatSpeed(result.AverageSpeed))
@@ -111,7 +111,7 @@ func demonstrateDownloadWithProgress() {
 		return
 	}
 
-	fmt.Printf("\n✓ Download completed: %s\n", result.FilePath)
+	fmt.Printf("\n[OK] Download completed: %s\n", result.FilePath)
 	fmt.Printf("  Total size: %s\n", httpc.FormatBytes(result.BytesWritten))
 	fmt.Printf("  Average speed: %s\n\n", httpc.FormatSpeed(result.AverageSpeed))
 }
@@ -154,7 +154,7 @@ func demonstrateLargeFileDownload() {
 		return
 	}
 
-	fmt.Printf("\n✓ Large file downloaded successfully\n")
+	fmt.Printf("\n[OK] Large file downloaded successfully\n")
 	fmt.Printf("  File: %s\n", result.FilePath)
 	fmt.Printf("  Size: %s\n", httpc.FormatBytes(result.BytesWritten))
 	fmt.Printf("  Time: %v\n", result.Duration)
@@ -223,11 +223,11 @@ func demonstrateResumeDownload() {
 		}
 
 		if result.StatusCode == 416 {
-			fmt.Printf("\n✓ File already complete (no resume needed)\n")
+			fmt.Printf("\n[OK] File already complete (no resume needed)\n")
 		} else if result.Resumed {
-			fmt.Printf("\n✓ Download resumed successfully\n")
+			fmt.Printf("\n[OK] Download resumed successfully\n")
 		} else {
-			fmt.Printf("\n✓ Download completed (server doesn't support resume)\n")
+			fmt.Printf("\n[OK] Download completed (server doesn't support resume)\n")
 		}
 		fmt.Printf("  Final size: %s\n\n", httpc.FormatBytes(result.BytesWritten))
 	} else {
@@ -259,8 +259,8 @@ func demonstrateSaveResponseToFile() {
 		return
 	}
 
-	fmt.Printf("✓ Response saved to: %s\n", filePath)
-	fmt.Printf("  Size: %s\n\n", httpc.FormatBytes(int64(len(resp.RawBody))))
+	fmt.Printf("[OK] Response saved to: %s\n", filePath)
+	fmt.Printf("  Size: %s\n\n", httpc.FormatBytes(int64(len(resp.RawBody()))))
 }
 
 // demonstrateAuthenticatedDownload shows downloading files with authentication
@@ -291,7 +291,7 @@ func demonstrateAuthenticatedDownload() {
 		return
 	}
 
-	fmt.Printf("✓ Authenticated download completed\n")
+	fmt.Printf("[OK] Authenticated download completed\n")
 	fmt.Printf("  File: %s\n", result.FilePath)
 	fmt.Printf("  Size: %s\n\n", httpc.FormatBytes(result.BytesWritten))
 }

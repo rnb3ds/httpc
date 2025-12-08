@@ -65,14 +65,14 @@ func demonstrateJSON(client httpc.Client) {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 
 	// Request header (received by the server)
 	fmt.Printf("Content-Type: %s\n", result.Headers["content-type"])
 
 	// Response header (returned by the server)
-	fmt.Printf("Content-Type: %s\n", resp.Headers["Content-Type"])
-	fmt.Printf("Content-Type: %s\n", resp.Headers.Get("content-type")) // recommend case-insensitive
+	fmt.Printf("Content-Type: %s\n", resp.Response.Headers["Content-Type"])
+	fmt.Printf("Content-Type: %s\n", resp.Response.Headers.Get("content-type")) // recommend case-insensitive
 
 	fmt.Printf("Request Data: %s\n\n", result.Data)
 
@@ -92,7 +92,7 @@ func demonstrateJSON(client httpc.Client) {
 		return
 	}
 
-	fmt.Printf("Map data sent successfully, Status: %d\n\n", resp.StatusCode)
+	fmt.Printf("Map data sent successfully, Status: %d\n\n", resp.StatusCode())
 }
 
 // demonstrateForm shows form data handling
@@ -119,7 +119,7 @@ func demonstrateForm(client httpc.Client) {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Printf("Content-Type: %s\n", result.Headers["content-type"])
 	fmt.Printf("Form Data: %s\n\n", result.Data)
 }
@@ -144,7 +144,7 @@ func demonstrateText(client httpc.Client) {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Printf("Content-Type: %s\n", result.Headers["content-type"])
 	fmt.Printf("Text Data: %s\n\n", result.Data)
 }
@@ -181,7 +181,7 @@ func demonstrateXML(client httpc.Client) {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Printf("Content-Type: %s\n", result.Headers["content-type"])
 	fmt.Printf("XML Data: %s\n\n", result.Data)
 
@@ -234,7 +234,7 @@ func demonstrateBinary(client httpc.Client) {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Printf("Content-Type: %s\n", result.Headers["content-type"])
 	fmt.Printf("Binary Data Length: %d bytes\n\n", len(binaryData))
 
@@ -277,7 +277,7 @@ func demonstrateRawBody(client httpc.Client) {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Printf("Content-Type: %s\n", result.Headers["content-type"])
 	fmt.Printf("Custom Data: %s\n\n", result.Data)
 }

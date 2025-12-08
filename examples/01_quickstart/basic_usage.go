@@ -1,4 +1,4 @@
-//go:build examples
+﻿//go:build examples
 
 package main
 
@@ -57,9 +57,9 @@ func simpleGET() {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Printf("Success: %v\n", resp.IsSuccess())
-	fmt.Printf("Duration: %v\n\n", resp.Duration)
+	fmt.Printf("Duration: %v\n\n", resp.Meta.Duration)
 }
 
 // Example 2: POST with JSON data
@@ -87,7 +87,7 @@ func postJSON() {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Printf("Method: %s\n", result.Method)
 	fmt.Printf("Content-Type: %s\n\n", result.Headers["content-type"])
 }
@@ -121,7 +121,7 @@ func useClientInstance() {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Printf("Query Parameters: %+v\n\n", result.Args)
 }
 
@@ -144,7 +144,7 @@ func putRequest() {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Printf("Success: %v\n\n", resp.IsSuccess())
 }
 
@@ -163,10 +163,10 @@ func deleteRequest() {
 
 	// Check response status
 	if resp.IsSuccess() {
-		fmt.Println("✓ Resource deleted successfully")
+		fmt.Println("[OK] Resource deleted successfully")
 	} else {
-		fmt.Printf("✗ Delete failed with status: %d\n", resp.StatusCode)
+		fmt.Printf("[X] Delete failed with status: %d\n", resp.StatusCode())
 	}
 
-	fmt.Printf("Duration: %v\n\n", resp.Duration)
+	fmt.Printf("Duration: %v\n\n", resp.Meta.Duration)
 }

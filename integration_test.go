@@ -97,8 +97,8 @@ func TestIntegration_RESTfulAPI(t *testing.T) {
 			t.Fatalf("Failed to create user: %v", err)
 		}
 
-		if resp.StatusCode != http.StatusCreated {
-			t.Errorf("Expected status 201, got %d", resp.StatusCode)
+		if resp.StatusCode() != http.StatusCreated {
+			t.Errorf("Expected status 201, got %d", resp.StatusCode())
 		}
 
 		var created map[string]interface{}
@@ -118,8 +118,8 @@ func TestIntegration_RESTfulAPI(t *testing.T) {
 			t.Fatalf("Failed to get user: %v", err)
 		}
 
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("Expected status 200, got %d", resp.StatusCode)
+		if resp.StatusCode() != http.StatusOK {
+			t.Errorf("Expected status 200, got %d", resp.StatusCode())
 		}
 	})
 
@@ -135,8 +135,8 @@ func TestIntegration_RESTfulAPI(t *testing.T) {
 			t.Fatalf("Failed to update user: %v", err)
 		}
 
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("Expected status 200, got %d", resp.StatusCode)
+		if resp.StatusCode() != http.StatusOK {
+			t.Errorf("Expected status 200, got %d", resp.StatusCode())
 		}
 	})
 
@@ -147,8 +147,8 @@ func TestIntegration_RESTfulAPI(t *testing.T) {
 			t.Fatalf("Failed to delete user: %v", err)
 		}
 
-		if resp.StatusCode != http.StatusNoContent {
-			t.Errorf("Expected status 204, got %d", resp.StatusCode)
+		if resp.StatusCode() != http.StatusNoContent {
+			t.Errorf("Expected status 204, got %d", resp.StatusCode())
 		}
 	})
 }
@@ -190,8 +190,8 @@ func TestIntegration_Authentication(t *testing.T) {
 			t.Fatalf("Request failed: %v", err)
 		}
 
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("Expected status 200, got %d", resp.StatusCode)
+		if resp.StatusCode() != http.StatusOK {
+			t.Errorf("Expected status 200, got %d", resp.StatusCode())
 		}
 	})
 
@@ -201,8 +201,8 @@ func TestIntegration_Authentication(t *testing.T) {
 			t.Fatalf("Request failed: %v", err)
 		}
 
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("Expected status 200, got %d", resp.StatusCode)
+		if resp.StatusCode() != http.StatusOK {
+			t.Errorf("Expected status 200, got %d", resp.StatusCode())
 		}
 	})
 
@@ -212,8 +212,8 @@ func TestIntegration_Authentication(t *testing.T) {
 			t.Fatalf("Request failed: %v", err)
 		}
 
-		if resp.StatusCode != http.StatusUnauthorized {
-			t.Errorf("Expected status 401, got %d", resp.StatusCode)
+		if resp.StatusCode() != http.StatusUnauthorized {
+			t.Errorf("Expected status 401, got %d", resp.StatusCode())
 		}
 	})
 }
@@ -252,8 +252,8 @@ func TestIntegration_Pagination(t *testing.T) {
 			t.Fatalf("Request failed for page %d: %v", page, err)
 		}
 
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("Expected status 200, got %d", resp.StatusCode)
+		if resp.StatusCode() != http.StatusOK {
+			t.Errorf("Expected status 200, got %d", resp.StatusCode())
 		}
 
 		var result map[string]interface{}
@@ -395,7 +395,7 @@ func TestStress_MemoryUsage(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Request %d failed: %v", i, err)
 		}
-		_ = resp.RawBody // Use the response
+		_ = resp.RawBody() // Use the response
 
 		if i%1000 == 0 {
 			t.Logf("Completed %d requests", i)

@@ -1,4 +1,4 @@
-//go:build examples
+﻿//go:build examples
 
 package main
 
@@ -74,7 +74,7 @@ func demonstrateParallelRequests() {
 
 			results <- result{
 				url:      u,
-				status:   resp.StatusCode,
+				status:   resp.StatusCode(),
 				duration: duration,
 			}
 		}(url)
@@ -88,9 +88,9 @@ func demonstrateParallelRequests() {
 	fmt.Println("Results:")
 	for r := range results {
 		if r.err != nil {
-			fmt.Printf("  ✗ %s - Error: %v\n", r.url, r.err)
+			fmt.Printf("  %s - Error: %v\n", r.url, r.err)
 		} else {
-			fmt.Printf("  ✓ %s - Status: %d, Duration: %v\n", r.url, r.status, r.duration)
+			fmt.Printf("  %s - Status: %d, Duration: %v\n", r.url, r.status, r.duration)
 		}
 	}
 	fmt.Printf("Total time: %v (parallel execution)\n\n", totalDuration)
@@ -127,7 +127,7 @@ func demonstrateWorkerPool() {
 					log.Printf("Worker %d error: %v\n", id, err)
 					continue
 				}
-				results <- resp.StatusCode
+				results <- resp.StatusCode()
 			}
 		}(w)
 	}
@@ -217,7 +217,7 @@ func demonstrateConcurrentWithErrors() {
 			results <- taskResult{
 				id:       task.id,
 				url:      task.url,
-				status:   resp.StatusCode,
+				status:   resp.StatusCode(),
 				duration: duration,
 			}
 		}(t)
@@ -229,11 +229,11 @@ func demonstrateConcurrentWithErrors() {
 	fmt.Println("Task Results:")
 	for r := range results {
 		if r.err != nil {
-			fmt.Printf("  Task %d: ✗ Error - %v (took %v)\n", r.id, r.err, r.duration)
+			fmt.Printf("  Task %d: Error - %v (took %v)\n", r.id, r.err, r.duration)
 		} else if r.status >= 200 && r.status < 300 {
-			fmt.Printf("  Task %d: ✓ Success - Status %d (took %v)\n", r.id, r.status, r.duration)
+			fmt.Printf("  Task %d: Success - Status %d (took %v)\n", r.id, r.status, r.duration)
 		} else {
-			fmt.Printf("  Task %d: ⚠ HTTP Error - Status %d (took %v)\n", r.id, r.status, r.duration)
+			fmt.Printf("  Task %d: HTTP Error - Status %d (took %v)\n", r.id, r.status, r.duration)
 		}
 	}
 	fmt.Println()
@@ -277,8 +277,8 @@ func demonstrateRateLimited() {
 				return
 			}
 
-			results <- resp.StatusCode
-			fmt.Printf("  Request %d completed (Status: %d)\n", id, resp.StatusCode)
+			results <- resp.StatusCode()
+			fmt.Printf("  Request %d completed (Status: %d)\n", id, resp.StatusCode())
 		}(i)
 	}
 

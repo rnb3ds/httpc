@@ -101,21 +101,26 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 		return nil, fmt.Errorf("download request failed: %w", err)
 	}
 
-	resumed := resumeOffset > 0 && resp.StatusCode == http.StatusPartialContent
-	if resumeOffset > 0 && resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+	statusCode := resp.Response.StatusCode
+	rawBody := resp.Response.RawBody
+	contentLength := resp.Response.ContentLength
+	duration := resp.Meta.Duration
+
+	resumed := resumeOffset > 0 && statusCode == http.StatusPartialContent
+	if resumeOffset > 0 && statusCode == http.StatusRequestedRangeNotSatisfiable {
 		return &DownloadResult{
 			FilePath:      opts.FilePath,
 			BytesWritten:  0,
-			Duration:      resp.Duration,
+			Duration:      duration,
 			AverageSpeed:  0,
-			StatusCode:    resp.StatusCode,
+			StatusCode:    statusCode,
 			ContentLength: resumeOffset,
 			Resumed:       false,
 		}, nil
 	}
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	if statusCode != http.StatusOK && statusCode != http.StatusPartialContent {
+		return nil, fmt.Errorf("unexpected status code: %d", statusCode)
 	}
 
 	var file *os.File
@@ -133,15 +138,15 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 		}
 	}()
 
-	bytesWritten := int64(len(resp.RawBody))
-	if _, err = file.Write(resp.RawBody); err != nil {
+	bytesWritten := int64(len(rawBody))
+	if _, err = file.Write(rawBody); err != nil {
 		return nil, fmt.Errorf("failed to write file: %w", err)
 	}
 
-	avgSpeed := calculateSpeed(bytesWritten, resp.Duration)
+	avgSpeed := calculateSpeed(bytesWritten, duration)
 
 	if opts.ProgressCallback != nil {
-		totalSize := resp.ContentLength
+		totalSize := contentLength
 		if resumed {
 			totalSize += resumeOffset
 		}
@@ -151,10 +156,10 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	return &DownloadResult{
 		FilePath:      opts.FilePath,
 		BytesWritten:  bytesWritten,
-		Duration:      resp.Duration,
+		Duration:      duration,
 		AverageSpeed:  avgSpeed,
-		StatusCode:    resp.StatusCode,
-		ContentLength: resp.ContentLength,
+		StatusCode:    statusCode,
+		ContentLength: contentLength,
 		Resumed:       resumed,
 	}, nil
 }
@@ -163,29 +168,14 @@ const (
 	maxFilePathLen  = 4096
 	dirPermissions  = 0755
 	filePermissions = 0644
-
-	// System path prefixes for security validation
-	unixEtcPrefix     = "/etc/"
-	unixSysPrefix     = "/sys/"
-	unixProcPrefix    = "/proc/"
-	unixDevPrefix     = "/dev/"
-	unixBootPrefix    = "/boot/"
-	unixRootPrefix    = "/root/"
-	unixUsrBinPrefix  = "/usr/bin/"
-	unixUsrSbinPrefix = "/usr/sbin/"
-	unixBinPrefix     = "/bin/"
-	unixSbinPrefix    = "/sbin/"
-
-	winWindowsPrefix      = "c:/windows/"
-	winSystem32Prefix     = "c:/system32/"
-	winProgramFilesPrefix = "c:/program files/"
-	winProgramDataPrefix  = "c:/programdata/"
-	winBootPrefix         = "c:/boot/"
-
-	macLibraryPrefix      = "/library/"
-	macSystemPrefix       = "/system/"
-	macApplicationsPrefix = "/applications/"
 )
+
+var systemPaths = []string{
+	"/etc/", "/sys/", "/proc/", "/dev/", "/boot/", "/root/",
+	"/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/",
+	"c:/windows/", "c:/system32/", "c:/program files/", "c:/programdata/", "c:/boot/",
+	"/library/", "/system/", "/applications/",
+}
 
 func calculateSpeed(bytes int64, duration time.Duration) float64 {
 	if duration.Seconds() > 0 {
@@ -195,23 +185,25 @@ func calculateSpeed(bytes int64, duration time.Duration) float64 {
 }
 
 func prepareFilePath(filePath string) error {
-	if filePath == "" {
+	filePathLen := len(filePath)
+	if filePathLen == 0 {
 		return ErrEmptyFilePath
 	}
-	filePathLen := len(filePath)
 	if filePathLen > maxFilePathLen {
 		return fmt.Errorf("file path too long (max %d)", maxFilePathLen)
 	}
 
-	for i := range filePathLen {
-		c := filePath[i]
-		if c == 0 || c == '\r' || c == '\n' {
-			return fmt.Errorf("file path contains invalid characters")
-		}
-	}
-
+	// Check for UNC paths early
 	if filePathLen >= 2 && ((filePath[0] == '\\' && filePath[1] == '\\') || (filePath[0] == '/' && filePath[1] == '/')) {
 		return fmt.Errorf("UNC paths not allowed")
+	}
+
+	// Validate characters in single pass
+	for i := range filePathLen {
+		c := filePath[i]
+		if c < 0x20 || c == 0x7F {
+			return fmt.Errorf("file path contains invalid characters")
+		}
 	}
 
 	cleanPath := filepath.Clean(filePath)
@@ -224,8 +216,7 @@ func prepareFilePath(filePath string) error {
 		return fmt.Errorf("system path access denied")
 	}
 
-	// Check for path traversal in relative paths only
-	// Absolute paths are allowed (e.g., temp directories)
+	// Path traversal check
 	if !filepath.IsAbs(filePath) && strings.Contains(cleanPath, "..") {
 		wd, err := os.Getwd()
 		if err != nil {
@@ -236,7 +227,6 @@ func prepareFilePath(filePath string) error {
 			return fmt.Errorf("failed to resolve working directory: %w", err)
 		}
 
-		// Ensure resolved path doesn't escape working directory
 		if !strings.HasPrefix(absPath+string(filepath.Separator), wdAbs+string(filepath.Separator)) {
 			return fmt.Errorf("path traversal detected: path outside working directory")
 		}
@@ -247,15 +237,6 @@ func prepareFilePath(filePath string) error {
 		return fmt.Errorf("failed to create directories: %w", err)
 	}
 	return nil
-}
-
-var systemPaths = []string{
-	unixEtcPrefix, unixSysPrefix, unixProcPrefix, unixDevPrefix,
-	unixBootPrefix, unixRootPrefix, unixUsrBinPrefix, unixUsrSbinPrefix,
-	unixBinPrefix, unixSbinPrefix,
-	winWindowsPrefix, winSystem32Prefix, winProgramFilesPrefix,
-	winProgramDataPrefix, winBootPrefix,
-	macLibraryPrefix, macSystemPrefix, macApplicationsPrefix,
 }
 
 func isSystemPath(path string) bool {
@@ -273,23 +254,6 @@ func isSystemPath(path string) bool {
 		}
 	}
 	return false
-}
-
-func (r *Response) SaveToFile(filePath string) error {
-	if r.RawBody == nil {
-		return ErrResponseBodyEmpty
-	}
-
-	if err := prepareFilePath(filePath); err != nil {
-		return fmt.Errorf("file path validation failed: %w", err)
-	}
-
-	cleanPath := filepath.Clean(filePath)
-	if err := os.WriteFile(cleanPath, r.RawBody, filePermissions); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
-	}
-
-	return nil
 }
 
 // FormatBytes formats bytes in human-readable format (e.g., "1.50 KB", "2.00 MB").

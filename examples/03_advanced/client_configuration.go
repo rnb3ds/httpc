@@ -49,7 +49,7 @@ func demonstrateDefaultConfig() {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Println("Default config includes:")
 	fmt.Println("  - 30s timeout")
 	fmt.Println("  - 3 retries with exponential backoff")
@@ -75,7 +75,7 @@ func demonstrateSecureConfig() {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Println("Secure config includes:")
 	fmt.Println("  - TLS 1.3 minimum")
 	fmt.Println("  - Strict certificate validation")
@@ -101,7 +101,7 @@ func demonstratePerformanceConfig() {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Println("Performance config includes:")
 	fmt.Println("  - Higher connection limits")
 	fmt.Println("  - Longer keep-alive")
@@ -137,8 +137,8 @@ func demonstrateCustomConfig() {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
-	fmt.Printf("Duration: %v\n", resp.Duration)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
+	fmt.Printf("Duration: %v\n", resp.Meta.Duration)
 	fmt.Println("Custom config applied successfully\n ")
 }
 

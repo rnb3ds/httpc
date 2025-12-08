@@ -7,6 +7,58 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ---
 
+## v1.3.0 - Performance and Quality Improvements (2025-12-09)
+
+> **⚠️ BREAKING CHANGES**: This version includes internal optimizations that may affect behavior in edge cases. While the public API remains unchanged, applications relying on specific internal timing or nil-handling behavior should test thoroughly before upgrading.
+
+### ⚠️ Migration Notes
+- **Nil Response Handling**: Removed redundant nil checks in hot paths. Ensure your code doesn't pass nil Response/Result objects to methods.
+- **Validation Changes**: Stricter input validation may reject previously accepted (but invalid) inputs. Review error handling for header/cookie/URL validation.
+- **Decompression**: Responses with `Content-Encoding: gzip/deflate` are now automatically decompressed. If you were manually handling decompression, remove that code.
+- **Redirect Tracking**: New redirect chain tracking is enabled by default. Use `WithFollowRedirects(false)` to disable if needed.
+
+### Performance
+- Optimized hot path execution by removing redundant nil checks in Result and Response methods
+- Improved status code checks with local variable caching
+- Enhanced localhost detection using switch statement for better performance
+- Optimized URL building in DomainClient (prioritize https:// check)
+- Accelerated file path validation by moving UNC path check earlier
+- Reduced allocations in cookie parsing with custom trim functions
+- Added integer lookup table (0-99) for common conversions
+- Optimized String() methods with pre-allocated strings.Builder
+
+### Code Quality
+- Consolidated duplicate cookie parsing logic between cookie_utils.go and public_options.go
+- Added shared trimSpace helper functions to eliminate code duplication
+- Unified character validation patterns (control char checks: c < 0x20 || c == 0x7F)
+- Simplified validation logic across all input validators
+- Enhanced prepareFilePath with single-pass validation
+- Improved whitespace-only header key validation
+- Optimized option processing in Request method
+- Enhanced code readability and maintainability
+
+### Added
+- Automatic decompression for gzip and deflate encoded responses
+- Redirect chain tracking (RedirectChain, RedirectCount in Result)
+- Per-request redirect control (WithFollowRedirects, WithMaxRedirects)
+- WithCookieString for parsing cookie strings from browser/server
+- WithCookieValue for simple cookie creation
+- DomainClient for automatic cookie/header management per domain
+
+### Security
+- Enhanced header validation to detect CRLF injection
+- Comprehensive URL validation with scheme checking
+- Strengthened cookie validation with improved error messages
+- Added size limits for all user inputs
+
+### Changed
+- All optimizations maintain thread safety and existing functionality
+- Zero breaking changes to public API
+- Test coverage maintained at >72%
+- Backward compatibility preserved with deprecated Response type
+
+---
+
 
 ## v1.2.2 - Response and Cookie Enhancement (2025-12-04)
 

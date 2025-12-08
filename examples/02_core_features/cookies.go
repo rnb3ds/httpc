@@ -50,11 +50,11 @@ func demonstrateRequestCookies() {
 
 	fmt.Println("Method 1: Simple name-value cookie")
 	fmt.Println("Sending simple name-value cookies:")
-	fmt.Printf("Status: %d\n", resp.StatusCode)
-	fmt.Printf("Response: %s\n\n", resp.Body)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
+	fmt.Printf("Response: %s\n\n", resp.Body())
 
 	// Method 2: Cookie with attributes
-	cookie := &http.Cookie{
+	cookie := http.Cookie{
 		Name:     "auth_token",
 		Value:    "xyz789",
 		Path:     "/api",
@@ -75,11 +75,11 @@ func demonstrateRequestCookies() {
 
 	fmt.Println("Method 2: Cookie with attributes")
 	fmt.Println("Sending cookie with attributes:")
-	fmt.Printf("Status: %d\n", resp.StatusCode)
-	fmt.Printf("Response: %s\n\n", resp.Body)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
+	fmt.Printf("Response: %s\n\n", resp.Body())
 
 	// Method 3: Multiple cookies at once
-	cookies := []*http.Cookie{
+	cookies := []http.Cookie{
 		{Name: "cookie1", Value: "value1"},
 		{Name: "cookie2", Value: "value2"},
 		{Name: "cookie3", Value: "value3"},
@@ -95,8 +95,8 @@ func demonstrateRequestCookies() {
 
 	fmt.Println("Method 3: Multiple cookies at once")
 	fmt.Println("Sending multiple cookies at once:")
-	fmt.Printf("Status: %d\n", resp.StatusCode)
-	fmt.Printf("Response: %s\n\n", resp.Body)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
+	fmt.Printf("Response: %s\n\n", resp.Body())
 }
 
 // demonstrateResponseCookies shows how to read cookies from responses
@@ -117,12 +117,12 @@ func demonstrateResponseCookies() {
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
-	fmt.Printf("Number of cookies received: %d\n", len(resp.Cookies))
+	fmt.Printf("Status: %d\n", resp.StatusCode())
+	fmt.Printf("Number of cookies received: %d\n", len(resp.Response.Cookies))
 
 	// Method 1: Iterate through all cookies
 	fmt.Println("\nAll cookies:")
-	for _, cookie := range resp.Cookies {
+	for _, cookie := range resp.Response.Cookies {
 		fmt.Printf("  %s = %s\n", cookie.Name, cookie.Value)
 	}
 
@@ -167,7 +167,7 @@ func demonstrateCookieJar() {
 		return
 	}
 	fmt.Printf("Status: %d\n", resp1.StatusCode)
-	fmt.Printf("Cookies in final response: %d (expected: 0, cookies are in redirect response)\n", len(resp1.Cookies))
+	fmt.Printf("Cookies in final response: %d (expected: 0, cookies are in redirect response)\n", len(resp1.Response.Cookies))
 
 	// Note: Cookies are automatically managed by the client's internal cookie jar
 	fmt.Println("Cookies are automatically stored and managed by the client")
@@ -205,7 +205,7 @@ func demonstrateAdvancedCookies() {
 
 	// Scenario 1: Session management
 	fmt.Println("Scenario 1: Session Management")
-	sessionCookie := &http.Cookie{
+	sessionCookie := http.Cookie{
 		Name:     "session_token",
 		Value:    "secure_token_12345",
 		Path:     "/",
@@ -223,11 +223,11 @@ func demonstrateAdvancedCookies() {
 		log.Printf("Error: %v\n", err)
 		return
 	}
-	fmt.Printf("Status: %d\n", resp.StatusCode)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
 
 	// Scenario 2: Multiple cookies for different purposes
 	fmt.Println("\nScenario 2: Multiple Purpose Cookies")
-	cookies := []*http.Cookie{
+	cookies := []http.Cookie{
 		{
 			Name:     "auth",
 			Value:    "bearer_token",
@@ -256,8 +256,8 @@ func demonstrateAdvancedCookies() {
 		log.Printf("Error: %v\n", err)
 		return
 	}
-	fmt.Printf("Status: %d\n", resp.StatusCode)
-	fmt.Printf("Response: %s\n\n", resp.Body)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
+	fmt.Printf("Response: %s\n\n", resp.Body())
 
 	// Scenario 3: Combining cookies with other options
 	fmt.Println("Scenario 3: Cookies with Authentication")
@@ -271,8 +271,8 @@ func demonstrateAdvancedCookies() {
 		log.Printf("Error: %v\n", err)
 		return
 	}
-	fmt.Printf("Status: %d\n", resp.StatusCode)
-	fmt.Printf("Response: %s\n", resp.Body)
+	fmt.Printf("Status: %d\n", resp.StatusCode())
+	fmt.Printf("Response: %s\n", resp.Body())
 }
 
 func main() {

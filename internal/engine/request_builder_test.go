@@ -115,7 +115,7 @@ func TestRequestProcessor_BuildHTTPRequest(t *testing.T) {
 				Method:  "GET",
 				URL:     "https://api.example.com/users",
 				Context: context.Background(),
-				Cookies: []*http.Cookie{
+				Cookies: []http.Cookie{
 					{Name: "session_id", Value: "abc123"},
 					{Name: "user_pref", Value: "dark_mode"},
 				},

@@ -1,4 +1,4 @@
-//go:build examples
+﻿//go:build examples
 
 package main
 
@@ -46,9 +46,9 @@ func example1AutoFollow() {
 		return
 	}
 
-	fmt.Printf("Final Status: %d\n", resp.StatusCode)
-	fmt.Printf("Redirects Followed: %d\n", resp.RedirectCount)
-	fmt.Printf("Redirect Chain Length: %d\n\n", len(resp.RedirectChain))
+	fmt.Printf("Final Status: %d\n", resp.StatusCode())
+	fmt.Printf("Redirects Followed: %d\n", resp.Meta.RedirectCount)
+	fmt.Printf("Redirect Chain Length: %d\n\n", len(resp.Meta.RedirectChain))
 }
 
 func example2NoFollow() {
@@ -71,10 +71,10 @@ func example2NoFollow() {
 		return
 	}
 
-	fmt.Printf("Status: %d (redirect response)\n", resp.StatusCode)
-	fmt.Printf("Location Header: %s\n", resp.Headers.Get("Location"))
+	fmt.Printf("Status: %d (redirect response)\n", resp.StatusCode())
+	fmt.Printf("Location Header: %s\n", resp.Response.Headers.Get("Location"))
 	fmt.Printf("Is Redirect: %v\n", resp.IsRedirect())
-	fmt.Printf("Redirects Followed: %d\n\n", resp.RedirectCount)
+	fmt.Printf("Redirects Followed: %d\n\n", resp.Meta.RedirectCount)
 }
 
 func example3MaxRedirects() {
@@ -94,9 +94,9 @@ func example3MaxRedirects() {
 	// This will fail because it tries to redirect 3 times
 	resp, err := client.Get("http://httpbin.org/redirect/3")
 	if err != nil {
-		fmt.Printf("✓ Expected error: %v\n", err)
+		fmt.Printf("Expected error: %v\n", err)
 	} else {
-		fmt.Printf("Unexpected success: %d redirects\n", resp.RedirectCount)
+		fmt.Printf("Unexpected success: %d redirects\n", resp.Meta.RedirectCount)
 	}
 
 	// This will succeed because it only redirects 2 times
@@ -106,7 +106,7 @@ func example3MaxRedirects() {
 		return
 	}
 
-	fmt.Printf("✓ Success: %d redirects (within limit)\n\n", resp.RedirectCount)
+	fmt.Printf("Success: %d redirects (within limit)\n\n", resp.Meta.RedirectCount)
 }
 
 func example4PerRequestControl() {
@@ -130,7 +130,7 @@ func example4PerRequestControl() {
 	}
 
 	fmt.Printf("Request 1 (no follow): Status %d, Redirects: %d\n",
-		resp.StatusCode, resp.RedirectCount)
+		resp.StatusCode(), resp.Meta.RedirectCount)
 
 	// Override max redirects for this specific request
 	resp, err = client.Get("http://httpbin.org/redirect/5",
@@ -150,7 +150,7 @@ func example4PerRequestControl() {
 	}
 
 	fmt.Printf("Request 3 (default): Status %d, Redirects: %d\n\n",
-		resp.StatusCode, resp.RedirectCount)
+		resp.StatusCode(), resp.Meta.RedirectCount)
 }
 
 func example5RedirectChain() {
@@ -170,10 +170,10 @@ func example5RedirectChain() {
 		return
 	}
 
-	fmt.Printf("Final Status: %d\n", resp.StatusCode)
-	fmt.Printf("Total Redirects: %d\n", resp.RedirectCount)
+	fmt.Printf("Final Status: %d\n", resp.StatusCode())
+	fmt.Printf("Total Redirects: %d\n", resp.Meta.RedirectCount)
 	fmt.Println("\nRedirect Chain:")
-	for i, url := range resp.RedirectChain {
+	for i, url := range resp.Meta.RedirectChain {
 		fmt.Printf("  %d. %s\n", i+1, url)
 	}
 	fmt.Println()
@@ -204,28 +204,28 @@ func example6ManualHandling() {
 			return
 		}
 
-		fmt.Printf("Step %d: Status %d\n", redirectCount+1, resp.StatusCode)
+		fmt.Printf("Step %d: Status %d\n", redirectCount+1, resp.StatusCode())
 
 		// Check if it's a redirect
 		if !resp.IsRedirect() {
-			fmt.Printf("✓ Reached final destination after %d redirects\n", redirectCount)
-			fmt.Printf("Final response: %s\n\n", resp.Body[:50])
+			fmt.Printf("Reached final destination after %d redirects\n", redirectCount)
+			fmt.Printf("Final response: %s\n\n", resp.Body()[:50])
 			break
 		}
 
 		// Get the redirect location
-		location := resp.Headers.Get("Location")
+		location := resp.Response.Headers.Get("Location")
 		if location == "" {
-			fmt.Println("✗ Redirect without Location header")
+			fmt.Println("Redirect without Location header")
 			break
 		}
 
-		fmt.Printf("  → Redirecting to: %s\n", location)
+		fmt.Printf("  Redirecting to: %s\n", location)
 		currentURL = location
 		redirectCount++
 	}
 
 	if redirectCount >= maxRedirects {
-		fmt.Printf("✗ Stopped after %d redirects (limit reached)\n\n", maxRedirects)
+		fmt.Printf("Stopped after %d redirects (limit reached)\n\n", maxRedirects)
 	}
 }

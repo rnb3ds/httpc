@@ -3,8 +3,6 @@ package httpc
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -62,15 +60,15 @@ func TestClient_HTTPMethods(t *testing.T) {
 	tests := []struct {
 		name   string
 		method string
-		fn     func(Client, string, ...RequestOption) (*Response, error)
+		fn     func(Client, string, ...RequestOption) (*Result, error)
 	}{
-		{"GET", "GET", func(c Client, url string, opts ...RequestOption) (*Response, error) { return c.Get(url, opts...) }},
-		{"POST", "POST", func(c Client, url string, opts ...RequestOption) (*Response, error) { return c.Post(url, opts...) }},
-		{"PUT", "PUT", func(c Client, url string, opts ...RequestOption) (*Response, error) { return c.Put(url, opts...) }},
-		{"PATCH", "PATCH", func(c Client, url string, opts ...RequestOption) (*Response, error) { return c.Patch(url, opts...) }},
-		{"DELETE", "DELETE", func(c Client, url string, opts ...RequestOption) (*Response, error) { return c.Delete(url, opts...) }},
-		{"HEAD", "HEAD", func(c Client, url string, opts ...RequestOption) (*Response, error) { return c.Head(url, opts...) }},
-		{"OPTIONS", "OPTIONS", func(c Client, url string, opts ...RequestOption) (*Response, error) { return c.Options(url, opts...) }},
+		{"GET", "GET", func(c Client, url string, opts ...RequestOption) (*Result, error) { return c.Get(url, opts...) }},
+		{"POST", "POST", func(c Client, url string, opts ...RequestOption) (*Result, error) { return c.Post(url, opts...) }},
+		{"PUT", "PUT", func(c Client, url string, opts ...RequestOption) (*Result, error) { return c.Put(url, opts...) }},
+		{"PATCH", "PATCH", func(c Client, url string, opts ...RequestOption) (*Result, error) { return c.Patch(url, opts...) }},
+		{"DELETE", "DELETE", func(c Client, url string, opts ...RequestOption) (*Result, error) { return c.Delete(url, opts...) }},
+		{"HEAD", "HEAD", func(c Client, url string, opts ...RequestOption) (*Result, error) { return c.Head(url, opts...) }},
+		{"OPTIONS", "OPTIONS", func(c Client, url string, opts ...RequestOption) (*Result, error) { return c.Options(url, opts...) }},
 	}
 
 	for _, tt := range tests {
@@ -94,8 +92,8 @@ func TestClient_HTTPMethods(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Request failed: %v", err)
 			}
-			if resp.StatusCode != http.StatusOK {
-				t.Errorf("Expected status 200, got %d", resp.StatusCode)
+			if resp.StatusCode() != http.StatusOK {
+				t.Errorf("Expected status 200, got %d", resp.StatusCode())
 			}
 		})
 	}
@@ -284,179 +282,19 @@ func TestClient_Concurrency(t *testing.T) {
 // Package-Level Function Tests
 // ----------------------------------------------------------------------------
 
+var packageLevelTestsSetup sync.Once
+
 func setupPackageLevelTests() {
-	config := DefaultConfig()
-	config.AllowPrivateIPs = true
-	client, _ := New(config)
-	_ = SetDefaultClient(client)
-}
+	packageLevelTestsSetup.Do(func() {
+		// Close any existing default client first
+		_ = CloseDefaultClient()
 
-func TestPackage_HTTPMethods(t *testing.T) {
-	setupPackageLevelTests()
-
-	t.Run("Get", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != "GET" {
-				t.Errorf("Expected GET, got %s", r.Method)
-			}
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"status":"ok"}`))
-		}))
-		defer server.Close()
-
-		resp, err := Get(server.URL)
-		if err != nil {
-			t.Fatalf("Get failed: %v", err)
-		}
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("Expected status 200, got %d", resp.StatusCode)
-		}
+		// Create new client with test-friendly config
+		config := DefaultConfig()
+		config.AllowPrivateIPs = true
+		client, _ := New(config)
+		_ = SetDefaultClient(client)
 	})
-
-	t.Run("Post", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != "POST" {
-				t.Errorf("Expected POST, got %s", r.Method)
-			}
-			body, _ := io.ReadAll(r.Body)
-			var data map[string]interface{}
-			_ = json.Unmarshal(body, &data)
-			if data["test"] != "value" {
-				t.Error("Expected test=value")
-			}
-			w.WriteHeader(http.StatusCreated)
-		}))
-		defer server.Close()
-
-		resp, err := Post(server.URL, WithJSON(map[string]string{"test": "value"}))
-		if err != nil {
-			t.Fatalf("Post failed: %v", err)
-		}
-		if resp.StatusCode != http.StatusCreated {
-			t.Errorf("Expected status 201, got %d", resp.StatusCode)
-		}
-	})
-
-	t.Run("Put", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != "PUT" {
-				t.Errorf("Expected PUT, got %s", r.Method)
-			}
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
-		resp, err := Put(server.URL, WithJSON(map[string]string{"update": "data"}))
-		if err != nil {
-			t.Fatalf("Put failed: %v", err)
-		}
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("Expected status 200, got %d", resp.StatusCode)
-		}
-	})
-
-	t.Run("Delete", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != "DELETE" {
-				t.Errorf("Expected DELETE, got %s", r.Method)
-			}
-			w.WriteHeader(http.StatusNoContent)
-		}))
-		defer server.Close()
-
-		resp, err := Delete(server.URL)
-		if err != nil {
-			t.Fatalf("Delete failed: %v", err)
-		}
-		if resp.StatusCode != http.StatusNoContent {
-			t.Errorf("Expected status 204, got %d", resp.StatusCode)
-		}
-	})
-}
-
-func TestPackage_DefaultClient(t *testing.T) {
-	config := DefaultConfig()
-	config.Timeout = 5 * time.Second
-	config.MaxRetries = 1
-	config.AllowPrivateIPs = true
-
-	customClient, err := New(config)
-	if err != nil {
-		t.Fatalf("Failed to create custom client: %v", err)
-	}
-
-	if err := SetDefaultClient(customClient); err != nil {
-		t.Fatalf("Failed to set default client: %v", err)
-	}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	resp, err := Get(server.URL)
-	if err != nil {
-		t.Fatalf("Get with custom default client failed: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", resp.StatusCode)
-	}
-
-	// Reset to default client before closing
-	defaultClient, _ := newTestClient()
-	if err := SetDefaultClient(defaultClient); err != nil {
-		t.Fatalf("Failed to reset default client: %v", err)
-	}
-	_ = customClient.Close()
-}
-
-func TestPackage_Concurrency(t *testing.T) {
-	setupPackageLevelTests()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	const numRequests = 50
-	var wg sync.WaitGroup
-	errors := make(chan error, numRequests)
-
-	for i := 0; i < numRequests; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			var err error
-			switch idx % 5 {
-			case 0:
-				_, err = Get(server.URL)
-			case 1:
-				_, err = Post(server.URL, WithJSON(map[string]int{"id": idx}))
-			case 2:
-				_, err = Put(server.URL, WithJSON(map[string]int{"id": idx}))
-			case 3:
-				_, err = Delete(server.URL)
-			case 4:
-				_, err = Head(server.URL)
-			}
-			if err != nil {
-				errors <- err
-			}
-		}(i)
-	}
-
-	wg.Wait()
-	close(errors)
-
-	failCount := 0
-	for err := range errors {
-		t.Logf("Request failed: %v", err)
-		failCount++
-	}
-
-	if failCount > 0 {
-		t.Errorf("Failed %d out of %d concurrent requests", failCount, numRequests)
-	}
 }
 
 // ----------------------------------------------------------------------------

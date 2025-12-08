@@ -37,13 +37,13 @@ if err != nil {
 defer client.Close()
 
 // Automatically follows redirects
-resp, err := client.Get("https://example.com/redirect")
+result, err := client.Get("https://example.com/redirect")
 if err != nil {
     log.Fatal(err)
 }
 
-fmt.Printf("Final Status: %d\n", resp.StatusCode)
-fmt.Printf("Redirects Followed: %d\n", resp.RedirectCount)
+fmt.Printf("Final Status: %d\n", result.StatusCode())
+fmt.Printf("Redirects Followed: %d\n", result.Meta.RedirectCount)
 ```
 
 ## Redirect Configuration
@@ -78,14 +78,14 @@ if err != nil {
 }
 defer client.Close()
 
-resp, err := client.Get("https://example.com/redirect")
+result, err := client.Get("https://example.com/redirect")
 if err != nil {
     log.Fatal(err)
 }
 
-// resp.StatusCode will be 301, 302, etc.
-// resp.Headers.Get("Location") contains the redirect URL
-fmt.Printf("Redirect to: %s\n", resp.Headers.Get("Location"))
+// result.Response.StatusCode will be 301, 302, etc.
+// result.Response.Headers.Get("Location") contains the redirect URL
+fmt.Printf("Redirect to: %s\n", result.Response.Headers.Get("Location"))
 ```
 
 ### Configuration Limits
@@ -118,15 +118,15 @@ if err != nil {
 defer client.Close()
 
 // Override to not follow redirects for this request
-resp, err := client.Get("https://example.com/redirect",
+result, err := client.Get("https://example.com/redirect",
     httpc.WithFollowRedirects(false),
 )
 if err != nil {
     log.Fatal(err)
 }
 
-if resp.IsRedirect() {
-    fmt.Printf("Redirect to: %s\n", resp.Headers.Get("Location"))
+if result.IsRedirect() {
+    fmt.Printf("Redirect to: %s\n", result.Response.Headers.Get("Location"))
 }
 ```
 
@@ -134,7 +134,7 @@ if resp.IsRedirect() {
 
 ```go
 // Override max redirects for this request
-resp, err := client.Get("https://example.com/redirect",
+result, err := client.Get("https://example.com/redirect",
     httpc.WithMaxRedirects(3),  // Only follow up to 3 redirects
 )
 if err != nil {
@@ -145,7 +145,7 @@ if err != nil {
 ### Combine Options
 
 ```go
-resp, err := client.Get("https://example.com/redirect",
+result, err := client.Get("https://example.com/redirect",
     httpc.WithFollowRedirects(true),
     httpc.WithMaxRedirects(5),
     httpc.WithTimeout(30*time.Second),
@@ -170,17 +170,17 @@ type Response struct {
 ### Example: Track Redirect Chain
 
 ```go
-resp, err := client.Get("https://example.com/redirect")
+result, err := client.Get("https://example.com/redirect")
 if err != nil {
     log.Fatal(err)
 }
 
-fmt.Printf("Final Status: %d\n", resp.StatusCode)
-fmt.Printf("Total Redirects: %d\n", resp.RedirectCount)
+fmt.Printf("Final Status: %d\n", result.StatusCode())
+fmt.Printf("Total Redirects: %d\n", result.Meta.RedirectCount)
 
-if len(resp.RedirectChain) > 0 {
+if len(result.Meta.RedirectChain) > 0 {
     fmt.Println("\nRedirect Chain:")
-    for i, url := range resp.RedirectChain {
+    for i, url := range result.Meta.RedirectChain {
         fmt.Printf("  %d. %s\n", i+1, url)
     }
 }
@@ -200,19 +200,19 @@ Redirect Chain:
 ### Check for Redirects
 
 ```go
-resp, err := client.Get(url)
+result, err := client.Get(url)
 if err != nil {
     log.Fatal(err)
 }
 
 // Check if response is a redirect (3xx)
-if resp.IsRedirect() {
+if result.IsRedirect() {
     fmt.Println("Response is a redirect")
 }
 
 // Check if redirects were followed
-if resp.RedirectCount > 0 {
-    fmt.Printf("Followed %d redirects\n", resp.RedirectCount)
+if result.Meta.RedirectCount > 0 {
+    fmt.Printf("Followed %d redirects\n", result.Meta.RedirectCount)
 }
 ```
 
@@ -234,19 +234,19 @@ redirectCount := 0
 maxRedirects := 5
 
 for redirectCount < maxRedirects {
-    resp, err := client.Get(currentURL)
+    result, err := client.Get(currentURL)
     if err != nil {
         log.Fatal(err)
     }
 
     // Check if it's a redirect
-    if !resp.IsRedirect() {
+    if !result.IsRedirect() {
         fmt.Println("Reached final destination")
         break
     }
 
     // Get the redirect location
-    location := resp.Headers.Get("Location")
+    location := result.Response.Headers.Get("Location")
     if location == "" {
         fmt.Println("Redirect without Location header")
         break
@@ -302,20 +302,20 @@ client, err := httpc.New(config)
 ### 2. Check Redirect Count
 
 ```go
-resp, err := client.Get(url)
+result, err := client.Get(url)
 if err != nil {
     log.Fatal(err)
 }
 
-if resp.RedirectCount > 5 {
-    log.Printf("Warning: Followed %d redirects", resp.RedirectCount)
+if result.Meta.RedirectCount > 5 {
+    log.Printf("Warning: Followed %d redirects", result.Meta.RedirectCount)
 }
 ```
 
 ### 3. Handle Redirect Errors
 
 ```go
-resp, err := client.Get(url)
+result, err := client.Get(url)
 if err != nil {
     // Check if error is due to too many redirects
     if strings.Contains(err.Error(), "redirects") {
@@ -331,7 +331,7 @@ if err != nil {
 When handling redirects manually, validate the redirect URL:
 
 ```go
-location := resp.Headers.Get("Location")
+location := result.Response.Headers.Get("Location")
 if location == "" {
     return fmt.Errorf("redirect without Location header")
 }
@@ -363,14 +363,14 @@ resp, err := client.Get(specialURL, httpc.WithMaxRedirects(10))
 ### 6. Monitor Redirect Chains
 
 ```go
-resp, err := client.Get(url)
+result, err := client.Get(url)
 if err != nil {
     log.Fatal(err)
 }
 
 // Log redirect chain for debugging
-if len(resp.RedirectChain) > 0 {
-    log.Printf("Redirect chain: %v", resp.RedirectChain)
+if len(result.Meta.RedirectChain) > 0 {
+    log.Printf("Redirect chain: %v", result.Meta.RedirectChain)
 }
 ```
 
@@ -387,7 +387,7 @@ if err != nil {
 }
 defer client.Close()
 
-resp, err := client.Get(url)
+result, err := client.Get(url)
 if err != nil {
     // Error: "stopped after 3 redirects"
     log.Printf("Redirect error: %v", err)
@@ -401,7 +401,7 @@ if err != nil {
 // Server redirects to itself infinitely
 // HTTPC will stop after MaxRedirects and return an error
 
-resp, err := client.Get("https://example.com/infinite-loop")
+result, err := client.Get("https://example.com/infinite-loop")
 if err != nil {
     // Error: "stopped after 10 redirects"
     log.Printf("Possible infinite loop: %v", err)
