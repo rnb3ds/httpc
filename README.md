@@ -140,33 +140,73 @@ resp, err := httpc.Post(url,
 
 **[📖 Complete Options Reference](docs/request-options.md)**
 
+### Response Data Access
+
+HTTPC returns a `Result` object that provides structured access to request and response information:
+
+```go
+result, err := httpc.Get("https://api.example.com/users/123")
+if err != nil {
+    log.Fatal(err)
+}
+
+// Quick access methods
+statusCode := result.StatusCode()    // HTTP status code
+body := result.Body()                // Response body as string
+rawBody := result.RawBody()          // Response body as []byte
+
+// Detailed response information
+response := result.Response
+fmt.Printf("Status: %d %s\n", response.StatusCode, response.Status)
+fmt.Printf("Content-Length: %d\n", response.ContentLength)
+fmt.Printf("Headers: %v\n", response.Headers)
+fmt.Printf("Cookies: %v\n", response.Cookies)
+
+// Request information
+request := result.Request
+fmt.Printf("Method: %s\n", request.Method)
+fmt.Printf("URL: %s\n", request.URL)
+fmt.Printf("Request Headers: %v\n", request.Headers)
+
+// Metadata
+meta := result.Meta
+fmt.Printf("Duration: %v\n", meta.Duration)
+fmt.Printf("Attempts: %d\n", meta.Attempts)
+fmt.Printf("Redirects: %d\n", meta.RedirectCount)
+```
+
 ### Response Handling
 
 ```go
-resp, err := httpc.Get(url)
+result, err := httpc.Get(url)
 if err != nil {
     log.Fatal(err)
 }
 
 // Status checking
-if resp.IsSuccess() {        // 2xx
+if result.IsSuccess() {        // 2xx
     fmt.Println("Success!")
 }
 
 // Parse JSON response
-var result map[string]interface{}
-if err := resp.JSON(&result); err != nil {
+var data map[string]interface{}
+if err := result.JSON(&data); err != nil {
     log.Fatal(err)
 }
 
 // Access response data
-fmt.Printf("Status: %d\n", resp.StatusCode())
-fmt.Printf("Body: %s\n", resp.Body())
-fmt.Printf("Duration: %v\n", resp.Meta.Duration)
-fmt.Printf("Attempts: %d\n", resp.Meta.Attempts)
+fmt.Printf("Status: %d\n", result.StatusCode())
+fmt.Printf("Body: %s\n", result.Body())
+fmt.Printf("Duration: %v\n", result.Meta.Duration)
+fmt.Printf("Attempts: %d\n", result.Meta.Attempts)
 
 // Work with cookies
-cookie := resp.GetCookie("session_id")
+cookie := result.GetCookie("session_id")
+
+// Access detailed response information
+fmt.Printf("Content-Length: %d\n", result.Response.ContentLength)
+fmt.Printf("Response Headers: %v\n", result.Response.Headers)
+fmt.Printf("Request Headers: %v\n", result.Request.Headers)
 ```
 
 ### Automatic Response Decompression
@@ -175,13 +215,13 @@ HTTPC automatically detects and decompresses compressed HTTP responses:
 
 ```go
 // Request compressed response
-resp, err := httpc.Get("https://api.example.com/data",
+result, err := httpc.Get("https://api.example.com/data",
     httpc.WithHeader("Accept-Encoding", "gzip, deflate"),
 )
 
 // Response is automatically decompressed
-fmt.Printf("Decompressed body: %s\n", resp.Body())
-fmt.Printf("Original encoding: %s\n", resp.Response.Headers.Get("Content-Encoding"))
+fmt.Printf("Decompressed body: %s\n", result.Body())
+fmt.Printf("Original encoding: %s\n", result.Response.Headers.Get("Content-Encoding"))
 ```
 
 **Supported Encodings:**
@@ -265,7 +305,7 @@ client, err := httpc.New(config)
 ## Error Handling
 
 ```go
-resp, err := httpc.Get(url)
+result, err := httpc.Get(url)
 if err != nil {
     // Check for specific error types
     var httpErr *httpc.HTTPError
@@ -282,8 +322,15 @@ if err != nil {
 }
 
 // Check response status
-if !resp.IsSuccess() {
-    return fmt.Errorf("unexpected status: %d", resp.StatusCode())
+if !result.IsSuccess() {
+    return fmt.Errorf("unexpected status: %d", result.StatusCode())
+}
+
+// Access detailed error information
+if result.IsClientError() {
+    fmt.Printf("Client error (4xx): %d\n", result.StatusCode())
+} else if result.IsServerError() {
+    fmt.Printf("Server error (5xx): %d\n", result.StatusCode())
 }
 ```
 
@@ -303,7 +350,7 @@ defer client.Close()  // Always close to release resources
 
 // Or use package-level functions (auto-managed)
 defer httpc.CloseDefaultClient()
-resp, err := httpc.Get(url)
+result, err := httpc.Get(url)
 ```
 
 ### Automatic Retries
@@ -316,7 +363,7 @@ config.BackoffFactor = 2.0
 client, err := httpc.New(config)
 
 // Or per-request
-resp, err := httpc.Get(url, httpc.WithMaxRetries(5))
+result, err := httpc.Get(url, httpc.WithMaxRetries(5))
 ```
 
 ### Context Support
@@ -325,7 +372,7 @@ resp, err := httpc.Get(url, httpc.WithMaxRetries(5))
 // Timeout
 ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 defer cancel()
-resp, err := client.Get(url, httpc.WithContext(ctx))
+result, err := client.Get(url, httpc.WithContext(ctx))
 
 // Cancellation
 ctx, cancel := context.WithCancel(context.Background())
@@ -333,27 +380,27 @@ go func() {
     time.Sleep(5 * time.Second)
     cancel()
 }()
-resp, err := client.Get(url, httpc.WithContext(ctx))
+result, err := client.Get(url, httpc.WithContext(ctx))
 ```
 
 ### HTTP Redirects
 
 ```go
 // Automatic redirect following (default)
-resp, err := httpc.Get("https://example.com/redirect")
-fmt.Printf("Followed %d redirects\n", resp.Meta.RedirectCount)
+result, err := httpc.Get("https://example.com/redirect")
+fmt.Printf("Followed %d redirects\n", result.Meta.RedirectCount)
 
 // Disable redirects for specific request
-resp, err := httpc.Get(url, httpc.WithFollowRedirects(false))
-if resp.IsRedirect() {
-    fmt.Printf("Redirect to: %s\n", resp.Response.Headers.Get("Location"))
+result, err := httpc.Get(url, httpc.WithFollowRedirects(false))
+if result.IsRedirect() {
+    fmt.Printf("Redirect to: %s\n", result.Response.Headers.Get("Location"))
 }
 
 // Limit redirects
-resp, err := httpc.Get(url, httpc.WithMaxRedirects(5))
+result, err := httpc.Get(url, httpc.WithMaxRedirects(5))
 
 // Track redirect chain
-for i, url := range resp.Meta.RedirectChain {
+for i, url := range result.Meta.RedirectChain {
     fmt.Printf("%d. %s\n", i+1, url)
 }
 ```
@@ -376,12 +423,12 @@ client.Get("https://example.com/profile")
 
 // Manual cookie setting
 // Parse cookie string (from browser dev tools or server response)
-resp, err := httpc.Get("https://api.example.com/data",
+result, err := httpc.Get("https://api.example.com/data",
     httpc.WithCookieString("PSID=4418ECBB1281B550; PSTM=1733760779; BS=kUwNTVFcEUBUItoc"),
 )
 
 // Set individual cookies
-resp, err = httpc.Get("https://api.example.com/data",
+result, err = httpc.Get("https://api.example.com/data",
     httpc.WithCookieValue("session", "abc123"),
     httpc.WithCookieValue("token", "xyz789"),
 )
@@ -394,7 +441,7 @@ cookie := &http.Cookie{
     HttpOnly: true,
     SameSite: http.SameSiteStrictMode,
 }
-resp, err = httpc.Get("https://api.example.com/data", httpc.WithCookie(cookie))
+result, err = httpc.Get("https://api.example.com/data", httpc.WithCookie(cookie))
 ```
 
 **[📖 Cookie API Reference](docs/cookie-api-reference.md)**
@@ -522,7 +569,7 @@ for i := 0; i < 100; i++ {
     wg.Add(1)
     go func() {
         defer wg.Done()
-        resp, _ := client.Get("https://api.example.com")
+        result, _ := client.Get("https://api.example.com")
         // Process response...
     }()
 }
@@ -542,6 +589,27 @@ wg.Wait()
 - Response objects are safe to read but shouldn't be modified concurrently
 
 **Testing:** Run `make test-race` to verify race-free operation in your code.
+
+### Performance Benchmarks
+
+HTTPC is designed for high performance with minimal allocations:
+
+```bash
+# Run benchmarks
+go test -bench=. -benchmem ./...
+
+# Example results (your results may vary):
+BenchmarkClient_Get-8           5000    250000 ns/op    1024 B/op    8 allocs/op
+BenchmarkClient_Post-8          4000    300000 ns/op    1536 B/op   12 allocs/op
+BenchmarkClient_Concurrent-8   10000    150000 ns/op     512 B/op    4 allocs/op
+```
+
+**Performance Features:**
+- **Zero-copy operations** where possible
+- **Connection pooling** with configurable limits
+- **Hot path optimization** with minimal allocations
+- **Atomic operations** for thread-safe counters
+- **Efficient string operations** with pre-allocated buffers
 
 **[📖 Security Guide](SECURITY.md)**
 

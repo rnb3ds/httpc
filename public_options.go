@@ -70,15 +70,16 @@ func WithXMLAccept() RequestOption {
 }
 
 const (
-	maxCredLen     = 255
-	maxTokenLen    = 2048
-	maxKeyLen      = 256
-	maxValueLen    = 8192
-	maxFilenameLen = 256
+	maxCredLen     = 255  // Maximum credential length (username/password)
+	maxTokenLen    = 2048 // Maximum bearer token length
+	maxKeyLen      = 256  // Maximum query parameter key length
+	maxValueLen    = 8192 // Maximum query parameter value length
+	maxFilenameLen = 256  // Maximum filename length for uploads
 )
 
 // WithBasicAuth adds HTTP Basic Authentication to the request.
 // The credentials are base64-encoded and added to the Authorization header.
+// Validates credentials to prevent injection attacks and enforce size limits.
 // Returns an error if username is empty or credentials contain invalid characters.
 func WithBasicAuth(username, password string) RequestOption {
 	return func(r *Request) error {
@@ -93,15 +94,18 @@ func WithBasicAuth(username, password string) RequestOption {
 		}
 
 		if r.Headers == nil {
-			r.Headers = make(map[string]string)
+			r.Headers = make(map[string]string, 1)
 		}
 
-		r.Headers["Authorization"] = "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+password))
+		// Efficient string concatenation and encoding
+		creds := username + ":" + password
+		r.Headers["Authorization"] = "Basic " + base64.StdEncoding.EncodeToString([]byte(creds))
 		return nil
 	}
 }
 
 // WithBearerToken adds a Bearer token to the Authorization header.
+// Validates token to prevent injection attacks and enforce size limits.
 // Returns an error if token is empty, too long, or contains invalid characters.
 func WithBearerToken(token string) RequestOption {
 	return func(r *Request) error {
@@ -113,7 +117,7 @@ func WithBearerToken(token string) RequestOption {
 		}
 
 		if r.Headers == nil {
-			r.Headers = make(map[string]string)
+			r.Headers = make(map[string]string, 1)
 		}
 		r.Headers["Authorization"] = "Bearer " + token
 		return nil
@@ -471,6 +475,8 @@ func WithCookieString(cookieString string) RequestOption {
 	}
 }
 
+// validateCredential validates credentials for Basic Auth to prevent injection attacks.
+// Checks for control characters, length limits, and colon in username (RFC 7617).
 func validateCredential(cred string, maxLen int, checkColon bool) error {
 	credLen := len(cred)
 	if credLen > maxLen {
@@ -479,13 +485,24 @@ func validateCredential(cred string, maxLen int, checkColon bool) error {
 
 	for i := range credLen {
 		c := cred[i]
-		if c < 0x20 || c == 0x7F || (checkColon && c == ':') {
+		// Reject control characters and DEL
+		if c < 0x20 || c == 0x7F {
 			return fmt.Errorf("contains invalid characters")
+		}
+		// Username cannot contain colon (RFC 7617)
+		if checkColon && c == ':' {
+			return fmt.Errorf("username cannot contain colon")
+		}
+		// Additional security: reject CRLF injection attempts
+		if c == '\r' || c == '\n' {
+			return fmt.Errorf("CRLF injection detected")
 		}
 	}
 	return nil
 }
 
+// validateToken validates bearer tokens to prevent injection attacks.
+// Enforces RFC 6750 token format and prevents header injection.
 func validateToken(token string) error {
 	tokenLen := len(token)
 	if tokenLen > maxTokenLen {
@@ -494,13 +511,24 @@ func validateToken(token string) error {
 
 	for i := range tokenLen {
 		c := token[i]
+		// Reject control characters and DEL
 		if c < 0x20 || c == 0x7F {
 			return fmt.Errorf("token contains invalid characters")
+		}
+		// Additional security: reject CRLF injection attempts
+		if c == '\r' || c == '\n' {
+			return fmt.Errorf("CRLF injection detected in token")
+		}
+		// RFC 6750: token should be ASCII printable characters except space
+		if c == ' ' {
+			return fmt.Errorf("token cannot contain spaces")
 		}
 	}
 	return nil
 }
 
+// validateQueryKey validates query parameter keys to prevent injection attacks.
+// Enforces URL encoding rules and prevents parameter pollution.
 func validateQueryKey(key string) error {
 	keyLen := len(key)
 	if keyLen == 0 {
@@ -512,8 +540,17 @@ func validateQueryKey(key string) error {
 
 	for i := range keyLen {
 		c := key[i]
-		if c < 0x20 || c == 0x7F || c == '&' || c == '=' {
+		// Reject control characters and DEL
+		if c < 0x20 || c == 0x7F {
 			return fmt.Errorf("query key contains invalid characters")
+		}
+		// Prevent query parameter injection
+		if c == '&' || c == '=' || c == '#' || c == '?' {
+			return fmt.Errorf("query key contains reserved characters")
+		}
+		// Additional security: reject CRLF injection attempts
+		if c == '\r' || c == '\n' {
+			return fmt.Errorf("CRLF injection detected in query key")
 		}
 	}
 	return nil
@@ -597,12 +634,13 @@ func validateCookie(cookie *http.Cookie) error {
 }
 
 // parseCookieString parses a cookie string and returns http.Cookie objects with secure defaults.
-// Optimized to minimize allocations.
+// Optimized for minimal allocations and comprehensive validation.
 func parseCookieString(cookieString string) ([]http.Cookie, error) {
 	if cookieString == "" {
 		return nil, nil
 	}
 
+	// Pre-allocate with reasonable capacity
 	cookies := make([]http.Cookie, 0, 4)
 	start := 0
 
@@ -621,6 +659,21 @@ func parseCookieString(cookieString string) ([]http.Cookie, error) {
 
 				if name == "" {
 					return nil, fmt.Errorf("empty cookie name in pair: %s", pair)
+				}
+
+				// Validate cookie name and value for security
+				if len(name) > maxCookieNameLen {
+					return nil, fmt.Errorf("cookie name too long: %s", name)
+				}
+				if len(value) > maxCookieValueLen {
+					return nil, fmt.Errorf("cookie value too long for %s", name)
+				}
+
+				// Check for invalid characters
+				for _, c := range name {
+					if c < 0x20 || c == 0x7F || c == ';' || c == ',' || c == '=' {
+						return nil, fmt.Errorf("invalid character in cookie name: %s", name)
+					}
 				}
 
 				cookies = append(cookies, http.Cookie{

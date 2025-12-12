@@ -7,6 +7,35 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ---
 
+## v1.3.1 - Security and Performance Optimization (2025-12-12)
+
+### Security
+- Enhanced input validation with CRLF injection prevention
+- Strengthened SSRF protection with additional IP range checks
+- Improved file path validation with comprehensive security checks
+- Enhanced cookie parsing with strict validation rules
+
+### Performance
+- Optimized hot path functions for minimal allocations
+- Improved connection pool metrics with lock-free operations
+- Optimized string operations and trimming functions
+- Enhanced domain client URL building and state management
+
+### Error Handling
+- Comprehensive error classification improvements with priority-based matching
+- Added Unix error code support (ECONNREFUSED, ETIMEDOUT, EHOSTUNREACH, ENETUNREACH)
+- Enhanced network error pattern detection
+- Fixed HTTP/2 header validation error messages
+- Added Connection header value validation (keep-alive, close, upgrade)
+
+### Code Quality
+- Added comprehensive comments for security-critical functions
+- Improved error context and classification accuracy
+- Enhanced test coverage for edge cases and ambiguous patterns
+- Optimized error classification with early returns for better performance
+
+---
+
 ## v1.3.0 - Performance and Quality Improvements (2025-12-09)
 
 > **⚠️ BREAKING CHANGES**: This version includes internal optimizations that may affect behavior in edge cases. While the public API remains unchanged, applications relying on specific internal timing or nil-handling behavior should test thoroughly before upgrading.
