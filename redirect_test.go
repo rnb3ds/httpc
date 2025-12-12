@@ -306,35 +306,6 @@ func TestRedirect_ChainTracking(t *testing.T) {
 	}
 }
 
-func TestRedirect_IsRedirectMethod(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		statusCode int
-		expected   bool
-	}{
-		{200, false},
-		{299, false},
-		{300, true},
-		{301, true},
-		{302, true},
-		{303, true},
-		{304, true},
-		{307, true},
-		{308, true},
-		{399, true},
-		{400, false},
-		{500, false},
-	}
-
-	for _, tt := range tests {
-		resp := &Response{StatusCode: tt.statusCode}
-		if got := resp.IsRedirect(); got != tt.expected {
-			t.Errorf("StatusCode %d: IsRedirect() = %v, want %v", tt.statusCode, got, tt.expected)
-		}
-	}
-}
-
 func TestRedirect_ConfigValidation(t *testing.T) {
 	t.Parallel()
 

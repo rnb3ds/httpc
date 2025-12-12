@@ -348,7 +348,7 @@ func TestDownload_CreateDirectories(t *testing.T) {
 	}
 }
 
-func TestResponse_SaveToFile(t *testing.T) {
+func TestResult_SaveToFile(t *testing.T) {
 	content := []byte("response content")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

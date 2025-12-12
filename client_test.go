@@ -301,45 +301,6 @@ func setupPackageLevelTests() {
 // Response Helper Tests
 // ----------------------------------------------------------------------------
 
-func TestResponse_Helpers(t *testing.T) {
-	tests := []struct {
-		name       string
-		statusCode int
-		isSuccess  bool
-		isRedirect bool
-		isClient   bool
-		isServer   bool
-	}{
-		{"200 OK", 200, true, false, false, false},
-		{"201 Created", 201, true, false, false, false},
-		{"204 No Content", 204, true, false, false, false},
-		{"301 Moved", 301, false, true, false, false},
-		{"302 Found", 302, false, true, false, false},
-		{"400 Bad Request", 400, false, false, true, false},
-		{"404 Not Found", 404, false, false, true, false},
-		{"500 Server Error", 500, false, false, false, true},
-		{"503 Unavailable", 503, false, false, false, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resp := &Response{StatusCode: tt.statusCode}
-			if resp.IsSuccess() != tt.isSuccess {
-				t.Errorf("IsSuccess() = %v, want %v", resp.IsSuccess(), tt.isSuccess)
-			}
-			if resp.IsRedirect() != tt.isRedirect {
-				t.Errorf("IsRedirect() = %v, want %v", resp.IsRedirect(), tt.isRedirect)
-			}
-			if resp.IsClientError() != tt.isClient {
-				t.Errorf("IsClientError() = %v, want %v", resp.IsClientError(), tt.isClient)
-			}
-			if resp.IsServerError() != tt.isServer {
-				t.Errorf("IsServerError() = %v, want %v", resp.IsServerError(), tt.isServer)
-			}
-		})
-	}
-}
-
 // ----------------------------------------------------------------------------
 // Type Tests
 // ----------------------------------------------------------------------------

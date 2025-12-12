@@ -10,6 +10,7 @@ func SecureConfig() *Config {
 	cfg.MaxIdleConns = 20
 	cfg.MaxConnsPerHost = 5
 	cfg.MaxResponseBodySize = 5 * 1024 * 1024
+	cfg.AllowPrivateIPs = false // Strict SSRF protection for security-critical applications
 	cfg.MaxRetries = 1
 	cfg.RetryDelay = 2 * time.Second
 	cfg.FollowRedirects = false
