@@ -3,153 +3,12 @@ package httpc
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"strings"
 	"time"
 )
-
-// Response represents an HTTP response.
-// Deprecated: Use Result instead for new code.
-// This type is maintained for backward compatibility only.
-type Response struct {
-	StatusCode     int
-	Status         string
-	Headers        http.Header
-	Body           string
-	RawBody        []byte
-	ContentLength  int64
-	Duration       time.Duration
-	Attempts       int
-	Cookies        []*http.Cookie
-	RedirectChain  []string
-	RedirectCount  int
-	RequestHeaders http.Header
-}
-
-// IsSuccess returns true if the response status code indicates success (2xx).
-func (r *Response) IsSuccess() bool {
-	code := r.StatusCode
-	return code >= 200 && code < 300
-}
-
-// IsRedirect returns true if the response status code indicates a redirect (3xx).
-func (r *Response) IsRedirect() bool {
-	code := r.StatusCode
-	return code >= 300 && code < 400
-}
-
-// IsClientError returns true if the response status code indicates a client error (4xx).
-func (r *Response) IsClientError() bool {
-	code := r.StatusCode
-	return code >= 400 && code < 500
-}
-
-// IsServerError returns true if the response status code indicates a server error (5xx).
-func (r *Response) IsServerError() bool {
-	code := r.StatusCode
-	return code >= 500 && code < 600
-}
-
-// JSON unmarshals the response body into the provided interface.
-func (r *Response) JSON(v any) error {
-	bodyLen := len(r.RawBody)
-	if bodyLen == 0 {
-		return ErrResponseBodyEmpty
-	}
-	if bodyLen > maxJSONSize {
-		return fmt.Errorf("%w: %d bytes exceeds 50MB", ErrResponseBodyTooLarge, bodyLen)
-	}
-	return json.Unmarshal(r.RawBody, v)
-}
-
-// GetCookie returns a specific cookie from the response by name.
-func (r *Response) GetCookie(name string) *http.Cookie {
-	for _, cookie := range r.Cookies {
-		if cookie.Name == name {
-			return cookie
-		}
-	}
-	return nil
-}
-
-// HasCookie checks if a specific cookie exists in the response.
-func (r *Response) HasCookie(name string) bool {
-	return r.GetCookie(name) != nil
-}
-
-// GetRequestCookies extracts cookies from the request Cookie header.
-func (r *Response) GetRequestCookies() []*http.Cookie {
-	if r.RequestHeaders == nil {
-		return nil
-	}
-	cookieHeader := r.RequestHeaders.Get("Cookie")
-	if cookieHeader == "" {
-		return nil
-	}
-	return parseCookieHeader(cookieHeader)
-}
-
-// GetRequestCookie returns a specific cookie from the request by name.
-func (r *Response) GetRequestCookie(name string) *http.Cookie {
-	cookies := r.GetRequestCookies()
-	for _, cookie := range cookies {
-		if cookie.Name == name {
-			return cookie
-		}
-	}
-	return nil
-}
-
-// HasRequestCookie checks if a specific cookie was sent in the request.
-func (r *Response) HasRequestCookie(name string) bool {
-	return r.GetRequestCookie(name) != nil
-}
-
-// String returns a formatted string representation of the response.
-func (r *Response) String() string {
-	if r == nil {
-		return "<nil Response>"
-	}
-
-	var b strings.Builder
-	b.Grow(256)
-	b.WriteString("Response{Status: ")
-	b.WriteString(itoa(r.StatusCode))
-	b.WriteByte(' ')
-	b.WriteString(r.Status)
-	b.WriteString(", ContentLength: ")
-	b.WriteString(itoa64(r.ContentLength))
-	b.WriteString(", Duration: ")
-	b.WriteString(r.Duration.String())
-	b.WriteString(", Attempts: ")
-	b.WriteString(itoa(r.Attempts))
-
-	if len(r.Headers) > 0 {
-		b.WriteString(", Headers: ")
-		b.WriteString(itoa(len(r.Headers)))
-	}
-	if len(r.Cookies) > 0 {
-		b.WriteString(", Cookies: ")
-		b.WriteString(itoa(len(r.Cookies)))
-	}
-	if len(r.Body) > 0 {
-		b.WriteString(", Body: \n")
-		b.WriteString(r.Body)
-	}
-	b.WriteByte('}')
-	return b.String()
-}
-
-// Html returns the response body as HTML content.
-func (r *Response) Html() string {
-	if r == nil {
-		return ""
-	}
-	return r.Body
-}
 
 const (
 	maxJSONSize         = 50 * 1024 * 1024   // 50MB
@@ -182,7 +41,7 @@ type Config struct {
 	MaxTLSVersion       uint16
 	InsecureSkipVerify  bool
 	MaxResponseBodySize int64
-	AllowPrivateIPs     bool
+	AllowPrivateIPs     bool // Allow requests to private/reserved IP ranges (default: true for usability)
 	StrictContentLength bool
 
 	MaxRetries    int
@@ -233,7 +92,7 @@ func DefaultConfig() *Config {
 		MaxTLSVersion:       tls.VersionTLS13,
 		InsecureSkipVerify:  false,
 		MaxResponseBodySize: 10 * 1024 * 1024,
-		AllowPrivateIPs:     false,
+		AllowPrivateIPs:     true, // Changed: Enable for better usability in diverse network environments
 		StrictContentLength: true,
 		MaxRetries:          3,
 		RetryDelay:          1 * time.Second,

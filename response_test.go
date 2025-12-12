@@ -16,7 +16,7 @@ import (
 // Basic Result Usage
 // ----------------------------------------------------------------------------
 
-func TestResponse_BasicUsage(t *testing.T) {
+func TestResult_BasicUsage(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -65,7 +65,7 @@ func TestResponse_BasicUsage(t *testing.T) {
 // Convenience Methods
 // ----------------------------------------------------------------------------
 
-func TestResponse_ConvenienceMethods(t *testing.T) {
+func TestResult_ConvenienceMethods(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -117,7 +117,7 @@ func TestResponse_ConvenienceMethods(t *testing.T) {
 // Status Checks
 // ----------------------------------------------------------------------------
 
-func TestResponse_StatusChecks(t *testing.T) {
+func TestResult_StatusChecks(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -167,7 +167,7 @@ func TestResponse_StatusChecks(t *testing.T) {
 // JSON Parsing
 // ----------------------------------------------------------------------------
 
-func TestResponse_JSON(t *testing.T) {
+func TestResult_JSON(t *testing.T) {
 	t.Parallel()
 
 	t.Run("Valid JSON", func(t *testing.T) {
@@ -226,7 +226,7 @@ func TestResponse_JSON(t *testing.T) {
 // Response Cookies
 // ----------------------------------------------------------------------------
 
-func TestResponse_Cookies(t *testing.T) {
+func TestResult_Cookies(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.SetCookie(w, &http.Cookie{Name: "session", Value: "abc123"})
 		http.SetCookie(w, &http.Cookie{Name: "token", Value: "xyz789"})
@@ -273,15 +273,7 @@ func TestResponse_Cookies(t *testing.T) {
 // String Formatting
 // ----------------------------------------------------------------------------
 
-func TestResponse_String(t *testing.T) {
-	t.Run("nil response", func(t *testing.T) {
-		var r *Response
-		str := r.String()
-		if str != "<nil Response>" {
-			t.Errorf("Expected '<nil Response>', got %s", str)
-		}
-	})
-
+func TestResult_String(t *testing.T) {
 	t.Run("valid response", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -309,15 +301,7 @@ func TestResponse_String(t *testing.T) {
 // HTML Formatting
 // ----------------------------------------------------------------------------
 
-func TestResponse_Html(t *testing.T) {
-	t.Run("nil response", func(t *testing.T) {
-		var r *Response
-		html := r.Html()
-		if html != "" {
-			t.Errorf("Expected empty string for nil response, got %s", html)
-		}
-	})
-
+func TestResult_Html(t *testing.T) {
 	t.Run("valid response", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/html")
@@ -345,7 +329,7 @@ func TestResponse_Html(t *testing.T) {
 // Nil Safety
 // ----------------------------------------------------------------------------
 
-func TestResponse_NilSafety(t *testing.T) {
+func TestResult_NilSafety(t *testing.T) {
 	t.Parallel()
 
 	var result *Result
