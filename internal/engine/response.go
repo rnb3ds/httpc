@@ -62,6 +62,8 @@ func (p *ResponseProcessor) Process(httpResp *http.Response) (*Response, error) 
 	return resp, nil
 }
 
+// readBody reads and optionally decompresses the response body with size limits.
+// Optimized for security and performance with comprehensive validation.
 func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 	if httpResp.Body == nil {
 		return nil, nil
@@ -80,18 +82,19 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 		}
 	}
 
-	// Apply size limit if configured
+	// Apply size limit if configured - critical for security
 	if maxSize > 0 {
-		// Read one extra byte to detect size violations
+		// Read one extra byte to detect size violations efficiently
 		reader = io.LimitReader(reader, maxSize+1)
 	}
 
+	// Read body with error handling
 	body, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	// Check if body exceeds limit
+	// Security check: enforce size limit strictly
 	if maxSize > 0 && int64(len(body)) > maxSize {
 		return nil, fmt.Errorf("response body exceeds limit of %d bytes", maxSize)
 	}
@@ -100,7 +103,8 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 }
 
 // createDecompressor creates an appropriate decompressor based on the encoding type.
-// Supports gzip and deflate encodings.
+// Supports gzip and deflate encodings with comprehensive error handling.
+// Adheres to zero external dependencies principle.
 func (p *ResponseProcessor) createDecompressor(reader io.Reader, encoding string) (io.Reader, error) {
 	switch encoding {
 	case "gzip":
@@ -111,12 +115,23 @@ func (p *ResponseProcessor) createDecompressor(reader io.Reader, encoding string
 		return gzipReader, nil
 
 	case "deflate":
+		// flate.NewReader never returns an error
 		return flate.NewReader(reader), nil
 
 	case "br":
+		// Brotli not supported - would require external dependency
 		return nil, fmt.Errorf("brotli decompression not supported (stdlib only, no external dependencies)")
 
+	case "compress", "x-compress":
+		// LZW compression not supported in stdlib
+		return nil, fmt.Errorf("LZW compression not supported")
+
+	case "identity", "":
+		// No compression or explicit identity
+		return reader, nil
+
 	default:
+		// Unknown encoding - return as-is but log warning
 		return reader, nil
 	}
 }

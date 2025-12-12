@@ -152,6 +152,8 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 	return pm, nil
 }
 
+// createDialer creates an optimized dialer with SSRF protection and connection tracking.
+// Implements comprehensive security validation and performance monitoring.
 func (pm *PoolManager) createDialer() func(context.Context, string, string) (net.Conn, error) {
 	dialer := &net.Dialer{
 		Timeout:   pm.config.DialTimeout,
@@ -161,38 +163,44 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		startTime := time.Now()
 
+		// Extract hostname for validation
 		host, _, err := net.SplitHostPort(address)
 		if err != nil {
 			host = address
 		}
 
+		// DNS resolution with SSRF protection
 		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 		if err != nil {
 			atomic.AddInt64(&pm.rejectedConns, 1)
-			return nil, fmt.Errorf("failed to resolve host: %w", err)
+			return nil, fmt.Errorf("DNS resolution failed: %w", err)
 		}
 
+		// Post-DNS SSRF validation (critical security check)
 		if !pm.config.AllowPrivateIPs {
 			for _, ip := range ips {
 				if err := pm.validateResolvedIP(ip.IP); err != nil {
 					atomic.AddInt64(&pm.rejectedConns, 1)
-					return nil, fmt.Errorf("SSRF protection: %w", err)
+					return nil, fmt.Errorf("SSRF protection blocked connection: %w", err)
 				}
 			}
 		}
 
+		// Establish connection
 		conn, err := dialer.DialContext(ctx, network, address)
 		connTime := time.Since(startTime).Nanoseconds()
 		pm.updateConnectionMetrics(address, connTime, err == nil)
 
 		if err != nil {
 			atomic.AddInt64(&pm.rejectedConns, 1)
-			return nil, err
+			return nil, fmt.Errorf("connection failed: %w", err)
 		}
 
+		// Update connection counters
 		atomic.AddInt64(&pm.totalConns, 1)
 		atomic.AddInt64(&pm.activeConns, 1)
 
+		// Return tracked connection for proper cleanup
 		return &trackedConn{
 			Conn: conn,
 			pm:   pm,
@@ -201,11 +209,14 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 	}
 }
 
+// validateResolvedIP performs comprehensive IP validation to prevent SSRF attacks.
+// This is the critical post-DNS resolution security check.
 func (pm *PoolManager) validateResolvedIP(ip net.IP) error {
 	if pm.config.AllowPrivateIPs {
 		return nil
 	}
 
+	// Comprehensive SSRF protection checks
 	if ip.IsLoopback() {
 		return fmt.Errorf("loopback address blocked: %s", ip.String())
 	}
@@ -226,9 +237,19 @@ func (pm *PoolManager) validateResolvedIP(ip net.IP) error {
 		return fmt.Errorf("unspecified address blocked: %s", ip.String())
 	}
 
+	// Additional IPv4 reserved ranges
 	if ip4 := ip.To4(); ip4 != nil {
+		// Class E (240.0.0.0/4) and 0.0.0.0/8
 		if ip4[0] >= 240 || ip4[0] == 0 {
-			return fmt.Errorf("reserved IP blocked: %s", ip.String())
+			return fmt.Errorf("reserved IP range blocked: %s", ip.String())
+		}
+		// Carrier-grade NAT (100.64.0.0/10)
+		if ip4[0] == 100 && (ip4[1]&0xC0) == 64 {
+			return fmt.Errorf("carrier-grade NAT range blocked: %s", ip.String())
+		}
+		// Benchmark testing (198.18.0.0/15)
+		if ip4[0] == 198 && (ip4[1] == 18 || ip4[1] == 19) {
+			return fmt.Errorf("benchmark testing range blocked: %s", ip.String())
 		}
 	}
 
@@ -280,7 +301,10 @@ func (tc *trackedConn) Close() error {
 	return tc.Conn.Close()
 }
 
+// updateConnectionMetrics efficiently updates per-host connection statistics.
+// Uses atomic operations for thread-safe metrics without locks.
 func (pm *PoolManager) updateConnectionMetrics(host string, connTime int64, success bool) {
+	// Load or create host statistics
 	value, _ := pm.hostConns.LoadOrStore(host, &HostStats{
 		Host:     host,
 		LastUsed: time.Now().Unix(),
@@ -289,20 +313,26 @@ func (pm *PoolManager) updateConnectionMetrics(host string, connTime int64, succ
 	stats := value.(*HostStats)
 
 	if success {
+		// Update success counters
 		atomic.AddInt64(&stats.TotalConns, 1)
 		atomic.AddInt64(&stats.ActiveConns, 1)
 
+		// Update rolling average latency (lock-free)
 		for {
 			current := atomic.LoadInt64(&stats.AverageLatency)
+			// Exponential moving average: 90% old + 10% new
 			newAvg := (current*9 + connTime) / 10
 			if atomic.CompareAndSwapInt64(&stats.AverageLatency, current, newAvg) {
 				break
 			}
+			// CAS failed, retry - rare in practice
 		}
 	} else {
+		// Update failure counter
 		atomic.AddInt64(&stats.FailedConns, 1)
 	}
 
+	// Update last used timestamp
 	atomic.StoreInt64(&stats.LastUsed, time.Now().Unix())
 }
 

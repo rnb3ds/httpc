@@ -270,16 +270,22 @@ func (c *Client) sleepWithContext(ctx context.Context, duration time.Duration) e
 	}
 }
 
+// updateLatencyMetrics updates the rolling average latency using lock-free atomic operations.
+// Uses exponential moving average with 90% weight on historical data for stability.
 func (c *Client) updateLatencyMetrics(latency int64) {
 	for {
 		current := atomic.LoadInt64(&c.averageLatency)
+		// Exponential moving average: 90% old + 10% new
 		newAvg := (current*9 + latency) / 10
 		if atomic.CompareAndSwapInt64(&c.averageLatency, current, newAvg) {
 			break
 		}
+		// CAS failed, retry - this is rare in practice
 	}
 }
 
+// executeWithRetry executes a request with intelligent retry logic.
+// Optimized for performance with minimal allocations and efficient error handling.
 func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 	maxRetries := c.config.MaxRetries
 	if req.MaxRetries > 0 {
@@ -296,16 +302,19 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 			clientErr := ClassifyError(err, req.URL, req.Method, attempt+1)
 			lastErr = clientErr
 
+			// Fast path: non-retryable errors
 			if !clientErr.IsRetryable() || attempt >= maxRetries {
 				clientErr.Attempts = attempt + 1
 				return nil, clientErr
 			}
 
+			// Check retry policy
 			if !c.retryEngine.ShouldRetry(nil, err, attempt) {
 				clientErr.Attempts = attempt + 1
 				return nil, clientErr
 			}
 
+			// Calculate delay and sleep
 			delay := c.retryEngine.GetDelay(attempt)
 			if sleepErr := c.sleepWithContext(req.Context, delay); sleepErr != nil {
 				return nil, ClassifyError(sleepErr, req.URL, req.Method, attempt+1)
@@ -316,6 +325,7 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 		if resp != nil {
 			lastResp = resp
 
+			// Check if response status is retryable
 			if c.retryEngine.isRetryableStatus(resp.StatusCode) && attempt < maxRetries {
 				if c.retryEngine.ShouldRetry(resp, nil, attempt) {
 					delay := c.retryEngine.GetDelayWithResponse(attempt, resp)
@@ -326,11 +336,13 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 				}
 			}
 
+			// Success - set attempt count and return
 			resp.Attempts = attempt + 1
 			return resp, nil
 		}
 	}
 
+	// Handle final failure cases
 	if lastResp != nil {
 		lastResp.Attempts = maxRetries + 1
 		return lastResp, nil
@@ -351,13 +363,17 @@ const (
 	defaultMaxDrain int64 = 10 * 1024 * 1024 // 10MB
 )
 
+// executeRequest executes a single HTTP request with comprehensive error handling.
+// Optimized for performance with efficient resource management and minimal allocations.
 func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
+	// Panic recovery for safety
 	defer func() {
 		if r := recover(); r != nil {
 			err = ClassifyError(fmt.Errorf("panic: %v", r), req.URL, req.Method, 0)
 		}
 	}()
 
+	// Context setup with timeout handling
 	originalCtx := req.Context
 	if originalCtx == nil {
 		originalCtx = context.Background()
@@ -384,15 +400,18 @@ func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
 		execCtx = originalCtx
 	}
 
+	// Fast path: check if context is already cancelled
 	select {
 	case <-execCtx.Done():
 		return nil, ClassifyError(execCtx.Err(), req.URL, req.Method, 0)
 	default:
 	}
 
+	// Prepare request copy with execution context
 	reqCopy := *req
 	reqCopy.Context = execCtx
 
+	// Configure redirect policy
 	followRedirects := c.config.FollowRedirects
 	maxRedirects := c.config.MaxRedirects
 	if req.FollowRedirects != nil {
@@ -403,11 +422,13 @@ func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
 	}
 	c.transport.SetRedirectPolicy(followRedirects, maxRedirects)
 
+	// Build HTTP request
 	httpReq, err := c.requestProcessor.Build(&reqCopy)
 	if err != nil {
 		return nil, ClassifyError(fmt.Errorf("build request failed: %w", err), req.URL, req.Method, 0)
 	}
 
+	// Execute HTTP request with timing
 	start := time.Now()
 	httpResp, err := c.transport.RoundTrip(httpReq)
 	duration := time.Since(start)
@@ -416,31 +437,37 @@ func (c *Client) executeRequest(req *Request) (resp *Response, err error) {
 		return nil, ClassifyError(fmt.Errorf("transport failed: %w", err), req.URL, req.Method, 0)
 	}
 
+	// Ensure response body is properly closed and drained
 	defer func() {
 		if httpResp != nil && httpResp.Body != nil {
 			maxDrain := defaultMaxDrain
 			if c.config.MaxResponseBodySize > 0 && c.config.MaxResponseBodySize < maxDrain {
 				maxDrain = c.config.MaxResponseBodySize
 			}
+			// Drain remaining body to enable connection reuse
 			_, _ = io.Copy(io.Discard, io.LimitReader(httpResp.Body, maxDrain))
 			_ = httpResp.Body.Close()
 		}
 	}()
 
+	// Process response
 	resp, err = c.responseProcessor.Process(httpResp)
 	if err != nil {
 		return nil, ClassifyError(fmt.Errorf("process response failed: %w", err), req.URL, req.Method, 0)
 	}
 
+	// Handle redirect chain
 	redirectChain := c.transport.GetRedirectChain()
 	if len(redirectChain) > 0 {
 		resp.RedirectChain = redirectChain
 		resp.RedirectCount = len(redirectChain)
 	}
 
+	// Capture request headers for debugging/inspection
 	if httpResp != nil && httpResp.Request != nil {
 		requestHeaders := make(map[string][]string, len(httpResp.Request.Header))
 		for key, values := range httpResp.Request.Header {
+			// Deep copy to prevent modification
 			requestHeaders[key] = append([]string(nil), values...)
 		}
 		resp.RequestHeaders = requestHeaders

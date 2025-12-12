@@ -184,6 +184,8 @@ func calculateSpeed(bytes int64, duration time.Duration) float64 {
 	return 0
 }
 
+// prepareFilePath validates and prepares file paths with comprehensive security checks.
+// Prevents path traversal, system path access, and other file system attacks.
 func prepareFilePath(filePath string) error {
 	filePathLen := len(filePath)
 	if filePathLen == 0 {
@@ -193,30 +195,36 @@ func prepareFilePath(filePath string) error {
 		return fmt.Errorf("file path too long (max %d)", maxFilePathLen)
 	}
 
-	// Check for UNC paths early
+	// Security check: block UNC paths early
 	if filePathLen >= 2 && ((filePath[0] == '\\' && filePath[1] == '\\') || (filePath[0] == '/' && filePath[1] == '/')) {
-		return fmt.Errorf("UNC paths not allowed")
+		return fmt.Errorf("UNC paths not allowed for security")
 	}
 
-	// Validate characters in single pass
+	// Validate characters in single pass for efficiency
 	for i := range filePathLen {
 		c := filePath[i]
 		if c < 0x20 || c == 0x7F {
 			return fmt.Errorf("file path contains invalid characters")
 		}
+		// Additional security: check for null bytes
+		if c == 0 {
+			return fmt.Errorf("null byte in file path")
+		}
 	}
 
+	// Clean and resolve path
 	cleanPath := filepath.Clean(filePath)
 	absPath, err := filepath.Abs(cleanPath)
 	if err != nil {
 		return fmt.Errorf("failed to resolve path: %w", err)
 	}
 
+	// Security check: prevent system path access
 	if isSystemPath(absPath) {
-		return fmt.Errorf("system path access denied")
+		return fmt.Errorf("system path access denied for security")
 	}
 
-	// Path traversal check
+	// Path traversal protection
 	if !filepath.IsAbs(filePath) && strings.Contains(cleanPath, "..") {
 		wd, err := os.Getwd()
 		if err != nil {
@@ -227,15 +235,18 @@ func prepareFilePath(filePath string) error {
 			return fmt.Errorf("failed to resolve working directory: %w", err)
 		}
 
+		// Ensure resolved path is within working directory
 		if !strings.HasPrefix(absPath+string(filepath.Separator), wdAbs+string(filepath.Separator)) {
 			return fmt.Errorf("path traversal detected: path outside working directory")
 		}
 	}
 
+	// Create directory structure if needed
 	dir := filepath.Dir(absPath)
 	if err := os.MkdirAll(dir, dirPermissions); err != nil {
 		return fmt.Errorf("failed to create directories: %w", err)
 	}
+
 	return nil
 }
 

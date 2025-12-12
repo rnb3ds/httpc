@@ -38,18 +38,32 @@ func parseCookieHeader(cookieHeader string) []*http.Cookie {
 	return cookies
 }
 
-// trimSpace trims leading and trailing spaces without allocation
+// trimSpace trims leading and trailing spaces without allocation.
+// Optimized for hot path usage in cookie parsing with minimal branching.
 func trimSpace(s string) string {
-	for len(s) > 0 && s[0] == ' ' {
-		s = s[1:]
+	// Fast path: check if trimming is needed
+	if len(s) == 0 {
+		return s
 	}
-	for len(s) > 0 && s[len(s)-1] == ' ' {
-		s = s[:len(s)-1]
+
+	start := 0
+	end := len(s)
+
+	// Find first non-space character
+	for start < end && s[start] == ' ' {
+		start++
 	}
-	return s
+
+	// Find last non-space character
+	for end > start && s[end-1] == ' ' {
+		end--
+	}
+
+	return s[start:end]
 }
 
-// trimSpaceLeft trims leading spaces without allocation
+// trimSpaceLeft trims leading spaces without allocation.
+// Optimized for cookie parsing hot path.
 func trimSpaceLeft(s string) string {
 	for len(s) > 0 && s[0] == ' ' {
 		s = s[1:]
@@ -57,7 +71,8 @@ func trimSpaceLeft(s string) string {
 	return s
 }
 
-// trimSpaceRight trims trailing spaces without allocation
+// trimSpaceRight trims trailing spaces without allocation.
+// Optimized for cookie parsing hot path.
 func trimSpaceRight(s string) string {
 	for len(s) > 0 && s[len(s)-1] == ' ' {
 		s = s[:len(s)-1]

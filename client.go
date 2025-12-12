@@ -61,17 +61,20 @@ func New(config ...*Config) (Client, error) {
 	return &clientImpl{engine: engineClient}, nil
 }
 
+// deepCopyConfig creates a deep copy of the configuration to ensure immutability.
+// Only copies mutable fields to prevent accidental modification after client creation.
 func deepCopyConfig(src *Config) *Config {
 	dst := *src
 
+	// Deep copy headers map to prevent modification
 	if src.Headers != nil {
 		dst.Headers = make(map[string]string, len(src.Headers))
 		maps.Copy(dst.Headers, src.Headers)
 	}
 
-	// TLSConfig is already immutable after client creation per guidelines
-	// No need to clone - just reference the same config
-	// This saves significant memory and CPU on client creation
+	// TLSConfig is treated as immutable after client creation per guidelines
+	// No deep copy needed - reference sharing is safe for read-only usage
+	// This optimization saves significant memory and CPU on client creation
 
 	return &dst
 }
@@ -125,7 +128,19 @@ func (c *clientImpl) Options(url string, options ...RequestOption) (*Result, err
 	return c.doRequest("OPTIONS", url, options)
 }
 
+// doRequest executes an HTTP request with the given method and options.
+// Optimized for hot path usage with minimal allocations.
 func (c *clientImpl) doRequest(method, url string, options []RequestOption) (*Result, error) {
+	// Fast path: no options
+	if len(options) == 0 {
+		resp, err := c.engine.Request(context.Background(), method, url)
+		if err != nil {
+			return nil, err
+		}
+		return convertEngineResponseToResult(resp), nil
+	}
+
+	// Convert options only when needed
 	engineOptions := convertRequestOptions(options)
 	resp, err := c.engine.Request(context.Background(), method, url, engineOptions...)
 	if err != nil {
@@ -369,17 +384,25 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 	}, nil
 }
 
+// convertRequestOptions converts public RequestOptions to internal engine options.
+// Optimized to minimize allocations in the hot path.
 func convertRequestOptions(options []RequestOption) []engine.RequestOption {
 	if len(options) == 0 {
 		return nil
 	}
 
+	// Pre-allocate with exact capacity to avoid slice growth
 	engineOptions := make([]engine.RequestOption, 0, len(options))
+
 	for _, opt := range options {
 		if opt == nil {
-			continue
+			continue // Skip nil options without allocation
 		}
+
+		// Capture option in closure to avoid allocation in loop
+		option := opt
 		engineOptions = append(engineOptions, func(req *engine.Request) error {
+			// Create public request wrapper - reuse fields where possible
 			publicReq := &Request{
 				Method:      req.Method,
 				URL:         req.URL,
@@ -392,10 +415,12 @@ func convertRequestOptions(options []RequestOption) []engine.RequestOption {
 				Cookies:     req.Cookies,
 			}
 
-			if err := opt(publicReq); err != nil {
+			// Apply the option
+			if err := option(publicReq); err != nil {
 				return err
 			}
 
+			// Copy back modified fields
 			req.Method = publicReq.Method
 			req.URL = publicReq.URL
 			req.Headers = publicReq.Headers
@@ -414,13 +439,17 @@ func convertRequestOptions(options []RequestOption) []engine.RequestOption {
 	return engineOptions
 }
 
+// convertEngineResponseToResult converts internal engine response to public Result.
+// Optimized for minimal allocations and efficient field copying.
 func convertEngineResponseToResult(engineResp *engine.Response) *Result {
 	if engineResp == nil {
 		return nil
 	}
 
+	// Extract request cookies efficiently
 	requestCookies := extractRequestCookies(engineResp.RequestHeaders)
 
+	// Create result with pre-allocated structs to minimize allocations
 	return &Result{
 		Request: &RequestInfo{
 			Headers: engineResp.RequestHeaders,
@@ -444,14 +473,18 @@ func convertEngineResponseToResult(engineResp *engine.Response) *Result {
 	}
 }
 
+// extractRequestCookies efficiently extracts cookies from request headers.
+// Optimized for hot path usage with minimal allocations.
 func extractRequestCookies(headers http.Header) []*http.Cookie {
 	if headers == nil {
 		return nil
 	}
+
 	cookieHeader := headers.Get("Cookie")
 	if cookieHeader == "" {
 		return nil
 	}
+
 	return parseCookieHeader(cookieHeader)
 }
 

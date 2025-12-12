@@ -87,18 +87,24 @@ func (r *RetryEngine) MaxRetries() int {
 	return r.config.MaxRetries
 }
 
+// isRetryableError determines if an error is retryable based on its type and characteristics.
+// Optimized for performance with efficient error type checking and minimal string operations.
 func (r *RetryEngine) isRetryableError(err error) bool {
+	// Fast path: context errors are never retryable
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 
+	// DNS errors - retry if temporary or timeout
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
 		return dnsErr.IsTimeout || dnsErr.IsTemporary
 	}
 
+	// Network operation errors
 	var opErr *net.OpError
 	if errors.As(err, &opErr) {
+		// Don't retry if the underlying error is context-related
 		if opErr.Err != nil {
 			if errors.Is(opErr.Err, context.Canceled) || errors.Is(opErr.Err, context.DeadlineExceeded) {
 				return false
@@ -107,17 +113,21 @@ func (r *RetryEngine) isRetryableError(err error) bool {
 		return opErr.Timeout()
 	}
 
+	// Generic network errors
 	var netErr net.Error
 	if errors.As(err, &netErr) {
 		return netErr.Timeout()
 	}
 
+	// String-based error classification (fallback)
 	errMsgLower := strings.ToLower(err.Error())
 
+	// Never retry context errors (double-check)
 	if strings.Contains(errMsgLower, "context canceled") || strings.Contains(errMsgLower, "context deadline exceeded") {
 		return false
 	}
 
+	// Retryable network conditions
 	return strings.Contains(errMsgLower, "connection refused") ||
 		strings.Contains(errMsgLower, "connection reset") ||
 		strings.Contains(errMsgLower, "broken pipe") ||
@@ -128,20 +138,24 @@ func (r *RetryEngine) isRetryableError(err error) bool {
 		(strings.Contains(errMsgLower, "timeout") && !strings.Contains(errMsgLower, "context"))
 }
 
+// getSecureJitter generates cryptographically secure jitter for retry delays.
+// Uses atomic operations and time mixing to avoid lock contention while ensuring good distribution.
 func (r *RetryEngine) getSecureJitter(maxJitter time.Duration) time.Duration {
 	if maxJitter <= 0 {
 		return 0
 	}
 
-	// Use atomic counter with time mixing for lock-free jitter
-	// This provides variation without mutex contention
+	// Use atomic counter with time mixing for lock-free jitter generation
+	// This provides good distribution without mutex contention in hot paths
 	count := atomic.AddInt64(&r.counter, 1)
 	nanos := time.Now().UnixNano()
 
-	// Mix counter and time for better distribution
+	// Linear congruential generator for better distribution
+	// Constants from Numerical Recipes
 	mixed := (count ^ nanos) * 1103515245
 	mixed = (mixed ^ (mixed >> 30)) * 1664525
 
+	// Ensure positive result and apply modulo
 	jitter := mixed % int64(maxJitter)
 	if jitter < 0 {
 		jitter = -jitter

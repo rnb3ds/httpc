@@ -152,17 +152,17 @@ func (r *Response) Html() string {
 }
 
 const (
-	maxJSONSize         = 50 * 1024 * 1024
-	maxTimeout          = 30 * time.Minute
-	maxIdleConns        = 1000
-	maxConnsPerHost     = 1000
-	maxResponseBodySize = 1024 * 1024 * 1024
-	maxRetries          = 10
-	minBackoffFactor    = 1.0
-	maxBackoffFactor    = 10.0
-	maxUserAgentLen     = 512
-	maxHeaderKeyLen     = 256
-	maxHeaderValueLen   = 8192
+	maxJSONSize         = 50 * 1024 * 1024   // 50MB
+	maxTimeout          = 30 * time.Minute   // 30 minutes
+	maxIdleConns        = 1000               // Connection pool limit
+	maxConnsPerHost     = 1000               // Per-host connection limit
+	maxResponseBodySize = 1024 * 1024 * 1024 // 1GB
+	maxRetries          = 10                 // Maximum retry attempts
+	minBackoffFactor    = 1.0                // Minimum backoff multiplier
+	maxBackoffFactor    = 10.0               // Maximum backoff multiplier
+	maxUserAgentLen     = 512                // User-Agent header limit
+	maxHeaderKeyLen     = 256                // Header key length limit
+	maxHeaderValueLen   = 8192               // Header value length limit
 )
 
 // Config defines the HTTP client configuration.
@@ -254,15 +254,19 @@ func NewCookieJar() (http.CookieJar, error) {
 }
 
 // ValidateConfig validates the configuration with reasonable limits.
+// ValidateConfig validates the configuration with comprehensive security checks.
+// All limits are enforced to prevent resource exhaustion and security issues.
 func ValidateConfig(cfg *Config) error {
 	if cfg == nil {
 		return ErrNilConfig
 	}
 
+	// Timeout validation - prevent excessive timeouts
 	if cfg.Timeout < 0 || cfg.Timeout > maxTimeout {
 		return fmt.Errorf("%w: must be 0-%v, got %v", ErrInvalidTimeout, maxTimeout, cfg.Timeout)
 	}
 
+	// Connection pool validation - prevent resource exhaustion
 	if cfg.MaxIdleConns < 0 || cfg.MaxIdleConns > maxIdleConns {
 		return fmt.Errorf("MaxIdleConns must be 0-%d, got %d", maxIdleConns, cfg.MaxIdleConns)
 	}
@@ -270,10 +274,12 @@ func ValidateConfig(cfg *Config) error {
 		return fmt.Errorf("MaxConnsPerHost must be 0-%d, got %d", maxConnsPerHost, cfg.MaxConnsPerHost)
 	}
 
+	// Response size validation - prevent memory exhaustion
 	if cfg.MaxResponseBodySize < 0 || cfg.MaxResponseBodySize > maxResponseBodySize {
 		return fmt.Errorf("MaxResponseBodySize must be 0-1GB, got %d", cfg.MaxResponseBodySize)
 	}
 
+	// Retry validation - prevent infinite loops
 	if cfg.MaxRetries < 0 || cfg.MaxRetries > maxRetries {
 		return fmt.Errorf("%w: must be 0-%d, got %d", ErrInvalidRetry, maxRetries, cfg.MaxRetries)
 	}
@@ -284,14 +290,17 @@ func ValidateConfig(cfg *Config) error {
 		return fmt.Errorf("%w: factor must be %.1f-%.1f, got %.1f", ErrInvalidRetry, minBackoffFactor, maxBackoffFactor, cfg.BackoffFactor)
 	}
 
+	// Redirect validation - prevent redirect loops
 	if cfg.MaxRedirects < 0 || cfg.MaxRedirects > 50 {
 		return fmt.Errorf("MaxRedirects must be 0-50, got %d", cfg.MaxRedirects)
 	}
 
+	// User-Agent validation - prevent header injection
 	if len(cfg.UserAgent) > maxUserAgentLen || !isValidHeaderString(cfg.UserAgent) {
 		return fmt.Errorf("UserAgent invalid: max %d chars, no control characters", maxUserAgentLen)
 	}
 
+	// Header validation - prevent header injection attacks
 	for key, value := range cfg.Headers {
 		if err := validateHeaderKeyValue(key, value); err != nil {
 			return fmt.Errorf("%w: %s: %v", ErrInvalidHeader, key, err)
@@ -301,6 +310,8 @@ func ValidateConfig(cfg *Config) error {
 	return nil
 }
 
+// validateHeaderKeyValue performs comprehensive header validation to prevent injection attacks.
+// Validates both key and value according to HTTP/1.1 and HTTP/2 specifications.
 func validateHeaderKeyValue(key, value string) error {
 	keyLen := len(key)
 	if keyLen == 0 {
@@ -309,15 +320,23 @@ func validateHeaderKeyValue(key, value string) error {
 	if keyLen > maxHeaderKeyLen {
 		return fmt.Errorf("key too long (max %d)", maxHeaderKeyLen)
 	}
+
+	// Prevent HTTP/2 pseudo-header injection
 	if key[0] == ':' {
 		return fmt.Errorf("pseudo-headers not allowed")
 	}
 
-	// Validate key characters (no tab allowed in keys)
+	// Validate key characters - strict validation for security
 	for i := range keyLen {
 		c := key[i]
 		if c < 0x20 || c == 0x7F {
 			return fmt.Errorf("invalid characters in key")
+		}
+		// Additional validation for HTTP header field names (RFC 7230)
+		if c == ' ' || c == '\t' || c == '(' || c == ')' || c == '<' || c == '>' ||
+			c == '@' || c == ',' || c == ';' || c == ':' || c == '\\' || c == '"' ||
+			c == '/' || c == '[' || c == ']' || c == '?' || c == '=' || c == '{' || c == '}' {
+			return fmt.Errorf("invalid character in header key: %c", c)
 		}
 	}
 
@@ -326,7 +345,7 @@ func validateHeaderKeyValue(key, value string) error {
 		return fmt.Errorf("value too long (max %d)", maxHeaderValueLen)
 	}
 
-	// Validate value characters (tab allowed in values)
+	// Validate value characters - allow tab but reject other control chars
 	for i := range valueLen {
 		c := value[i]
 		if (c < 0x20 && c != 0x09) || c == 0x7F {
@@ -334,13 +353,42 @@ func validateHeaderKeyValue(key, value string) error {
 		}
 	}
 
+	// Validate common header values to prevent protocol errors
+	keyLower := strings.ToLower(key)
+	valueLower := strings.ToLower(value)
+
+	switch keyLower {
+	case "connection":
+		if valueLower != "keep-alive" && valueLower != "close" && valueLower != "upgrade" {
+			return fmt.Errorf("invalid Connection header value: %q (expected: keep-alive, close, or upgrade)", value)
+		}
+	case "content-length":
+		// Prevent negative content-length attacks
+		if strings.HasPrefix(valueLower, "-") {
+			return fmt.Errorf("negative Content-Length not allowed")
+		}
+	case "host":
+		// Prevent host header injection
+		if strings.ContainsAny(value, "\r\n") {
+			return fmt.Errorf("CRLF injection detected in Host header")
+		}
+	}
+
+	// Check for CRLF injection in any header
+	if strings.ContainsAny(key, "\r\n") || strings.ContainsAny(value, "\r\n") {
+		return fmt.Errorf("CRLF injection detected")
+	}
+
 	return nil
 }
 
+// isValidHeaderString validates header string for control characters and CRLF injection.
+// More efficient than validateHeaderKeyValue for simple string validation.
 func isValidHeaderString(s string) bool {
 	for i := range len(s) {
 		c := s[i]
-		if (c < 0x20 && c != 0x09) || c == 0x7F {
+		// Reject control characters except tab, and check for CRLF injection
+		if (c < 0x20 && c != 0x09) || c == 0x7F || c == '\r' || c == '\n' {
 			return false
 		}
 	}
