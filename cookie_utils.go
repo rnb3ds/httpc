@@ -8,28 +8,34 @@ import (
 
 // parseCookieHeader parses a Cookie header value into http.Cookie slice.
 // Handles the format: "name1=value1; name2=value2"
-// Optimized for hot path usage with minimal allocations.
+// Optimized for hot path usage with minimal allocations and efficient parsing.
 func parseCookieHeader(cookieHeader string) []*http.Cookie {
 	if cookieHeader == "" {
 		return nil
 	}
 
+	// Pre-allocate with reasonable capacity based on typical usage
 	cookies := make([]*http.Cookie, 0, 4)
+	headerLen := len(cookieHeader)
 	start := 0
 
-	for i := 0; i <= len(cookieHeader); i++ {
-		if i == len(cookieHeader) || cookieHeader[i] == ';' {
-			pair := trimSpace(cookieHeader[start:i])
+	for i := 0; i <= headerLen; i++ {
+		if i == headerLen || cookieHeader[i] == ';' {
+			if i > start {
+				pair := trimSpace(cookieHeader[start:i])
+				if pair != "" {
+					if idx := strings.IndexByte(pair, '='); idx > 0 && idx < len(pair)-1 {
+						name := trimSpaceRight(pair[:idx])
+						value := trimSpaceLeft(pair[idx+1:])
 
-			if pair != "" {
-				if idx := strings.IndexByte(pair, '='); idx > 0 {
-					name := trimSpaceRight(pair[:idx])
-					value := trimSpaceLeft(pair[idx+1:])
-
-					cookies = append(cookies, &http.Cookie{
-						Name:  name,
-						Value: value,
-					})
+						// Only create cookie if both name and value are valid
+						if name != "" {
+							cookies = append(cookies, &http.Cookie{
+								Name:  name,
+								Value: value,
+							})
+						}
+					}
 				}
 			}
 			start = i + 1

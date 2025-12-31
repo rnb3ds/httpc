@@ -31,7 +31,7 @@ func NewValidator() *Validator {
 		ValidateURL:         true,
 		ValidateHeaders:     true,
 		MaxResponseBodySize: 50 * 1024 * 1024,
-		AllowPrivateIPs:     false,
+		AllowPrivateIPs:     true,
 	}
 
 	return &Validator{

@@ -88,7 +88,7 @@ func (r *RetryEngine) MaxRetries() int {
 }
 
 // isRetryableError determines if an error is retryable based on its type and characteristics.
-// Optimized for performance with efficient error type checking and minimal string operations.
+// Optimized for performance with efficient error type checking and early returns.
 func (r *RetryEngine) isRetryableError(err error) bool {
 	// Fast path: context errors are never retryable
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -119,23 +119,35 @@ func (r *RetryEngine) isRetryableError(err error) bool {
 		return netErr.Timeout()
 	}
 
-	// String-based error classification (fallback)
-	errMsgLower := strings.ToLower(err.Error())
+	// Optimized string-based classification with early returns
+	errMsg := err.Error()
+	errMsgLen := len(errMsg)
 
-	// Never retry context errors (double-check)
-	if strings.Contains(errMsgLower, "context canceled") || strings.Contains(errMsgLower, "context deadline exceeded") {
+	// Skip string operations for very short messages
+	if errMsgLen < 4 {
 		return false
 	}
 
-	// Retryable network conditions
+	// Convert to lowercase once for efficiency
+	errMsgLower := strings.ToLower(errMsg)
+
+	// Never retry context errors (double-check with fast string matching)
+	if strings.Contains(errMsgLower, "context") {
+		return strings.Contains(errMsgLower, "timeout") &&
+			!strings.Contains(errMsgLower, "canceled") &&
+			!strings.Contains(errMsgLower, "deadline")
+	}
+
+	// Optimized retryable condition checks with priority ordering
+	// Most common errors first for better performance
 	return strings.Contains(errMsgLower, "connection refused") ||
+		strings.Contains(errMsgLower, "timeout") ||
 		strings.Contains(errMsgLower, "connection reset") ||
 		strings.Contains(errMsgLower, "broken pipe") ||
 		strings.Contains(errMsgLower, "network unreachable") ||
 		strings.Contains(errMsgLower, "host unreachable") ||
 		strings.Contains(errMsgLower, "no route to host") ||
-		strings.Contains(errMsgLower, "no such host") ||
-		(strings.Contains(errMsgLower, "timeout") && !strings.Contains(errMsgLower, "context"))
+		strings.Contains(errMsgLower, "no such host")
 }
 
 // getSecureJitter generates cryptographically secure jitter for retry delays.

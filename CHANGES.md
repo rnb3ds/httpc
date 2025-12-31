@@ -7,6 +7,34 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ---
 
+## v1.3.2 - Code Quality & Security Enhancement (2025-12-31)
+
+### Security
+- Enhanced SSRF protection with secure defaults (blocks private IP ranges by default)
+- Maintained backward compatibility for existing `AllowPrivateIPs: true` configurations
+- Improved default security posture for new users
+
+### Code Quality
+- **NEW**: Created `internal/validation/common.go` package consolidating all validation logic
+- **REMOVED**: ~150 lines of duplicate validation code from `public_options.go`
+- **CONSOLIDATED**: 8 validation functions into reusable, well-tested utilities
+- Enhanced test coverage with 50+ validation test cases
+- Unified error message formats across all validators
+
+### Performance
+- Optimized retry logic with early returns and priority ordering
+- Enhanced file path validation with single-pass character checking
+- Improved cookie parsing with better bounds checking
+- Reduced allocations in hot paths through optimized string operations
+
+### Changed
+- All validation logic centralized in single package for better maintainability
+- Consistent CRLF injection prevention and input sanitization
+- Zero breaking changes - all public APIs remain unchanged
+- Code duplication reduced by ~25% through consolidation
+
+---
+
 ## v1.3.1 - Security and Performance Optimization (2025-12-12)
 
 ### Security

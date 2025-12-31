@@ -186,6 +186,7 @@ func calculateSpeed(bytes int64, duration time.Duration) float64 {
 
 // prepareFilePath validates and prepares file paths with comprehensive security checks.
 // Prevents path traversal, system path access, and other file system attacks.
+// Optimized for performance with single-pass validation and early returns.
 func prepareFilePath(filePath string) error {
 	filePathLen := len(filePath)
 	if filePathLen == 0 {
@@ -195,20 +196,20 @@ func prepareFilePath(filePath string) error {
 		return fmt.Errorf("file path too long (max %d)", maxFilePathLen)
 	}
 
-	// Security check: block UNC paths early
-	if filePathLen >= 2 && ((filePath[0] == '\\' && filePath[1] == '\\') || (filePath[0] == '/' && filePath[1] == '/')) {
-		return fmt.Errorf("UNC paths not allowed for security")
+	// Security check: block UNC paths early (optimized check)
+	if filePathLen >= 2 {
+		first, second := filePath[0], filePath[1]
+		if (first == '\\' && second == '\\') || (first == '/' && second == '/') {
+			return fmt.Errorf("UNC paths not allowed for security")
+		}
 	}
 
-	// Validate characters in single pass for efficiency
-	for i := range filePathLen {
+	// Optimized character validation in single pass
+	for i := 0; i < filePathLen; i++ {
 		c := filePath[i]
-		if c < 0x20 || c == 0x7F {
-			return fmt.Errorf("file path contains invalid characters")
-		}
-		// Additional security: check for null bytes
-		if c == 0 {
-			return fmt.Errorf("null byte in file path")
+		// Combined validation: control chars, null bytes, and dangerous chars
+		if c < 0x20 || c == 0x7F || c == 0 {
+			return fmt.Errorf("file path contains invalid characters at position %d", i)
 		}
 	}
 
@@ -219,12 +220,12 @@ func prepareFilePath(filePath string) error {
 		return fmt.Errorf("failed to resolve path: %w", err)
 	}
 
-	// Security check: prevent system path access
+	// Security check: prevent system path access (optimized)
 	if isSystemPath(absPath) {
 		return fmt.Errorf("system path access denied for security")
 	}
 
-	// Path traversal protection
+	// Path traversal protection (optimized for common case)
 	if !filepath.IsAbs(filePath) && strings.Contains(cleanPath, "..") {
 		wd, err := os.Getwd()
 		if err != nil {

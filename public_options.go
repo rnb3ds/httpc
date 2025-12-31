@@ -9,13 +9,15 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // WithHeader adds a custom header to the request.
 // Returns an error if the header key or value is invalid.
 func WithHeader(key, value string) RequestOption {
 	return func(r *Request) error {
-		if err := validateHeaderKeyValue(key, value); err != nil {
+		if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
 			return fmt.Errorf("invalid header: %w", err)
 		}
 
@@ -35,7 +37,7 @@ func WithHeaderMap(headers map[string]string) RequestOption {
 			r.Headers = make(map[string]string)
 		}
 		for k, v := range headers {
-			if err := validateHeaderKeyValue(k, v); err != nil {
+			if err := validation.ValidateHeaderKeyValue(k, v); err != nil {
 				return fmt.Errorf("invalid header %s: %w", k, err)
 			}
 			r.Headers[k] = v
@@ -70,12 +72,60 @@ func WithXMLAccept() RequestOption {
 }
 
 const (
-	maxCredLen     = 255  // Maximum credential length (username/password)
-	maxTokenLen    = 2048 // Maximum bearer token length
-	maxKeyLen      = 256  // Maximum query parameter key length
-	maxValueLen    = 8192 // Maximum query parameter value length
-	maxFilenameLen = 256  // Maximum filename length for uploads
+	// Use validation package constants
+	maxCredLen     = validation.MaxCredLen
+	maxTokenLen    = validation.MaxTokenLen
+	maxKeyLen      = validation.MaxKeyLen
+	maxValueLen    = validation.MaxValueLen
+	maxFilenameLen = validation.MaxFilenameLen
+
+	maxCookieNameLen   = validation.MaxCookieNameLen
+	maxCookieValueLen  = validation.MaxCookieValueLen
+	maxCookieDomainLen = validation.MaxCookieDomainLen
+	maxCookiePathLen   = validation.MaxCookiePathLen
 )
+
+// validateCookie validates HTTP cookies using consolidated validation.
+// Prevents cookie injection and enforces RFC 6265 compliance.
+func validateCookie(cookie *http.Cookie) error {
+	if err := validation.ValidateCookieName(cookie.Name); err != nil {
+		return err
+	}
+
+	if err := validation.ValidateCookieValue(cookie.Value); err != nil {
+		return err
+	}
+
+	// Validate domain if set
+	if cookie.Domain != "" {
+		domainLen := len(cookie.Domain)
+		if domainLen > maxCookieDomainLen {
+			return fmt.Errorf("cookie domain too long (max %d)", maxCookieDomainLen)
+		}
+		// Basic domain validation - no control characters
+		for i, r := range cookie.Domain {
+			if r < 0x20 || r == 0x7F {
+				return fmt.Errorf("cookie domain contains invalid characters at position %d", i)
+			}
+		}
+	}
+
+	// Validate path if set
+	if cookie.Path != "" {
+		pathLen := len(cookie.Path)
+		if pathLen > maxCookiePathLen {
+			return fmt.Errorf("cookie path too long (max %d)", maxCookiePathLen)
+		}
+		// Basic path validation - no control characters
+		for i, r := range cookie.Path {
+			if r < 0x20 || r == 0x7F {
+				return fmt.Errorf("cookie path contains invalid characters at position %d", i)
+			}
+		}
+	}
+
+	return nil
+}
 
 // WithBasicAuth adds HTTP Basic Authentication to the request.
 // The credentials are base64-encoded and added to the Authorization header.
@@ -86,10 +136,10 @@ func WithBasicAuth(username, password string) RequestOption {
 		if username == "" {
 			return fmt.Errorf("username cannot be empty")
 		}
-		if err := validateCredential(username, maxCredLen, true); err != nil {
+		if err := validation.ValidateCredential(username, maxCredLen, true, "username"); err != nil {
 			return fmt.Errorf("invalid username: %w", err)
 		}
-		if err := validateCredential(password, maxCredLen, false); err != nil {
+		if err := validation.ValidateCredential(password, maxCredLen, false, "password"); err != nil {
 			return fmt.Errorf("invalid password: %w", err)
 		}
 
@@ -112,7 +162,7 @@ func WithBearerToken(token string) RequestOption {
 		if token == "" {
 			return fmt.Errorf("token cannot be empty")
 		}
-		if err := validateToken(token); err != nil {
+		if err := validation.ValidateToken(token); err != nil {
 			return err
 		}
 
@@ -128,7 +178,7 @@ func WithBearerToken(token string) RequestOption {
 // Returns an error if key is empty, too long, or contains invalid characters.
 func WithQuery(key string, value any) RequestOption {
 	return func(r *Request) error {
-		if err := validateQueryKey(key); err != nil {
+		if err := validation.ValidateQueryKey(key); err != nil {
 			return err
 		}
 
@@ -155,7 +205,7 @@ func WithQueryMap(params map[string]any) RequestOption {
 			r.QueryParams = make(map[string]any, len(params))
 		}
 		for k, v := range params {
-			if err := validateQueryKey(k); err != nil {
+			if err := validation.ValidateQueryKey(k); err != nil {
 				return fmt.Errorf("invalid key %s: %w", k, err)
 			}
 
@@ -253,10 +303,10 @@ func WithFile(fieldName, filename string, content []byte) RequestOption {
 		if filename == "" {
 			return fmt.Errorf("filename cannot be empty")
 		}
-		if err := validateFieldName(fieldName); err != nil {
+		if err := validation.ValidateFieldName(fieldName, "field name"); err != nil {
 			return fmt.Errorf("invalid field name: %w", err)
 		}
-		if err := validateFieldName(filename); err != nil {
+		if err := validation.ValidateFieldName(filename, "filename"); err != nil {
 			return fmt.Errorf("invalid filename: %w", err)
 		}
 
@@ -368,13 +418,6 @@ func WithBinary(data []byte, contentType ...string) RequestOption {
 	}
 }
 
-const (
-	maxCookieNameLen   = 256
-	maxCookieValueLen  = 4096
-	maxCookieDomainLen = 255
-	maxCookiePathLen   = 1024
-)
-
 func WithCookie(cookie http.Cookie) RequestOption {
 	return func(r *Request) error {
 		if err := validateCookie(&cookie); err != nil {
@@ -473,164 +516,6 @@ func WithCookieString(cookieString string) RequestOption {
 
 		return nil
 	}
-}
-
-// validateCredential validates credentials for Basic Auth to prevent injection attacks.
-// Checks for control characters, length limits, and colon in username (RFC 7617).
-func validateCredential(cred string, maxLen int, checkColon bool) error {
-	credLen := len(cred)
-	if credLen > maxLen {
-		return fmt.Errorf("too long (max %d)", maxLen)
-	}
-
-	for i := range credLen {
-		c := cred[i]
-		// Reject control characters and DEL
-		if c < 0x20 || c == 0x7F {
-			return fmt.Errorf("contains invalid characters")
-		}
-		// Username cannot contain colon (RFC 7617)
-		if checkColon && c == ':' {
-			return fmt.Errorf("username cannot contain colon")
-		}
-		// Additional security: reject CRLF injection attempts
-		if c == '\r' || c == '\n' {
-			return fmt.Errorf("CRLF injection detected")
-		}
-	}
-	return nil
-}
-
-// validateToken validates bearer tokens to prevent injection attacks.
-// Enforces RFC 6750 token format and prevents header injection.
-func validateToken(token string) error {
-	tokenLen := len(token)
-	if tokenLen > maxTokenLen {
-		return fmt.Errorf("token too long (max %d)", maxTokenLen)
-	}
-
-	for i := range tokenLen {
-		c := token[i]
-		// Reject control characters and DEL
-		if c < 0x20 || c == 0x7F {
-			return fmt.Errorf("token contains invalid characters")
-		}
-		// Additional security: reject CRLF injection attempts
-		if c == '\r' || c == '\n' {
-			return fmt.Errorf("CRLF injection detected in token")
-		}
-		// RFC 6750: token should be ASCII printable characters except space
-		if c == ' ' {
-			return fmt.Errorf("token cannot contain spaces")
-		}
-	}
-	return nil
-}
-
-// validateQueryKey validates query parameter keys to prevent injection attacks.
-// Enforces URL encoding rules and prevents parameter pollution.
-func validateQueryKey(key string) error {
-	keyLen := len(key)
-	if keyLen == 0 {
-		return fmt.Errorf("query key cannot be empty")
-	}
-	if keyLen > maxKeyLen {
-		return fmt.Errorf("query key too long (max %d)", maxKeyLen)
-	}
-
-	for i := range keyLen {
-		c := key[i]
-		// Reject control characters and DEL
-		if c < 0x20 || c == 0x7F {
-			return fmt.Errorf("query key contains invalid characters")
-		}
-		// Prevent query parameter injection
-		if c == '&' || c == '=' || c == '#' || c == '?' {
-			return fmt.Errorf("query key contains reserved characters")
-		}
-		// Additional security: reject CRLF injection attempts
-		if c == '\r' || c == '\n' {
-			return fmt.Errorf("CRLF injection detected in query key")
-		}
-	}
-	return nil
-}
-
-func validateFieldName(name string) error {
-	nameLen := len(name)
-	if nameLen > maxFilenameLen {
-		return fmt.Errorf("too long (max %d)", maxFilenameLen)
-	}
-
-	for i := range nameLen {
-		c := name[i]
-		if c < 0x20 || c == 0x7F || c == '"' || c == '\'' || c == '<' || c == '>' || c == '&' {
-			return fmt.Errorf("contains invalid characters")
-		}
-	}
-	return nil
-}
-
-func validateCookie(cookie *http.Cookie) error {
-	nameLen := len(cookie.Name)
-	if nameLen == 0 {
-		return fmt.Errorf("cookie name cannot be empty")
-	}
-	if nameLen > maxCookieNameLen {
-		return fmt.Errorf("cookie name too long (max %d)", maxCookieNameLen)
-	}
-
-	for i := range nameLen {
-		c := cookie.Name[i]
-		if c < 0x20 || c == 0x7F || c == ';' || c == ',' {
-			return fmt.Errorf("cookie name contains invalid characters")
-		}
-	}
-
-	valueLen := len(cookie.Value)
-	if valueLen > maxCookieValueLen {
-		return fmt.Errorf("cookie value too long (max %d)", maxCookieValueLen)
-	}
-
-	for i := range valueLen {
-		c := cookie.Value[i]
-		if c < 0x20 || c == 0x7F {
-			return fmt.Errorf("cookie value contains invalid characters")
-		}
-	}
-
-	if cookie.Domain != "" {
-		domainLen := len(cookie.Domain)
-		if domainLen > maxCookieDomainLen {
-			return fmt.Errorf("cookie domain too long (max %d)", maxCookieDomainLen)
-		}
-		if cookie.Domain == "." {
-			return fmt.Errorf("cookie domain cannot be just a dot")
-		}
-		for i := range domainLen {
-			c := cookie.Domain[i]
-			if c < 0x20 || c == 0x7F || c == ';' || c == ',' {
-				return fmt.Errorf("cookie domain contains invalid characters")
-			}
-		}
-	}
-
-	if cookie.Path != "" {
-		pathLen := len(cookie.Path)
-		if pathLen == 0 || cookie.Path[0] != '/' {
-			return fmt.Errorf("cookie path must start with /")
-		}
-		if pathLen > maxCookiePathLen {
-			return fmt.Errorf("cookie path too long (max %d)", maxCookiePathLen)
-		}
-		for i := range pathLen {
-			c := cookie.Path[i]
-			if c < 0x20 || c == 0x7F || c == ';' {
-				return fmt.Errorf("cookie path contains invalid characters")
-			}
-		}
-	}
-	return nil
 }
 
 // parseCookieString parses a cookie string and returns http.Cookie objects with secure defaults.
