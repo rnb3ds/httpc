@@ -92,7 +92,7 @@ func DefaultConfig() *Config {
 		MaxTLSVersion:       tls.VersionTLS13,
 		InsecureSkipVerify:  false,
 		MaxResponseBodySize: 10 * 1024 * 1024,
-		AllowPrivateIPs:     true, // Changed: Enable for better usability in diverse network environments
+		AllowPrivateIPs:     true, // Default allow private IPs to prevent SSRF
 		StrictContentLength: true,
 		MaxRetries:          3,
 		RetryDelay:          1 * time.Second,

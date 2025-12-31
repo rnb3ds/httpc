@@ -109,7 +109,7 @@ func DefaultConfig() *Config {
 		DisableKeepAlives:  false,
 		ForceAttemptHTTP2:  true,
 
-		AllowPrivateIPs: false,
+		AllowPrivateIPs: true,
 	}
 }
 
