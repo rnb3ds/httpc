@@ -1,6 +1,8 @@
 package httpc
 
 import (
+	"compress/flate"
+	"compress/gzip"
 	"encoding/json"
 	"encoding/xml"
 	"io"
@@ -305,43 +307,8 @@ func TestData_Multipart(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
-// Cookie Jar Persistence
+// Note: Cookie tests have been moved to cookie_test.go for better organization
 // ----------------------------------------------------------------------------
-
-func TestData_CookiePersistence(t *testing.T) {
-	requestCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestCount++
-		if requestCount == 1 {
-			http.SetCookie(w, &http.Cookie{Name: "session", Value: "abc123"})
-		} else {
-			cookie, err := r.Cookie("session")
-			if err != nil || cookie.Value != "abc123" {
-				t.Error("Cookie not persisted across requests")
-			}
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	config := DefaultConfig()
-	config.EnableCookies = true
-	config.AllowPrivateIPs = true
-	client, _ := New(config)
-	defer client.Close()
-
-	// First request sets cookie
-	_, err := client.Get(server.URL)
-	if err != nil {
-		t.Fatalf("First request failed: %v", err)
-	}
-
-	// Second request should send cookie
-	_, err = client.Get(server.URL)
-	if err != nil {
-		t.Fatalf("Second request failed: %v", err)
-	}
-}
 
 // ----------------------------------------------------------------------------
 // Form URL Encoded
@@ -372,4 +339,88 @@ func TestData_FormURLEncoded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)
 	}
+}
+
+// ----------------------------------------------------------------------------
+// Compression Handling
+// ----------------------------------------------------------------------------
+
+func TestData_Compression(t *testing.T) {
+	t.Run("GzipResponse", func(t *testing.T) {
+		content := "This is compressed content"
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Encoding", "gzip")
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+
+			// Write gzip compressed content
+			gw := gzip.NewWriter(w)
+			_, _ = gw.Write([]byte(content))
+			_ = gw.Close()
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		resp, err := client.Get(server.URL)
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+
+		// Response should be automatically decompressed
+		if resp.Body() != content {
+			t.Errorf("Expected decompressed content %q, got %q", content, resp.Body())
+		}
+	})
+
+	t.Run("DeflateResponse", func(t *testing.T) {
+		content := "This is deflate compressed content"
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Encoding", "deflate")
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+
+			// Write deflate compressed content
+			fw, _ := flate.NewWriter(w, flate.DefaultCompression)
+			_, _ = fw.Write([]byte(content))
+			_ = fw.Close()
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		resp, err := client.Get(server.URL)
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+
+		// Response should be automatically decompressed
+		if resp.Body() != content {
+			t.Errorf("Expected decompressed content %q, got %q", content, resp.Body())
+		}
+	})
+
+	t.Run("NoCompression", func(t *testing.T) {
+		content := "This is uncompressed content"
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(content))
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		resp, err := client.Get(server.URL)
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+
+		if resp.Body() != content {
+			t.Errorf("Expected content %q, got %q", content, resp.Body())
+		}
+	})
 }

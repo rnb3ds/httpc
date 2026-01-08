@@ -173,13 +173,6 @@ type FileDataExtractor struct {
 }
 
 func extractFormData(v any) (*FormDataExtractor, bool) {
-	// Try direct type assertion first (more efficient)
-	type formDataLike interface {
-		GetFields() map[string]string
-		GetFiles() map[string]*FileDataExtractor
-	}
-
-	// Use JSON marshaling as fallback for compatibility
 	jsonData, err := json.Marshal(v)
 	if err != nil {
 		return nil, false
@@ -204,7 +197,7 @@ func extractFormData(v any) (*FormDataExtractor, bool) {
 
 	extractor := &FormDataExtractor{
 		Fields: result.Fields,
-		Files:  make(map[string]*FileDataExtractor),
+		Files:  make(map[string]*FileDataExtractor, len(result.Files)),
 	}
 
 	if extractor.Fields == nil {

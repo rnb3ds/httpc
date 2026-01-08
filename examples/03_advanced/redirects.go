@@ -10,7 +10,7 @@ import (
 )
 
 func main() {
-	fmt.Println("=== HTTPC Redirect Examples ===\n")
+	fmt.Println("=== HTTPC Redirect Examples ===\n ")
 
 	// Example 1: Automatic redirect following (default behavior)
 	example1AutoFollow()

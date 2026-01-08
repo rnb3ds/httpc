@@ -282,24 +282,45 @@ func TestClient_Concurrency(t *testing.T) {
 // Package-Level Function Tests
 // ----------------------------------------------------------------------------
 
-var packageLevelTestsSetup sync.Once
+func TestPackageLevel_Functions(t *testing.T) {
+	// Setup default client for package-level tests
+	config := DefaultConfig()
+	config.AllowPrivateIPs = true
+	client, _ := New(config)
+	_ = SetDefaultClient(client)
+	defer CloseDefaultClient()
 
-func setupPackageLevelTests() {
-	packageLevelTestsSetup.Do(func() {
-		// Close any existing default client first
-		_ = CloseDefaultClient()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer server.Close()
 
-		// Create new client with test-friendly config
-		config := DefaultConfig()
-		config.AllowPrivateIPs = true
-		client, _ := New(config)
-		_ = SetDefaultClient(client)
-	})
+	tests := []struct {
+		name string
+		fn   func(string, ...RequestOption) (*Result, error)
+	}{
+		{"Get", Get},
+		{"Post", Post},
+		{"Put", Put},
+		{"Patch", Patch},
+		{"Delete", Delete},
+		{"Head", Head},
+		{"Options", Options},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := tt.fn(server.URL)
+			if err != nil {
+				t.Fatalf("Package-level %s failed: %v", tt.name, err)
+			}
+			if resp.StatusCode() != http.StatusOK {
+				t.Errorf("Expected status 200, got %d", resp.StatusCode())
+			}
+		})
+	}
 }
-
-// ----------------------------------------------------------------------------
-// Response Helper Tests
-// ----------------------------------------------------------------------------
 
 // ----------------------------------------------------------------------------
 // Type Tests
@@ -345,6 +366,57 @@ func TestTypes(t *testing.T) {
 		}
 		if string(file.Content) != "test content" {
 			t.Error("File content should match")
+		}
+	})
+}
+
+// ----------------------------------------------------------------------------
+// Error Handling Tests
+// ----------------------------------------------------------------------------
+
+func TestClient_ErrorHandling(t *testing.T) {
+	t.Run("InvalidURL", func(t *testing.T) {
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Get("://invalid-url")
+		if err == nil {
+			t.Error("Expected error for invalid URL")
+		}
+	})
+
+	t.Run("NetworkError", func(t *testing.T) {
+		config := DefaultConfig()
+		config.Timeout = 1 * time.Second
+		config.AllowPrivateIPs = true
+		client, _ := New(config)
+		defer client.Close()
+
+		// Use a non-routable IP address
+		_, err := client.Get("http://192.0.2.1:12345")
+		if err == nil {
+			t.Error("Expected network error")
+		}
+	})
+
+	t.Run("NilConfig", func(t *testing.T) {
+		// Nil config should use defaults
+		client, err := New(nil)
+		if err != nil {
+			t.Errorf("Unexpected error for nil config: %v", err)
+		}
+		if client != nil {
+			defer client.Close()
+		}
+	})
+
+	t.Run("EmptyURL", func(t *testing.T) {
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Get("")
+		if err == nil {
+			t.Error("Expected error for empty URL")
 		}
 	})
 }

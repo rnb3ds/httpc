@@ -54,7 +54,7 @@ Located in `internal/connection/pool.go`:
 **Configuration:**
 ```go
 config := httpc.DefaultConfig()
-config.AllowPrivateIPs = false  // Default: blocks private IPs (production)
+config.AllowPrivateIPs = false  // blocks private IPs (production)
 // Set to true only for development/testing environments
 ```
 
@@ -276,7 +276,7 @@ config.InsecureSkipVerify = true  // Vulnerable to MITM attacks
 ```go
 // ✅ Good for production
 config := httpc.DefaultConfig()
-config.AllowPrivateIPs = false  // Default
+config.AllowPrivateIPs = false
 
 // ⚠️ Only for development/testing
 config.AllowPrivateIPs = true

@@ -1,6 +1,7 @@
 ﻿# HTTPC - Production-Ready HTTP Client for Go
 
 [![Go Version](https://img.shields.io/badge/Go-1.24+-blue.svg)](https://golang.org)
+[![pkg.go.dev](https://pkg.go.dev/badge/github.com/cybergodev/httpc.svg)](https://pkg.go.dev/github.com/cybergodev/httpc)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Security](https://img.shields.io/badge/Security-Hardened-red.svg)](SECURITY.md)
 [![Performance](https://img.shields.io/badge/performance-high%20performance-green.svg)](https://github.com/cybergodev/json)
@@ -39,22 +40,22 @@ import (
 
 func main() {
     // Simple GET request
-    resp, err := httpc.Get("https://api.example.com/users")
+    result, err := httpc.Get("https://api.example.com/users")
     if err != nil {
         log.Fatal(err)
     }
-    fmt.Printf("Status: %d\n", resp.StatusCode())
+    fmt.Printf("Status: %d\n", result.StatusCode())
 
     // POST with JSON and authentication
     user := map[string]string{"name": "John", "email": "john@example.com"}
-    resp, err = httpc.Post("https://api.example.com/users",
+    result, err = httpc.Post("https://api.example.com/users",
         httpc.WithJSON(user),
         httpc.WithBearerToken("your-token"),
     )
     if err != nil {
         log.Fatal(err)
     }
-    fmt.Printf("Created: %s\n", resp.Body())
+    fmt.Printf("Created: %s\n", result.Body())
 }
 ```
 
@@ -68,29 +69,29 @@ All standard HTTP methods with clean, intuitive API:
 
 ```go
 // GET - Retrieve data
-resp, err := httpc.Get("https://api.example.com/users",
+result, err := httpc.Get("https://api.example.com/users",
     httpc.WithQuery("page", 1),
     httpc.WithBearerToken("token"),
 )
 
 // POST - Create resource
-resp, err := httpc.Post("https://api.example.com/users",
+result, err := httpc.Post("https://api.example.com/users",
     httpc.WithJSON(user),
     httpc.WithBearerToken("token"),
 )
 
 // PUT - Full update
-resp, err := httpc.Put("https://api.example.com/users/123",
+result, err := httpc.Put("https://api.example.com/users/123",
     httpc.WithJSON(updatedUser),
 )
 
 // PATCH - Partial update
-resp, err := httpc.Patch("https://api.example.com/users/123",
+result, err := httpc.Patch("https://api.example.com/users/123",
     httpc.WithJSON(map[string]string{"email": "new@example.com"}),
 )
 
 // DELETE - Remove resource
-resp, err := httpc.Delete("https://api.example.com/users/123")
+result, err := httpc.Delete("https://api.example.com/users/123")
 
 // HEAD, OPTIONS, and custom methods also supported
 ```
@@ -111,7 +112,10 @@ httpc.WithQueryMap(map[string]interface{}{"page": 1, "limit": 20})
 
 // Request Body
 httpc.WithJSON(data)              // JSON body
+httpc.WithXML(data)               // XML body
 httpc.WithForm(formData)          // Form data
+httpc.WithText("content")         // Plain text
+httpc.WithBinary(data, "image/png")  // Binary data with content type
 httpc.WithFile("file", "doc.pdf", content)  // File upload
 
 // Cookies
@@ -130,7 +134,7 @@ httpc.WithMaxRetries(3)
 httpc.WithContext(ctx)
 
 // Combine multiple options
-resp, err := httpc.Post(url,
+result, err := httpc.Post(url,
     httpc.WithJSON(data),
     httpc.WithBearerToken("token"),
     httpc.WithTimeout(30*time.Second),
@@ -202,11 +206,21 @@ fmt.Printf("Attempts: %d\n", result.Meta.Attempts)
 
 // Work with cookies
 cookie := result.GetCookie("session_id")
+if result.HasCookie("session_id") {
+    fmt.Println("Session cookie found")
+}
+
+// Access request cookies
+requestCookies := result.RequestCookies()
+requestCookie := result.GetRequestCookie("auth_token")
 
 // Access detailed response information
 fmt.Printf("Content-Length: %d\n", result.Response.ContentLength)
 fmt.Printf("Response Headers: %v\n", result.Response.Headers)
 fmt.Printf("Request Headers: %v\n", result.Request.Headers)
+
+// Save response to file
+err = result.SaveToFile("response.html")
 ```
 
 ### Automatic Response Decompression
@@ -633,7 +647,7 @@ BenchmarkClient_Concurrent-8   10000    150000 ns/op     512 B/op    4 allocs/op
 
 ## Contributing
 
-Contributions welcome! Please open an issue first for major changes.
+Contributions welcome! Please open an issue first for major changes or contact us.
 
 ## License
 

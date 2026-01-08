@@ -9,10 +9,6 @@ import (
 // SECURITY COVERAGE IMPROVEMENT TESTS
 // ============================================================================
 
-// ----------------------------------------------------------------------------
-// NewValidatorWithConfig (0% coverage)
-// ----------------------------------------------------------------------------
-
 func TestNewValidatorWithConfig(t *testing.T) {
 	t.Run("CustomConfig", func(t *testing.T) {
 		cfg := &Config{
@@ -91,7 +87,12 @@ func TestIsPrivateOrReservedIP(t *testing.T) {
 // ----------------------------------------------------------------------------
 
 func TestValidateHost_EdgeCases(t *testing.T) {
-	validator := NewValidator()
+	validator := NewValidatorWithConfig(&Config{
+		ValidateURL:         true,
+		ValidateHeaders:     true,
+		MaxResponseBodySize: 50 * 1024 * 1024,
+		AllowPrivateIPs:     false,
+	})
 
 	tests := []struct {
 		name      string

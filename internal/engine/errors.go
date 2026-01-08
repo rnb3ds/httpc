@@ -56,7 +56,7 @@ func (e *ClientError) Error() string {
 func sanitizeURL(urlStr string) string {
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
-		return "[invalid-url]"
+		return urlStr
 	}
 
 	if parsedURL.User == nil {
@@ -66,11 +66,6 @@ func sanitizeURL(urlStr string) string {
 	_, hasPassword := parsedURL.User.Password()
 	parsedURL.User = nil
 
-	creds := "***"
-	if hasPassword {
-		creds = "***:***"
-	}
-
 	path := parsedURL.Path
 	if parsedURL.RawQuery != "" {
 		path += "?" + parsedURL.RawQuery
@@ -79,7 +74,10 @@ func sanitizeURL(urlStr string) string {
 		path += "#" + parsedURL.Fragment
 	}
 
-	return fmt.Sprintf("%s://%s@%s%s", parsedURL.Scheme, creds, parsedURL.Host, path)
+	if hasPassword {
+		return fmt.Sprintf("%s://***:***@%s%s", parsedURL.Scheme, parsedURL.Host, path)
+	}
+	return fmt.Sprintf("%s://***@%s%s", parsedURL.Scheme, parsedURL.Host, path)
 }
 
 func (e *ClientError) Unwrap() error {
@@ -185,8 +183,6 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 		clientErr.Type = ErrorTypeNetwork
 		if dnsErr.IsTimeout {
 			clientErr.Message = "DNS resolution timed out"
-		} else if dnsErr.IsTemporary {
-			clientErr.Message = "temporary DNS resolution failure"
 		} else {
 			clientErr.Message = "DNS resolution failed"
 		}
@@ -220,135 +216,68 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 	clientErr.Type = ErrorTypeUnknown
 	clientErr.Message = err.Error()
 
-	// Priority 1: Context errors (most specific)
-	if strings.Contains(errMsg, "context canceled") {
+	switch {
+	case strings.Contains(errMsg, "context canceled"):
 		clientErr.Type = ErrorTypeContextCanceled
 		clientErr.Message = "request context was canceled"
-		return clientErr
-	}
-	if strings.Contains(errMsg, "context deadline exceeded") {
+	case strings.Contains(errMsg, "context deadline exceeded"):
 		clientErr.Type = ErrorTypeTimeout
 		clientErr.Message = "request context deadline exceeded"
-		return clientErr
-	}
-
-	// Priority 2: HTTP/2 validation errors
-	if strings.Contains(errMsg, "http2") && strings.Contains(errMsg, "invalid") {
+	case strings.Contains(errMsg, "http2") && strings.Contains(errMsg, "invalid"):
 		clientErr.Type = ErrorTypeValidation
 		clientErr.Message = "invalid HTTP/2 request header"
-		return clientErr
-	}
-
-	// Priority 3: Network errors (connection issues)
-	if strings.Contains(errMsg, "connection refused") || strings.Contains(errMsg, "econnrefused") {
+	case strings.Contains(errMsg, "connection refused"):
 		clientErr.Type = ErrorTypeNetwork
 		clientErr.Message = "connection refused by server"
-		return clientErr
-	}
-	if strings.Contains(errMsg, "no such host") {
+	case strings.Contains(errMsg, "no such host"):
 		clientErr.Type = ErrorTypeNetwork
 		clientErr.Message = "DNS resolution failed"
-		return clientErr
-	}
-	if strings.Contains(errMsg, "connection reset") {
+	case strings.Contains(errMsg, "connection reset"):
 		clientErr.Type = ErrorTypeNetwork
 		clientErr.Message = "connection reset by peer"
-		return clientErr
-	}
-	if strings.Contains(errMsg, "connection aborted") || strings.Contains(errMsg, "connection closed") ||
-		strings.Contains(errMsg, "peer closed") {
+	case strings.Contains(errMsg, "connection closed") || strings.Contains(errMsg, "peer closed"):
 		clientErr.Type = ErrorTypeNetwork
 		clientErr.Message = "connection closed by peer"
-		return clientErr
-	}
-	if strings.Contains(errMsg, "broken pipe") {
+	case strings.Contains(errMsg, "broken pipe"):
 		clientErr.Type = ErrorTypeNetwork
 		clientErr.Message = "broken pipe"
-		return clientErr
-	}
-	if strings.Contains(errMsg, "network unreachable") || strings.Contains(errMsg, "enetunreach") {
+	case strings.Contains(errMsg, "network unreachable"):
 		clientErr.Type = ErrorTypeNetwork
 		clientErr.Message = "network unreachable"
-		return clientErr
-	}
-	if strings.Contains(errMsg, "host unreachable") || strings.Contains(errMsg, "ehostunreach") {
+	case strings.Contains(errMsg, "host unreachable"):
 		clientErr.Type = ErrorTypeNetwork
 		clientErr.Message = "host unreachable"
-		return clientErr
-	}
-
-	// Priority 4: TLS/SSL errors (check for error keywords)
-	if (strings.Contains(errMsg, "tls") || strings.Contains(errMsg, "ssl")) &&
-		(strings.Contains(errMsg, "error") || strings.Contains(errMsg, "failed") || strings.Contains(errMsg, "handshake")) {
+	case (strings.Contains(errMsg, "tls") || strings.Contains(errMsg, "ssl")) && strings.Contains(errMsg, "handshake"):
 		clientErr.Type = ErrorTypeTLS
 		clientErr.Message = "TLS handshake error"
-		return clientErr
-	}
-
-	// Priority 5: Certificate errors
-	if (strings.Contains(errMsg, "certificate") || strings.Contains(errMsg, "x509")) &&
-		(strings.Contains(errMsg, "error") || strings.Contains(errMsg, "failed") || strings.Contains(errMsg, "invalid") ||
-			strings.Contains(errMsg, "expired") || strings.Contains(errMsg, "verify")) {
+	case (strings.Contains(errMsg, "certificate") || strings.Contains(errMsg, "x509")):
 		clientErr.Type = ErrorTypeCertificate
 		clientErr.Message = "certificate validation error"
-		return clientErr
-	}
-
-	// Priority 6: Transport errors
-	if strings.Contains(errMsg, "transport") && (strings.Contains(errMsg, "error") || strings.Contains(errMsg, "failed") ||
-		strings.Contains(errMsg, "closed") || strings.Contains(errMsg, "broken") || strings.Contains(errMsg, "connection")) {
+	case strings.Contains(errMsg, "transport"):
 		clientErr.Type = ErrorTypeTransport
 		clientErr.Message = "HTTP transport error"
-		return clientErr
-	}
-	if strings.Contains(errMsg, "round trip") && strings.Contains(errMsg, "failed") {
-		clientErr.Type = ErrorTypeTransport
-		clientErr.Message = "HTTP transport error"
-		return clientErr
-	}
-	if strings.Contains(errMsg, "protocol error") {
+	case strings.Contains(errMsg, "protocol error"):
 		clientErr.Type = ErrorTypeTransport
 		clientErr.Message = "HTTP protocol error"
-		return clientErr
-	}
-
-	// Priority 7: Response read errors
-	if strings.Contains(errMsg, "failed to read response body") {
+	case strings.Contains(errMsg, "failed to read response body"):
 		clientErr.Type = ErrorTypeResponseRead
 		clientErr.Message = "failed to read response body"
-		return clientErr
-	}
-	if strings.Contains(errMsg, "unexpected eof") || (strings.Contains(errMsg, "eof") && strings.Contains(errMsg, "read")) {
+	case strings.Contains(errMsg, "unexpected eof"):
 		clientErr.Type = ErrorTypeResponseRead
 		clientErr.Message = "unexpected end of response"
-		return clientErr
-	}
-
-	// Priority 8: Validation errors
-	if strings.Contains(errMsg, "validation failed") {
+	case strings.Contains(errMsg, "validation failed"):
 		clientErr.Type = ErrorTypeValidation
 		clientErr.Message = "request validation failed"
-		return clientErr
-	}
-	if (strings.Contains(errMsg, "parse") && strings.Contains(errMsg, "url")) ||
-		strings.Contains(errMsg, "invalid url") || strings.Contains(errMsg, "missing protocol scheme") {
+	case strings.Contains(errMsg, "invalid url") || strings.Contains(errMsg, "missing protocol scheme"):
 		clientErr.Type = ErrorTypeValidation
 		clientErr.Message = "URL validation failed"
-		return clientErr
-	}
-
-	// Priority 9: HTTP status errors
-	if strings.Contains(errMsg, "http ") && (strings.Contains(errMsg, "http 4") || strings.Contains(errMsg, "http 5")) {
+	case strings.Contains(errMsg, "http 4") || strings.Contains(errMsg, "http 5"):
 		clientErr.Type = ErrorTypeHTTP
-		return clientErr
-	}
-
-	// Priority 10: Timeout errors (check last to avoid false positives)
-	if (strings.Contains(errMsg, "timeout") || strings.Contains(errMsg, "etimedout") || strings.Contains(errMsg, "timed out")) &&
-		!strings.Contains(errMsg, "context") {
-		clientErr.Type = ErrorTypeTimeout
-		clientErr.Message = "operation timed out"
-		return clientErr
+	case strings.Contains(errMsg, "timeout") || strings.Contains(errMsg, "timed out"):
+		if !strings.Contains(errMsg, "context") {
+			clientErr.Type = ErrorTypeTimeout
+			clientErr.Message = "operation timed out"
+		}
 	}
 
 	return clientErr

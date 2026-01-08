@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // DomainClient provides automatic Cookie and Header management for a specific domain.
@@ -131,24 +133,18 @@ func (dc *DomainClient) Options(path string, options ...RequestOption) (*Result,
 func (dc *DomainClient) request(method, path string, options ...RequestOption) (*Result, error) {
 	fullURL := dc.buildURL(path)
 
-	// Prepare managed options (cookies + headers)
 	managedOptions := dc.prepareManagedOptions()
-
-	// Combine managed options with user options (user options override)
 	allOptions := append(managedOptions, options...)
 
-	// Capture request options before execution
 	if dc.autoManage {
 		dc.captureRequestOptions(options)
 	}
 
-	// Execute request using context-aware Request method
 	result, err := dc.client.Request(context.Background(), method, fullURL, allOptions...)
 	if err != nil {
 		return nil, err
 	}
 
-	// Update managed state from response
 	if result != nil && dc.autoManage {
 		dc.updateFromResult(result)
 	}
@@ -156,45 +152,28 @@ func (dc *DomainClient) request(method, path string, options ...RequestOption) (
 	return result, nil
 }
 
-// buildURL efficiently constructs the full URL from base URL and path.
-// Optimized for hot path usage with minimal allocations and string operations.
+// buildURL constructs the full URL from base URL and path.
 func (dc *DomainClient) buildURL(path string) string {
 	if path == "" {
 		return dc.baseURL
 	}
 
-	pathLen := len(path)
-
-	// Fast path: check if path is already a full URL
-	if pathLen > 8 && path[:8] == "https://" {
-		// Validate it's for the same domain (security check)
-		if parsedURL, err := url.Parse(path); err == nil && parsedURL.Hostname() == dc.domain {
+	// Check if path is already a full URL
+	if len(path) > 7 {
+		if path[:7] == "http://" || (len(path) > 8 && path[:8] == "https://") {
 			return path
 		}
-		// Different domain - return as-is (let validation catch it)
-		return path
-	}
-	if pathLen > 7 && path[:7] == "http://" {
-		// Validate it's for the same domain (security check)
-		if parsedURL, err := url.Parse(path); err == nil && parsedURL.Hostname() == dc.domain {
-			return path
-		}
-		// Different domain - return as-is (let validation catch it)
-		return path
 	}
 
-	// Relative path handling - optimize string concatenation
+	// Relative path handling
 	if path[0] != '/' {
-		// Avoid multiple allocations by using efficient concatenation
 		return dc.baseURL + "/" + path
 	}
 	return dc.baseURL + path
 }
 
-// prepareManagedOptions efficiently prepares cookies and headers for requests.
-// Optimized to minimize lock contention and allocations in the hot path.
+// prepareManagedOptions prepares cookies and headers for requests.
 func (dc *DomainClient) prepareManagedOptions() []RequestOption {
-	// Fast path: check if we have any managed state
 	dc.mu.RLock()
 	cookieCount := len(dc.cookies)
 	headerCount := len(dc.headers)
@@ -204,22 +183,18 @@ func (dc *DomainClient) prepareManagedOptions() []RequestOption {
 		return nil
 	}
 
-	// Pre-allocate with exact capacity
 	options := make([]RequestOption, 0, 2)
 
-	// Handle cookies
 	if cookieCount > 0 {
 		dc.mu.RLock()
 		cookies := make([]http.Cookie, 0, len(dc.cookies))
 		for _, cookie := range dc.cookies {
-			// Copy cookie value to avoid reference issues
 			cookies = append(cookies, *cookie)
 		}
 		dc.mu.RUnlock()
 		options = append(options, WithCookies(cookies))
 	}
 
-	// Handle headers
 	if headerCount > 0 {
 		dc.mu.RLock()
 		headersCopy := make(map[string]string, len(dc.headers))
@@ -231,42 +206,35 @@ func (dc *DomainClient) prepareManagedOptions() []RequestOption {
 	return options
 }
 
-// captureRequestOptions efficiently captures cookies and headers from request options.
-// Optimized to minimize allocations and lock contention.
+// captureRequestOptions captures cookies and headers from request options.
 func (dc *DomainClient) captureRequestOptions(options []RequestOption) {
 	if len(options) == 0 {
 		return
 	}
 
-	// Create temporary request to capture option values
 	tempReq := &Request{
 		Headers: make(map[string]string, 4),
 		Cookies: make([]http.Cookie, 0, 4),
 	}
 
-	// Apply all options to capture their values
 	for _, opt := range options {
 		if opt != nil {
-			_ = opt(tempReq) // Ignore errors - they'll be caught during actual request
+			_ = opt(tempReq)
 		}
 	}
 
-	// Fast path: nothing to capture
 	if len(tempReq.Cookies) == 0 && len(tempReq.Headers) == 0 {
 		return
 	}
 
-	// Update managed state (minimize lock time)
 	dc.mu.Lock()
 	defer dc.mu.Unlock()
 
-	// Capture cookies
 	for i := range tempReq.Cookies {
 		cookie := &tempReq.Cookies[i]
 		dc.cookies[cookie.Name] = cookie
 	}
 
-	// Capture headers
 	for key, value := range tempReq.Headers {
 		dc.headers[key] = value
 	}
@@ -292,7 +260,7 @@ func (dc *DomainClient) updateFromResult(result *Result) {
 // SetHeader sets a persistent header that will be sent with all subsequent requests.
 // This header can be overridden per-request using WithHeader or WithHeaderMap.
 func (dc *DomainClient) SetHeader(key, value string) error {
-	if err := validateHeaderKeyValue(key, value); err != nil {
+	if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
 		return fmt.Errorf("invalid header: %w", err)
 	}
 
@@ -306,7 +274,7 @@ func (dc *DomainClient) SetHeader(key, value string) error {
 // SetHeaders sets multiple persistent headers.
 func (dc *DomainClient) SetHeaders(headers map[string]string) error {
 	for k, v := range headers {
-		if err := validateHeaderKeyValue(k, v); err != nil {
+		if err := validation.ValidateHeaderKeyValue(k, v); err != nil {
 			return fmt.Errorf("invalid header %s: %w", k, err)
 		}
 	}

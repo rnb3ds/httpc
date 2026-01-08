@@ -88,86 +88,58 @@ func (r *RetryEngine) MaxRetries() int {
 }
 
 // isRetryableError determines if an error is retryable based on its type and characteristics.
-// Optimized for performance with efficient error type checking and early returns.
 func (r *RetryEngine) isRetryableError(err error) bool {
-	// Fast path: context errors are never retryable
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 
-	// DNS errors - retry if temporary or timeout
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
 		return dnsErr.IsTimeout || dnsErr.IsTemporary
 	}
 
-	// Network operation errors
 	var opErr *net.OpError
 	if errors.As(err, &opErr) {
-		// Don't retry if the underlying error is context-related
-		if opErr.Err != nil {
-			if errors.Is(opErr.Err, context.Canceled) || errors.Is(opErr.Err, context.DeadlineExceeded) {
-				return false
-			}
+		if opErr.Err != nil && (errors.Is(opErr.Err, context.Canceled) || errors.Is(opErr.Err, context.DeadlineExceeded)) {
+			return false
 		}
 		return opErr.Timeout()
 	}
 
-	// Generic network errors
 	var netErr net.Error
 	if errors.As(err, &netErr) {
 		return netErr.Timeout()
 	}
 
-	// Optimized string-based classification with early returns
-	errMsg := err.Error()
-	errMsgLen := len(errMsg)
-
-	// Skip string operations for very short messages
-	if errMsgLen < 4 {
+	errMsg := strings.ToLower(err.Error())
+	if len(errMsg) < 4 {
 		return false
 	}
 
-	// Convert to lowercase once for efficiency
-	errMsgLower := strings.ToLower(errMsg)
-
-	// Never retry context errors (double-check with fast string matching)
-	if strings.Contains(errMsgLower, "context") {
-		return strings.Contains(errMsgLower, "timeout") &&
-			!strings.Contains(errMsgLower, "canceled") &&
-			!strings.Contains(errMsgLower, "deadline")
+	if strings.Contains(errMsg, "context") {
+		return strings.Contains(errMsg, "timeout") && !strings.Contains(errMsg, "canceled") && !strings.Contains(errMsg, "deadline")
 	}
 
-	// Optimized retryable condition checks with priority ordering
-	// Most common errors first for better performance
-	return strings.Contains(errMsgLower, "connection refused") ||
-		strings.Contains(errMsgLower, "timeout") ||
-		strings.Contains(errMsgLower, "connection reset") ||
-		strings.Contains(errMsgLower, "broken pipe") ||
-		strings.Contains(errMsgLower, "network unreachable") ||
-		strings.Contains(errMsgLower, "host unreachable") ||
-		strings.Contains(errMsgLower, "no route to host") ||
-		strings.Contains(errMsgLower, "no such host")
+	return strings.Contains(errMsg, "connection refused") ||
+		strings.Contains(errMsg, "timeout") ||
+		strings.Contains(errMsg, "connection reset") ||
+		strings.Contains(errMsg, "broken pipe") ||
+		strings.Contains(errMsg, "network unreachable") ||
+		strings.Contains(errMsg, "host unreachable") ||
+		strings.Contains(errMsg, "no route to host") ||
+		strings.Contains(errMsg, "no such host")
 }
 
-// getSecureJitter generates cryptographically secure jitter for retry delays.
-// Uses atomic operations and time mixing to avoid lock contention while ensuring good distribution.
+// getSecureJitter generates jitter for retry delays using atomic operations.
 func (r *RetryEngine) getSecureJitter(maxJitter time.Duration) time.Duration {
 	if maxJitter <= 0 {
 		return 0
 	}
 
-	// Use atomic counter with time mixing for lock-free jitter generation
-	// This provides good distribution without mutex contention in hot paths
 	count := atomic.AddInt64(&r.counter, 1)
 	nanos := time.Now().UnixNano()
-
-	// Linear congruential generator for better distribution
-	// Constants from Numerical Recipes
 	mixed := (count ^ nanos) * 1103515245
-	mixed = (mixed ^ (mixed >> 30)) * 1664525
 
-	// Ensure positive result and apply modulo
 	jitter := mixed % int64(maxJitter)
 	if jitter < 0 {
 		jitter = -jitter

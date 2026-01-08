@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/cybergodev/httpc/internal/connection"
 )
@@ -96,51 +97,32 @@ func (t *Transport) GetRedirectChain() []string {
 
 // RoundTrip executes an HTTP round trip
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// If cookie jar is enabled, merge request cookies into the jar
-	// BEFORE calling Do() so the http.Client can properly manage them
 	if t.httpClient.Jar != nil {
-		// Get cookies that were manually added to this request
-		requestCookies := req.Cookies()
-
-		if len(requestCookies) > 0 {
-			// Get existing cookies from jar for this URL
+		if requestCookies := req.Cookies(); len(requestCookies) > 0 {
 			existingCookies := t.httpClient.Jar.Cookies(req.URL)
+			cookieMap := make(map[string]*http.Cookie, len(existingCookies)+len(requestCookies))
 
-			// Merge: add existing cookies first, then new ones (new ones override)
-			cookieMap := make(map[string]*http.Cookie)
 			for _, c := range existingCookies {
 				cookieMap[c.Name] = c
 			}
 
-			// Process request cookies: ensure they have proper domain/path for jar storage
 			for _, c := range requestCookies {
-				// Create a copy to avoid modifying the original
 				cookieCopy := *c
-
-				// If domain is not set, set it to the request's hostname (without port)
-				// The cookiejar requires domain without port for proper matching
 				if cookieCopy.Domain == "" {
 					cookieCopy.Domain = req.URL.Hostname()
 				}
-
-				// If path is not set, default to "/"
 				if cookieCopy.Path == "" {
 					cookieCopy.Path = "/"
 				}
-
 				cookieMap[cookieCopy.Name] = &cookieCopy
 			}
 
-			// Convert map back to slice
 			mergedCookies := make([]*http.Cookie, 0, len(cookieMap))
 			for _, c := range cookieMap {
 				mergedCookies = append(mergedCookies, c)
 			}
 
-			// Update jar with merged cookies
 			t.httpClient.Jar.SetCookies(req.URL, mergedCookies)
-
-			// Clear the request's Cookie header so http.Client will use jar
 			req.Header.Del("Cookie")
 		}
 	}
@@ -150,23 +132,19 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("transport round trip failed: %w", err)
 	}
 
-	// After Do() completes, capture the actual cookies that were sent
-	// The http.Client with Jar adds cookies internally, so we need to reconstruct
-	// the Cookie header from the jar for accurate RequestHeaders
 	if t.httpClient.Jar != nil {
-		cookies := t.httpClient.Jar.Cookies(req.URL)
-		if len(cookies) > 0 {
-			// Build Cookie header value
-			cookieHeader := ""
+		if cookies := t.httpClient.Jar.Cookies(req.URL); len(cookies) > 0 {
+			var cookieHeader strings.Builder
 			for i, c := range cookies {
 				if i > 0 {
-					cookieHeader += "; "
+					cookieHeader.WriteString("; ")
 				}
-				cookieHeader += c.Name + "=" + c.Value
+				cookieHeader.WriteString(c.Name)
+				cookieHeader.WriteString("=")
+				cookieHeader.WriteString(c.Value)
 			}
-			// Store in response for later retrieval
 			if resp != nil && resp.Request != nil {
-				resp.Request.Header.Set("Cookie", cookieHeader)
+				resp.Request.Header.Set("Cookie", cookieHeader.String())
 			}
 		}
 	}

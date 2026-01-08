@@ -136,78 +136,34 @@ func (v *Validator) validateHost(host string) error {
 	return nil
 }
 
-// isLocalhost efficiently detects localhost variations without allocations.
-// Optimized for security scanning with comprehensive localhost detection.
+// isLocalhost detects localhost variations.
 func isLocalhost(hostname string) bool {
-	hostnameLen := len(hostname)
-	if hostnameLen == 0 {
-		return false
+	switch hostname {
+	case "localhost", "127.0.0.1", "::1", "0.0.0.0", "::":
+		return true
 	}
 
-	// Fast path: IPv4 loopback detection
-	if hostnameLen >= 9 && hostname[0] == '1' {
-		if hostname == "127.0.0.1" {
-			return true
-		}
-		// Check 127.x.x.x range
-		if hostnameLen > 4 && hostname[:4] == "127." {
-			return true
-		}
+	if len(hostname) > 4 && hostname[:4] == "127." {
+		return true
 	}
 
-	// Exact length matches for common cases (avoid string allocation)
-	switch hostnameLen {
-	case 9: // "localhost"
-		if hostname == "localhost" || hostname == "LOCALHOST" || hostname == "Localhost" {
-			return true
-		}
-	case 3: // "::1"
-		if hostname == "::1" {
-			return true
-		}
-	case 7: // "0.0.0.0"
-		if hostname == "0.0.0.0" {
-			return true
-		}
-	case 2: // "::"
-		if hostname == "::" {
-			return true
-		}
-	}
-
-	// Check for localhost subdomains (only allocate when necessary)
-	if hostnameLen > 10 {
-		lower := strings.ToLower(hostname)
-		if strings.HasPrefix(lower, "localhost.") {
-			return true
-		}
+	if len(hostname) > 10 && strings.HasPrefix(strings.ToLower(hostname), "localhost.") {
+		return true
 	}
 
 	return false
 }
 
-// isPrivateOrReservedIP comprehensively checks for private and reserved IP ranges.
-// Provides defense against SSRF attacks by blocking internal network access.
+// isPrivateOrReservedIP checks for private and reserved IP ranges.
 func isPrivateOrReservedIP(ip net.IP) bool {
-	// Use Go's built-in methods for standard checks
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
 		return true
 	}
 
-	// Additional IPv4 reserved ranges not covered by Go's methods
 	if ip4 := ip.To4(); ip4 != nil {
-		// Class E (240.0.0.0/4) and 0.0.0.0/8
-		if ip4[0] >= 240 || ip4[0] == 0 {
-			return true
-		}
-		// Additional reserved ranges for enhanced security
-		// 100.64.0.0/10 (Carrier-grade NAT)
-		if ip4[0] == 100 && (ip4[1]&0xC0) == 64 {
-			return true
-		}
-		// 198.18.0.0/15 (Benchmark testing)
-		if ip4[0] == 198 && (ip4[1] == 18 || ip4[1] == 19) {
+		if ip4[0] >= 240 || ip4[0] == 0 || (ip4[0] == 100 && (ip4[1]&0xC0) == 64) ||
+			(ip4[0] == 198 && (ip4[1] == 18 || ip4[1] == 19)) {
 			return true
 		}
 	}
@@ -221,33 +177,23 @@ func (v *Validator) validateHeader(key, value string) error {
 		return fmt.Errorf("header key cannot be empty")
 	}
 
-	// Check for whitespace-only key
-	hasNonSpace := false
-	for i := range keyLen {
-		if key[i] != ' ' && key[i] != '\t' {
-			hasNonSpace = true
-			break
-		}
-	}
-	if !hasNonSpace {
+	trimmedKey := strings.TrimSpace(key)
+	if len(trimmedKey) == 0 {
 		return fmt.Errorf("header key cannot be empty")
 	}
 
 	if keyLen > maxHeaderKeyLen {
-		return fmt.Errorf("header key too long (max %d)", maxHeaderKeyLen)
-	}
-	if key[0] == ':' {
-		return fmt.Errorf("pseudo-headers not allowed")
+		return fmt.Errorf("invalid header key")
 	}
 
-	// Validate key characters - reject control characters and validate allowed chars
+	if key[0] == ':' {
+		return fmt.Errorf("invalid header key")
+	}
+
 	for i := range keyLen {
 		c := key[i]
-		if c < 0x20 || c == 0x7F {
+		if c < 0x20 || c == 0x7F || !isValidHeaderChar(rune(c)) {
 			return fmt.Errorf("header contains invalid characters")
-		}
-		if !isValidHeaderChar(rune(c)) {
-			return fmt.Errorf("invalid character in header key")
 		}
 	}
 
@@ -256,7 +202,6 @@ func (v *Validator) validateHeader(key, value string) error {
 		return fmt.Errorf("header value too long (max %d)", maxHeaderValueLen)
 	}
 
-	// Validate value characters - reject control characters except tab (0x09)
 	for i := range valueLen {
 		c := value[i]
 		if (c < 0x20 && c != 0x09) || c == 0x7F {
@@ -264,35 +209,22 @@ func (v *Validator) validateHeader(key, value string) error {
 		}
 	}
 
-	// Validate common header values to prevent HTTP/2 errors
-	if err := validateCommonHeaderValue(key, value); err != nil {
-		return err
-	}
-
-	return nil
+	return validateCommonHeaderValue(key, value)
 }
 
 func validateCommonHeaderValue(key, value string) error {
-	keyLower := strings.ToLower(key)
-	valueLower := strings.ToLower(value)
-
-	switch keyLower {
+	switch strings.ToLower(key) {
 	case "connection":
-		// HTTP/2 does not allow Connection header, but HTTP/1.1 does
-		// Valid values: keep-alive, close, upgrade
-		if valueLower != "keep-alive" && valueLower != "close" && valueLower != "upgrade" {
-			return fmt.Errorf("invalid Connection header value: %q (expected: keep-alive, close, or upgrade)", value)
+		v := strings.ToLower(value)
+		if v != "keep-alive" && v != "close" && v != "upgrade" {
+			return fmt.Errorf("invalid Connection header value: %q", value)
 		}
 	case "transfer-encoding":
-		// HTTP/2 does not allow Transfer-Encoding header
-		// Valid values for HTTP/1.1: chunked, compress, deflate, gzip
-		validTE := valueLower == "chunked" || valueLower == "compress" ||
-			valueLower == "deflate" || valueLower == "gzip" || valueLower == "identity"
-		if !validTE {
+		v := strings.ToLower(value)
+		if v != "chunked" && v != "compress" && v != "deflate" && v != "gzip" && v != "identity" {
 			return fmt.Errorf("invalid Transfer-Encoding header value: %q", value)
 		}
 	}
-
 	return nil
 }
 

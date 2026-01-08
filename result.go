@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -197,27 +198,27 @@ func (r *Result) String() string {
 	b.Grow(256)
 
 	b.WriteString("Result{Status: ")
-	b.WriteString(itoa(r.Response.StatusCode))
+	b.WriteString(strconv.Itoa(r.Response.StatusCode))
 	b.WriteByte(' ')
 	b.WriteString(r.Response.Status)
 	b.WriteString(", ContentLength: ")
-	b.WriteString(itoa64(r.Response.ContentLength))
+	b.WriteString(strconv.FormatInt(r.Response.ContentLength, 10))
 
 	if r.Meta != nil {
 		b.WriteString(", Duration: ")
 		b.WriteString(r.Meta.Duration.String())
 		b.WriteString(", Attempts: ")
-		b.WriteString(itoa(r.Meta.Attempts))
+		b.WriteString(strconv.Itoa(r.Meta.Attempts))
 	}
 
 	if len(r.Response.Headers) > 0 {
 		b.WriteString(", Headers: ")
-		b.WriteString(itoa(len(r.Response.Headers)))
+		b.WriteString(strconv.Itoa(len(r.Response.Headers)))
 	}
 
 	if len(r.Response.Cookies) > 0 {
 		b.WriteString(", Cookies: ")
-		b.WriteString(itoa(len(r.Response.Cookies)))
+		b.WriteString(strconv.Itoa(len(r.Response.Cookies)))
 	}
 
 	if len(r.Response.Body) > 0 {
