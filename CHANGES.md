@@ -7,7 +7,7 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ---
 
-## v1.3.2 - Code Quality & Security Enhancement (2025-12-31)
+## v1.3.3 - Code Quality & Security Enhancement (2025-12-31)
 
 ### Security
 - Enhanced SSRF protection with secure defaults (blocks private IP ranges by default)
