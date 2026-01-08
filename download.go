@@ -184,9 +184,7 @@ func calculateSpeed(bytes int64, duration time.Duration) float64 {
 	return 0
 }
 
-// prepareFilePath validates and prepares file paths with comprehensive security checks.
-// Prevents path traversal, system path access, and other file system attacks.
-// Optimized for performance with single-pass validation and early returns.
+// prepareFilePath validates and prepares file paths with security checks.
 func prepareFilePath(filePath string) error {
 	filePathLen := len(filePath)
 	if filePathLen == 0 {
@@ -196,36 +194,33 @@ func prepareFilePath(filePath string) error {
 		return fmt.Errorf("file path too long (max %d)", maxFilePathLen)
 	}
 
-	// Security check: block UNC paths early (optimized check)
+	// Check for UNC paths
 	if filePathLen >= 2 {
-		first, second := filePath[0], filePath[1]
-		if (first == '\\' && second == '\\') || (first == '/' && second == '/') {
+		if (filePath[0] == '\\' && filePath[1] == '\\') || (filePath[0] == '/' && filePath[1] == '/') {
 			return fmt.Errorf("UNC paths not allowed for security")
 		}
 	}
 
-	// Optimized character validation in single pass
+	// Validate characters
 	for i := 0; i < filePathLen; i++ {
 		c := filePath[i]
-		// Combined validation: control chars, null bytes, and dangerous chars
 		if c < 0x20 || c == 0x7F || c == 0 {
 			return fmt.Errorf("file path contains invalid characters at position %d", i)
 		}
 	}
 
-	// Clean and resolve path
 	cleanPath := filepath.Clean(filePath)
 	absPath, err := filepath.Abs(cleanPath)
 	if err != nil {
 		return fmt.Errorf("failed to resolve path: %w", err)
 	}
 
-	// Security check: prevent system path access (optimized)
+	// Check for system path access
 	if isSystemPath(absPath) {
 		return fmt.Errorf("system path access denied for security")
 	}
 
-	// Path traversal protection (optimized for common case)
+	// Check for path traversal
 	if !filepath.IsAbs(filePath) && strings.Contains(cleanPath, "..") {
 		wd, err := os.Getwd()
 		if err != nil {
@@ -236,13 +231,12 @@ func prepareFilePath(filePath string) error {
 			return fmt.Errorf("failed to resolve working directory: %w", err)
 		}
 
-		// Ensure resolved path is within working directory
 		if !strings.HasPrefix(absPath+string(filepath.Separator), wdAbs+string(filepath.Separator)) {
 			return fmt.Errorf("path traversal detected: path outside working directory")
 		}
 	}
 
-	// Create directory structure if needed
+	// Create directories
 	dir := filepath.Dir(absPath)
 	if err := os.MkdirAll(dir, dirPermissions); err != nil {
 		return fmt.Errorf("failed to create directories: %w", err)
@@ -275,11 +269,11 @@ func FormatBytes(bytes int64) string {
 		return fmt.Sprintf("%d B", bytes)
 	}
 
-	units := []rune{'K', 'M', 'G', 'T', 'P', 'E'}
+	units := [6]byte{'K', 'M', 'G', 'T', 'P', 'E'}
 	div := int64(unit)
 	exp := 0
 
-	for n := bytes / unit; n >= unit && exp < len(units)-1; n /= unit {
+	for n := bytes / unit; n >= unit && exp < 5; n /= unit {
 		div *= unit
 		exp++
 	}
@@ -294,15 +288,15 @@ func FormatSpeed(bytesPerSecond float64) string {
 		return fmt.Sprintf("%.0f B/s", bytesPerSecond)
 	}
 
-	units := []string{"KB/s", "MB/s", "GB/s", "TB/s", "PB/s", "EB/s"}
+	units := [6]string{"KB/s", "MB/s", "GB/s", "TB/s", "PB/s", "EB/s"}
 	div := unit
 
-	for exp := range len(units) {
-		if bytesPerSecond < div*unit || exp == len(units)-1 {
+	for exp := 0; exp < 6; exp++ {
+		if bytesPerSecond < div*unit || exp == 5 {
 			return fmt.Sprintf("%.2f %s", bytesPerSecond/div, units[exp])
 		}
 		div *= unit
 	}
 
-	return fmt.Sprintf("%.2f %s", bytesPerSecond/div, units[len(units)-1])
+	return fmt.Sprintf("%.2f %s", bytesPerSecond/div, units[5])
 }

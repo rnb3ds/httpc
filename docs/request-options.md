@@ -385,6 +385,16 @@ resp, err := client.Get(url,
 )
 ```
 
+### Cookie String (From Browser)
+
+Parse and send multiple cookies from a cookie string (e.g., copied from browser dev tools):
+
+```go
+resp, err := client.Get(url,
+    httpc.WithCookieString("session=abc123; token=xyz789; user_id=12345"),
+)
+```
+
 ## Complete Reference
 
 ### All Request Options
@@ -416,6 +426,7 @@ resp, err := client.Get(url,
 | `WithCookie(cookie)`             | Add cookie           | `WithCookie(&http.Cookie{...})`         |
 | `WithCookies(cookies)`           | Add multiple cookies | `WithCookies([]*http.Cookie{...})`      |
 | `WithCookieValue(name, value)`   | Add simple cookie    | `WithCookieValue("session", "abc123")`  |
+| `WithCookieString(cookieStr)`    | Parse cookie string  | `WithCookieString("a=1; b=2")`          |
 
 ## Best Practices
 

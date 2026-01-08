@@ -121,9 +121,10 @@ result, err := client.Get(url,
     httpc.WithCookies(cookies),
 )
 
-// Method 4: Cookie string (from browser)
+// Method 4: Cookie string (from browser dev tools)
+// Parse and send multiple cookies from a cookie string
 result, err := client.Get(url,
-    httpc.WithCookieString("session=abc123; token=xyz789"),
+    httpc.WithCookieString("session=abc123; token=xyz789; user_id=12345"),
 )
 ```
 

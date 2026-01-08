@@ -223,51 +223,8 @@ func TestResult_JSON(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
-// Response Cookies
+// Note: Cookie tests have been moved to cookie_test.go for better organization
 // ----------------------------------------------------------------------------
-
-func TestResult_Cookies(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.SetCookie(w, &http.Cookie{Name: "session", Value: "abc123"})
-		http.SetCookie(w, &http.Cookie{Name: "token", Value: "xyz789"})
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	client, _ := newTestClient()
-	defer client.Close()
-
-	resp, err := client.Get(server.URL)
-	if err != nil {
-		t.Fatalf("Request failed: %v", err)
-	}
-
-	t.Run("GetCookie", func(t *testing.T) {
-		cookie := resp.GetCookie("session")
-		if cookie == nil {
-			t.Fatal("Expected cookie to be found")
-		}
-		if cookie.Value != "abc123" {
-			t.Errorf("Expected cookie value abc123, got %s", cookie.Value)
-		}
-	})
-
-	t.Run("HasCookie", func(t *testing.T) {
-		if !resp.HasCookie("session") {
-			t.Error("Expected HasCookie to return true")
-		}
-		if resp.HasCookie("nonexistent") {
-			t.Error("Expected HasCookie to return false for nonexistent cookie")
-		}
-	})
-
-	t.Run("ResponseCookies", func(t *testing.T) {
-		cookies := resp.ResponseCookies()
-		if len(cookies) != 2 {
-			t.Errorf("Expected 2 cookies, got %d", len(cookies))
-		}
-	})
-}
 
 // ----------------------------------------------------------------------------
 // String Formatting

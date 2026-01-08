@@ -71,19 +71,7 @@ func WithXMLAccept() RequestOption {
 	return WithAccept("application/xml")
 }
 
-const (
-	// Use validation package constants
-	maxCredLen     = validation.MaxCredLen
-	maxTokenLen    = validation.MaxTokenLen
-	maxKeyLen      = validation.MaxKeyLen
-	maxValueLen    = validation.MaxValueLen
-	maxFilenameLen = validation.MaxFilenameLen
 
-	maxCookieNameLen   = validation.MaxCookieNameLen
-	maxCookieValueLen  = validation.MaxCookieValueLen
-	maxCookieDomainLen = validation.MaxCookieDomainLen
-	maxCookiePathLen   = validation.MaxCookiePathLen
-)
 
 // validateCookie validates HTTP cookies using consolidated validation.
 // Prevents cookie injection and enforces RFC 6265 compliance.
@@ -99,10 +87,9 @@ func validateCookie(cookie *http.Cookie) error {
 	// Validate domain if set
 	if cookie.Domain != "" {
 		domainLen := len(cookie.Domain)
-		if domainLen > maxCookieDomainLen {
-			return fmt.Errorf("cookie domain too long (max %d)", maxCookieDomainLen)
+		if domainLen > validation.MaxCookieDomainLen {
+			return fmt.Errorf("cookie domain too long (max %d)", validation.MaxCookieDomainLen)
 		}
-		// Basic domain validation - no control characters
 		for i, r := range cookie.Domain {
 			if r < 0x20 || r == 0x7F {
 				return fmt.Errorf("cookie domain contains invalid characters at position %d", i)
@@ -113,10 +100,9 @@ func validateCookie(cookie *http.Cookie) error {
 	// Validate path if set
 	if cookie.Path != "" {
 		pathLen := len(cookie.Path)
-		if pathLen > maxCookiePathLen {
-			return fmt.Errorf("cookie path too long (max %d)", maxCookiePathLen)
+		if pathLen > validation.MaxCookiePathLen {
+			return fmt.Errorf("cookie path too long (max %d)", validation.MaxCookiePathLen)
 		}
-		// Basic path validation - no control characters
 		for i, r := range cookie.Path {
 			if r < 0x20 || r == 0x7F {
 				return fmt.Errorf("cookie path contains invalid characters at position %d", i)
@@ -136,10 +122,10 @@ func WithBasicAuth(username, password string) RequestOption {
 		if username == "" {
 			return fmt.Errorf("username cannot be empty")
 		}
-		if err := validation.ValidateCredential(username, maxCredLen, true, "username"); err != nil {
+		if err := validation.ValidateCredential(username, validation.MaxCredLen, true, "username"); err != nil {
 			return fmt.Errorf("invalid username: %w", err)
 		}
-		if err := validation.ValidateCredential(password, maxCredLen, false, "password"); err != nil {
+		if err := validation.ValidateCredential(password, validation.MaxCredLen, false, "password"); err != nil {
 			return fmt.Errorf("invalid password: %w", err)
 		}
 
@@ -184,8 +170,8 @@ func WithQuery(key string, value any) RequestOption {
 
 		if value != nil {
 			valueStr := fmt.Sprintf("%v", value)
-			if len(valueStr) > maxValueLen {
-				return fmt.Errorf("query value too long (max %d)", maxValueLen)
+			if len(valueStr) > validation.MaxValueLen {
+				return fmt.Errorf("query value too long (max %d)", validation.MaxValueLen)
 			}
 		}
 
@@ -211,8 +197,8 @@ func WithQueryMap(params map[string]any) RequestOption {
 
 			if v != nil {
 				valueStr := fmt.Sprintf("%v", v)
-				if len(valueStr) > maxValueLen {
-					return fmt.Errorf("query value too long for key %s (max %d)", k, maxValueLen)
+				if len(valueStr) > validation.MaxValueLen {
+					return fmt.Errorf("query value too long for key %s (max %d)", k, validation.MaxValueLen)
 				}
 			}
 			r.QueryParams[k] = v
@@ -519,18 +505,17 @@ func WithCookieString(cookieString string) RequestOption {
 }
 
 // parseCookieString parses a cookie string and returns http.Cookie objects with secure defaults.
-// Optimized for minimal allocations and comprehensive validation.
 func parseCookieString(cookieString string) ([]http.Cookie, error) {
 	if cookieString == "" {
 		return nil, nil
 	}
 
-	// Pre-allocate with reasonable capacity
 	cookies := make([]http.Cookie, 0, 4)
 	start := 0
+	cookieLen := len(cookieString)
 
-	for i := 0; i <= len(cookieString); i++ {
-		if i == len(cookieString) || cookieString[i] == ';' {
+	for i := 0; i <= cookieLen; i++ {
+		if i == cookieLen || cookieString[i] == ';' {
 			pair := trimSpace(cookieString[start:i])
 
 			if pair != "" {
@@ -546,16 +531,17 @@ func parseCookieString(cookieString string) ([]http.Cookie, error) {
 					return nil, fmt.Errorf("empty cookie name in pair: %s", pair)
 				}
 
-				// Validate cookie name and value for security
-				if len(name) > maxCookieNameLen {
+				nameLen := len(name)
+				if nameLen > validation.MaxCookieNameLen {
 					return nil, fmt.Errorf("cookie name too long: %s", name)
 				}
-				if len(value) > maxCookieValueLen {
+				if len(value) > validation.MaxCookieValueLen {
 					return nil, fmt.Errorf("cookie value too long for %s", name)
 				}
 
-				// Check for invalid characters
-				for _, c := range name {
+				// Validate cookie name characters
+				for j := 0; j < nameLen; j++ {
+					c := name[j]
 					if c < 0x20 || c == 0x7F || c == ';' || c == ',' || c == '=' {
 						return nil, fmt.Errorf("invalid character in cookie name: %s", name)
 					}

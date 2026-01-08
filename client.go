@@ -62,40 +62,28 @@ func New(config ...*Config) (Client, error) {
 }
 
 // deepCopyConfig creates a deep copy of the configuration to ensure immutability.
-// Only copies mutable fields to prevent accidental modification after client creation.
 func deepCopyConfig(src *Config) *Config {
 	dst := *src
 
-	// Deep copy headers map to prevent modification
 	if src.Headers != nil {
 		dst.Headers = make(map[string]string, len(src.Headers))
 		maps.Copy(dst.Headers, src.Headers)
 	}
 
-	// TLSConfig is treated as immutable after client creation per guidelines
-	// No deep copy needed - reference sharing is safe for read-only usage
-	// This optimization saves significant memory and CPU on client creation
-
 	return &dst
 }
 
 // NewSecure creates a new client with security-focused configuration.
-// This preset prioritizes security over performance with strict validation,
-// minimal retries, and conservative connection limits.
 func NewSecure() (Client, error) {
 	return New(SecureConfig())
 }
 
 // NewPerformance creates a new client optimized for high-throughput scenarios.
-// This preset uses aggressive connection pooling, longer timeouts, and
-// faster retry intervals for maximum performance.
 func NewPerformance() (Client, error) {
 	return New(PerformanceConfig())
 }
 
 // NewMinimal creates a new client with minimal features and lightweight configuration.
-// This preset is ideal for simple, one-off requests where you don't need
-// retries or advanced features.
 func NewMinimal() (Client, error) {
 	return New(MinimalConfig())
 }
@@ -129,9 +117,7 @@ func (c *clientImpl) Options(url string, options ...RequestOption) (*Result, err
 }
 
 // doRequest executes an HTTP request with the given method and options.
-// Optimized for hot path usage with minimal allocations.
 func (c *clientImpl) doRequest(method, url string, options []RequestOption) (*Result, error) {
-	// Fast path: no options
 	if len(options) == 0 {
 		resp, err := c.engine.Request(context.Background(), method, url)
 		if err != nil {
@@ -140,7 +126,6 @@ func (c *clientImpl) doRequest(method, url string, options []RequestOption) (*Re
 		return convertEngineResponseToResult(resp), nil
 	}
 
-	// Convert options only when needed
 	engineOptions := convertRequestOptions(options)
 	resp, err := c.engine.Request(context.Background(), method, url, engineOptions...)
 	if err != nil {
@@ -385,24 +370,20 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 }
 
 // convertRequestOptions converts public RequestOptions to internal engine options.
-// Optimized to minimize allocations in the hot path.
 func convertRequestOptions(options []RequestOption) []engine.RequestOption {
 	if len(options) == 0 {
 		return nil
 	}
 
-	// Pre-allocate with exact capacity to avoid slice growth
 	engineOptions := make([]engine.RequestOption, 0, len(options))
 
 	for _, opt := range options {
 		if opt == nil {
-			continue // Skip nil options without allocation
+			continue
 		}
 
-		// Capture option in closure to avoid allocation in loop
 		option := opt
 		engineOptions = append(engineOptions, func(req *engine.Request) error {
-			// Create public request wrapper - reuse fields where possible
 			publicReq := &Request{
 				Method:      req.Method,
 				URL:         req.URL,
@@ -415,12 +396,10 @@ func convertRequestOptions(options []RequestOption) []engine.RequestOption {
 				Cookies:     req.Cookies,
 			}
 
-			// Apply the option
 			if err := option(publicReq); err != nil {
 				return err
 			}
 
-			// Copy back modified fields
 			req.Method = publicReq.Method
 			req.URL = publicReq.URL
 			req.Headers = publicReq.Headers
@@ -440,16 +419,13 @@ func convertRequestOptions(options []RequestOption) []engine.RequestOption {
 }
 
 // convertEngineResponseToResult converts internal engine response to public Result.
-// Optimized for minimal allocations and efficient field copying.
 func convertEngineResponseToResult(engineResp *engine.Response) *Result {
 	if engineResp == nil {
 		return nil
 	}
 
-	// Extract request cookies efficiently
 	requestCookies := extractRequestCookies(engineResp.RequestHeaders)
 
-	// Create result with pre-allocated structs to minimize allocations
 	return &Result{
 		Request: &RequestInfo{
 			Headers: engineResp.RequestHeaders,
@@ -473,8 +449,7 @@ func convertEngineResponseToResult(engineResp *engine.Response) *Result {
 	}
 }
 
-// extractRequestCookies efficiently extracts cookies from request headers.
-// Optimized for hot path usage with minimal allocations.
+// extractRequestCookies extracts cookies from request headers.
 func extractRequestCookies(headers http.Header) []*http.Cookie {
 	if headers == nil {
 		return nil

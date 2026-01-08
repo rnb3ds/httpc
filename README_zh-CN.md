@@ -112,7 +112,10 @@ httpc.WithQueryMap(map[string]interface{}{"page": 1, "limit": 20})
 
 // 请求体
 httpc.WithJSON(data)              // JSON 格式
+httpc.WithXML(data)               // XML 格式
 httpc.WithForm(formData)          // 表单数据
+httpc.WithText("content")         // 纯文本
+httpc.WithBinary(data, "image/png")  // 二进制数据及内容类型
 httpc.WithFile("file", "doc.pdf", content)  // 文件上传
 
 // Cookie 设置
@@ -203,11 +206,21 @@ fmt.Printf("尝试次数: %d\n", result.Meta.Attempts)
 
 // 处理 Cookie
 cookie := result.GetCookie("session_id")
+if result.HasCookie("session_id") {
+    fmt.Println("找到会话 Cookie")
+}
+
+// 访问请求 Cookie
+requestCookies := result.RequestCookies()
+requestCookie := result.GetRequestCookie("auth_token")
 
 // 访问详细响应信息
 fmt.Printf("内容长度: %d\n", result.Response.ContentLength)
 fmt.Printf("响应头: %v\n", result.Response.Headers)
 fmt.Printf("请求头: %v\n", result.Request.Headers)
+
+// 保存响应到文件
+err = result.SaveToFile("response.html")
 ```
 
 ### 自动响应解压缩
@@ -634,7 +647,7 @@ BenchmarkClient_Concurrent-8   10000    150000 ns/op     512 B/op    4 allocs/op
 
 ## 贡献
 
-欢迎贡献！对于重大更改，请先开启 issue 讨论。
+欢迎贡献！对于重大更改，请先开启 issue 讨论或联系我们。
 
 ## 许可证
 

@@ -36,7 +36,7 @@ defer client.Close()
 - FollowRedirects: true
 - MaxRedirects: 10
 - EnableCookies: false
-- AllowPrivateIPs: false
+- AllowPrivateIPs: true
 - StrictContentLength: true
 - UserAgent: "httpc/1.0"
 
@@ -96,7 +96,7 @@ client, err := httpc.New()  // Uses balanced by default
 - MaxIdleConns: 50
 - MaxConnsPerHost: 10
 - MaxResponseBodySize: 10 MB
-- AllowPrivateIPs: false
+- AllowPrivateIPs: true
 - HTTP/2: Enabled
 - FollowRedirects: true
 - MaxRedirects: 10

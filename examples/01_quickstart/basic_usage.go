@@ -10,6 +10,9 @@ import (
 	"github.com/cybergodev/httpc"
 )
 
+// This example demonstrates the quickest way to get started with httpc
+// Perfect for: Quick testing, simple scripts, learning the basics
+
 // User represents a user data structure
 type User struct {
 	ID    int    `json:"id"`
@@ -26,7 +29,8 @@ type APIResponse struct {
 }
 
 func main() {
-	fmt.Println("=== HTTPC Quick Start Examples ===\n ")
+	fmt.Println("=== HTTPC Quick Start Examples ===")
+	fmt.Println("Learn the basics in 5 minutes!\n ")
 
 	// Example 1: Simplest GET request (package-level function)
 	simpleGET()
@@ -44,6 +48,10 @@ func main() {
 	deleteRequest()
 
 	fmt.Println("\n=== All Quick Start Examples Completed ===")
+	fmt.Println("\nNext steps:")
+	fmt.Println("  - Explore examples/02_core_features/ for more options")
+	fmt.Println("  - Check examples/03_advanced/ for advanced patterns")
+	fmt.Println("  - Read the documentation at docs/")
 }
 
 // Example 1: Simplest GET request using package-level function

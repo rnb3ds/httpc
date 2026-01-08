@@ -11,26 +11,33 @@ import (
 	"github.com/cybergodev/httpc"
 )
 
-// demonstrateCookies shows various cookie handling patterns
-func demonstrateCookies() {
-	fmt.Println("=== Cookie Examples ===\n ")
+// This example demonstrates comprehensive cookie handling
+// Consolidates: 02_core_features/cookies.go, 05_cookies/* (all cookie examples)
 
-	// Example 1: Setting cookies in requests
+func main() {
+	fmt.Println("=== Advanced Cookie Handling ===\n ")
+
+	// 1. Request Cookies
 	demonstrateRequestCookies()
 
-	// Example 2: Reading cookies from responses
+	// 2. Response Cookies
 	demonstrateResponseCookies()
 
-	// Example 3: Automatic cookie management with Cookie Jar
+	// 3. Cookie Jar (Automatic Management)
 	demonstrateCookieJar()
 
-	// Example 4: Advanced cookie attributes
-	demonstrateAdvancedCookies()
+	// 4. Cookie String Parsing
+	demonstrateCookieString()
+
+	// 5. Advanced Cookie Scenarios
+	demonstrateAdvancedScenarios()
+
+	fmt.Println("\n=== All Examples Completed ===")
 }
 
 // demonstrateRequestCookies shows how to send cookies with requests
 func demonstrateRequestCookies() {
-	fmt.Println("--- Example 1: Setting Request Cookies ---")
+	fmt.Println("--- Request Cookies ---")
 
 	client, err := httpc.New()
 	if err != nil {
@@ -47,36 +54,25 @@ func demonstrateRequestCookies() {
 		log.Printf("Error: %v\n", err)
 		return
 	}
-
-	fmt.Println("Method 1: Simple name-value cookie")
-	fmt.Println("Sending simple name-value cookies:")
-	fmt.Printf("Status: %d\n", resp.StatusCode())
-	fmt.Printf("Response: %s\n\n", resp.Body())
+	fmt.Printf("✓ Simple cookies: Status %d\n", resp.StatusCode())
 
 	// Method 2: Cookie with attributes
 	cookie := http.Cookie{
 		Name:     "auth_token",
 		Value:    "xyz789",
 		Path:     "/api",
-		Domain:   "httpbin.org",
 		Expires:  time.Now().Add(24 * time.Hour),
 		Secure:   true,
 		HttpOnly: true,
 	}
-
 	resp, err = client.Get("https://httpbin.org/cookies",
 		httpc.WithCookie(cookie),
-		httpc.WithCookieValue("login_token", "login_abc123"),
 	)
 	if err != nil {
 		log.Printf("Error: %v\n", err)
 		return
 	}
-
-	fmt.Println("Method 2: Cookie with attributes")
-	fmt.Println("Sending cookie with attributes:")
-	fmt.Printf("Status: %d\n", resp.StatusCode())
-	fmt.Printf("Response: %s\n\n", resp.Body())
+	fmt.Printf("✓ Cookie with attributes: Status %d\n", resp.StatusCode())
 
 	// Method 3: Multiple cookies at once
 	cookies := []http.Cookie{
@@ -84,7 +80,6 @@ func demonstrateRequestCookies() {
 		{Name: "cookie2", Value: "value2"},
 		{Name: "cookie3", Value: "value3"},
 	}
-
 	resp, err = client.Get("https://httpbin.org/cookies",
 		httpc.WithCookies(cookies),
 	)
@@ -92,16 +87,12 @@ func demonstrateRequestCookies() {
 		log.Printf("Error: %v\n", err)
 		return
 	}
-
-	fmt.Println("Method 3: Multiple cookies at once")
-	fmt.Println("Sending multiple cookies at once:")
-	fmt.Printf("Status: %d\n", resp.StatusCode())
-	fmt.Printf("Response: %s\n\n", resp.Body())
+	fmt.Printf("✓ Multiple cookies: Status %d\n\n", resp.StatusCode())
 }
 
 // demonstrateResponseCookies shows how to read cookies from responses
 func demonstrateResponseCookies() {
-	fmt.Println("--- Example 2: Reading Response Cookies ---")
+	fmt.Println("--- Response Cookies ---")
 
 	client, err := httpc.New()
 	if err != nil {
@@ -109,93 +100,103 @@ func demonstrateResponseCookies() {
 	}
 	defer client.Close()
 
-	// Use response-headers endpoint which directly sets cookies without redirect
-	// Note: httpbin.org/cookies/set uses redirects, so cookies won't appear in final response
+	// Server sets cookies
 	resp, err := client.Get("https://httpbin.org/response-headers?Set-Cookie=session=abc123&Set-Cookie=user=john")
 	if err != nil {
 		log.Printf("Error: %v\n", err)
 		return
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode())
-	fmt.Printf("Number of cookies received: %d\n", len(resp.Response.Cookies))
+	fmt.Printf("Cookies received: %d\n", len(resp.Response.Cookies))
 
 	// Method 1: Iterate through all cookies
-	fmt.Println("\nAll cookies:")
 	for _, cookie := range resp.Response.Cookies {
 		fmt.Printf("  %s = %s\n", cookie.Name, cookie.Value)
 	}
 
 	// Method 2: Get specific cookie by name
-	sessionCookie := resp.GetCookie("session")
-	if sessionCookie != nil {
-		fmt.Printf("\nSession cookie value: %s\n", sessionCookie.Value)
+	if sessionCookie := resp.GetCookie("session"); sessionCookie != nil {
+		fmt.Printf("✓ Session cookie: %s\n", sessionCookie.Value)
 	}
 
 	// Method 3: Check if cookie exists
 	if resp.HasCookie("user") {
-		fmt.Println("User cookie is present")
+		fmt.Println("✓ User cookie present")
 	}
-
 	if !resp.HasCookie("nonexistent") {
-		fmt.Println("Nonexistent cookie is not present")
+		fmt.Println("✓ Nonexistent cookie not present\n ")
 	}
-
-	fmt.Println()
 }
 
 // demonstrateCookieJar shows automatic cookie management
 func demonstrateCookieJar() {
-	fmt.Println("--- Example 3: Automatic Cookie Management (Cookie Jar) ---")
+	fmt.Println("--- Cookie Jar (Automatic Management) ---")
 
 	// Create client with cookie jar enabled
 	config := httpc.DefaultConfig()
 	config.EnableCookies = true
-	// Note: Cookie jar is automatically created when EnableCookies is true
-
 	client, err := httpc.New(config)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer client.Close()
 
-	// First request - server sets cookies via redirect
-	fmt.Println("Step 1: Server sets cookies via redirect")
+	// Step 1: Server sets cookies via redirect
+	fmt.Println("Step 1: Server sets cookies")
 	resp1, err := client.Get("https://httpbin.org/cookies/set?session=xyz789&user=alice")
 	if err != nil {
 		log.Printf("Error: %v\n", err)
 		return
 	}
-	fmt.Printf("Status: %d\n", resp1.StatusCode)
-	fmt.Printf("Cookies in final response: %d (expected: 0, cookies are in redirect response)\n", len(resp1.Response.Cookies))
+	fmt.Printf("✓ Status: %d (cookies stored in jar)\n", resp1.StatusCode)
 
-	// Note: Cookies are automatically managed by the client's internal cookie jar
-	fmt.Println("Cookies are automatically stored and managed by the client")
-
-	fmt.Println("\nStep 2: Cookies automatically sent in subsequent requests")
-	// Second request - cookies are automatically sent
+	// Step 2: Cookies automatically sent in subsequent requests
+	fmt.Println("\nStep 2: Cookies automatically sent")
 	resp2, err := client.Get("https://httpbin.org/cookies")
 	if err != nil {
 		log.Printf("Error: %v\n", err)
 		return
 	}
-	fmt.Printf("Status: %d\n", resp2.StatusCode)
-	fmt.Printf("Response: %s\n", resp2.Body)
+	fmt.Printf("✓ Status: %d\n", resp2.StatusCode)
+	fmt.Printf("✓ Cookies persisted across requests\n\n")
+}
 
-	fmt.Println("\nStep 3: Cookies persist across multiple requests")
-	// Third request - cookies still present
-	resp3, err := client.Get("https://httpbin.org/cookies")
+// demonstrateCookieString shows cookie string parsing
+func demonstrateCookieString() {
+	fmt.Println("--- Cookie String Parsing ---")
+
+	client, err := httpc.New()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer client.Close()
+
+	// Parse cookie string (like from browser DevTools)
+	cookieString := "BSID=4418ECBB1281B550; PSTM=1733760779; UPN=12314753"
+	resp, err := client.Get("https://httpbin.org/cookies",
+		httpc.WithCookieString(cookieString),
+	)
 	if err != nil {
 		log.Printf("Error: %v\n", err)
 		return
 	}
-	fmt.Printf("Status: %d\n", resp3.StatusCode)
-	fmt.Printf("Response: %s\n\n", resp3.Body)
+	fmt.Printf("✓ Parsed cookie string: Status %d\n", resp.StatusCode())
+
+	// Combine with other cookie methods
+	resp, err = client.Get("https://httpbin.org/cookies",
+		httpc.WithCookieString("session=abc123; token=xyz789"),
+		httpc.WithCookieValue("manual", "cookie"),
+	)
+	if err != nil {
+		log.Printf("Error: %v\n", err)
+		return
+	}
+	fmt.Printf("✓ Combined cookies: Status %d\n\n", resp.StatusCode())
 }
 
-// demonstrateAdvancedCookies shows advanced cookie scenarios
-func demonstrateAdvancedCookies() {
-	fmt.Println("--- Example 4: Advanced Cookie Scenarios ---")
+// demonstrateAdvancedScenarios shows real-world cookie patterns
+func demonstrateAdvancedScenarios() {
+	fmt.Println("--- Advanced Cookie Scenarios ---")
 
 	client, err := httpc.New()
 	if err != nil {
@@ -204,7 +205,6 @@ func demonstrateAdvancedCookies() {
 	defer client.Close()
 
 	// Scenario 1: Session management
-	fmt.Println("Scenario 1: Session Management")
 	sessionCookie := http.Cookie{
 		Name:     "session_token",
 		Value:    "secure_token_12345",
@@ -214,7 +214,6 @@ func demonstrateAdvancedCookies() {
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
 	}
-
 	resp, err := client.Post("https://httpbin.org/post",
 		httpc.WithCookie(sessionCookie),
 		httpc.WithJSON(map[string]string{"action": "login"}),
@@ -223,10 +222,9 @@ func demonstrateAdvancedCookies() {
 		log.Printf("Error: %v\n", err)
 		return
 	}
-	fmt.Printf("Status: %d\n", resp.StatusCode())
+	fmt.Printf("✓ Session management: Status %d\n", resp.StatusCode())
 
-	// Scenario 2: Multiple cookies for different purposes
-	fmt.Println("\nScenario 2: Multiple Purpose Cookies")
+	// Scenario 2: Multiple purpose cookies
 	cookies := []http.Cookie{
 		{
 			Name:     "auth",
@@ -237,7 +235,7 @@ func demonstrateAdvancedCookies() {
 		},
 		{
 			Name:   "preferences",
-			Value:  "theme_dark_lang_en", // Use underscore or other separator, not semicolon
+			Value:  "theme_dark_lang_en",
 			Path:   "/",
 			MaxAge: 86400 * 30, // 30 days
 		},
@@ -248,7 +246,6 @@ func demonstrateAdvancedCookies() {
 			MaxAge: 86400 * 365, // 1 year
 		},
 	}
-
 	resp, err = client.Get("https://httpbin.org/cookies",
 		httpc.WithCookies(cookies),
 	)
@@ -256,25 +253,17 @@ func demonstrateAdvancedCookies() {
 		log.Printf("Error: %v\n", err)
 		return
 	}
-	fmt.Printf("Status: %d\n", resp.StatusCode())
-	fmt.Printf("Response: %s\n\n", resp.Body())
+	fmt.Printf("✓ Multiple purpose cookies: Status %d\n", resp.StatusCode())
 
-	// Scenario 3: Combining cookies with other options
-	fmt.Println("Scenario 3: Cookies with Authentication")
+	// Scenario 3: Cookies with authentication
 	resp, err = client.Get("https://httpbin.org/cookies",
 		httpc.WithCookieValue("session", "active"),
 		httpc.WithBearerToken("jwt_token_here"),
 		httpc.WithHeader("X-Request-ID", "12345"),
-		httpc.WithTimeout(10*time.Second),
 	)
 	if err != nil {
 		log.Printf("Error: %v\n", err)
 		return
 	}
-	fmt.Printf("Status: %d\n", resp.StatusCode())
-	fmt.Printf("Response: %s\n", resp.Body())
-}
-
-func main() {
-	demonstrateCookies()
+	fmt.Printf("✓ Cookies with auth: Status %d\n", resp.StatusCode())
 }

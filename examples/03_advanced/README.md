@@ -1,427 +1,193 @@
-# Advanced Usage Examples
+# Advanced Examples
 
-**Time to complete: 15 minutes**
+**Time to complete**: 30 minutes
 
-This directory demonstrates advanced features for production-grade HTTP client usage.
+Master advanced patterns and production-ready techniques.
 
 ## What You'll Learn
 
-- Timeout and retry strategies
-- Context usage for cancellation and timeouts
-- File uploads (single and multiple)
-- File downloads with progress tracking
-- Production-grade resilience patterns
+- ✅ Client configuration and presets
+- ✅ All HTTP methods and their use cases
+- ✅ Timeout and retry strategies
+- ✅ Redirect handling
+- ✅ Concurrent request patterns
+- ✅ File upload and download
+- ✅ Advanced cookie management
+- ✅ Domain-specific clients
+- ✅ Complete REST API client pattern
 
+## Examples
 
-## Examples Overview
+### 1. Client Configuration
+**[client_configuration.go](client_configuration.go)** - Configure clients for different scenarios
 
-### 1. Client Configuration (`client_configuration.go`)
+**Covers:**
+- Default, Secure, Performance presets
+- Custom configuration
+- Configuration comparison
 
-Master client configuration for different scenarios:
+### 2. HTTP Methods
+**[http_methods.go](http_methods.go)** - All HTTP methods
 
-- **Default Configuration**: Balanced settings for most use cases
-- **Secure Configuration**: Enhanced security with TLS 1.3+, SSRF protection
-- **Performance Configuration**: Optimized for high throughput
-- **Custom Configuration**: Tailor settings to your needs
-- **Configuration Comparison**: Different scenarios and best practices
+**Covers:**
+- GET, POST, PUT, PATCH, DELETE
+- HEAD, OPTIONS
+- Use cases for each method
 
-**Quick Example:**
+### 3. Timeout & Retry
+**[timeout_retry.go](timeout_retry.go)** - Resilient requests
+
+**Covers:**
+- Basic timeout
+- Context with timeout
+- Retry configuration
+- Combined timeout and retry
+
+### 4. Redirects
+**[redirects.go](redirects.go)** - Redirect handling
+
+**Covers:**
+- Automatic redirect following
+- Disable redirects
+- Limit maximum redirects
+- Track redirect chain
+
+### 5. Concurrent Requests
+**[concurrent_requests.go](concurrent_requests.go)** - Parallel processing
+
+**Covers:**
+- Parallel requests
+- Worker pool pattern
+- Error handling in concurrent requests
+- Rate-limited requests
+
+### 6. File Operations
+**[file_operations.go](file_operations.go)** - File handling
+
+**Covers:**
+- File upload (single, multiple, with metadata)
+- File download (simple, with progress, resume)
+- Large file handling
+
+### 7. Advanced Cookies
+**[cookies_advanced.go](cookies_advanced.go)** - Cookie management
+
+**Covers:**
+- Request cookies (simple, with attributes, multiple)
+- Response cookies (read, iterate, check)
+- Cookie Jar (automatic management)
+- Cookie string parsing
+- Real-world scenarios
+
+### 8. Domain Client
+**[domain_client.go](domain_client.go)** - State management
+
+**Covers:**
+- Automatic state management
+- Persistent headers and cookies
+- URL matching
+- State clearing
+
+### 9. REST API Client
+**[rest_api_client.go](rest_api_client.go)** - Production pattern
+
+**Covers:**
+- Complete REST API client
+- CRUD operations
+- Error handling
+- Context management
+
+## Running Examples
+
+```bash
+# Client configuration
+go run -tags examples examples/03_advanced/client_configuration.go
+
+# HTTP methods
+go run -tags examples examples/03_advanced/http_methods.go
+
+# Timeout & retry
+go run -tags examples examples/03_advanced/timeout_retry.go
+
+# Redirects
+go run -tags examples examples/03_advanced/redirects.go
+
+# Concurrent requests
+go run -tags examples examples/03_advanced/concurrent_requests.go
+
+# File operations
+go run -tags examples examples/03_advanced/file_operations.go
+
+# Advanced cookies
+go run -tags examples examples/03_advanced/cookies_advanced.go
+
+# Domain client
+go run -tags examples examples/03_advanced/domain_client.go
+
+# REST API client
+go run -tags examples examples/03_advanced/rest_api_client.go
+```
+
+## Key Takeaways
+
+1. **Configuration**: Choose the right preset or customize
+2. **Resilience**: Use timeouts and retries for production
+3. **Concurrency**: Handle multiple requests efficiently
+4. **State Management**: Use DomainClient for session-based APIs
+5. **Production Patterns**: Follow REST API client example
+
+## Common Patterns
+
+### Production Client Setup
 ```go
-// Default client
-client, err := httpc.New()
+config := httpc.SecureConfig()
+config.Timeout = 30 * time.Second
+config.MaxRetries = 3
+config.EnableCookies = true
 
-// Secure client
-client, err := httpc.NewSecure()
-
-// Performance client
-client, err := httpc.NewPerformance()
-
-// Custom configuration
-config := httpc.DefaultConfig()
-config.Timeout = 15 * time.Second
-config.MaxRetries = 5
 client, err := httpc.New(config)
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Close()
 ```
 
-### 2. HTTP Methods (`http_methods.go`)
-
-Complete coverage of all HTTP methods:
-
-- **GET**: Retrieve data
-- **POST**: Create new resource
-- **PUT**: Replace entire resource
-- **PATCH**: Partial update
-- **DELETE**: Remove resource
-- **HEAD**: Get headers only (no body)
-- **OPTIONS**: Discover allowed methods (CORS preflight)
-
-**Quick Example:**
+### Concurrent Requests with Error Handling
 ```go
-// GET - Retrieve
-resp, err := client.Get(url)
-
-// POST - Create
-resp, err := client.Post(url, httpc.WithJSON(data))
-
-// PUT - Replace
-resp, err := client.Put(url, httpc.WithJSON(fullData))
-
-// PATCH - Update
-resp, err := client.Patch(url, httpc.WithJSON(partialData))
-
-// DELETE - Remove
-resp, err := client.Delete(url)
-
-// HEAD - Metadata only
-resp, err := client.Head(url)
-
-// OPTIONS - Allowed methods
-resp, err := client.Options(url)
-```
-
-### 3. Timeout and Retry (`timeout_retry.go`)
-
-Master timeout and retry strategies for resilient applications:
-
-- **Basic Timeout**: Simple request timeouts
-- **Context Timeout**: Context-based timeouts
-- **Retry Configuration**: Configure retry behavior
-- **Combined Strategies**: Timeout + retry for resilience
-- **Disable Retries**: When retries aren't appropriate
-
-**Key Patterns:**
-- Health checks: Short timeout, no retry
-- Critical operations: Long timeout, multiple retries
-- User-facing requests: Moderate timeout, few retries
-- Background jobs: Very long timeout, many retries
-
-**Quick Example:**
-```go
-// Basic timeout
-resp, err := client.Get(url,
-    httpc.WithTimeout(10*time.Second),
-)
-
-// With retry
-resp, err := client.Post(url,
-    httpc.WithJSON(data),
-    httpc.WithTimeout(10*time.Second),
-    httpc.WithMaxRetries(3),
-)
-
-// Context-based timeout
-ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-defer cancel()
-
-resp, err := client.Get(url,
-    httpc.WithContext(ctx),
-)
-```
-
-### 4. File Upload (`file_upload.go`)
-
-Handle file uploads efficiently:
-
-- **Single File**: Upload one file
-- **Multiple Files**: Upload multiple files at once
-- **File with Fields**: Combine files and form data
-- **Large Files**: Handle large uploads with proper timeouts
-
-**Common Patterns:**
-- Avatar/profile picture uploads
-- Document uploads with metadata
-- Batch file uploads
-- Large file handling with extended timeouts
-
-**Quick Example:**
-```go
-// Single file upload
-fileContent := []byte("file content")
-resp, err := client.Post(url,
-    httpc.WithFile("file", "document.pdf", fileContent),
-)
-
-// Multiple files with metadata
-formData := &httpc.FormData{
-    Fields: map[string]string{
-        "title": "My Document",
-        "tags":  "important",
-    },
-    Files: map[string]*httpc.FileData{
-        "document": {
-            Filename: "doc.pdf",
-            Content:  pdfContent,
-        },
-        "thumbnail": {
-            Filename: "thumb.jpg",
-            Content:  jpgContent,
-        },
-    },
+type result struct {
+    data string
+    err  error
 }
 
-resp, err := client.Post(url,
-    httpc.WithFormData(formData),
-    httpc.WithTimeout(60*time.Second),
-)
-```
-
-### 5. File Download (`file_download.go`)
-
-Learn how to download files efficiently with comprehensive examples:
-
-- **Simple Download**: Basic file download with `DownloadFile()`
-- **Progress Tracking**: Real-time download progress with callbacks
-- **Large Files**: Optimized for large file downloads with streaming
-- **Resume Downloads**: Resume interrupted downloads using Range requests
-- **Save Response**: Alternative method using `Response.SaveToFile()`
-- **Authenticated Downloads**: Download protected files with auth headers
-
-**Key Features:**
-- Streaming downloads (memory efficient)
-- Progress callbacks with speed tracking
-- Automatic directory creation
-- Resume support with Range requests
-- Overwrite protection
-- Custom buffer sizes
-
-**Quick Example:**
-```go
-// Simple download
-result, err := client.DownloadFile(
-    "https://example.com/file.zip",
-    "downloads/file.zip",
-)
-
-// With progress tracking
-opts := &httpc.DownloadOptions{
-    FilePath:  "downloads/file.zip",
-    Overwrite: true,
-    ProgressCallback: func(downloaded, total int64, speed float64) {
-        percentage := float64(downloaded) / float64(total) * 100
-        fmt.Printf("\rProgress: %.1f%% - %s",
-            percentage,
-            httpc.FormatSpeed(speed),
-        )
-    },
-}
-result, err := client.DownloadWithOptions(url, opts)
-
-// Resume interrupted download
-opts.ResumeDownload = true
-result, err := client.DownloadWithOptions(url, opts)
-```
-
-### 6. Concurrent Requests (`concurrent_requests.go`)
-
-Handle multiple requests efficiently:
-
-- **Parallel Requests**: Execute multiple requests simultaneously
-- **Worker Pool**: Limit concurrency with worker pool pattern
-- **Error Handling**: Robust error handling in concurrent scenarios
-- **Rate Limiting**: Control request rate with semaphores
-
-**Quick Example:**
-```go
-// Parallel requests
-var wg sync.WaitGroup
-for _, url := range urls {
-    wg.Add(1)
-    go func(u string) {
-        defer wg.Done()
-        resp, err := client.Get(u)
-        // Handle response
-    }(url)
-}
-wg.Wait()
-
-// Worker pool with rate limiting
-sem := make(chan struct{}, maxConcurrent)
-for _, url := range urls {
-    sem <- struct{}{}
-    go func(u string) {
-        defer func() { <-sem }()
-        resp, err := client.Get(u)
-        // Handle response
-    }(url)
-}
-```
-
-## Timeout Strategies
-
-### Quick Operations (< 5s)
-```go
-httpc.WithTimeout(2 * time.Second)
-httpc.WithMaxRetries(0)
-```
-
-### Standard Operations (5-15s)
-```go
-httpc.WithTimeout(10 * time.Second)
-httpc.WithMaxRetries(2)
-```
-
-### Long Operations (15-60s)
-```go
-httpc.WithTimeout(30 * time.Second)
-httpc.WithMaxRetries(3)
-```
-
-### Background Jobs (> 60s)
-```go
-httpc.WithTimeout(120 * time.Second)
-httpc.WithMaxRetries(5)
-```
-
-## Context Patterns
-
-### Request Timeout
-```go
-ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-defer cancel()
-
-resp, err := client.Get(url, httpc.WithContext(ctx))
-```
-
-### Manual Cancellation
-```go
-ctx, cancel := context.WithCancel(context.Background())
-defer cancel()
-
-// Cancel from another goroutine when needed
-go func() {
-    <-stopChan
-    cancel()
-}()
-
-resp, err := client.Get(url, httpc.WithContext(ctx))
-```
-
-### Deadline
-```go
-deadline := time.Now().Add(1 * time.Hour)
-ctx, cancel := context.WithDeadline(context.Background(), deadline)
-defer cancel()
-
-resp, err := client.Get(url, httpc.WithContext(ctx))
-```
-
-## File Upload Patterns
-
-### Single File
-```go
-fileContent := []byte("file content")
-resp, err := client.Post(url,
-    httpc.WithFile("file", "document.pdf", fileContent),
-)
-```
-
-### Multiple Files with Metadata
-```go
-formData := &httpc.FormData{
-    Fields: map[string]string{
-        "title": "My Document",
-        "tags":  "important,urgent",
-    },
-    Files: map[string]*httpc.FileData{
-        "document": {
-            Filename:    "doc.pdf",
-            Content:     pdfContent,
-            ContentType: "application/pdf",
-        },
-        "thumbnail": {
-            Filename:    "thumb.jpg",
-            Content:     jpgContent,
-            ContentType: "image/jpeg",
-        },
-    },
-}
-
-resp, err := client.Post(url,
-    httpc.WithFormData(formData),
-    httpc.WithTimeout(60*time.Second),
-)
-```
-
-## Concurrent Request Patterns
-
-### Parallel Requests
-```go
-urls := []string{url1, url2, url3}
-results := make(chan *httpc.Response, len(urls))
+results := make(chan result, len(urls))
 
 for _, url := range urls {
     go func(u string) {
         resp, err := client.Get(u)
-        if err == nil {
-            results <- resp
+        if err != nil {
+            results <- result{err: err}
+            return
         }
+        results <- result{data: resp.Body()}
     }(url)
 }
 
-// Collect results
-for i := 0; i < len(urls); i++ {
-    resp := <-results
-    // Process response
+for range urls {
+    r := <-results
+    if r.err != nil {
+        log.Printf("Error: %v\n", r.err)
+    }
 }
 ```
-
-### Worker Pool
-```go
-const workers = 10
-jobs := make(chan string, 100)
-results := make(chan *httpc.Response, 100)
-
-// Start workers
-for w := 0; w < workers; w++ {
-    go func() {
-        for url := range jobs {
-            resp, err := client.Get(url)
-            if err == nil {
-                results <- resp
-            }
-        }
-    }()
-}
-
-// Send jobs
-for _, url := range urls {
-    jobs <- url
-}
-close(jobs)
-```
-
-## Best Practices
-
-1. **Configure for your use case**: Don't use default config blindly
-2. **Set appropriate timeouts**: Match timeout to operation type
-3. **Use contexts**: Enable cancellation and timeout control
-4. **Handle retries wisely**: Not all operations should retry
-5. **Limit concurrency**: Use worker pools for many requests
-6. **Monitor performance**: Track duration and attempts
-7. **Secure by default**: Use TLS 1.2+, validate certificates
-8. **Connection pooling**: Reuse clients, don't create per-request
-
-## Performance Tips
-
-- **Reuse clients**: Create once, use many times
-- **Connection pooling**: Configured automatically
-- **HTTP/2**: Enabled by default for multiplexing
-- **Concurrent requests**: Use goroutines with worker pools
-- **Timeouts**: Prevent hanging requests
-- **Retries**: Use exponential backoff with jitter
 
 ## Next Steps
 
-After mastering advanced usage:
-- **[Real-World Examples](../04_real_world)** - Complete REST API client implementation
-- Review the main documentation for comprehensive API reference
+You've completed all examples! Now you can:
+- Build production-ready HTTP clients
+- Handle complex scenarios with confidence
+- Optimize for performance and reliability
 
-## Tips
+---
 
-- Start with default configuration and adjust as needed
-- Use `NewSecureClient()` for enhanced security
-- Always set timeouts for production code
-- Use contexts for cancellation support
-- Monitor `resp.Duration` and `resp.Attempts` for performance insights
-- Configure connection limits based on your infrastructure
+**Estimated time**: 30 minutes | **Difficulty**: Advanced
 
