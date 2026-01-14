@@ -2,6 +2,8 @@
 
 Quick reference for working with cookies in httpc.
 
+> **Prerequisite**: This guide assumes you understand the [Client Setup and Error Handling patterns](getting-started.md#common-patterns) from the Getting Started guide.
+
 ## Request Cookies vs Response Cookies
 
 | Type | Description | Source | Usage |
@@ -249,5 +251,5 @@ exists := result.HasRequestCookie("session")
 ## See Also
 
 - [Request Inspection](./request-inspection.md) - Detailed guide on inspecting requests
-- [Cookie Examples](../examples/02_core_features/cookies.go) - More cookie examples
+- [cookies_advanced.go](../examples/03_advanced/cookies_advanced.go) - More cookie examples
 - [Configuration](./configuration.md) - Cookie jar configuration

@@ -11,27 +11,17 @@ import (
 	"time"
 )
 
-// Result represents the complete outcome of an HTTP request.
-// It provides clear separation between request information, response data, and metadata.
-//
-// Thread Safety:
-// Result objects are immutable after creation and safe to read from
-// multiple goroutines concurrently. Do not modify Result fields directly.
 type Result struct {
 	Request  *RequestInfo
 	Response *ResponseInfo
 	Meta     *RequestMeta
 }
 
-// RequestInfo contains information about the HTTP request that was sent.
 type RequestInfo struct {
-	Method  string
-	URL     string
 	Headers http.Header
 	Cookies []*http.Cookie
 }
 
-// ResponseInfo contains the HTTP response data received from the server.
 type ResponseInfo struct {
 	StatusCode    int
 	Status        string
@@ -42,7 +32,6 @@ type ResponseInfo struct {
 	Cookies       []*http.Cookie
 }
 
-// RequestMeta contains metadata about the request execution.
 type RequestMeta struct {
 	Duration      time.Duration
 	Attempts      int
@@ -50,8 +39,6 @@ type RequestMeta struct {
 	RedirectCount int
 }
 
-// Body returns the response body as a string.
-// This is a convenience method equivalent to accessing Result.Response.Body.
 func (r *Result) Body() string {
 	if r == nil || r.Response == nil {
 		return ""
@@ -59,8 +46,6 @@ func (r *Result) Body() string {
 	return r.Response.Body
 }
 
-// RawBody returns the response body as raw bytes.
-// This is a convenience method equivalent to accessing Result.Response.RawBody.
 func (r *Result) RawBody() []byte {
 	if r == nil || r.Response == nil {
 		return nil
@@ -68,8 +53,6 @@ func (r *Result) RawBody() []byte {
 	return r.Response.RawBody
 }
 
-// StatusCode returns the HTTP status code.
-// This is a convenience method equivalent to accessing Result.Response.StatusCode.
 func (r *Result) StatusCode() int {
 	if r == nil || r.Response == nil {
 		return 0
@@ -77,8 +60,6 @@ func (r *Result) StatusCode() int {
 	return r.Response.StatusCode
 }
 
-// RequestCookies returns the cookies that were sent with the request.
-// This is a convenience method equivalent to accessing Result.Request.Cookies.
 func (r *Result) RequestCookies() []*http.Cookie {
 	if r == nil || r.Request == nil {
 		return nil
@@ -86,8 +67,6 @@ func (r *Result) RequestCookies() []*http.Cookie {
 	return r.Request.Cookies
 }
 
-// ResponseCookies returns the cookies received in the response.
-// This is a convenience method equivalent to accessing Result.Response.Cookies.
 func (r *Result) ResponseCookies() []*http.Cookie {
 	if r == nil || r.Response == nil {
 		return nil
@@ -151,8 +130,6 @@ func (r *Result) IsServerError() bool {
 	return code >= 500 && code < 600
 }
 
-// GetCookie returns a specific cookie from the response by name.
-// This returns cookies from the server's Set-Cookie header (response cookies).
 func (r *Result) GetCookie(name string) *http.Cookie {
 	if r == nil || r.Response == nil {
 		return nil
@@ -165,12 +142,10 @@ func (r *Result) GetCookie(name string) *http.Cookie {
 	return nil
 }
 
-// HasCookie checks if a specific cookie exists in the response.
 func (r *Result) HasCookie(name string) bool {
 	return r.GetCookie(name) != nil
 }
 
-// GetRequestCookie returns a specific cookie from the request by name.
 func (r *Result) GetRequestCookie(name string) *http.Cookie {
 	if r == nil || r.Request == nil {
 		return nil
@@ -183,12 +158,10 @@ func (r *Result) GetRequestCookie(name string) *http.Cookie {
 	return nil
 }
 
-// HasRequestCookie checks if a specific cookie was sent in the request.
 func (r *Result) HasRequestCookie(name string) bool {
 	return r.GetRequestCookie(name) != nil
 }
 
-// String returns a formatted string representation of the result.
 func (r *Result) String() string {
 	if r == nil || r.Response == nil {
 		return "Result{}"
@@ -231,14 +204,10 @@ func (r *Result) String() string {
 	return b.String()
 }
 
-// Html returns the response body as HTML content.
-// This is an alias for Body() method.
 func (r *Result) Html() string {
 	return r.Body()
 }
 
-// SaveToFile saves the response body to a file.
-// Returns ErrResponseBodyEmpty if the body is nil or empty.
 func (r *Result) SaveToFile(filePath string) error {
 	if r == nil || r.Response == nil || r.Response.RawBody == nil {
 		return ErrResponseBodyEmpty

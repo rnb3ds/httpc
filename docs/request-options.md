@@ -2,6 +2,8 @@
 
 This guide covers all available request options in HTTPC for customizing HTTP requests.
 
+> **Prerequisite**: Before diving into request options, make sure you understand the [Common Patterns from Getting Started](getting-started.md#common-patterns), especially the Client Setup and Error Handling patterns.
+
 ## Table of Contents
 
 - [Overview](#overview)

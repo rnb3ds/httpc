@@ -280,7 +280,9 @@ func (pm *PoolManager) updateConnectionMetrics(host string, connTime int64, succ
 		atomic.AddInt64(&stats.TotalConns, 1)
 		atomic.AddInt64(&stats.ActiveConns, 1)
 
-		for {
+		// Update average latency with limited retries to prevent CPU thrashing
+		const maxAtomicRetries = 10
+		for i := 0; i < maxAtomicRetries; i++ {
 			current := atomic.LoadInt64(&stats.AverageLatency)
 			newAvg := (current*9 + connTime) / 10
 			if atomic.CompareAndSwapInt64(&stats.AverageLatency, current, newAvg) {

@@ -7,6 +7,59 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ---
 
+## v1.3.5 - Documentation, Code Quality & Performance Enhancement (2026-01-14)
+
+### Documentation
+- **Quick Start Enhancement**: Added comprehensive default request headers documentation explaining `httpc.DefaultConfig()` usage and three-level customization (global, client, per-request)
+- **Bilingual Support**: Updated both README.md and README_zh-CN.md with structured default headers guide
+- **Documentation Accuracy**: Comprehensive verification and corrections across all documentation files (100% accuracy achieved)
+
+### Features
+- **DomainClient Download Support**: Added `DownloadFile()` and `DownloadWithOptions()` methods to DomainClient for automatic state management in file downloads
+- **Cookie Management**: Enhanced documentation clarifying `EnableCookies` defaults to `false` in `DefaultConfig()`
+- **Request Inspection**: Added `Request.Headers` and `Request.Cookies` to Result type for complete request visibility
+
+### Security
+- **Context Propagation**: Fixed context handling in `doRequest()` to properly use `WithContext()` for timeout and cancellation
+- **URL Scheme Validation**: Added validation to only allow `http` and `https` schemes in DomainClient, preventing SSRF attacks via dangerous protocols (file:, data:, javascript:)
+- **Race Condition Prevention**: Limited atomic retry operations to prevent potential CPU thrashing under extreme load
+- **CRLF Injection**: Maintained comprehensive protection across all input validation paths
+
+### Code Quality
+- **Test Suite Consolidation**: Reduced test files from 32 to 30 by merging duplicate coverage tests
+- **Cookie Validation**: Simplified cookie string parsing, reduced complexity by ~30 lines
+- **Package Documentation**: Added comprehensive package-level godoc with usage examples
+- **Redundant Code Removal**: Eliminated ~200 lines of unnecessary comments and unreachable code
+- **URL Building**: Improved DomainClient URL construction using proper URL parsing instead of string manipulation
+- **Cookie Security**: Removed hardcoded security-sensitive cookie flags, now uses Go stdlib defaults
+
+### Performance
+- **Benchmark Coverage**: 16 comprehensive benchmark categories covering HTTP requests, concurrency, advanced features, memory efficiency, response processing, and decompression
+- **Measured Performance**:
+  - GET request: ~214μs with 8.7KB memory (93 allocations)
+  - POST JSON: ~231μs with 12.7KB memory (146 allocations)
+  - Consistent performance across 1-100 concurrent goroutines (~60μs per operation)
+  - Zero-copy convenience methods for status code and cookie access
+  - Gzip/deflate decompression: ~14μs with 68KB working buffer
+
+### Bug Fixes
+- **RequestInfo Fields**: Corrected documentation to only include actual fields (`Headers`, `Cookies`)
+- **Error Handling Behavior**: Clarified that HTTPC returns Result for ALL status codes (including 4xx/5xx)
+- **Cookie Parsing**: Fixed handling of cookies with empty values (e.g., `empty=`)
+
+### Examples
+- **Restructuring**: Major consolidation reducing example files by 60% (30+ files → 12 files)
+- **Quality Improvements**: Enhanced error handling, better documentation, reliable testing endpoints
+- **Compilation Fixes**: Fixed 6 bugs where method calls were missing parentheses
+- **Comprehensive Guides**: Created detailed examples/README.md with learning paths
+
+### Impact
+- **Code Quality**: Reduced test files, eliminated code duplication, improved maintainability
+- **Features**: DomainClient download parity with Client interface
+- **Backward Compatibility**: Zero breaking changes, all tests pass
+
+---
+
 ## v1.3.4 - Code Quality, Documentation & Examples Enhancement (2026-01-08)
 
 ### Code Quality

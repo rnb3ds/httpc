@@ -25,12 +25,6 @@ const (
 	maxHeaderValueLen   = 8192               // Header value length limit
 )
 
-// Config defines the HTTP client configuration.
-//
-// Thread Safety:
-// Config must be treated as immutable after passing it to New().
-// Do not modify Config fields after client creation.
-// Create a new Config for each client with different settings.
 type Config struct {
 	Timeout         time.Duration
 	MaxIdleConns    int
@@ -42,7 +36,7 @@ type Config struct {
 	MaxTLSVersion       uint16
 	InsecureSkipVerify  bool
 	MaxResponseBodySize int64
-	AllowPrivateIPs     bool // Allow requests to private/reserved IP ranges (default: true for usability)
+	AllowPrivateIPs     bool
 	StrictContentLength bool
 
 	MaxRetries    int
@@ -52,7 +46,7 @@ type Config struct {
 	UserAgent       string
 	Headers         map[string]string
 	FollowRedirects bool
-	MaxRedirects    int // Maximum number of redirects to follow (default: 10, 0 = no limit)
+	MaxRedirects    int
 	EnableHTTP2     bool
 	EnableCookies   bool
 }
@@ -113,7 +107,6 @@ func NewCookieJar() (http.CookieJar, error) {
 	})
 }
 
-// ValidateConfig validates the configuration with security checks.
 func ValidateConfig(cfg *Config) error {
 	if cfg == nil {
 		return ErrNilConfig
@@ -161,7 +154,6 @@ func ValidateConfig(cfg *Config) error {
 	return nil
 }
 
-// isValidHeaderString validates header string for control characters and CRLF injection.
 func isValidHeaderString(s string) bool {
 	for i := 0; i < len(s); i++ {
 		c := s[i]

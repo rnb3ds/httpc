@@ -2,6 +2,8 @@
 
 This guide covers comprehensive error handling patterns and best practices for HTTPC.
 
+> **Prerequisite**: This guide builds on the [Error Handling Pattern](getting-started.md#error-handling-pattern) from the Getting Started guide. Master that pattern first before exploring advanced techniques.
+
 ## Table of Contents
 
 - [Overview](#overview)

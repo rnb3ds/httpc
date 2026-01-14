@@ -1,5 +1,47 @@
 package httpc
 
+// Package httpc provides a high-performance HTTP client library with enterprise-grade
+// security, zero external dependencies, and production-ready defaults.
+//
+// Key Features:
+//   - Secure by default with TLS 1.2+, SSRF protection, CRLF injection prevention
+//   - High performance with connection pooling, HTTP/2, and goroutine-safe operations
+//   - Built-in resilience with smart retry and exponential backoff
+//   - Clean API with functional options and comprehensive error handling
+//
+// Basic Usage:
+//
+//	result, err := httpc.Get("https://api.example.com/data")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	fmt.Println(result.Body())
+//
+// Advanced Usage:
+//
+//	// Create a configured client
+//	client, err := httpc.New(httpc.SecureConfig())
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer client.Close()
+//
+//	// Make authenticated requests
+//	result, err := client.Get("https://api.example.com/protected",
+//	    httpc.WithBearerToken(token),
+//	)
+//
+//	// Automatic state management with DomainClient
+//	domainClient, err := httpc.NewDomain("https://api.example.com")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer domainClient.Close()
+//
+//	domainClient.SetHeader("Authorization", "Bearer "+token)
+//	result, err = domainClient.Get("/profile")  // Header automatically included
+//
+// For more information, see https://github.com/cybergodev/httpc
 import (
 	"context"
 	"crypto/tls"
@@ -13,8 +55,6 @@ import (
 	"github.com/cybergodev/httpc/internal/engine"
 )
 
-// Client represents the HTTP client interface.
-// All methods are safe for concurrent use by multiple goroutines.
 type Client interface {
 	Get(url string, options ...RequestOption) (*Result, error)
 	Post(url string, options ...RequestOption) (*Result, error)
@@ -32,7 +72,6 @@ type Client interface {
 	Close() error
 }
 
-// clientImpl implements the Client interface using the engine
 type clientImpl struct {
 	engine *engine.Client
 }
@@ -61,7 +100,10 @@ func New(config ...*Config) (Client, error) {
 	return &clientImpl{engine: engineClient}, nil
 }
 
-// deepCopyConfig creates a deep copy of the configuration to ensure immutability.
+// deepCopyConfig creates a deep copy of the configuration to prevent
+// accidental mutation of shared config state. This is called internally
+// when creating a new client to ensure each client has its own
+// independent configuration.
 func deepCopyConfig(src *Config) *Config {
 	dst := *src
 
@@ -118,8 +160,26 @@ func (c *clientImpl) Options(url string, options ...RequestOption) (*Result, err
 
 // doRequest executes an HTTP request with the given method and options.
 func (c *clientImpl) doRequest(method, url string, options []RequestOption) (*Result, error) {
+	// Extract context from options if provided
+	var ctx context.Context
+	if len(options) > 0 {
+		tempReq := &Request{Context: context.Background()}
+		for _, opt := range options {
+			if opt != nil {
+				_ = opt(tempReq)
+			}
+		}
+		if tempReq.Context != nil {
+			ctx = tempReq.Context
+		}
+	}
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	if len(options) == 0 {
-		resp, err := c.engine.Request(context.Background(), method, url)
+		resp, err := c.engine.Request(ctx, method, url)
 		if err != nil {
 			return nil, err
 		}
@@ -127,7 +187,7 @@ func (c *clientImpl) doRequest(method, url string, options []RequestOption) (*Re
 	}
 
 	engineOptions := convertRequestOptions(options)
-	resp, err := c.engine.Request(context.Background(), method, url, engineOptions...)
+	resp, err := c.engine.Request(ctx, method, url, engineOptions...)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +258,6 @@ func CloseDefaultClient() error {
 	return err
 }
 
-// Get executes a GET request using the default client and returns a Result.
 func Get(url string, options ...RequestOption) (*Result, error) {
 	client, err := getDefaultClient()
 	if err != nil {
@@ -207,7 +266,6 @@ func Get(url string, options ...RequestOption) (*Result, error) {
 	return client.Get(url, options...)
 }
 
-// Post executes a POST request using the default client and returns a Result.
 func Post(url string, options ...RequestOption) (*Result, error) {
 	client, err := getDefaultClient()
 	if err != nil {
@@ -216,7 +274,6 @@ func Post(url string, options ...RequestOption) (*Result, error) {
 	return client.Post(url, options...)
 }
 
-// Put executes a PUT request using the default client and returns a Result.
 func Put(url string, options ...RequestOption) (*Result, error) {
 	client, err := getDefaultClient()
 	if err != nil {
@@ -225,7 +282,6 @@ func Put(url string, options ...RequestOption) (*Result, error) {
 	return client.Put(url, options...)
 }
 
-// Patch executes a PATCH request using the default client and returns a Result.
 func Patch(url string, options ...RequestOption) (*Result, error) {
 	client, err := getDefaultClient()
 	if err != nil {
@@ -234,7 +290,6 @@ func Patch(url string, options ...RequestOption) (*Result, error) {
 	return client.Patch(url, options...)
 }
 
-// Delete executes a DELETE request using the default client and returns a Result.
 func Delete(url string, options ...RequestOption) (*Result, error) {
 	client, err := getDefaultClient()
 	if err != nil {
@@ -243,7 +298,6 @@ func Delete(url string, options ...RequestOption) (*Result, error) {
 	return client.Delete(url, options...)
 }
 
-// Head executes a HEAD request using the default client and returns a Result.
 func Head(url string, options ...RequestOption) (*Result, error) {
 	client, err := getDefaultClient()
 	if err != nil {
@@ -252,7 +306,6 @@ func Head(url string, options ...RequestOption) (*Result, error) {
 	return client.Head(url, options...)
 }
 
-// Options executes an OPTIONS request using the default client and returns a Result.
 func Options(url string, options ...RequestOption) (*Result, error) {
 	client, err := getDefaultClient()
 	if err != nil {
@@ -291,13 +344,6 @@ func SetDefaultClient(client Client) error {
 const (
 	minIdleConnsPerHost    = 2
 	maxIdleConnsPerHostCap = 10
-	defaultDialTimeout     = 10 * time.Second
-	defaultKeepAlive       = 30 * time.Second
-	defaultTLSHandshake    = 10 * time.Second
-	defaultResponseHeader  = 30 * time.Second
-	defaultIdleConnTimeout = 90 * time.Second
-	defaultMaxRetryDelay   = 5 * time.Second
-	absoluteMaxRetryDelay  = 30 * time.Second
 	retryDelayMultiplier   = 3
 )
 
@@ -323,6 +369,10 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		maxTLSVersion = tls.VersionTLS13
 	}
 
+	const (
+		defaultMaxRetryDelay  = 5 * time.Second
+		absoluteMaxRetryDelay = 30 * time.Second
+	)
 	maxRetryDelay := defaultMaxRetryDelay
 	if cfg.RetryDelay > 0 && cfg.BackoffFactor > 0 {
 		calculated := time.Duration(float64(cfg.RetryDelay) * cfg.BackoffFactor * retryDelayMultiplier)
@@ -336,11 +386,11 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 
 	return &engine.Config{
 		Timeout:               cfg.Timeout,
-		DialTimeout:           defaultDialTimeout,
-		KeepAlive:             defaultKeepAlive,
-		TLSHandshakeTimeout:   defaultTLSHandshake,
-		ResponseHeaderTimeout: defaultResponseHeader,
-		IdleConnTimeout:       defaultIdleConnTimeout,
+		DialTimeout:           10 * time.Second,
+		KeepAlive:             30 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
 		MaxIdleConns:          cfg.MaxIdleConns,
 		MaxIdleConnsPerHost:   idleConnsPerHost,
 		MaxConnsPerHost:       cfg.MaxConnsPerHost,
@@ -382,7 +432,6 @@ func convertRequestOptions(options []RequestOption) []engine.RequestOption {
 			continue
 		}
 
-		option := opt
 		engineOptions = append(engineOptions, func(req *engine.Request) error {
 			publicReq := &Request{
 				Method:      req.Method,
@@ -396,7 +445,7 @@ func convertRequestOptions(options []RequestOption) []engine.RequestOption {
 				Cookies:     req.Cookies,
 			}
 
-			if err := option(publicReq); err != nil {
+			if err := opt(publicReq); err != nil {
 				return err
 			}
 
@@ -409,8 +458,12 @@ func convertRequestOptions(options []RequestOption) []engine.RequestOption {
 			req.Timeout = publicReq.Timeout
 			req.MaxRetries = publicReq.MaxRetries
 			req.Cookies = publicReq.Cookies
-			req.FollowRedirects = publicReq.FollowRedirects
-			req.MaxRedirects = publicReq.MaxRedirects
+			if publicReq.FollowRedirects != nil {
+				req.FollowRedirects = publicReq.FollowRedirects
+			}
+			if publicReq.MaxRedirects != nil {
+				req.MaxRedirects = publicReq.MaxRedirects
+			}
 
 			return nil
 		})
@@ -418,7 +471,6 @@ func convertRequestOptions(options []RequestOption) []engine.RequestOption {
 	return engineOptions
 }
 
-// convertEngineResponseToResult converts internal engine response to public Result.
 func convertEngineResponseToResult(engineResp *engine.Response) *Result {
 	if engineResp == nil {
 		return nil
@@ -449,7 +501,6 @@ func convertEngineResponseToResult(engineResp *engine.Response) *Result {
 	}
 }
 
-// extractRequestCookies extracts cookies from request headers.
 func extractRequestCookies(headers http.Header) []*http.Cookie {
 	if headers == nil {
 		return nil

@@ -13,7 +13,7 @@ A high-performance HTTP client library for Go with enterprise-grade security, ze
 
 ---
 
-## Why HTTPC?
+## ✨ Core Features
 
 - 🛡️ **Secure by Default** - TLS 1.2+, SSRF protection, CRLF injection prevention
 - ⚡ **High Performance** - Connection pooling, HTTP/2, goroutine-safe operations
@@ -23,11 +23,13 @@ A high-performance HTTP client library for Go with enterprise-grade security, ze
 - 🚀 **Production Ready** - Battle-tested defaults, extensive test coverage
 
 
-## Quick Start
+## 📦 Installation
 
 ```bash
 go get -u github.com/cybergodev/httpc
 ```
+
+## 🚀 Quick Start
 
 ```go
 package main
@@ -59,9 +61,14 @@ func main() {
 }
 ```
 
+> **Default Request Headers**: By default, use "httpc.DefaultConfig()", which automatically includes a `User-Agent: httpc/1.0` header with all requests. To customize default headers:
+> - **User-Agent**: Set `config.UserAgent` or use `httpc.WithUserAgent("your-custom-agent")`
+> - **Custom Headers**: Set `config.Headers` map when creating a client for client-level default headers
+> - **Per-Request**: Use `httpc.WithHeader()` or `httpc.WithHeaderMap()` to override for specific requests
+
 **[📖 See more examples](examples)** | **[🚀 Getting Started Guide](docs/getting-started.md)**
 
-## Core Features
+## 📖 Core Features
 
 ### HTTP Methods
 
@@ -77,7 +84,7 @@ result, err := httpc.Get("https://api.example.com/users",
 // POST - Create resource
 result, err := httpc.Post("https://api.example.com/users",
     httpc.WithJSON(user),
-    httpc.WithBearerToken("token"),
+    httpc.WithBearerToken("your-token"),
 )
 
 // PUT - Full update
@@ -102,7 +109,7 @@ Customize requests using functional options (all options start with `With`):
 
 ```go
 // Headers & Authentication
-httpc.WithHeader("X-API-Key", "key")
+httpc.WithHeader("x-api-key", "key")
 httpc.WithBearerToken("token")
 httpc.WithBasicAuth("user", "pass")
 
@@ -168,9 +175,8 @@ fmt.Printf("Cookies: %v\n", response.Cookies)
 
 // Request information
 request := result.Request
-fmt.Printf("Method: %s\n", request.Method)
-fmt.Printf("URL: %s\n", request.URL)
 fmt.Printf("Request Headers: %v\n", request.Headers)
+fmt.Printf("Request Cookies: %v\n", request.Cookies)
 
 // Metadata
 meta := result.Meta
@@ -277,7 +283,7 @@ result, err := httpc.DownloadFile(url, "file.zip",
 
 **[📖 File Download Guide](docs/file-download.md)**
 
-## Configuration
+## 🔧 Configuration
 
 ### Quick Start with Presets
 
@@ -326,16 +332,18 @@ if err != nil {
     if errors.As(err, &httpErr) {
         fmt.Printf("HTTP %d: %s\n", httpErr.StatusCode, httpErr.Status)
     }
-    
+
     // Check for timeout
     if strings.Contains(err.Error(), "timeout") {
         return fmt.Errorf("request timed out")
     }
-    
+
     return err
 }
 
 // Check response status
+// Note: HTTPC returns Result for all status codes (including 4xx and 5xx)
+// HTTPError is NOT automatically returned for non-2xx status codes
 if !result.IsSuccess() {
     return fmt.Errorf("unexpected status: %d", result.StatusCode())
 }
@@ -425,8 +433,9 @@ for i, url := range result.Meta.RedirectChain {
 
 ```go
 // Automatic cookie handling
+// Note: EnableCookies is false by default in DefaultConfig()
 config := httpc.DefaultConfig()
-config.EnableCookies = true
+config.EnableCookies = true  // Must explicitly enable for automatic cookie handling
 client, err := httpc.New(config)
 
 // Login sets cookies
@@ -472,8 +481,11 @@ if err != nil {
 }
 defer client.Close()
 
+// Request Homepage
+resp0, err := client.Get("/")
+
 // First request - server sets cookies
-resp1, err := client.Get("/login",
+resp1, err := client.Post("/login",
     httpc.WithJSON(credentials),
 )
 
@@ -482,7 +494,7 @@ resp2, err := client.Get("/profile")  // Cookies automatically included
 
 // Set persistent headers (sent with all requests)
 client.SetHeader("Authorization", "Bearer "+token)
-client.SetHeader("X-API-Key", "your-api-key")
+client.SetHeader("x-api-key", "your-api-key")
 
 // All subsequent requests include these headers
 resp3, err := client.Get("/data")  // Headers + Cookies automatically included
@@ -543,14 +555,42 @@ settingsResp, _ := client.Put("/api/user/settings",
 // - Any other persistent headers/cookies
 ```
 
+**File Downloads with DomainClient:**
+
+```go
+client, _ := httpc.NewDomain("https://api.example.com")
+defer client.Close()
+
+// Set authentication header (used for all requests including downloads)
+client.SetHeader("Authorization", "Bearer "+token)
+
+// Simple download with automatic state management
+result, err := client.DownloadFile("/files/report.pdf", "downloads/report.pdf")
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("Downloaded: %s at %s/s\n",
+    httpc.FormatBytes(result.BytesWritten),
+    httpc.FormatSpeed(result.AverageSpeed))
+
+// Download with progress tracking
+opts := httpc.DefaultDownloadOptions("downloads/large-file.zip")
+opts.ProgressCallback = func(downloaded, total int64, speed float64) {
+    percentage := float64(downloaded) / float64(total) * 100
+    fmt.Printf("\rProgress: %.1f%% - %s", percentage, httpc.FormatSpeed(speed))
+}
+result, err = client.DownloadWithOptions("/files/large-file.zip", opts)
+```
+
 **Key Features:**
 - **Automatic Cookie Persistence** - Cookies from responses are saved and sent in subsequent requests
 - **Automatic Header Persistence** - Set headers once, used in all requests
+- **File Download Support** - Download files with automatic state management (cookies/headers)
 - **Per-Request Overrides** - Use `WithCookies()` and `WithHeaderMap()` to override for specific requests
 - **Thread-Safe** - All operations are goroutine-safe
 - **Manual Control** - Full API for inspecting and modifying state
 
-**[📖 See full example](examples/domain_client_example.go)**
+**[📖 See full example](examples/03_advanced/domain_client.go)**
 
 ## Security & Performance
 
@@ -604,27 +644,6 @@ wg.Wait()
 
 **Testing:** Run `make test-race` to verify race-free operation in your code.
 
-### Performance Benchmarks
-
-HTTPC is designed for high performance with minimal allocations:
-
-```bash
-# Run benchmarks
-go test -bench=. -benchmem ./...
-
-# Example results (your results may vary):
-BenchmarkClient_Get-8           5000    250000 ns/op    1024 B/op    8 allocs/op
-BenchmarkClient_Post-8          4000    300000 ns/op    1536 B/op   12 allocs/op
-BenchmarkClient_Concurrent-8   10000    150000 ns/op     512 B/op    4 allocs/op
-```
-
-**Performance Features:**
-- **Zero-copy operations** where possible
-- **Connection pooling** with configurable limits
-- **Hot path optimization** with minimal allocations
-- **Atomic operations** for thread-safe counters
-- **Efficient string operations** with pre-allocated buffers
-
 **[📖 Security Guide](SECURITY.md)**
 
 ## Documentation
@@ -643,16 +662,15 @@ BenchmarkClient_Concurrent-8   10000    150000 ns/op     512 B/op    4 allocs/op
 - **[Quick Start](examples/01_quickstart)** - Basic usage
 - **[Core Features](examples/02_core_features)** - Headers, auth, body formats
 - **[Advanced](examples/03_advanced)** - File uploads, downloads, retries
-- **[Real World](examples/04_real_world)** - Complete API client
 
-## Contributing
+## 🤝 Contributing
 
-Contributions welcome! Please open an issue first for major changes or contact us.
+Contributions, issue reports, and suggestions are welcome!
 
-## License
+## 📄 License
 
-MIT License - see [LICENSE](LICENSE) file for details.
+MIT License - See [LICENSE](LICENSE) file for details.
 
 ---
 
-**Made with ❤️ by the CyberGoDev team**
+**Crafted with care for the Go community** ❤️ | If this project helps you, please give it a ⭐️ Star!

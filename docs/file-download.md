@@ -2,6 +2,8 @@
 
 This guide covers all aspects of downloading files using HTTPC, from simple downloads to advanced features like progress tracking and resume support.
 
+> **Prerequisite**: This guide assumes you understand the [Client Setup and Error Handling patterns](getting-started.md#common-patterns) from the Getting Started guide.
+
 ## Table of Contents
 
 - [Quick Start](#quick-start)

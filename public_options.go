@@ -13,8 +13,6 @@ import (
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
-// WithHeader adds a custom header to the request.
-// Returns an error if the header key or value is invalid.
 func WithHeader(key, value string) RequestOption {
 	return func(r *Request) error {
 		if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
@@ -29,8 +27,6 @@ func WithHeader(key, value string) RequestOption {
 	}
 }
 
-// WithHeaderMap adds multiple headers to the request.
-// Returns an error if any header key or value is invalid.
 func WithHeaderMap(headers map[string]string) RequestOption {
 	return func(r *Request) error {
 		if r.Headers == nil {
@@ -46,35 +42,26 @@ func WithHeaderMap(headers map[string]string) RequestOption {
 	}
 }
 
-// WithUserAgent sets the User-Agent header for the request.
 func WithUserAgent(userAgent string) RequestOption {
 	return WithHeader("User-Agent", userAgent)
 }
 
-// WithContentType sets the Content-Type header for the request.
 func WithContentType(contentType string) RequestOption {
 	return WithHeader("Content-Type", contentType)
 }
 
-// WithAccept sets the Accept header for the request.
 func WithAccept(accept string) RequestOption {
 	return WithHeader("Accept", accept)
 }
 
-// WithJSONAccept sets the Accept header to application/json.
 func WithJSONAccept() RequestOption {
 	return WithAccept("application/json")
 }
 
-// WithXMLAccept sets the Accept header to application/xml.
 func WithXMLAccept() RequestOption {
 	return WithAccept("application/xml")
 }
 
-
-
-// validateCookie validates HTTP cookies using consolidated validation.
-// Prevents cookie injection and enforces RFC 6265 compliance.
 func validateCookie(cookie *http.Cookie) error {
 	if err := validation.ValidateCookieName(cookie.Name); err != nil {
 		return err
@@ -113,10 +100,6 @@ func validateCookie(cookie *http.Cookie) error {
 	return nil
 }
 
-// WithBasicAuth adds HTTP Basic Authentication to the request.
-// The credentials are base64-encoded and added to the Authorization header.
-// Validates credentials to prevent injection attacks and enforce size limits.
-// Returns an error if username is empty or credentials contain invalid characters.
 func WithBasicAuth(username, password string) RequestOption {
 	return func(r *Request) error {
 		if username == "" {
@@ -140,9 +123,6 @@ func WithBasicAuth(username, password string) RequestOption {
 	}
 }
 
-// WithBearerToken adds a Bearer token to the Authorization header.
-// Validates token to prevent injection attacks and enforce size limits.
-// Returns an error if token is empty, too long, or contains invalid characters.
 func WithBearerToken(token string) RequestOption {
 	return func(r *Request) error {
 		if token == "" {
@@ -160,8 +140,6 @@ func WithBearerToken(token string) RequestOption {
 	}
 }
 
-// WithQuery adds a single query parameter to the request URL.
-// Returns an error if key is empty, too long, or contains invalid characters.
 func WithQuery(key string, value any) RequestOption {
 	return func(r *Request) error {
 		if err := validation.ValidateQueryKey(key); err != nil {
@@ -183,8 +161,6 @@ func WithQuery(key string, value any) RequestOption {
 	}
 }
 
-// WithQueryMap adds multiple query parameters to the request URL.
-// Returns an error if any key is empty, too long, or contains invalid characters.
 func WithQueryMap(params map[string]any) RequestOption {
 	return func(r *Request) error {
 		if r.QueryParams == nil {
@@ -207,7 +183,6 @@ func WithQueryMap(params map[string]any) RequestOption {
 	}
 }
 
-// WithJSON sets the request body to JSON-encoded data and sets Content-Type to application/json.
 func WithJSON(data any) RequestOption {
 	return func(r *Request) error {
 		if data == nil {
@@ -222,7 +197,6 @@ func WithJSON(data any) RequestOption {
 	}
 }
 
-// WithXML sets the request body to XML-encoded data and sets Content-Type to application/xml.
 func WithXML(data any) RequestOption {
 	return func(r *Request) error {
 		if data == nil {
@@ -279,8 +253,6 @@ func WithFormData(data *FormData) RequestOption {
 	}
 }
 
-// WithFile adds a file upload to the request.
-// Returns an error if fieldName or filename is empty or contains invalid characters.
 func WithFile(fieldName, filename string, content []byte) RequestOption {
 	return func(r *Request) error {
 		if fieldName == "" {
@@ -314,8 +286,6 @@ func WithFile(fieldName, filename string, content []byte) RequestOption {
 	}
 }
 
-// WithTimeout sets the request timeout.
-// Returns ErrInvalidTimeout if timeout is negative or exceeds 30 minutes.
 func WithTimeout(timeout time.Duration) RequestOption {
 	return func(r *Request) error {
 		if timeout < 0 {
@@ -339,8 +309,6 @@ func WithContext(ctx context.Context) RequestOption {
 	}
 }
 
-// WithMaxRetries sets the maximum number of retry attempts.
-// Returns ErrInvalidRetry if maxRetries is not between 0 and 10.
 func WithMaxRetries(maxRetries int) RequestOption {
 	return func(r *Request) error {
 		if maxRetries < 0 || maxRetries > 10 {
@@ -358,9 +326,6 @@ func WithBody(body any) RequestOption {
 	}
 }
 
-// WithFollowRedirects enables or disables automatic redirect following for this request.
-// This overrides the client's FollowRedirects configuration.
-// When disabled, the client returns the redirect response (3xx) without following it.
 func WithFollowRedirects(follow bool) RequestOption {
 	return func(r *Request) error {
 		r.FollowRedirects = &follow
@@ -368,10 +333,6 @@ func WithFollowRedirects(follow bool) RequestOption {
 	}
 }
 
-// WithMaxRedirects sets the maximum number of redirects to follow for this request.
-// This overrides the client's MaxRedirects configuration.
-// Set to 0 to allow unlimited redirects (not recommended).
-// Returns an error if maxRedirects is negative or exceeds 50.
 func WithMaxRedirects(maxRedirects int) RequestOption {
 	return func(r *Request) error {
 		if maxRedirects < 0 {
@@ -438,19 +399,11 @@ func WithCookies(cookies []http.Cookie) RequestOption {
 	}
 }
 
-// WithCookieValue adds a cookie with the given name and value to the request.
-// The cookie is created with secure defaults: HttpOnly=true, SameSite=Lax.
-// The domain should be set explicitly using WithCookie if needed.
-// For HTTPS requests, consider using WithCookie with Secure=true.
-// Returns an error if name is empty or contains invalid characters.
 func WithCookieValue(name, value string) RequestOption {
 	return func(r *Request) error {
 		cookie := http.Cookie{
-			Name:     name,
-			Value:    value,
-			HttpOnly: true,
-			Secure:   false,
-			SameSite: http.SameSiteLaxMode,
+			Name:  name,
+			Value: value,
 		}
 
 		if err := validateCookie(&cookie); err != nil {
@@ -465,15 +418,6 @@ func WithCookieValue(name, value string) RequestOption {
 	}
 }
 
-// WithCookieString parses a cookie string and adds all cookies to the request.
-// The cookie string should be in the format: "name1=value1; name2=value2; name3=value3"
-// This is commonly used when copying cookies from browser developer tools or server responses.
-// Each cookie is created with secure defaults: HttpOnly=true, SameSite=Lax.
-// Returns an error if the cookie string is malformed or contains invalid cookie names/values.
-//
-// Example:
-//
-//	WithCookieString("BPSID=4418ECBB1281B550; PSTM=1733760779; BDS=kUwNTVFcEUBUItoc")
 func WithCookieString(cookieString string) RequestOption {
 	return func(r *Request) error {
 		if cookieString == "" {
@@ -504,59 +448,43 @@ func WithCookieString(cookieString string) RequestOption {
 	}
 }
 
-// parseCookieString parses a cookie string and returns http.Cookie objects with secure defaults.
 func parseCookieString(cookieString string) ([]http.Cookie, error) {
-	if cookieString == "" {
+	// Quick validation for common malformed cases
+	if strings.IndexByte(cookieString, '=') < 0 {
+		return nil, fmt.Errorf("malformed cookie: missing '=' separator")
+	}
+
+	if strings.HasPrefix(cookieString, "=") {
+		return nil, fmt.Errorf("malformed cookie: empty name before '='")
+	}
+
+	parsedCookies := parseCookieHeader(cookieString)
+	if parsedCookies == nil {
 		return nil, nil
 	}
 
-	cookies := make([]http.Cookie, 0, 4)
-	start := 0
-	cookieLen := len(cookieString)
-
-	for i := 0; i <= cookieLen; i++ {
-		if i == cookieLen || cookieString[i] == ';' {
-			pair := trimSpace(cookieString[start:i])
-
-			if pair != "" {
-				idx := strings.IndexByte(pair, '=')
-				if idx == -1 {
-					return nil, fmt.Errorf("malformed cookie pair: %s (missing '=')", pair)
-				}
-
-				name := trimSpaceRight(pair[:idx])
-				value := trimSpaceLeft(pair[idx+1:])
-
-				if name == "" {
-					return nil, fmt.Errorf("empty cookie name in pair: %s", pair)
-				}
-
-				nameLen := len(name)
-				if nameLen > validation.MaxCookieNameLen {
-					return nil, fmt.Errorf("cookie name too long: %s", name)
-				}
-				if len(value) > validation.MaxCookieValueLen {
-					return nil, fmt.Errorf("cookie value too long for %s", name)
-				}
-
-				// Validate cookie name characters
-				for j := 0; j < nameLen; j++ {
-					c := name[j]
-					if c < 0x20 || c == 0x7F || c == ';' || c == ',' || c == '=' {
-						return nil, fmt.Errorf("invalid character in cookie name: %s", name)
-					}
-				}
-
-				cookies = append(cookies, http.Cookie{
-					Name:     name,
-					Value:    value,
-					HttpOnly: true,
-					Secure:   false,
-					SameSite: http.SameSiteLaxMode,
-				})
-			}
-			start = i + 1
+	cookies := make([]http.Cookie, 0, len(parsedCookies))
+	for _, cookie := range parsedCookies {
+		nameLen := len(cookie.Name)
+		if nameLen > validation.MaxCookieNameLen {
+			return nil, fmt.Errorf("cookie name too long: %s", cookie.Name)
 		}
+		if len(cookie.Value) > validation.MaxCookieValueLen {
+			return nil, fmt.Errorf("cookie value too long for %s", cookie.Name)
+		}
+
+		// Validate cookie name characters
+		for j := 0; j < nameLen; j++ {
+			c := cookie.Name[j]
+			if c < 0x20 || c == 0x7F || c == ';' || c == ',' || c == '=' {
+				return nil, fmt.Errorf("invalid character in cookie name: %s", cookie.Name)
+			}
+		}
+
+		cookies = append(cookies, http.Cookie{
+			Name:  cookie.Name,
+			Value: cookie.Value,
+		})
 	}
 
 	return cookies, nil

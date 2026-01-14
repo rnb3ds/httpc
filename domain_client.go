@@ -11,31 +11,6 @@ import (
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
-// DomainClient provides automatic Cookie and Header management for a specific domain.
-// All methods are safe for concurrent use by multiple goroutines.
-//
-// Features:
-// - Automatic Cookie persistence across requests
-// - Automatic Header persistence across requests
-// - Per-request overrides via WithCookies/WithHeaderMap
-// - Thread-safe state management
-//
-// Example:
-//
-//	client, _ := httpc.NewDomain("https://www.example.com")
-//	defer client.Close()
-//
-//	// First request with initial cookies and headers
-//	resp1, _ := client.Get("/",
-//	    httpc.WithCookies(initialCookies),
-//	    httpc.WithHeaderMap(map[string]string{"User-Agent": "MyBot"}),
-//	)
-//
-//	// Second request automatically uses cookies from resp1 and persisted headers
-//	// Can override with new headers
-//	resp2, _ := client.Get("/search?q=test",
-//	    httpc.WithHeaderMap(map[string]string{"Accept": "application/json"}),
-//	)
 type DomainClient struct {
 	client     Client
 	baseURL    string
@@ -46,21 +21,6 @@ type DomainClient struct {
 	autoManage bool
 }
 
-// NewDomain creates a new DomainClient for the specified base URL.
-// The base URL should include the scheme and domain (e.g., "https://www.example.com").
-// Returns an error if the URL is invalid or the client cannot be created.
-//
-// The client automatically manages:
-// - Cookies: Saved from responses, sent in subsequent requests
-// - Headers: Persisted across requests unless overridden
-//
-// Example:
-//
-//	client, err := httpc.NewDomain("https://api.example.com")
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-//	defer client.Close()
 func NewDomain(baseURL string, config ...*Config) (*DomainClient, error) {
 	parsedURL, err := url.Parse(baseURL)
 	if err != nil {
@@ -95,39 +55,64 @@ func NewDomain(baseURL string, config ...*Config) (*DomainClient, error) {
 	}, nil
 }
 
-// Get executes a GET request with automatic Cookie and Header management.
 func (dc *DomainClient) Get(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("GET", path, options...)
 }
 
-// Post executes a POST request with automatic Cookie and Header management.
 func (dc *DomainClient) Post(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("POST", path, options...)
 }
 
-// Put executes a PUT request with automatic Cookie and Header management.
 func (dc *DomainClient) Put(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("PUT", path, options...)
 }
 
-// Patch executes a PATCH request with automatic Cookie and Header management.
 func (dc *DomainClient) Patch(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("PATCH", path, options...)
 }
 
-// Delete executes a DELETE request with automatic Cookie and Header management.
 func (dc *DomainClient) Delete(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("DELETE", path, options...)
 }
 
-// Head executes a HEAD request with automatic Cookie and Header management.
 func (dc *DomainClient) Head(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("HEAD", path, options...)
 }
 
-// Options executes an OPTIONS request with automatic Cookie and Header management.
 func (dc *DomainClient) Options(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("OPTIONS", path, options...)
+}
+
+// DownloadFile downloads a file from the given path to the specified file path.
+// The path is relative to the domain's base URL or can be a full URL.
+// Automatic state management (cookies/headers) is applied during download.
+func (dc *DomainClient) DownloadFile(path string, filePath string, options ...RequestOption) (*DownloadResult, error) {
+	fullURL := dc.buildURL(path)
+
+	managedOptions := dc.prepareManagedOptions()
+	allOptions := append(managedOptions, options...)
+
+	if dc.autoManage {
+		dc.captureRequestOptions(options)
+	}
+
+	return dc.client.DownloadFile(fullURL, filePath, allOptions...)
+}
+
+// DownloadWithOptions downloads a file with custom download options.
+// The path is relative to the domain's base URL or can be a full URL.
+// Automatic state management (cookies/headers) is applied during download.
+func (dc *DomainClient) DownloadWithOptions(path string, downloadOpts *DownloadOptions, options ...RequestOption) (*DownloadResult, error) {
+	fullURL := dc.buildURL(path)
+
+	managedOptions := dc.prepareManagedOptions()
+	allOptions := append(managedOptions, options...)
+
+	if dc.autoManage {
+		dc.captureRequestOptions(options)
+	}
+
+	return dc.client.DownloadWithOptions(fullURL, downloadOpts, allOptions...)
 }
 
 func (dc *DomainClient) request(method, path string, options ...RequestOption) (*Result, error) {
@@ -152,27 +137,43 @@ func (dc *DomainClient) request(method, path string, options ...RequestOption) (
 	return result, nil
 }
 
-// buildURL constructs the full URL from base URL and path.
 func (dc *DomainClient) buildURL(path string) string {
 	if path == "" {
 		return dc.baseURL
 	}
 
-	// Check if path is already a full URL
-	if len(path) > 7 {
-		if path[:7] == "http://" || (len(path) > 8 && path[:8] == "https://") {
-			return path
+	parsedURL, err := url.Parse(path)
+	if err == nil && parsedURL.Scheme != "" && parsedURL.Host != "" {
+		// Validate URL scheme for security
+		// Only allow http and https schemes to prevent potential SSRF attacks
+		if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+			// Reject URLs with disallowed schemes (file:, data:, javascript:, etc.)
+			return dc.baseURL
 		}
+		return path
 	}
 
-	// Relative path handling
-	if path[0] != '/' {
-		return dc.baseURL + "/" + path
-	}
-	return dc.baseURL + path
+	baseURL, _ := url.Parse(dc.baseURL)
+	baseURL.Path = pathJoin(baseURL.Path, path)
+	return baseURL.String()
 }
 
-// prepareManagedOptions prepares cookies and headers for requests.
+func pathJoin(base, path string) string {
+	if base == "" {
+		if path[0] == '/' {
+			return path
+		}
+		return "/" + path
+	}
+	if path == "" {
+		return base
+	}
+	if path[0] == '/' {
+		return base + path
+	}
+	return base + "/" + path
+}
+
 func (dc *DomainClient) prepareManagedOptions() []RequestOption {
 	dc.mu.RLock()
 	cookieCount := len(dc.cookies)
@@ -206,7 +207,6 @@ func (dc *DomainClient) prepareManagedOptions() []RequestOption {
 	return options
 }
 
-// captureRequestOptions captures cookies and headers from request options.
 func (dc *DomainClient) captureRequestOptions(options []RequestOption) {
 	if len(options) == 0 {
 		return
@@ -257,8 +257,6 @@ func (dc *DomainClient) updateFromResult(result *Result) {
 	// Only cookies are managed automatically from server responses
 }
 
-// SetHeader sets a persistent header that will be sent with all subsequent requests.
-// This header can be overridden per-request using WithHeader or WithHeaderMap.
 func (dc *DomainClient) SetHeader(key, value string) error {
 	if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
 		return fmt.Errorf("invalid header: %w", err)
@@ -271,7 +269,6 @@ func (dc *DomainClient) SetHeader(key, value string) error {
 	return nil
 }
 
-// SetHeaders sets multiple persistent headers.
 func (dc *DomainClient) SetHeaders(headers map[string]string) error {
 	for k, v := range headers {
 		if err := validation.ValidateHeaderKeyValue(k, v); err != nil {
@@ -286,7 +283,6 @@ func (dc *DomainClient) SetHeaders(headers map[string]string) error {
 	return nil
 }
 
-// DeleteHeader removes a persistent header.
 func (dc *DomainClient) DeleteHeader(key string) {
 	dc.mu.Lock()
 	defer dc.mu.Unlock()
@@ -294,7 +290,6 @@ func (dc *DomainClient) DeleteHeader(key string) {
 	delete(dc.headers, key)
 }
 
-// ClearHeaders removes all persistent headers.
 func (dc *DomainClient) ClearHeaders() {
 	dc.mu.Lock()
 	defer dc.mu.Unlock()
@@ -302,7 +297,6 @@ func (dc *DomainClient) ClearHeaders() {
 	dc.headers = make(map[string]string)
 }
 
-// GetHeaders returns a copy of all persistent headers.
 func (dc *DomainClient) GetHeaders() map[string]string {
 	dc.mu.RLock()
 	defer dc.mu.RUnlock()
@@ -312,8 +306,6 @@ func (dc *DomainClient) GetHeaders() map[string]string {
 	return headers
 }
 
-// SetCookie sets a persistent cookie that will be sent with all subsequent requests.
-// This cookie can be overridden per-request using WithCookie or WithCookies.
 func (dc *DomainClient) SetCookie(cookie *http.Cookie) error {
 	if cookie == nil {
 		return fmt.Errorf("cookie cannot be nil")
@@ -329,7 +321,6 @@ func (dc *DomainClient) SetCookie(cookie *http.Cookie) error {
 	return nil
 }
 
-// SetCookies sets multiple persistent cookies.
 func (dc *DomainClient) SetCookies(cookies []*http.Cookie) error {
 	for i, cookie := range cookies {
 		if cookie == nil {
@@ -349,7 +340,6 @@ func (dc *DomainClient) SetCookies(cookies []*http.Cookie) error {
 	return nil
 }
 
-// DeleteCookie removes a persistent cookie by name.
 func (dc *DomainClient) DeleteCookie(name string) {
 	dc.mu.Lock()
 	defer dc.mu.Unlock()
@@ -357,7 +347,6 @@ func (dc *DomainClient) DeleteCookie(name string) {
 	delete(dc.cookies, name)
 }
 
-// ClearCookies removes all persistent cookies.
 func (dc *DomainClient) ClearCookies() {
 	dc.mu.Lock()
 	defer dc.mu.Unlock()
@@ -365,7 +354,6 @@ func (dc *DomainClient) ClearCookies() {
 	dc.cookies = make(map[string]*http.Cookie)
 }
 
-// GetCookies returns a copy of all persistent cookies.
 func (dc *DomainClient) GetCookies() []*http.Cookie {
 	dc.mu.RLock()
 	defer dc.mu.RUnlock()
@@ -378,8 +366,6 @@ func (dc *DomainClient) GetCookies() []*http.Cookie {
 	return cookies
 }
 
-// GetCookie returns a specific persistent cookie by name.
-// Returns nil if the cookie doesn't exist.
 func (dc *DomainClient) GetCookie(name string) *http.Cookie {
 	dc.mu.RLock()
 	defer dc.mu.RUnlock()
@@ -391,7 +377,6 @@ func (dc *DomainClient) GetCookie(name string) *http.Cookie {
 	return nil
 }
 
-// Close closes the underlying HTTP client and releases resources.
 func (dc *DomainClient) Close() error {
 	return dc.client.Close()
 }
