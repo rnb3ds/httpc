@@ -238,13 +238,111 @@ if err := result.JSON(&data); err != nil {
 
 ## Common Patterns
 
-### Pattern 1: Simple API Client
+> **Note**: These patterns are referenced throughout the documentation. Master these basics first, then explore specialized guides.
+
+### Client Setup Pattern
+
+**Standard Client (Recommended for Production)**
+
+```go
+client, err := httpc.New()
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Close()  // Always close to release resources
+```
+
+**Custom Client**
+
+```go
+config := httpc.DefaultConfig()
+config.Timeout = 30 * time.Second
+config.UserAgent = "MyApp/1.0"
+
+client, err := httpc.New(config)
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Close()
+```
+
+**Quick One-Off Requests**
+
+```go
+// Uses shared default client - good for scripts
+result, err := httpc.Get("https://api.example.com/data")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Error Handling Pattern
+
+```go
+result, err := client.Get(url)
+if err != nil {
+    // Network error, timeout, or invalid input
+    log.Printf("Request failed: %v", err)
+    return err
+}
+
+// Check HTTP status (HTTPC returns Result for all status codes)
+if !result.IsSuccess() {
+    // 4xx or 5xx status
+    log.Printf("API error: %d - %s", result.StatusCode(), result.Status())
+    return fmt.Errorf("request failed with status %d", result.StatusCode())
+}
+
+// Process successful response
+fmt.Println(result.Body())
+```
+
+### Authenticated Request Pattern
+
+```go
+result, err := client.Get("https://api.example.com/protected",
+    httpc.WithBearerToken("your-token"),
+)
+if err != nil {
+    return err
+}
+if !result.IsSuccess() {
+    return fmt.Errorf("authentication failed: %d", result.StatusCode())
+}
+```
+
+### JSON Request/Response Pattern
+
+```go
+// POST JSON data
+payload := map[string]string{"name": "John", "email": "john@example.com"}
+result, err := client.Post("https://api.example.com/users",
+    httpc.WithJSON(payload),
+)
+if err != nil {
+    return err
+}
+
+// Parse JSON response
+var response struct {
+    ID    int    `json:"id"`
+    Name  string `json:"name"`
+    Email string `json:"email"`
+}
+if err := result.JSON(&response); err != nil {
+    return err
+}
+
+fmt.Printf("Created user: %+v\n", response)
+```
+
+### Advanced Pattern 1: API Client Wrapper
 
 ```go
 type APIClient struct {
-    client httpc.Client
+    client  httpc.Client
     baseURL string
-    token string
+    token   string
 }
 
 func NewAPIClient(baseURL, token string) (*APIClient, error) {
@@ -252,11 +350,11 @@ func NewAPIClient(baseURL, token string) (*APIClient, error) {
     if err != nil {
         return nil, err
     }
-    
+
     return &APIClient{
-        client: client,
+        client:  client,
         baseURL: baseURL,
-        token: token,
+        token:   token,
     }, nil
 }
 
@@ -266,7 +364,7 @@ func (c *APIClient) Close() error {
 
 func (c *APIClient) GetUser(id int) (*User, error) {
     url := fmt.Sprintf("%s/users/%d", c.baseURL, id)
-    
+
     result, err := c.client.Get(url,
         httpc.WithBearerToken(c.token),
         httpc.WithTimeout(10*time.Second),
@@ -274,37 +372,21 @@ func (c *APIClient) GetUser(id int) (*User, error) {
     if err != nil {
         return nil, err
     }
-    
+
     if !result.IsSuccess() {
         return nil, fmt.Errorf("API returned status %d", result.StatusCode())
     }
-    
+
     var user User
     if err := result.JSON(&user); err != nil {
         return nil, err
     }
-    
+
     return &user, nil
 }
 ```
 
-### Pattern 2: Package-Level Functions
-
-For quick one-off requests:
-
-```go
-// No need to create a client
-result, err := httpc.Get("https://api.example.com/data")
-if err != nil {
-    log.Fatal(err)
-}
-
-fmt.Println(result.Body())
-```
-
-**Note:** Package-level functions use a shared default client. For production code, prefer creating your own client instance.
-
-### Pattern 3: Context-Aware Requests
+### Advanced Pattern 2: Context-Aware Requests
 
 ```go
 func fetchData(ctx context.Context, url string) ([]byte, error) {
@@ -313,7 +395,7 @@ func fetchData(ctx context.Context, url string) ([]byte, error) {
         return nil, err
     }
     defer client.Close()
-    
+
     result, err := client.Get(url,
         httpc.WithContext(ctx),
         httpc.WithTimeout(30*time.Second),
@@ -321,20 +403,36 @@ func fetchData(ctx context.Context, url string) ([]byte, error) {
     if err != nil {
         return nil, err
     }
-    
+
     if !result.IsSuccess() {
         return nil, fmt.Errorf("status %d", result.StatusCode())
     }
-    
+
     return result.RawBody(), nil
 }
 
-// Usage
+// Usage with timeout
 ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 defer cancel()
 
-data, err := fetchData(ctx, url)
+data, err := fetchData(ctx, "https://api.example.com/large-data")
 ```
+
+---
+
+## Next Steps
+
+Now that you understand the basics, explore these guides:
+
+- **[Request Options](request-options.md)** - Complete reference for all request options
+- **[Configuration](configuration.md)** - Client configuration and presets
+- **[Error Handling](error-handling.md)** - Advanced error handling patterns
+- **[File Downloads](file-download.md)** - Download files with progress tracking
+- **[Cookie Management](cookie-api-reference.md)** - Automatic and manual cookie handling
+- **[Redirects](redirects.md)** - Handle HTTP redirects
+- **[Request Inspection](request-inspection.md)** - Debug and inspect requests
+
+---
 
 ## Configuration Basics
 

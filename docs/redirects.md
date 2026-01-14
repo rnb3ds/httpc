@@ -2,6 +2,8 @@
 
 HTTPC provides comprehensive support for HTTP redirects with automatic following, configurable limits, redirect chain tracking, and manual control.
 
+> **Prerequisite**: This guide assumes you understand the [Client Setup pattern](getting-started.md#common-patterns) from the Getting Started guide.
+
 ## Table of Contents
 
 - [Overview](#overview)

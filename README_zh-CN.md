@@ -1,4 +1,4 @@
-﻿# HTTPC - 生产级 Go HTTP 客户端
+﻿# HTTPC - Go 语言生产级 HTTP 客户端
 
 [![Go Version](https://img.shields.io/badge/Go-1.24+-blue.svg)](https://golang.org)
 [![pkg.go.dev](https://pkg.go.dev/badge/github.com/cybergodev/httpc.svg)](https://pkg.go.dev/github.com/cybergodev/httpc)
@@ -7,27 +7,28 @@
 [![Performance](https://img.shields.io/badge/performance-high%20performance-green.svg)](https://github.com/cybergodev/json)
 [![Thread Safe](https://img.shields.io/badge/thread%20safe-yes-brightgreen.svg)](https://github.com/cybergodev/json)
 
-一个高性能的 Go HTTP 客户端库，具有企业级安全性、零外部依赖和生产就绪的默认配置。专为需要可靠性、安全性和性能的应用程序而构建。
+一款高性能的 Go 语言 HTTP 客户端库，具备企业级安全、零外部依赖和生产级默认配置。为追求可靠性、安全性和性能的应用而构建。
 
 **[📖 English Documentation](README.md)** | **[📚 完整文档](docs)**
 
 ---
 
-## 为什么选择 HTTPC？
+## ✨ 核心特性
 
 - 🛡️ **默认安全** - TLS 1.2+、SSRF 防护、CRLF 注入防护
-- ⚡ **高性能** - 连接池、HTTP/2、协程安全操作
-- 📊 **内置弹性** - 智能重试，支持指数退避和抖动
-- 🎯 **开发者友好** - 简洁的 API、函数式选项、全面的错误处理
-- 🔧 **零依赖** - 纯 Go 标准库，无外部依赖
-- 🚀 **生产就绪** - 经过实战检验的默认配置，广泛的测试覆盖
+- ⚡ **高性能** - 连接池、HTTP/2、goroutine 安全操作
+- 📊 **内置弹性** - 智能重试、指数退避和抖动
+- 🎯 **开发友好** - 清晰的 API、函数选项、全面的错误处理
+- 🔧 **零依赖** - 纯 Go 标准库，无外部包
+- 🚀 **生产就绪** - 经过实战检验的默认配置、广泛的测试覆盖
 
-
-## 快速开始
+## 📦 安装
 
 ```bash
 go get -u github.com/cybergodev/httpc
 ```
+
+## 🚀 快速开始
 
 ```go
 package main
@@ -44,10 +45,10 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
-    fmt.Printf("状态码: %d\n", result.StatusCode())
+    fmt.Printf("Status: %d\n", result.StatusCode())
 
-    // 带 JSON 和认证的 POST 请求
-    user := map[string]string{"name": "张三", "email": "zhangsan@example.com"}
+    // POST JSON 数据和认证
+    user := map[string]string{"name": "John", "email": "john@example.com"}
     result, err = httpc.Post("https://api.example.com/users",
         httpc.WithJSON(user),
         httpc.WithBearerToken("your-token"),
@@ -55,17 +56,22 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
-    fmt.Printf("已创建: %s\n", result.Body())
+    fmt.Printf("Created: %s\n", result.Body())
 }
 ```
 
+> **默认请求头**: 使用 `httpc.DefaultConfig()` 默认配置，默认使用 `User-Agent: httpc/1.0` 请求头。可自定义设置默认请求头：
+> - **User-Agent**: 设置 `config.UserAgent` 或使用 `httpc.WithUserAgent("your-custom-agent")`
+> - **自定义请求头**: 在创建客户端时设置 `config.Headers` 映射以添加客户端级别的默认请求头
+> - **每次请求**: 使用 `httpc.WithHeader()` 或 `httpc.WithHeaderMap()` 为特定请求覆盖默认值
+
 **[📖 查看更多示例](examples)** | **[🚀 入门指南](docs/getting-started.md)**
 
-## 核心功能
+## 📖 核心功能
 
 ### HTTP 方法
 
-所有标准 HTTP 方法，API 简洁直观：
+所有标准 HTTP 方法，提供清晰直观的 API：
 
 ```go
 // GET - 获取数据
@@ -77,7 +83,7 @@ result, err := httpc.Get("https://api.example.com/users",
 // POST - 创建资源
 result, err := httpc.Post("https://api.example.com/users",
     httpc.WithJSON(user),
-    httpc.WithBearerToken("token"),
+    httpc.WithBearerToken("your-token"),
 )
 
 // PUT - 完整更新
@@ -93,16 +99,16 @@ result, err := httpc.Patch("https://api.example.com/users/123",
 // DELETE - 删除资源
 result, err := httpc.Delete("https://api.example.com/users/123")
 
-// 同时支持 HEAD、OPTIONS 和自定义方法
+// HEAD、OPTIONS 和自定义方法也支持
 ```
 
 ### 请求选项
 
-使用函数式选项自定义请求（所有选项都以 `With` 开头）：
+使用函数选项自定义请求（所有选项以 `With` 开头）：
 
 ```go
-// 请求头和认证
-httpc.WithHeader("X-API-Key", "key")
+// Headers 和认证
+httpc.WithHeader("x-api-key", "key")
 httpc.WithBearerToken("token")
 httpc.WithBasicAuth("user", "pass")
 
@@ -111,22 +117,22 @@ httpc.WithQuery("page", 1)
 httpc.WithQueryMap(map[string]interface{}{"page": 1, "limit": 20})
 
 // 请求体
-httpc.WithJSON(data)              // JSON 格式
-httpc.WithXML(data)               // XML 格式
+httpc.WithJSON(data)              // JSON 请求体
+httpc.WithXML(data)               // XML 请求体
 httpc.WithForm(formData)          // 表单数据
 httpc.WithText("content")         // 纯文本
-httpc.WithBinary(data, "image/png")  // 二进制数据及内容类型
+httpc.WithBinary(data, "image/png")  // 二进制数据（带内容类型）
 httpc.WithFile("file", "doc.pdf", content)  // 文件上传
 
-// Cookie 设置
-httpc.WithCookieString("session=abc123; token=xyz789")  // 解析 Cookie 字符串
-httpc.WithCookieValue("name", "value")                  // 单个 Cookie
+// Cookies
+httpc.WithCookieString("session=abc123; token=xyz789")  // 解析 cookie 字符串
+httpc.WithCookieValue("name", "value")                  // 单个 cookie
 httpc.WithCookie(cookie)                                // http.Cookie 对象
-httpc.WithCookies(cookies)                              // 多个 Cookie
+httpc.WithCookies(cookies)                              // 多个 cookies
 
-// 重定向控制
-httpc.WithFollowRedirects(false)  // 禁用自动重定向跟随
-httpc.WithMaxRedirects(5)         // 限制最大重定向次数 (0-50)
+// 重定向
+httpc.WithFollowRedirects(false)  // 禁用自动跟随重定向
+httpc.WithMaxRedirects(5)         // 限制最大重定向次数（0-50）
 
 // 超时和重试
 httpc.WithTimeout(30*time.Second)
@@ -156,27 +162,26 @@ if err != nil {
 
 // 快速访问方法
 statusCode := result.StatusCode()    // HTTP 状态码
-body := result.Body()                // 响应体字符串
-rawBody := result.RawBody()          // 响应体字节数组
+body := result.Body()                // 响应体（字符串）
+rawBody := result.RawBody()          // 响应体（[]byte）
 
 // 详细响应信息
 response := result.Response
-fmt.Printf("状态: %d %s\n", response.StatusCode, response.Status)
-fmt.Printf("内容长度: %d\n", response.ContentLength)
-fmt.Printf("响应头: %v\n", response.Headers)
-fmt.Printf("Cookie: %v\n", response.Cookies)
+fmt.Printf("Status: %d %s\n", response.StatusCode, response.Status)
+fmt.Printf("Content-Length: %d\n", response.ContentLength)
+fmt.Printf("Headers: %v\n", response.Headers)
+fmt.Printf("Cookies: %v\n", response.Cookies)
 
 // 请求信息
 request := result.Request
-fmt.Printf("方法: %s\n", request.Method)
-fmt.Printf("URL: %s\n", request.URL)
-fmt.Printf("请求头: %v\n", request.Headers)
+fmt.Printf("Request Headers: %v\n", request.Headers)
+fmt.Printf("Request Cookies: %v\n", request.Cookies)
 
 // 元数据
 meta := result.Meta
-fmt.Printf("耗时: %v\n", meta.Duration)
-fmt.Printf("尝试次数: %d\n", meta.Attempts)
-fmt.Printf("重定向次数: %d\n", meta.RedirectCount)
+fmt.Printf("Duration: %v\n", meta.Duration)
+fmt.Printf("Attempts: %d\n", meta.Attempts)
+fmt.Printf("Redirects: %d\n", meta.RedirectCount)
 ```
 
 ### 响应处理
@@ -189,7 +194,7 @@ if err != nil {
 
 // 状态检查
 if result.IsSuccess() {        // 2xx
-    fmt.Println("成功！")
+    fmt.Println("Success!")
 }
 
 // 解析 JSON 响应
@@ -199,25 +204,25 @@ if err := result.JSON(&data); err != nil {
 }
 
 // 访问响应数据
-fmt.Printf("状态码: %d\n", result.StatusCode())
-fmt.Printf("响应体: %s\n", result.Body())
-fmt.Printf("耗时: %v\n", result.Meta.Duration)
-fmt.Printf("尝试次数: %d\n", result.Meta.Attempts)
+fmt.Printf("Status: %d\n", result.StatusCode())
+fmt.Printf("Body: %s\n", result.Body())
+fmt.Printf("Duration: %v\n", result.Meta.Duration)
+fmt.Printf("Attempts: %d\n", result.Meta.Attempts)
 
-// 处理 Cookie
+// 使用 cookies
 cookie := result.GetCookie("session_id")
 if result.HasCookie("session_id") {
-    fmt.Println("找到会话 Cookie")
+    fmt.Println("找到 Session cookie")
 }
 
-// 访问请求 Cookie
+// 访问请求 cookies
 requestCookies := result.RequestCookies()
 requestCookie := result.GetRequestCookie("auth_token")
 
 // 访问详细响应信息
-fmt.Printf("内容长度: %d\n", result.Response.ContentLength)
-fmt.Printf("响应头: %v\n", result.Response.Headers)
-fmt.Printf("请求头: %v\n", result.Request.Headers)
+fmt.Printf("Content-Length: %d\n", result.Response.ContentLength)
+fmt.Printf("Response Headers: %v\n", result.Response.Headers)
+fmt.Printf("Request Headers: %v\n", result.Request.Headers)
 
 // 保存响应到文件
 err = result.SaveToFile("response.html")
@@ -225,7 +230,7 @@ err = result.SaveToFile("response.html")
 
 ### 自动响应解压缩
 
-HTTPC 自动检测并解压缩 HTTP 响应：
+HTTPC 自动检测并解压缩压缩的 HTTP 响应：
 
 ```go
 // 请求压缩响应
@@ -234,15 +239,15 @@ result, err := httpc.Get("https://api.example.com/data",
 )
 
 // 响应自动解压缩
-fmt.Printf("解压后的内容: %s\n", result.Body())
+fmt.Printf("解压缩后的内容: %s\n", result.Body())
 fmt.Printf("原始编码: %s\n", result.Response.Headers.Get("Content-Encoding"))
 ```
 
 **支持的编码：**
-- ✅ **gzip** - 完全支持 (compress/gzip)
-- ✅ **deflate** - 完全支持 (compress/flate)
+- ✅ **gzip** - 完全支持（compress/gzip）
+- ✅ **deflate** - 完全支持（compress/flate）
 
-**注意：** 当服务器发送 `Content-Encoding` 头时，解压缩是自动的。库会透明地处理这一过程，因此您始终收到解压后的内容。
+**注意：** 当服务器发送 `Content-Encoding` 头时，解压缩是自动的。库透明地处理这个过程，因此您始终接收解压缩后的内容。
 
 ### 文件下载
 
@@ -252,7 +257,7 @@ result, err := httpc.DownloadFile(
     "https://example.com/file.zip",
     "downloads/file.zip",
 )
-fmt.Printf("已下载: %s，平均速度 %s\n", 
+fmt.Printf("已下载: %s，速度 %s/s\n",
     httpc.FormatBytes(result.BytesWritten),
     httpc.FormatSpeed(result.AverageSpeed))
 
@@ -264,7 +269,7 @@ opts.ProgressCallback = func(downloaded, total int64, speed float64) {
 }
 result, err := httpc.DownloadWithOptions(url, opts)
 
-// 断点续传
+// 恢复中断的下载
 opts.ResumeDownload = true
 result, err := httpc.DownloadWithOptions(url, opts)
 
@@ -277,15 +282,15 @@ result, err := httpc.DownloadFile(url, "file.zip",
 
 **[📖 文件下载指南](docs/file-download.md)**
 
-## 配置
+## 🔧 配置
 
 ### 使用预设快速开始
 
 ```go
-// Default - 生产环境均衡配置（推荐）
+// Default - 生产环境平衡配置（推荐）
 client, err := httpc.New()
 
-// Secure - 最大安全性（严格验证，最少重试）
+// Secure - 最大安全性（严格验证、最少重试）
 client, err := httpc.NewSecure()
 
 // Performance - 高吞吐量优化
@@ -294,7 +299,7 @@ client, err := httpc.NewPerformance()
 // Minimal - 轻量级简单请求
 client, err := httpc.NewMinimal()
 
-// Testing - 开发环境宽松配置（切勿在生产环境使用）
+// Testing - 开发测试宽松配置（切勿用于生产环境）
 client, err := httpc.New(httpc.TestingConfig())
 ```
 
@@ -326,16 +331,18 @@ if err != nil {
     if errors.As(err, &httpErr) {
         fmt.Printf("HTTP %d: %s\n", httpErr.StatusCode, httpErr.Status)
     }
-    
+
     // 检查超时
     if strings.Contains(err.Error(), "timeout") {
         return fmt.Errorf("请求超时")
     }
-    
+
     return err
 }
 
 // 检查响应状态
+// 注意：HTTPC 对所有状态码（包括 4xx 和 5xx）都返回 Result
+// HTTPError 不会自动返回给非 2xx 状态码
 if !result.IsSuccess() {
     return fmt.Errorf("意外的状态码: %d", result.StatusCode())
 }
@@ -355,14 +362,14 @@ if result.IsClientError() {
 ### 客户端生命周期管理
 
 ```go
-// 创建可复用的客户端
+// 创建可重用的客户端
 client, err := httpc.New()
 if err != nil {
     log.Fatal(err)
 }
 defer client.Close()  // 始终关闭以释放资源
 
-// 或使用包级函数（自动管理）
+// 或使用包级别函数（自动管理）
 defer httpc.CloseDefaultClient()
 result, err := httpc.Get(url)
 ```
@@ -376,19 +383,19 @@ config.MaxRetries = 3
 config.BackoffFactor = 2.0
 client, err := httpc.New(config)
 
-// 或针对单个请求
+// 或每次请求配置
 result, err := httpc.Get(url, httpc.WithMaxRetries(5))
 ```
 
 ### Context 支持
 
 ```go
-// 超时控制
+// 超时
 ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 defer cancel()
 result, err := client.Get(url, httpc.WithContext(ctx))
 
-// 取消控制
+// 取消
 ctx, cancel := context.WithCancel(context.Background())
 go func() {
     time.Sleep(5 * time.Second)
@@ -404,7 +411,7 @@ result, err := client.Get(url, httpc.WithContext(ctx))
 result, err := httpc.Get("https://example.com/redirect")
 fmt.Printf("跟随了 %d 次重定向\n", result.Meta.RedirectCount)
 
-// 禁用特定请求的重定向
+// 为特定请求禁用重定向
 result, err := httpc.Get(url, httpc.WithFollowRedirects(false))
 if result.IsRedirect() {
     fmt.Printf("重定向到: %s\n", result.Response.Headers.Get("Location"))
@@ -424,24 +431,25 @@ for i, url := range result.Meta.RedirectChain {
 ### Cookie 管理
 
 ```go
-// 自动 Cookie 处理
+// 自动 cookie 处理
+// 注意：DefaultConfig() 中 EnableCookies 默认为 false
 config := httpc.DefaultConfig()
-config.EnableCookies = true
+config.EnableCookies = true  // 必须显式启用以自动处理 cookies
 client, err := httpc.New(config)
 
-// 登录设置 Cookie
+// Login 设置 cookies
 client.Post("https://example.com/login", httpc.WithForm(credentials))
 
-// 后续请求自动包含 Cookie
+// 后续请求自动包含 cookies
 client.Get("https://example.com/profile")
 
-// 手动 Cookie 设置
-// 解析 Cookie 字符串（来自浏览器开发者工具或服务器响应）
+// 手动设置 cookie
+// 解析 cookie 字符串（从浏览器开发工具或服务器响应）
 result, err := httpc.Get("https://api.example.com/data",
     httpc.WithCookieString("PSID=4418ECBB1281B550; PSTM=1733760779; BS=kUwNTVFcEUBUItoc"),
 )
 
-// 设置单个 Cookie
+// 设置单个 cookies
 result, err = httpc.Get("https://api.example.com/data",
     httpc.WithCookieValue("session", "abc123"),
     httpc.WithCookieValue("token", "xyz789"),
@@ -460,43 +468,46 @@ result, err = httpc.Get("https://api.example.com/data", httpc.WithCookie(cookie)
 
 **[📖 Cookie API 参考](docs/cookie-api-reference.md)**
 
-### 域客户端 - 自动状态管理
+### Domain Client - 自动状态管理
 
-对于需要向同一域发起多个请求的应用，`DomainClient` 提供自动的 Cookie 和 Header 管理：
+对于向同一域发送多个请求的应用，`DomainClient` 提供自动的 Cookie 和 Header 管理：
 
 ```go
-// 创建域专用客户端
+// 创建域特定客户端
 client, err := httpc.NewDomain("https://api.example.com")
 if err != nil {
     log.Fatal(err)
 }
 defer client.Close()
 
-// 第一个请求 - 服务器设置 Cookie
-resp1, err := client.Get("/login",
+// 请求首页
+resp0, err := client.Get("/")
+
+// 第一个请求 - 服务器设置 cookies
+resp1, err := client.Post("/login",
     httpc.WithJSON(credentials),
 )
 
-// resp1 中的 Cookie 自动保存并在后续请求中发送
-resp2, err := client.Get("/profile")  // Cookie 自动包含
+// Cookies 从 resp1 自动保存并在后续请求中发送
+resp2, err := client.Get("/profile")  // Cookies 自动包含
 
-// 设置持久化 Header（所有请求都会发送）
+// 设置持久 headers（用于所有请求）
 client.SetHeader("Authorization", "Bearer "+token)
-client.SetHeader("X-API-Key", "your-api-key")
+client.SetHeader("x-api-key", "your-api-key")
 
-// 所有后续请求都包含这些 Header
-resp3, err := client.Get("/data")  // Header + Cookie 自动包含
+// 所有后续请求包含这些 headers
+resp3, err := client.Get("/data")  // Headers + Cookies 自动包含
 
-// 按请求覆盖（不影响持久化状态）
+// 每次请求覆盖（不影响持久状态）
 resp4, err := client.Get("/special",
-    httpc.WithHeader("Accept", "application/xml"),  // 仅此请求覆盖
+    httpc.WithHeader("Accept", "application/xml"),  // 仅对此请求覆盖
 )
 
-// 手动 Cookie 管理
+// 手动 cookie 管理
 client.SetCookie(&http.Cookie{Name: "session", Value: "abc123"})
 client.SetCookies([]*http.Cookie{
     {Name: "pref", Value: "dark"},
-    {Name: "lang", Value: "zh"},
+    {Name: "lang", Value: "en"},
 })
 
 // 查询状态
@@ -511,13 +522,13 @@ client.ClearCookies()
 client.ClearHeaders()
 ```
 
-**真实场景示例 - 登录流程：**
+**真实世界示例 - 登录流程：**
 
 ```go
 client, _ := httpc.NewDomain("https://api.example.com")
 defer client.Close()
 
-// 步骤 1：登录（服务器设置会话 Cookie）
+// 步骤 1：登录（服务器设置 session cookie）
 loginResp, _ := client.Post("/auth/login",
     httpc.WithJSON(map[string]string{
         "username": "user@example.com",
@@ -525,12 +536,12 @@ loginResp, _ := client.Post("/auth/login",
     }),
 )
 
-// 步骤 2：提取令牌并设置为持久化 Header
+// 步骤 2：提取 token 并设置为持久 header
 var loginData map[string]string
 loginResp.JSON(&loginData)
 client.SetHeader("Authorization", "Bearer "+loginData["token"])
 
-// 步骤 3：进行 API 调用（Cookie + 认证 Header 自动发送）
+// 步骤 3：进行 API 调用（cookies + auth header 自动发送）
 profileResp, _ := client.Get("/api/user/profile")
 dataResp, _ := client.Get("/api/user/data")
 settingsResp, _ := client.Put("/api/user/settings",
@@ -538,43 +549,71 @@ settingsResp, _ := client.Put("/api/user/settings",
 )
 
 // 所有请求自动包含：
-// - 登录响应中的会话 Cookie
-// - Authorization Header
-// - 任何其他持久化的 Header/Cookie
+// - 登录响应中的 session cookies
+// - Authorization header
+// - 任何其他持久 headers/cookies
 ```
 
-**主要特性：**
-- **自动 Cookie 持久化** - 响应中的 Cookie 被保存并在后续请求中发送
-- **自动 Header 持久化** - 设置一次 Header，在所有请求中使用
-- **按请求覆盖** - 使用 `WithCookies()` 和 `WithHeaderMap()` 覆盖特定请求
-- **线程安全** - 所有操作都是协程安全的
+**使用 DomainClient 进行文件下载：**
+
+```go
+client, _ := httpc.NewDomain("https://api.example.com")
+defer client.Close()
+
+// 设置认证 header（用于所有请求，包括下载）
+client.SetHeader("Authorization", "Bearer "+token)
+
+// 带自动状态管理的简单下载
+result, err := client.DownloadFile("/files/report.pdf", "downloads/report.pdf")
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("已下载: %s，速度 %s/s\n",
+    httpc.FormatBytes(result.BytesWritten),
+    httpc.FormatSpeed(result.AverageSpeed))
+
+// 带进度跟踪的下载
+opts := httpc.DefaultDownloadOptions("downloads/large-file.zip")
+opts.ProgressCallback = func(downloaded, total int64, speed float64) {
+    percentage := float64(downloaded) / float64(total) * 100
+    fmt.Printf("\r进度: %.1f%% - %s", percentage, httpc.FormatSpeed(speed))
+}
+result, err = client.DownloadWithOptions("/files/large-file.zip", opts)
+```
+
+**核心特性：**
+- **自动 Cookie 持久化** - 响应中的 cookies 被保存并在后续请求中发送
+- **自动 Header 持久化** - 设置一次 headers，所有请求中使用
+- **每次请求覆盖** - 使用 `WithCookies()` 和 `WithHeaderMap()` 为特定请求覆盖
+- **线程安全** - 所有操作都是 goroutine 安全的
 - **手动控制** - 完整的 API 用于检查和修改状态
+- **文件下载支持** - 下载文件时自动状态管理（cookies/headers）
 
-**[📖 查看完整示例](examples/domain_client_example.go)**
+**[📖 查看完整示例](examples/03_advanced/domain_client.go)**
 
-## 安全性与性能
+## 安全与性能
 
 ### 安全特性
-- **默认 TLS 1.2+** - 现代加密标准
-- **SSRF 防护** - DNS 解析前后验证，阻止私有 IP
-- **CRLF 注入防护** - 请求头和 URL 验证
-- **输入验证** - 全面验证所有用户输入
+- **TLS 1.2+ 默认** - 现代加密标准
+- **SSRF 防护** - DNS 前后验证阻止私有 IP
+- **CRLF 注入防护** - Header 和 URL 验证
+- **输入验证** - 所有用户输入的全面验证
 - **路径遍历防护** - 安全的文件操作
-- **可配置限制** - 响应大小、超时、连接数限制
+- **可配置限制** - 响应大小、超时、连接限制
 
 ### 性能优化
-- **连接池** - 高效的连接复用，支持每主机连接数限制
-- **HTTP/2 支持** - 多路复用提升性能
-- **协程安全** - 所有操作线程安全，使用原子操作
-- **智能重试** - 指数退避加抖动，减少服务器负载
+- **连接池** - 高效的连接重用，每主机限制
+- **HTTP/2 支持** - 多路复用以提高性能
+- **Goroutine 安全** - 所有操作线程安全，使用原子操作
+- **智能重试** - 带抖动的指数退避减少服务器负载
 - **内存高效** - 可配置限制防止内存耗尽
 
 ### 并发安全
 
-HTTPC 从设计之初就考虑了并发使用：
+HTTPC 从根本上设计用于并发使用：
 
 ```go
-// ✅ 安全：在多个协程间共享单个客户端
+// ✅ 安全：在 goroutine 之间共享单个客户端
 client, _ := httpc.New()
 defer client.Close()
 
@@ -591,39 +630,18 @@ wg.Wait()
 ```
 
 **线程安全保证：**
-- ✅ 所有 `Client` 方法都可安全并发使用
-- ✅ 包级函数（`Get`、`Post` 等）安全地使用共享的默认客户端
-- ✅ 响应对象在返回后可从多个协程读取
+- ✅ 所有 `Client` 方法并发使用安全
+- ✅ 包级别函数（`Get`、`Post` 等）安全地使用共享默认客户端
+- ✅ 响应对象返回后可从多个 goroutine 读取
 - ✅ 内部指标和连接池使用原子操作
-- ✅ Config 在客户端创建时深拷贝，防止修改问题
+- ✅ 配置在客户端创建时深拷贝以防止修改问题
 
 **最佳实践：**
-- 创建一个客户端并在整个应用中复用
+- 创建一个客户端并在整个应用中重用
 - 不要在传递给 `New()` 后修改 `Config`
-- 响应对象可安全读取，但不应并发修改
+- 响应对象可以安全读取但不应该并发修改
 
-**测试：** 运行 `make test-race` 验证代码中的无竞态操作。
-
-### 性能基准测试
-
-HTTPC 专为高性能设计，最小化内存分配：
-
-```bash
-# 运行基准测试
-go test -bench=. -benchmem ./...
-
-# 示例结果（实际结果可能有所不同）：
-BenchmarkClient_Get-8           5000    250000 ns/op    1024 B/op    8 allocs/op
-BenchmarkClient_Post-8          4000    300000 ns/op    1536 B/op   12 allocs/op
-BenchmarkClient_Concurrent-8   10000    150000 ns/op     512 B/op    4 allocs/op
-```
-
-**性能特性：**
-- **零拷贝操作** - 尽可能避免数据复制
-- **连接池** - 可配置限制的连接复用
-- **热路径优化** - 最小化内存分配
-- **原子操作** - 线程安全的计数器
-- **高效字符串操作** - 预分配缓冲区
+**测试：** 运行 `make test-race` 验证代码中的无竞争操作。
 
 **[📖 安全指南](SECURITY.md)**
 
@@ -637,22 +655,21 @@ BenchmarkClient_Concurrent-8   10000    150000 ns/op     512 B/op    4 allocs/op
 - **[文件下载](docs/file-download.md)** - 带进度的文件下载
 - **[HTTP 重定向](docs/redirects.md)** - 重定向处理和跟踪
 - **[请求检查](docs/request-inspection.md)** - 检查请求详情
-- **[安全性](SECURITY.md)** - 安全特性和最佳实践
+- **[安全](SECURITY.md)** - 安全特性和最佳实践
 
 ### 示例
 - **[快速开始](examples/01_quickstart)** - 基本用法
-- **[核心功能](examples/02_core_features)** - 请求头、认证、请求体格式
-- **[高级功能](examples/03_advanced)** - 文件上传、下载、重试
-- **[实战案例](examples/04_real_world)** - 完整的 API 客户端
+- **[核心功能](examples/02_core_features)** - Headers、认证、body 格式
+- **[高级](examples/03_advanced)** - 文件上传、下载、重试
 
-## 贡献
+## 🤝 贡献
 
-欢迎贡献！对于重大更改，请先开启 issue 讨论或联系我们。
+欢迎贡献、问题报告和建议！
 
-## 许可证
+## 📄 许可证
 
 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件。
 
 ---
 
-**由 CyberGoDev 团队用 ❤️ 打造**
+**用心为 Go 社区打造** ❤️ | 如果这个项目对您有帮助，请给它一个 ⭐️ Star！

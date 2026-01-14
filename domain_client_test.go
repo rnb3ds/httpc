@@ -1,8 +1,11 @@
 package httpc_test
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -1117,5 +1120,363 @@ func TestDomainClient_RealWorldScenario(t *testing.T) {
 
 	if !loginCalled || !apiCalled {
 		t.Error("Expected both login and API endpoints to be called")
+	}
+}
+
+// ============================================================================
+// DOWNLOAD TESTS - File downloads with automatic state management
+// ============================================================================
+
+func TestDomainClient_DownloadFile_Basic(t *testing.T) {
+	content := []byte("test file content")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write(content)
+	}))
+	defer server.Close()
+
+	client, err := httpc.NewDomain(server.URL)
+	if err != nil {
+		t.Fatalf("NewDomain error = %v", err)
+	}
+	defer client.Close()
+
+	tmpFile := filepath.Join(os.TempDir(), "test_download_basic.txt")
+	defer os.Remove(tmpFile)
+
+	result, err := client.DownloadFile("/file.txt", tmpFile)
+	if err != nil {
+		t.Fatalf("DownloadFile error = %v", err)
+	}
+
+	if result.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", result.StatusCode)
+	}
+
+	if result.BytesWritten != int64(len(content)) {
+		t.Errorf("Expected %d bytes, got %d", len(content), result.BytesWritten)
+	}
+
+	data, err := os.ReadFile(tmpFile)
+	if err != nil {
+		t.Fatalf("ReadFile error = %v", err)
+	}
+
+	if string(data) != string(content) {
+		t.Errorf("File content mismatch, got %s", string(data))
+	}
+}
+
+func TestDomainClient_DownloadFile_WithAutoHeaders(t *testing.T) {
+	content := []byte("test content with headers")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader != "Bearer test-token" {
+			t.Errorf("Expected Authorization header, got %s", authHeader)
+		}
+
+		customHeader := r.Header.Get("X-Custom")
+		if customHeader != "test-value" {
+			t.Errorf("Expected X-Custom header, got %s", customHeader)
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write(content)
+	}))
+	defer server.Close()
+
+	client, err := httpc.NewDomain(server.URL)
+	if err != nil {
+		t.Fatalf("NewDomain error = %v", err)
+	}
+	defer client.Close()
+
+	err = client.SetHeader("Authorization", "Bearer test-token")
+	if err != nil {
+		t.Fatalf("SetHeader error = %v", err)
+	}
+
+	err = client.SetHeader("X-Custom", "test-value")
+	if err != nil {
+		t.Fatalf("SetHeader error = %v", err)
+	}
+
+	tmpFile := filepath.Join(os.TempDir(), "test_download_headers.txt")
+	defer os.Remove(tmpFile)
+
+	_, err = client.DownloadFile("/file.txt", tmpFile)
+	if err != nil {
+		t.Fatalf("DownloadFile error = %v", err)
+	}
+
+	data, _ := os.ReadFile(tmpFile)
+	if string(data) != string(content) {
+		t.Errorf("File content mismatch")
+	}
+}
+
+func TestDomainClient_DownloadFile_WithAutoCookies(t *testing.T) {
+	content := []byte("test content with cookies")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie("session")
+		if err != nil {
+			t.Errorf("Expected session cookie, got error = %v", err)
+		}
+
+		if cookie.Value != "test-session-value" {
+			t.Errorf("Expected cookie value 'test-session-value', got %s", cookie.Value)
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write(content)
+	}))
+	defer server.Close()
+
+	client, err := httpc.NewDomain(server.URL)
+	if err != nil {
+		t.Fatalf("NewDomain error = %v", err)
+	}
+	defer client.Close()
+
+	err = client.SetCookie(&http.Cookie{
+		Name:  "session",
+		Value: "test-session-value",
+	})
+	if err != nil {
+		t.Fatalf("SetCookie error = %v", err)
+	}
+
+	tmpFile := filepath.Join(os.TempDir(), "test_download_cookies.txt")
+	defer os.Remove(tmpFile)
+
+	_, err = client.DownloadFile("/file.txt", tmpFile)
+	if err != nil {
+		t.Fatalf("DownloadFile error = %v", err)
+	}
+
+	data, _ := os.ReadFile(tmpFile)
+	if string(data) != string(content) {
+		t.Errorf("File content mismatch")
+	}
+}
+
+func TestDomainClient_DownloadFile_FullURL(t *testing.T) {
+	content := []byte("test full url download")
+	called := false
+
+	server1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("Server1 should not be called")
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server1.Close()
+
+	server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+		w.Write(content)
+	}))
+	defer server2.Close()
+
+	client, err := httpc.NewDomain(server1.URL)
+	if err != nil {
+		t.Fatalf("NewDomain error = %v", err)
+	}
+	defer client.Close()
+
+	tmpFile := filepath.Join(os.TempDir(), "test_download_fullurl.txt")
+	defer os.Remove(tmpFile)
+
+	result, err := client.DownloadFile(server2.URL+"/file.txt", tmpFile)
+	if err != nil {
+		t.Fatalf("DownloadFile error = %v", err)
+	}
+
+	if !called {
+		t.Error("Server2 should have been called for full URL")
+	}
+
+	if result.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", result.StatusCode)
+	}
+
+	data, _ := os.ReadFile(tmpFile)
+	if string(data) != string(content) {
+		t.Errorf("File content mismatch")
+	}
+}
+
+func TestDomainClient_DownloadFile_WithPathOptions(t *testing.T) {
+	tests := []struct {
+		name           string
+		path           string
+		expectedCalled bool
+	}{
+		{"relative path", "/files/doc.pdf", true},
+		{"relative path without leading slash", "files/doc.pdf", true},
+		{"empty path", "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte("content"))
+			}))
+			defer server.Close()
+
+			client, _ := httpc.NewDomain(server.URL)
+			defer client.Close()
+
+			tmpFile := filepath.Join(os.TempDir(), "test_path_"+tt.name+".txt")
+			defer os.Remove(tmpFile)
+
+			_, err := client.DownloadFile(tt.path, tmpFile)
+			if err != nil {
+				t.Fatalf("DownloadFile error = %v", err)
+			}
+
+			if tt.expectedCalled && !called {
+				t.Error("Expected server to be called")
+			}
+		})
+	}
+}
+
+func TestDomainClient_DownloadWithOptions_Progress(t *testing.T) {
+	content := []byte(strings.Repeat("x", 1024*10)) // 10KB
+	progressCalls := 0
+	var lastProgress int64
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+		w.WriteHeader(http.StatusOK)
+		w.Write(content)
+	}))
+	defer server.Close()
+
+	client, err := httpc.NewDomain(server.URL)
+	if err != nil {
+		t.Fatalf("NewDomain error = %v", err)
+	}
+	defer client.Close()
+
+	tmpFile := filepath.Join(os.TempDir(), "test_download_progress.txt")
+	defer os.Remove(tmpFile)
+
+	opts := httpc.DefaultDownloadOptions(tmpFile)
+	opts.ProgressCallback = func(downloaded, total int64, speed float64) {
+		progressCalls++
+		lastProgress = downloaded
+	}
+
+	result, err := client.DownloadWithOptions("/file.bin", opts)
+	if err != nil {
+		t.Fatalf("DownloadWithOptions error = %v", err)
+	}
+
+	if result.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", result.StatusCode)
+	}
+
+	if progressCalls == 0 {
+		t.Error("Progress callback was not called")
+	}
+
+	if lastProgress != int64(len(content)) {
+		t.Errorf("Expected final progress %d, got %d", len(content), lastProgress)
+	}
+}
+
+func TestDomainClient_DownloadWithOptions_Overwrite(t *testing.T) {
+	initialContent := []byte("initial content")
+	updatedContent := []byte("updated content")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write(updatedContent)
+	}))
+	defer server.Close()
+
+	client, err := httpc.NewDomain(server.URL)
+	if err != nil {
+		t.Fatalf("NewDomain error = %v", err)
+	}
+	defer client.Close()
+
+	tmpFile := filepath.Join(os.TempDir(), "test_download_overwrite.txt")
+	defer os.Remove(tmpFile)
+
+	os.WriteFile(tmpFile, initialContent, 0644)
+
+	opts := httpc.DefaultDownloadOptions(tmpFile)
+	opts.Overwrite = true
+
+	result, err := client.DownloadWithOptions("/file.txt", opts)
+	if err != nil {
+		t.Fatalf("DownloadWithOptions error = %v", err)
+	}
+
+	if result.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", result.StatusCode)
+	}
+
+	data, _ := os.ReadFile(tmpFile)
+	if string(data) != string(updatedContent) {
+		t.Errorf("Expected updated content, got %s", string(data))
+	}
+}
+
+func TestDomainClient_DownloadWithOptions_Resume(t *testing.T) {
+	fullContent := []byte(strings.Repeat("x", 1024*10)) // 10KB
+	partialContent := fullContent[:5*1024]               // First 5KB
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rangeHeader := r.Header.Get("Range")
+		if rangeHeader != "" {
+			// Range request: return the remaining content
+			w.Header().Set("Content-Range", "bytes 5120-10239/10240")
+			w.WriteHeader(http.StatusPartialContent)
+			w.Write(fullContent[5*1024:])
+		} else {
+			// Normal request: return partial content
+			w.WriteHeader(http.StatusOK)
+			w.Write(partialContent)
+		}
+	}))
+	defer server.Close()
+
+	client, err := httpc.NewDomain(server.URL)
+	if err != nil {
+		t.Fatalf("NewDomain error = %v", err)
+	}
+	defer client.Close()
+
+	tmpFile := filepath.Join(os.TempDir(), "test_download_resume.txt")
+	defer os.Remove(tmpFile)
+
+	os.WriteFile(tmpFile, partialContent, 0644)
+
+	opts := httpc.DefaultDownloadOptions(tmpFile)
+	opts.ResumeDownload = true
+
+	result, err := client.DownloadWithOptions("/file.bin", opts)
+	if err != nil {
+		t.Fatalf("DownloadWithOptions error = %v", err)
+	}
+
+	if result.StatusCode != http.StatusPartialContent {
+		t.Errorf("Expected status 206, got %d", result.StatusCode)
+	}
+
+	if !result.Resumed {
+		t.Error("Expected Resumed to be true")
+	}
+
+	data, _ := os.ReadFile(tmpFile)
+	if len(data) != len(fullContent) {
+		t.Errorf("Expected %d bytes, got %d", len(fullContent), len(data))
 	}
 }

@@ -2,6 +2,8 @@
 
 This guide covers all configuration options for HTTPC clients.
 
+> **Prerequisite**: This guide assumes you understand the [Client Setup pattern](getting-started.md#common-patterns) from the Getting Started guide.
+
 ## Table of Contents
 
 - [Default Configuration](#default-configuration)

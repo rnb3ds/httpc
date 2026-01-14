@@ -20,7 +20,7 @@ func parseCookieHeader(cookieHeader string) []*http.Cookie {
 			if i > start {
 				pair := trimSpace(cookieHeader[start:i])
 				if pair != "" {
-					if idx := strings.IndexByte(pair, '='); idx > 0 && idx < len(pair)-1 {
+					if idx := strings.IndexByte(pair, '='); idx > 0 {
 						name := trimSpaceRight(pair[:idx])
 						value := trimSpaceLeft(pair[idx+1:])
 
@@ -61,16 +61,25 @@ func trimSpace(s string) string {
 
 // trimSpaceLeft trims leading spaces without allocation.
 func trimSpaceLeft(s string) string {
-	for len(s) > 0 && s[0] == ' ' {
-		s = s[1:]
+	i := 0
+	for i < len(s) && s[i] == ' ' {
+		i++
 	}
-	return s
+	return s[i:]
 }
 
 // trimSpaceRight trims trailing spaces without allocation.
 func trimSpaceRight(s string) string {
-	for len(s) > 0 && s[len(s)-1] == ' ' {
-		s = s[:len(s)-1]
+	if len(s) == 0 {
+		return s
 	}
-	return s
+	// Find last non-space character
+	i := len(s) - 1
+	for i >= 0 && s[i] == ' ' {
+		i--
+	}
+	if i < 0 {
+		return ""
+	}
+	return s[:i+1]
 }

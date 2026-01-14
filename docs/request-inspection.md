@@ -2,6 +2,8 @@
 
 This document explains how to inspect the actual HTTP request that was sent, including headers and cookies.
 
+> **Prerequisite**: This is an advanced debugging guide. Ensure you're familiar with [basic patterns](getting-started.md#common-patterns) and [request options](request-options.md) first.
+
 ## Overview
 
 When making HTTP requests, you may need to verify what was actually sent to the server. The `Result` struct provides access to request information including headers and cookies.

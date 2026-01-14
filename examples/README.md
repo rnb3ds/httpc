@@ -2,6 +2,8 @@
 
 Comprehensive, production-ready examples for the httpc library. Learn by doing!
 
+---
+
 ## 📁 Structure
 
 ```
@@ -18,16 +20,6 @@ examples/
 - Package-level functions vs client instances
 - Basic JSON handling
 - When to use what
-
-```go
-// Simplest possible request
-resp, err := httpc.Get("https://api.example.com/data")
-
-// With JSON
-resp, err := httpc.Post("https://api.example.com/users",
-    httpc.WithJSON(user),
-)
-```
 
 ## 🎯 Core Features (15 minutes)
 
@@ -165,20 +157,60 @@ go run -tags examples examples/03_advanced/concurrent_requests.go
 10. ✅ **03_advanced/domain_client.go** - State management
 11. ✅ **03_advanced/rest_api_client.go** - Production patterns
 
-## 💡 Tips
-
-- **Start with 01_quickstart** - Don't skip the basics!
-- **Run examples** - See them in action
-- **Modify examples** - Best way to learn
-- **Check comments** - Detailed explanations included
-- **Use reliable endpoints** - Examples use httpbin.org and echo.hoppscotch.io
-
 ## 🔗 Additional Resources
 
 - **[Main README](../README.md)** - Library overview
 - **[Getting Started Guide](../docs/getting-started.md)** - Detailed tutorial
 - **[API Documentation](../docs)** - Complete reference
 - **[Configuration Guide](../docs/configuration.md)** - Advanced configuration
+
+---
+
+
+## 💡 Disclaimer & Acknowledgments
+
+### Third-Party Testing Services
+
+The examples in this directory use publicly available testing endpoints provided by open-source projects for demonstration purposes only:
+
+#### 1. Hoppscotch
+- **Testing Endpoint**: `https://echo.hoppscotch.io`
+- **Project**: [Hoppscotch - Open-source API development ecosystem](https://hoppscotch.io)
+- **Repository**: [github.com/hoppscotch/hoppscotch](https://github.com/hoppscotch/hoppscotch)
+- **License**: [Hoppscotch License](https://github.com/hoppscotch/hoppscotch/blob/main/LICENSE)
+
+**Usage in Examples**:
+- Client configuration demonstrations
+- Request/response testing
+- HTTP method examples
+
+#### 2. Postman httpbin
+- **Testing Endpoint**: `https://httpbin.org`
+- **Project**: [httpbin - HTTP Request & Response Service](https://httpbin.org)
+- **Repository**: [github.com/postmanlabs/httpbin](https://github.com/postmanlabs/httpbin)
+- **License**: [https://github.com/postmanlabs/httpbin/blob/master/LICENSE](https://github.com/postmanlabs/httpbin/blob/master/LICENSE)
+
+**Usage in Examples**:
+- Request testing and validation
+- Response inspection
+- Header and cookie handling
+- Status code testing
+
+### Important Notes
+
+**For Learners and Developers:**
+- ✅ These endpoints are provided free of charge by their respective projects
+- ✅ They are publicly available for testing and educational purposes
+- ⚠️ **Rate Limits**: Both services may impose rate limits or availability restrictions
+- ⚠️ **Not for Production**: Replace with your own API endpoints in production applications
+- ⚠️ **Service Availability**: These services may experience downtime or changes
+
+**Legal Disclaimer:**
+- These testing services are used solely for demonstrating httpc library capabilities
+- Examples are provided "as is" without warranty of any kind
+
+**Our Gratitude:**
+We extend our sincere thanks to the **Hoppscotch** and **Postman httpbin** teams for providing these valuable testing resources to the developer community. Their contributions have significantly simplified the API testing and training for developers.
 
 ---
 

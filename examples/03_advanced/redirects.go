@@ -40,7 +40,7 @@ func example1AutoFollow() {
 	defer client.Close()
 
 	// This URL redirects to the final destination
-	resp, err := client.Get("http://httpbin.org/redirect/3")
+	resp, err := client.Get("https://httpbin.org/redirect/3")
 	if err != nil {
 		log.Printf("Error: %v\n", err)
 		return
@@ -65,7 +65,7 @@ func example2NoFollow() {
 	defer client.Close()
 
 	// Get the redirect response without following
-	resp, err := client.Get("http://httpbin.org/redirect/1")
+	resp, err := client.Get("https://httpbin.org/redirect/1")
 	if err != nil {
 		log.Printf("Error: %v\n", err)
 		return
@@ -92,7 +92,7 @@ func example3MaxRedirects() {
 	defer client.Close()
 
 	// This will fail because it tries to redirect 3 times
-	resp, err := client.Get("http://httpbin.org/redirect/3")
+	resp, err := client.Get("https://httpbin.org/redirect/3")
 	if err != nil {
 		fmt.Printf("Expected error: %v\n", err)
 	} else {
@@ -100,7 +100,7 @@ func example3MaxRedirects() {
 	}
 
 	// This will succeed because it only redirects 2 times
-	resp, err = client.Get("http://httpbin.org/redirect/2")
+	resp, err = client.Get("https://httpbin.org/redirect/2")
 	if err != nil {
 		log.Printf("Error: %v\n", err)
 		return
@@ -121,7 +121,7 @@ func example4PerRequestControl() {
 	defer client.Close()
 
 	// Override to not follow redirects for this specific request
-	resp, err := client.Get("http://httpbin.org/redirect/1",
+	resp, err := client.Get("https://httpbin.org/redirect/1",
 		httpc.WithFollowRedirects(false),
 	)
 	if err != nil {
@@ -133,7 +133,7 @@ func example4PerRequestControl() {
 		resp.StatusCode(), resp.Meta.RedirectCount)
 
 	// Override max redirects for this specific request
-	resp, err = client.Get("http://httpbin.org/redirect/5",
+	resp, err = client.Get("https://httpbin.org/redirect/5",
 		httpc.WithMaxRedirects(3),
 	)
 	if err != nil {
@@ -143,7 +143,7 @@ func example4PerRequestControl() {
 	}
 
 	// Normal request follows all redirects
-	resp, err = client.Get("http://httpbin.org/redirect/2")
+	resp, err = client.Get("https://httpbin.org/redirect/2")
 	if err != nil {
 		log.Printf("Error: %v\n", err)
 		return
@@ -164,7 +164,7 @@ func example5RedirectChain() {
 	defer client.Close()
 
 	// Follow multiple redirects and track the chain
-	resp, err := client.Get("http://httpbin.org/redirect/3")
+	resp, err := client.Get("https://httpbin.org/redirect/3")
 	if err != nil {
 		log.Printf("Error: %v\n", err)
 		return
@@ -193,7 +193,7 @@ func example6ManualHandling() {
 	}
 	defer client.Close()
 
-	currentURL := "http://httpbin.org/redirect/3"
+	currentURL := "https://httpbin.org/redirect/3"
 	redirectCount := 0
 	maxRedirects := 5
 

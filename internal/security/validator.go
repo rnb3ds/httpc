@@ -239,7 +239,11 @@ func (v *Validator) validateRequestSize(body any) error {
 		size = int64(len(v))
 	case []byte:
 		size = int64(len(v))
+	case url.Values:
+		size = int64(len(v.Encode()))
 	default:
+		// For complex types (FormData, io.Reader, etc.), size validation
+		// occurs during request serialization in the request processor
 		return nil
 	}
 
