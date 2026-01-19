@@ -4,7 +4,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/cybergodev/httpc"
@@ -61,7 +60,7 @@ func simpleGET() {
 	// No need to create a client - just call httpc.Get()
 	resp, err := httpc.Get("https://echo.hoppscotch.io")
 	if err != nil {
-		log.Printf("Error: %v\n", err)
+		fmt.Printf("Error: %v\n", err)
 		return
 	}
 
@@ -84,14 +83,14 @@ func postJSON() {
 		httpc.WithJSON(user),
 	)
 	if err != nil {
-		log.Printf("Error: %v\n", err)
+		fmt.Printf("Error: %v\n", err)
 		return
 	}
 
 	// Parse JSON response
 	var result APIResponse
 	if err := resp.JSON(&result); err != nil {
-		log.Printf("Failed to parse JSON: %v\n", err)
+		fmt.Printf("Failed to parse JSON: %v\n", err)
 		return
 	}
 
@@ -107,7 +106,7 @@ func useClientInstance() {
 	// Create a client with default configuration
 	client, err := httpc.New()
 	if err != nil {
-		log.Printf("Failed to create client: %v\n", err)
+		fmt.Printf("Failed to create client: %v\n", err)
 		return
 	}
 	defer client.Close() // Always close the client
@@ -119,13 +118,13 @@ func useClientInstance() {
 		httpc.WithTimeout(10*time.Second),
 	)
 	if err != nil {
-		log.Printf("Error: %v\n", err)
+		fmt.Printf("Error: %v\n", err)
 		return
 	}
 
 	var result APIResponse
 	if err := resp.JSON(&result); err != nil {
-		log.Printf("Failed to parse JSON: %v\n", err)
+		fmt.Printf("Failed to parse JSON: %v\n", err)
 		return
 	}
 
@@ -148,7 +147,7 @@ func putRequest() {
 		httpc.WithBearerToken("your-token-here"),
 	)
 	if err != nil {
-		log.Printf("Error: %v\n", err)
+		fmt.Printf("Error: %v\n", err)
 		return
 	}
 
@@ -165,7 +164,7 @@ func deleteRequest() {
 		httpc.WithHeader("X-Request-ID", "delete-123"),
 	)
 	if err != nil {
-		log.Printf("Error: %v\n", err)
+		fmt.Printf("Error: %v\n", err)
 		return
 	}
 

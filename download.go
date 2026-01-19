@@ -173,7 +173,7 @@ const (
 var systemPaths = []string{
 	"/etc/", "/sys/", "/proc/", "/dev/", "/boot/", "/root/",
 	"/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/",
-	"c:/windows/", "c:/system32/", "c:/program files/", "c:/programdata/", "c:/boot/",
+	"c:/windows/", "c:/system32/", "c:/program files/", "c:/programdata/",
 	"/library/", "/system/", "/applications/",
 }
 

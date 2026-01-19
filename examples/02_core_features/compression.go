@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/cybergodev/httpc"
 )
@@ -27,7 +28,7 @@ func main() {
 	fmt.Printf("   Status: %d\n", resp.StatusCode())
 	fmt.Printf("   Content-Encoding: %s\n", resp.Response.Headers.Get("Content-Encoding"))
 	fmt.Printf("   Decompressed body length: %d bytes\n", len(resp.Body()))
-	fmt.Printf("   Body preview: %.100s...\n\n", resp.Body())
+	fmt.Printf("   Body preview: %.200s...\n\n", resp.Body())
 
 	// Example 2: Deflate decompression
 	// Note: Some servers may not properly support deflate encoding
@@ -40,7 +41,7 @@ func main() {
 	fmt.Printf("   Status: %d\n", resp2.StatusCode())
 	fmt.Printf("   Content-Encoding: %s\n", resp2.Response.Headers.Get("Content-Encoding"))
 	fmt.Printf("   Decompressed body length: %d bytes\n", len(resp2.Body()))
-	fmt.Printf("   Body preview: %.100s...\n\n", resp2.Body())
+	fmt.Printf("   Body preview: \n%.200s...\n\n", strings.Trim(resp2.Body(), "\n"))
 
 	// Example 3: Without compression
 	fmt.Println("3. Without compression (no Accept-Encoding header):")
@@ -52,7 +53,7 @@ func main() {
 	fmt.Printf("   Status: %d\n", resp3.StatusCode())
 	fmt.Printf("   Content-Encoding: %s\n", resp3.Response.Headers.Get("Content-Encoding"))
 	fmt.Printf("   Body length: %d bytes\n", len(resp3.Body()))
-	fmt.Printf("   Body preview: %.100s...\n\n", resp3.Body())
+	fmt.Printf("   Body preview: %.200s...\n\n", resp3.Body())
 
 	fmt.Println("\n[OK] All compression examples completed successfully!")
 	fmt.Println("\nNote:")

@@ -7,6 +7,63 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ---
 
+## v1.3.6 - Code Quality, Cross-Platform Compatibility & Documentation (2026-01-19)
+
+### Security
+- **Fixed SSRF Protection Cross-Platform Compatibility**: Replaced Windows-incompatible `syscall.RawConn.Control` implementation with cross-platform DNS resolution validation
+  - `validateAddressBeforeDial()` now performs comprehensive address validation before connection
+  - Validates all resolved IPs for domain names (defense against DNS rebinding attacks)
+  - Consistent behavior across Windows, Linux, and macOS
+- **Enhanced Validation**: Direct IP validation for IP address targets, DNS resolution with full IP range checking
+
+### Performance
+- **Code Deduplication**: Removed ~30 lines of duplicate string trimming code by using `strings.TrimSpace`
+- **Helper Functions**: Added `isValidHeaderByte()` for byte-based header validation
+- **Optimized Imports**: Removed unused imports (`syscall`, `strings`)
+
+### Code Quality
+- **Fixed Race Conditions**:
+  - `prepareManagedOptions()` now holds read lock for entire operation
+  - Previously acquired lock twice separately, allowing state to change between reads
+- **Improved Default Client Safety**:
+  - `getDefaultClient()` properly checks for nil after loading
+  - Simplified `SetDefaultClient()` by removing confusing custom implementation check logic
+- **Standard Library Usage**:
+  - Replaced custom `pathJoin` with `path.Join` from stdlib
+  - Replaced custom trim functions with `strings.TrimSpace`
+  - Replaced `fmt.Sprintf` with `strconv.Itoa/FormatInt` for faster integer conversions
+- **Removed Unused Code**:
+  - Eliminated `autoManage` field (always `true` with no way to toggle)
+  - Removed `done` channel (only closed, never used for synchronization)
+  - Removed redundant `isValidHeaderChar` function
+  - Cleaned up `systemPaths` list
+- **Simplified Methods**:
+  - Streamlined `doRequest()` by removing unnecessary context extraction
+  - Simplified `RoundTrip()` method in transport
+  - Reduced complexity in download method implementations
+
+### Bug Fixes
+- **DomainClient Documentation**: Fixed inaccurate example claiming domain restriction enforcement
+  - Clarified that full URLs bypass domain restriction (by design for flexibility)
+  - Added best practice guidance for developers
+- **Error Handling**: Fixed ignored error from `url.Parse(dc.baseURL)`
+- **Parameter Naming**: Renamed `path` to `pathStr` to avoid naming conflict with package alias
+
+### Documentation
+- **Enhanced Example Code** :
+  - Updated `demonstrateSecureConfig()` with better error handling
+  - Added error messages for RFC 2544 benchmark network environments
+  - Added Scenario 7 for private/reserved network configuration
+  - Changed example URLs to `httpbin.org` (more reliable)
+- **Validation Package**: Exported `IsValidHeaderChar()` for cross-package use
+- **Deprecation Handling**: Removed deprecation notice from `isValidHeaderChar()` (used internally)
+
+### API Changes
+- **Backward Compatible**: All changes are backward compatible except for `Html()` removal
+- No breaking changes to public APIs (except deprecated method removal)
+
+---
+
 ## v1.3.5 - Documentation, Code Quality & Performance Enhancement (2026-01-14)
 
 ### Documentation

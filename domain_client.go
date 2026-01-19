@@ -6,19 +6,19 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	stdpath "path"
 	"sync"
 
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
 type DomainClient struct {
-	client     Client
-	baseURL    string
-	domain     string
-	mu         sync.RWMutex
-	cookies    map[string]*http.Cookie // name -> cookie
-	headers    map[string]string       // key -> value
-	autoManage bool
+	client  Client
+	baseURL string
+	domain  string
+	mu      sync.RWMutex
+	cookies map[string]*http.Cookie
+	headers map[string]string
 }
 
 func NewDomain(baseURL string, config ...*Config) (*DomainClient, error) {
@@ -46,12 +46,11 @@ func NewDomain(baseURL string, config ...*Config) (*DomainClient, error) {
 	}
 
 	return &DomainClient{
-		client:     client,
-		baseURL:    baseURL,
-		domain:     parsedURL.Hostname(),
-		cookies:    make(map[string]*http.Cookie),
-		headers:    make(map[string]string),
-		autoManage: true,
+		client:  client,
+		baseURL: baseURL,
+		domain:  parsedURL.Hostname(),
+		cookies: make(map[string]*http.Cookie),
+		headers: make(map[string]string),
 	}, nil
 }
 
@@ -83,34 +82,24 @@ func (dc *DomainClient) Options(path string, options ...RequestOption) (*Result,
 	return dc.request("OPTIONS", path, options...)
 }
 
-// DownloadFile downloads a file from the given path to the specified file path.
-// The path is relative to the domain's base URL or can be a full URL.
-// Automatic state management (cookies/headers) is applied during download.
 func (dc *DomainClient) DownloadFile(path string, filePath string, options ...RequestOption) (*DownloadResult, error) {
 	fullURL := dc.buildURL(path)
 
 	managedOptions := dc.prepareManagedOptions()
 	allOptions := append(managedOptions, options...)
 
-	if dc.autoManage {
-		dc.captureRequestOptions(options)
-	}
+	dc.captureRequestOptions(options)
 
 	return dc.client.DownloadFile(fullURL, filePath, allOptions...)
 }
 
-// DownloadWithOptions downloads a file with custom download options.
-// The path is relative to the domain's base URL or can be a full URL.
-// Automatic state management (cookies/headers) is applied during download.
 func (dc *DomainClient) DownloadWithOptions(path string, downloadOpts *DownloadOptions, options ...RequestOption) (*DownloadResult, error) {
 	fullURL := dc.buildURL(path)
 
 	managedOptions := dc.prepareManagedOptions()
 	allOptions := append(managedOptions, options...)
 
-	if dc.autoManage {
-		dc.captureRequestOptions(options)
-	}
+	dc.captureRequestOptions(options)
 
 	return dc.client.DownloadWithOptions(fullURL, downloadOpts, allOptions...)
 }
@@ -121,28 +110,26 @@ func (dc *DomainClient) request(method, path string, options ...RequestOption) (
 	managedOptions := dc.prepareManagedOptions()
 	allOptions := append(managedOptions, options...)
 
-	if dc.autoManage {
-		dc.captureRequestOptions(options)
-	}
+	dc.captureRequestOptions(options)
 
 	result, err := dc.client.Request(context.Background(), method, fullURL, allOptions...)
 	if err != nil {
 		return nil, err
 	}
 
-	if result != nil && dc.autoManage {
+	if result != nil {
 		dc.updateFromResult(result)
 	}
 
 	return result, nil
 }
 
-func (dc *DomainClient) buildURL(path string) string {
-	if path == "" {
+func (dc *DomainClient) buildURL(pathStr string) string {
+	if pathStr == "" {
 		return dc.baseURL
 	}
 
-	parsedURL, err := url.Parse(path)
+	parsedURL, err := url.Parse(pathStr)
 	if err == nil && parsedURL.Scheme != "" && parsedURL.Host != "" {
 		// Validate URL scheme for security
 		// Only allow http and https schemes to prevent potential SSRF attacks
@@ -150,35 +137,23 @@ func (dc *DomainClient) buildURL(path string) string {
 			// Reject URLs with disallowed schemes (file:, data:, javascript:, etc.)
 			return dc.baseURL
 		}
-		return path
+		return pathStr
 	}
 
-	baseURL, _ := url.Parse(dc.baseURL)
-	baseURL.Path = pathJoin(baseURL.Path, path)
+	baseURL, err := url.Parse(dc.baseURL)
+	if err != nil {
+		return dc.baseURL
+	}
+	baseURL.Path = stdpath.Join(baseURL.Path, pathStr)
 	return baseURL.String()
-}
-
-func pathJoin(base, path string) string {
-	if base == "" {
-		if path[0] == '/' {
-			return path
-		}
-		return "/" + path
-	}
-	if path == "" {
-		return base
-	}
-	if path[0] == '/' {
-		return base + path
-	}
-	return base + "/" + path
 }
 
 func (dc *DomainClient) prepareManagedOptions() []RequestOption {
 	dc.mu.RLock()
+	defer dc.mu.RUnlock()
+
 	cookieCount := len(dc.cookies)
 	headerCount := len(dc.headers)
-	dc.mu.RUnlock()
 
 	if cookieCount == 0 && headerCount == 0 {
 		return nil
@@ -187,20 +162,16 @@ func (dc *DomainClient) prepareManagedOptions() []RequestOption {
 	options := make([]RequestOption, 0, 2)
 
 	if cookieCount > 0 {
-		dc.mu.RLock()
-		cookies := make([]http.Cookie, 0, len(dc.cookies))
+		cookies := make([]http.Cookie, 0, cookieCount)
 		for _, cookie := range dc.cookies {
 			cookies = append(cookies, *cookie)
 		}
-		dc.mu.RUnlock()
 		options = append(options, WithCookies(cookies))
 	}
 
 	if headerCount > 0 {
-		dc.mu.RLock()
-		headersCopy := make(map[string]string, len(dc.headers))
+		headersCopy := make(map[string]string, headerCount)
 		maps.Copy(headersCopy, dc.headers)
-		dc.mu.RUnlock()
 		options = append(options, WithHeaderMap(headersCopy))
 	}
 
@@ -244,7 +215,6 @@ func (dc *DomainClient) updateFromResult(result *Result) {
 	dc.mu.Lock()
 	defer dc.mu.Unlock()
 
-	// Update cookies from response
 	if result.Response != nil && len(result.Response.Cookies) > 0 {
 		for _, cookie := range result.Response.Cookies {
 			if cookie != nil {
@@ -252,9 +222,6 @@ func (dc *DomainClient) updateFromResult(result *Result) {
 			}
 		}
 	}
-
-	// Note: Headers are not automatically updated from response headers
-	// Only cookies are managed automatically from server responses
 }
 
 func (dc *DomainClient) SetHeader(key, value string) error {

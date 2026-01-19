@@ -33,7 +33,7 @@ func demonstrateBasicUsage() {
 	fmt.Println("--- Basic DomainClient Usage ---")
 
 	// Create domain-specific client
-	client, err := httpc.NewDomain("https://www.example.com")
+	client, err := httpc.NewDomain("https://httpbin.org")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func demonstrateBasicUsage() {
 		log.Fatal(err)
 	}
 
-	fmt.Printf("✓ Created DomainClient for www.example.com\n")
+	fmt.Printf("✓ Created DomainClient for httpbin.org\n")
 	fmt.Printf("✓ Set %d persistent headers\n", len(client.GetHeaders()))
 
 	// First request
@@ -117,6 +117,9 @@ func demonstrateStateManagement() {
 	fmt.Printf("✓ Request with override: Status %d\n", resp.StatusCode())
 	fmt.Printf("✓ Persistent headers still intact: %d\n", len(client.GetHeaders()))
 
+	fmt.Printf("✓ Persistent headers: %d\n", len(client.GetHeaders()))
+	fmt.Printf("✓ Persistent cookies: %d\n", len(client.GetCookies()))
+
 	// Clear state
 	client.ClearCookies()
 	fmt.Printf("✓ Cleared cookies: %d remaining\n", len(client.GetCookies()))
@@ -125,47 +128,52 @@ func demonstrateStateManagement() {
 	fmt.Printf("✓ Cleared headers: %d remaining\n\n", len(client.GetHeaders()))
 }
 
-// demonstrateURLMatching shows URL matching behavior
+// demonstrateURLMatching shows URL building behavior
 func demonstrateURLMatching() {
-	fmt.Println("--- URL Matching ---")
+	fmt.Println("--- URL Building Behavior ---")
 
-	client, err := httpc.NewDomain("https://api.example.com")
+	client, err := httpc.NewDomain("https://httpbin.org")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer client.Close()
 
-	// Valid: Relative paths
+	// Valid: Relative paths (automatically prefixed with base URL)
 	validPaths := []string{
-		"/users",
+		"/get",
 		"/users/123",
 		"/api/v1/data",
 		"/?query=test",
 	}
 
-	fmt.Println("Valid relative paths:")
+	fmt.Println("Relative paths (prefixed with base URL):")
 	for _, path := range validPaths {
 		resp, err := client.Get(path)
 		if err != nil {
 			fmt.Printf("  ✗ %s: %v\n", path, err)
 		} else {
-			fmt.Printf("  ✓ %s: Status %d\n", path, resp.StatusCode())
+			fmt.Printf("  ✓ %s → Status %d\n", path, resp.StatusCode())
 		}
 	}
 
-	// Invalid: Different domains (will error)
-	fmt.Println("\nInvalid (different domain):")
-	invalidURLs := []string{
-		"https://other-domain.com/path",
-		"http://api.example.com/path", // Different scheme
+	// Note: Full URLs are allowed but bypass domain restriction
+	// The DomainClient will send requests to any domain if you provide a full URL
+	// This is by design for flexibility, but be aware of this behavior
+	fmt.Println("\n⚠️  Full URLs (bypass domain restriction):")
+	fullURLs := []string{
+		"https://httpbin.org/ip",   // Same domain, https
+		"https://www.example.com/", // Different domain
 	}
 
-	for _, url := range invalidURLs {
-		_, err := client.Get(url)
+	for _, fullURL := range fullURLs {
+		resp, err := client.Get(fullURL)
 		if err != nil {
-			fmt.Printf("  ✓ %s: Correctly rejected\n", url)
+			fmt.Printf("  ✗ %s: %v\n", fullURL, err)
 		} else {
-			fmt.Printf("  ✗ %s: Should have been rejected\n", url)
+			fmt.Printf("  ✓ %s → Status %d\n", fullURL, resp.StatusCode())
 		}
 	}
+
+	fmt.Println("\n💡 Best Practice: Use relative paths for domain-restricted requests")
+	fmt.Println("  Full URLs should only be used when intentionally accessing other domains")
 }

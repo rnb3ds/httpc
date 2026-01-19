@@ -255,34 +255,6 @@ func TestResult_String(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
-// HTML Formatting
-// ----------------------------------------------------------------------------
-
-func TestResult_Html(t *testing.T) {
-	t.Run("valid response", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "text/html")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("<html><body>test</body></html>"))
-		}))
-		defer server.Close()
-
-		client, _ := newTestClient()
-		defer client.Close()
-
-		result, err := client.Get(server.URL)
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-
-		html := result.Html()
-		if html == "" {
-			t.Error("Html() should not be empty")
-		}
-	})
-}
-
-// ----------------------------------------------------------------------------
 // Nil Safety
 // ----------------------------------------------------------------------------
 

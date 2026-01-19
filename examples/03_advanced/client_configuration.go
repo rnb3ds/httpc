@@ -5,7 +5,6 @@ package main
 import (
 	"crypto/tls"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/cybergodev/httpc"
@@ -39,13 +38,14 @@ func demonstrateDefaultConfig() {
 	// Create client with default settings
 	client, err := httpc.New()
 	if err != nil {
-		log.Fatal(err)
+		fmt.Println(err)
+		return
 	}
 	defer client.Close()
 
-	resp, err := client.Get("https://echo.hoppscotch.io")
+	resp, err := client.Get("https://httpbin.org/get")
 	if err != nil {
-		log.Printf("Error: %v\n", err)
+		fmt.Printf("Error: %v\n", err)
 		return
 	}
 
@@ -65,13 +65,28 @@ func demonstrateSecureConfig() {
 	// Create client with enhanced security
 	client, err := httpc.NewSecure()
 	if err != nil {
-		log.Fatal(err)
+		fmt.Println(err)
+		return
 	}
 	defer client.Close()
 
-	resp, err := client.Get("https://echo.hoppscotch.io")
+	// Note: If you're in a network environment that uses RFC 2544 benchmark testing
+	// network (198.18.0.0/15) or other reserved IP ranges, the SSRF protection in
+	// SecureConfig will block connections. In such cases, use DefaultConfig() or
+	// create a custom config with AllowPrivateIPs: true.
+	//
+	// Example of custom config for such environments:
+	// config := httpc.SecureConfig()
+	// config.AllowPrivateIPs = true
+	// client, _ := httpc.New(config)
+
+	resp, err := client.Get("https://httpbin.org/get")
 	if err != nil {
-		log.Printf("Error: %v\n", err)
+		fmt.Printf("Error: %v\n", err)
+		fmt.Println("\nNote: This error may occur if you're in a network environment")
+		fmt.Println("that uses reserved IP ranges (e.g., RFC 2544 benchmark network).")
+		fmt.Println("For such environments, consider using DefaultConfig() or setting")
+		fmt.Println("AllowPrivateIPs: true in your configuration.\n ")
 		return
 	}
 
@@ -91,13 +106,14 @@ func demonstratePerformanceConfig() {
 	// Create client optimized for performance
 	client, err := httpc.NewPerformance()
 	if err != nil {
-		log.Fatal(err)
+		fmt.Println(err)
+		return
 	}
 	defer client.Close()
 
-	resp, err := client.Get("https://echo.hoppscotch.io")
+	resp, err := client.Get("https://httpbin.org/get")
 	if err != nil {
-		log.Printf("Error: %v\n", err)
+		fmt.Printf("Error: %v\n", err)
 		return
 	}
 
@@ -125,7 +141,8 @@ func demonstrateCustomConfig() {
 
 	client, err := httpc.New(config)
 	if err != nil {
-		log.Fatal(err)
+		fmt.Println(err)
+		return
 	}
 	defer client.Close()
 
@@ -133,7 +150,7 @@ func demonstrateCustomConfig() {
 		httpc.WithQuery("custom", "config"),
 	)
 	if err != nil {
-		log.Printf("Error: %v\n", err)
+		fmt.Printf("Error: %v\n", err)
 		return
 	}
 
@@ -194,4 +211,13 @@ func demonstrateConfigComparison() {
 	perfConfig.MaxConnsPerHost = 100
 	fmt.Println("  High connection limits, optimized pooling")
 	fmt.Println("  Use case: Web scraping, bulk operations\n ")
+
+	// Scenario 7: Special network environments (e.g., RFC 2544 benchmark testing)
+	fmt.Println("Scenario 7: Special Network Environments")
+	fmt.Println("For networks using reserved IP ranges (e.g., 198.18.0.0/15):")
+	specialConfig := httpc.SecureConfig()
+	specialConfig.AllowPrivateIPs = true // Enable for private/reserved networks
+	fmt.Println("  Start with SecureConfig()")
+	fmt.Println("  Set AllowPrivateIPs: true")
+	fmt.Println("  Use case: Corporate intranets, testing environments, VPN networks\n ")
 }
