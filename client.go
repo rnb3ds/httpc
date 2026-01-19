@@ -160,32 +160,7 @@ func (c *clientImpl) Options(url string, options ...RequestOption) (*Result, err
 
 // doRequest executes an HTTP request with the given method and options.
 func (c *clientImpl) doRequest(method, url string, options []RequestOption) (*Result, error) {
-	// Extract context from options if provided
-	var ctx context.Context
-	if len(options) > 0 {
-		tempReq := &Request{Context: context.Background()}
-		for _, opt := range options {
-			if opt != nil {
-				_ = opt(tempReq)
-			}
-		}
-		if tempReq.Context != nil {
-			ctx = tempReq.Context
-		}
-	}
-
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	if len(options) == 0 {
-		resp, err := c.engine.Request(ctx, method, url)
-		if err != nil {
-			return nil, err
-		}
-		return convertEngineResponseToResult(resp), nil
-	}
-
+	ctx := context.Background()
 	engineOptions := convertRequestOptions(options)
 	resp, err := c.engine.Request(ctx, method, url, engineOptions...)
 	if err != nil {
@@ -235,7 +210,12 @@ func getDefaultClient() (Client, error) {
 		return nil, defaultInitErr
 	}
 
-	return defaultClient.Load(), nil
+	client := defaultClient.Load()
+	if client == nil {
+		return nil, fmt.Errorf("default client not initialized")
+	}
+
+	return client, nil
 }
 
 // CloseDefaultClient closes the default client and resets it.
@@ -316,7 +296,7 @@ func Options(url string, options ...RequestOption) (*Result, error) {
 
 // SetDefaultClient sets a custom client as the default for package-level functions.
 // The previous default client is closed automatically.
-// Returns an error if the client is nil or not created with httpc.New().
+// Only *clientImpl instances created by this package are supported.
 func SetDefaultClient(client Client) error {
 	if client == nil {
 		return fmt.Errorf("cannot set nil client as default")
@@ -324,7 +304,7 @@ func SetDefaultClient(client Client) error {
 
 	impl, ok := client.(*clientImpl)
 	if !ok {
-		return fmt.Errorf("client must be created with httpc.New()")
+		return fmt.Errorf("only clients created by this package are supported")
 	}
 
 	defaultClientMu.Lock()

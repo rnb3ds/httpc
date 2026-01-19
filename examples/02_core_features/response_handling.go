@@ -204,12 +204,12 @@ func demonstrateFormatting(client httpc.Client) {
 	fmt.Println(resp.String())
 	fmt.Println()
 
-	// Html() - HTML-formatted output
-	fmt.Println("Html() format (first 200 chars):")
-	htmlOutput := resp.Html()
-	if len(htmlOutput) > 200 {
-		fmt.Println(htmlOutput[:200] + "...")
+	// Body() - Raw response body content
+	fmt.Println("Body() format (first 200 chars):")
+	bodyOutput := resp.Body()
+	if len(bodyOutput) > 200 {
+		fmt.Println(bodyOutput[:200] + "...")
 	} else {
-		fmt.Println(htmlOutput)
+		fmt.Println(bodyOutput)
 	}
 }

@@ -114,10 +114,14 @@ func ValidateHeaderKeyValue(key, value string) error {
 	return nil
 }
 
-// isValidHeaderChar checks if a character is valid in HTTP header names.
-func isValidHeaderChar(r rune) bool {
+// IsValidHeaderChar checks if a character is valid in HTTP header names.
+func IsValidHeaderChar(r rune) bool {
 	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
 		(r >= '0' && r <= '9') || r == '-'
+}
+
+func isValidHeaderChar(r rune) bool {
+	return IsValidHeaderChar(r)
 }
 
 // ValidateCookieName validates HTTP cookie names.

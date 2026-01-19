@@ -5,6 +5,8 @@ import (
 	"net"
 	"net/url"
 	"strings"
+
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 type Validator struct {
@@ -177,8 +179,7 @@ func (v *Validator) validateHeader(key, value string) error {
 		return fmt.Errorf("header key cannot be empty")
 	}
 
-	trimmedKey := strings.TrimSpace(key)
-	if len(trimmedKey) == 0 {
+	if strings.TrimSpace(key) == "" {
 		return fmt.Errorf("header key cannot be empty")
 	}
 
@@ -192,7 +193,7 @@ func (v *Validator) validateHeader(key, value string) error {
 
 	for i := range keyLen {
 		c := key[i]
-		if c < 0x20 || c == 0x7F || !isValidHeaderChar(rune(c)) {
+		if c < 0x20 || c == 0x7F || !validation.IsValidHeaderChar(rune(c)) {
 			return fmt.Errorf("header contains invalid characters")
 		}
 	}
@@ -254,7 +255,3 @@ func (v *Validator) validateRequestSize(body any) error {
 	return nil
 }
 
-func isValidHeaderChar(r rune) bool {
-	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-		(r >= '0' && r <= '9') || r == '-'
-}

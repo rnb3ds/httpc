@@ -3,7 +3,6 @@ package engine
 import (
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/cybergodev/httpc/internal/connection"
 )
@@ -97,6 +96,8 @@ func (t *Transport) GetRedirectChain() []string {
 
 // RoundTrip executes an HTTP round trip
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// The http.Client with Jar handles cookies automatically
+	// If there are manually set cookies, merge them with the jar
 	if t.httpClient.Jar != nil {
 		if requestCookies := req.Cookies(); len(requestCookies) > 0 {
 			existingCookies := t.httpClient.Jar.Cookies(req.URL)
@@ -127,29 +128,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 	}
 
-	resp, err := t.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("transport round trip failed: %w", err)
-	}
-
-	if t.httpClient.Jar != nil {
-		if cookies := t.httpClient.Jar.Cookies(req.URL); len(cookies) > 0 {
-			var cookieHeader strings.Builder
-			for i, c := range cookies {
-				if i > 0 {
-					cookieHeader.WriteString("; ")
-				}
-				cookieHeader.WriteString(c.Name)
-				cookieHeader.WriteString("=")
-				cookieHeader.WriteString(c.Value)
-			}
-			if resp != nil && resp.Request != nil {
-				resp.Request.Header.Set("Cookie", cookieHeader.String())
-			}
-		}
-	}
-
-	return resp, nil
+	return t.httpClient.Do(req)
 }
 
 // Close closes the transport and cleans up resources

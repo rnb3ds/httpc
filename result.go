@@ -204,10 +204,6 @@ func (r *Result) String() string {
 	return b.String()
 }
 
-func (r *Result) Html() string {
-	return r.Body()
-}
-
 func (r *Result) SaveToFile(filePath string) error {
 	if r == nil || r.Response == nil || r.Response.RawBody == nil {
 		return ErrResponseBodyEmpty

@@ -163,3 +163,8 @@ func isValidHeaderString(s string) bool {
 	}
 	return true
 }
+
+func isValidHeaderByte(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') || c == '-'
+}
