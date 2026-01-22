@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -170,11 +171,44 @@ const (
 	filePermissions = 0644
 )
 
-var systemPaths = []string{
-	"/etc/", "/sys/", "/proc/", "/dev/", "/boot/", "/root/",
-	"/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/",
-	"c:/windows/", "c:/system32/", "c:/program files/", "c:/programdata/",
-	"/library/", "/system/", "/applications/",
+// getSystemPaths returns platform-specific system paths that should be protected.
+func getSystemPaths() []string {
+	switch GetOS() {
+	case "windows":
+		return []string{
+			"c:\\windows\\", "c:\\system32\\",
+			"c:\\program files\\", "c:\\programdata\\",
+			"c:\\program files (x86)\\",
+			// Environment variables that typically point to system directories
+			"%systemroot%", "%windir%", "%programfiles%", "%programfiles(x86)%",
+		}
+	case "darwin":
+		return []string{
+			"/system/", "/library/", "/applications/",
+			"/usr/", "/bin/", "/sbin/", "/etc/", "/var/",
+		}
+	case "linux":
+		fallthrough
+	default:
+		return []string{
+			"/etc/", "/sys/", "/proc/", "/dev/", "/boot/", "/root/",
+			"/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/",
+			"/lib/", "/lib64/", "/run/", "/sys/fs/",
+		}
+	}
+}
+
+// GetOS returns the current operating system. Useful for testing.
+var GetOS = func() string {
+	return getOS()
+}
+
+func getOS() string {
+	// Check if the OS is Windows by looking at PATH separator
+	// This is a runtime check that works better than build tags for this case
+	// since the binary may be compiled for cross-platform use
+	// We'll use the runtime.GOOS as the primary method
+	return runtime.GOOS
 }
 
 func calculateSpeed(bytes int64, duration time.Duration) float64 {
@@ -251,18 +285,48 @@ func isSystemPath(path string) bool {
 		return true
 	}
 
-	cleanPath := strings.ToLower(filepath.Clean(absPath))
-	cleanPath = strings.ReplaceAll(cleanPath, "\\", "/")
+	cleanPath := filepath.Clean(absPath)
+
+	// On Windows, do case-insensitive comparison
+	// On Unix systems, do case-sensitive comparison
+	systemPaths := getSystemPaths()
 
 	for _, sysPath := range systemPaths {
-		if strings.HasPrefix(cleanPath, sysPath) {
+		// Handle environment variable patterns on Windows
+		if strings.HasPrefix(sysPath, "%") && runtime.GOOS == "windows" {
+			// Expand environment variables
+			expanded := os.ExpandEnv(sysPath)
+			if expanded != sysPath {
+				// Check if expanded path matches
+				if strings.HasPrefix(strings.ToLower(cleanPath), strings.ToLower(expanded)) {
+					return true
+				}
+			}
+		}
+
+		// Convert both paths to use the same separator for comparison
+		cleanPathForCompare := cleanPath
+		sysPathForCompare := sysPath
+
+		if runtime.GOOS == "windows" {
+			// Windows: case-insensitive, use backslashes
+			cleanPathForCompare = strings.ToLower(cleanPath)
+			cleanPathForCompare = strings.ReplaceAll(cleanPathForCompare, "/", "\\")
+			sysPathForCompare = strings.ToLower(sysPathForCompare)
+		} else {
+			// Unix: case-sensitive, use forward slashes
+			cleanPathForCompare = strings.ReplaceAll(cleanPathForCompare, "\\", "/")
+			sysPathForCompare = strings.ReplaceAll(sysPathForCompare, "\\", "/")
+		}
+
+		if strings.HasPrefix(cleanPathForCompare, sysPathForCompare) {
 			return true
 		}
 	}
+
 	return false
 }
 
-// FormatBytes formats bytes in human-readable format (e.g., "1.50 KB", "2.00 MB").
 func FormatBytes(bytes int64) string {
 	const unit = 1024
 	if bytes < unit {
@@ -281,7 +345,6 @@ func FormatBytes(bytes int64) string {
 	return fmt.Sprintf("%.2f %cB", float64(bytes)/float64(div), units[exp])
 }
 
-// FormatSpeed formats speed in human-readable format (e.g., "1.50 KB/s", "2.00 MB/s").
 func FormatSpeed(bytesPerSecond float64) string {
 	const unit = 1024.0
 	if bytesPerSecond < unit {

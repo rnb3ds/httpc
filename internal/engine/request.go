@@ -11,8 +11,20 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"reflect"
 	"strings"
 )
+
+type FormData struct {
+	Fields map[string]string
+	Files  map[string]*FileData
+}
+
+type FileData struct {
+	Filename    string
+	Content     []byte
+	ContentType string
+}
 
 type RequestProcessor struct {
 	config *Config
@@ -60,37 +72,77 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 		case io.Reader:
 			body = v
 		default:
-			if formData, ok := extractFormData(v); ok {
+			existingContentType := ""
+			if req.Headers != nil {
+				existingContentType = req.Headers["Content-Type"]
+			}
+
+			if existingContentType == "application/xml" {
+				xmlData, err := xml.Marshal(v)
+				if err != nil {
+					return nil, fmt.Errorf("marshal XML failed: %w", err)
+				}
+				body = bytes.NewReader(xmlData)
+				contentType = "application/xml"
+			} else if isFormData(v) {
 				var buf bytes.Buffer
 				writer := multipart.NewWriter(&buf)
 
-				for key, value := range formData.Fields {
-					if err := writer.WriteField(key, value); err != nil {
-						return nil, fmt.Errorf("write form field failed: %w", err)
+				fieldsVal := reflect.ValueOf(v).Elem().FieldByName("Fields")
+				filesVal := reflect.ValueOf(v).Elem().FieldByName("Files")
+
+				if fieldsVal.IsValid() && fieldsVal.Kind() == reflect.Map {
+					for _, key := range fieldsVal.MapKeys() {
+						value := fieldsVal.MapIndex(key).String()
+						if err := writer.WriteField(key.String(), value); err != nil {
+							return nil, fmt.Errorf("write form field failed: %w", err)
+						}
 					}
 				}
 
-				for fieldName, fileData := range formData.Files {
-					var part io.Writer
-					var err error
+				if filesVal.IsValid() && filesVal.Kind() == reflect.Map {
+					for _, key := range filesVal.MapKeys() {
+						fileDataValue := filesVal.MapIndex(key)
+						if !fileDataValue.IsValid() || fileDataValue.IsNil() {
+							continue
+						}
+						fileDataElem := fileDataValue.Elem()
 
-					if fileData.ContentType != "" {
-						h := make(textproto.MIMEHeader)
-						h.Set("Content-Disposition",
-							fmt.Sprintf(`form-data; name="%s"; filename="%s"`,
-								escapeQuotes(fieldName), escapeQuotes(fileData.Filename)))
-						h.Set("Content-Type", fileData.ContentType)
-						part, err = writer.CreatePart(h)
-					} else {
-						part, err = writer.CreateFormFile(fieldName, fileData.Filename)
-					}
+						filename := ""
+						var content []byte
+						contentType := ""
 
-					if err != nil {
-						return nil, fmt.Errorf("create form file failed: %w", err)
-					}
+						if f := fileDataElem.FieldByName("Filename"); f.IsValid() && f.Kind() == reflect.String {
+							filename = f.String()
+						}
+						if f := fileDataElem.FieldByName("Content"); f.IsValid() && f.Kind() == reflect.Slice {
+							content = f.Bytes()
+						}
+						if f := fileDataElem.FieldByName("ContentType"); f.IsValid() && f.Kind() == reflect.String {
+							contentType = f.String()
+						}
 
-					if _, err := part.Write(fileData.Content); err != nil {
-						return nil, fmt.Errorf("write file content failed: %w", err)
+						var part io.Writer
+						var err error
+
+						if contentType != "" {
+							h := make(textproto.MIMEHeader)
+							h.Set("Content-Disposition",
+								fmt.Sprintf(`form-data; name="%s"; filename="%s"`,
+									escapeQuotes(key.String()), escapeQuotes(filename)))
+							h.Set("Content-Type", contentType)
+							part, err = writer.CreatePart(h)
+						} else {
+							part, err = writer.CreateFormFile(key.String(), filename)
+						}
+
+						if err != nil {
+							return nil, fmt.Errorf("create form file failed: %w", err)
+						}
+
+						if _, err := part.Write(content); err != nil {
+							return nil, fmt.Errorf("write file content failed: %w", err)
+						}
 					}
 				}
 
@@ -101,26 +153,12 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 				body = &buf
 				contentType = writer.FormDataContentType()
 			} else {
-				existingContentType := ""
-				if req.Headers != nil {
-					existingContentType = req.Headers["Content-Type"]
+				jsonData, err := json.Marshal(v)
+				if err != nil {
+					return nil, fmt.Errorf("marshal JSON failed: %w", err)
 				}
-
-				if existingContentType == "application/xml" {
-					xmlData, err := xml.Marshal(v)
-					if err != nil {
-						return nil, fmt.Errorf("marshal XML failed: %w", err)
-					}
-					body = bytes.NewReader(xmlData)
-					contentType = "application/xml"
-				} else {
-					jsonData, err := json.Marshal(v)
-					if err != nil {
-						return nil, fmt.Errorf("marshal JSON failed: %w", err)
-					}
-					body = bytes.NewReader(jsonData)
-					contentType = "application/json"
-				}
+				body = bytes.NewReader(jsonData)
+				contentType = "application/json"
 			}
 		}
 	}
@@ -161,60 +199,26 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 	return httpReq, nil
 }
 
-type FormDataExtractor struct {
-	Fields map[string]string
-	Files  map[string]*FileDataExtractor
-}
-
-type FileDataExtractor struct {
-	Filename    string
-	Content     []byte
-	ContentType string
-}
-
-func extractFormData(v any) (*FormDataExtractor, bool) {
-	jsonData, err := json.Marshal(v)
-	if err != nil {
-		return nil, false
-	}
-
-	var result struct {
-		Fields map[string]string `json:"Fields"`
-		Files  map[string]struct {
-			Filename    string `json:"Filename"`
-			Content     []byte `json:"Content"`
-			ContentType string `json:"ContentType"`
-		} `json:"Files"`
-	}
-
-	if err := json.Unmarshal(jsonData, &result); err != nil {
-		return nil, false
-	}
-
-	if result.Fields == nil && result.Files == nil {
-		return nil, false
-	}
-
-	extractor := &FormDataExtractor{
-		Fields: result.Fields,
-		Files:  make(map[string]*FileDataExtractor, len(result.Files)),
-	}
-
-	if extractor.Fields == nil {
-		extractor.Fields = make(map[string]string)
-	}
-
-	for k, v := range result.Files {
-		extractor.Files[k] = &FileDataExtractor{
-			Filename:    v.Filename,
-			Content:     v.Content,
-			ContentType: v.ContentType,
-		}
-	}
-
-	return extractor, true
-}
-
 func escapeQuotes(s string) string {
 	return strings.ReplaceAll(s, `"`, `\"`)
+}
+
+func isFormData(v any) bool {
+	if v == nil {
+		return false
+	}
+	t := reflect.TypeOf(v)
+	if t.Kind() != reflect.Ptr {
+		return false
+	}
+	t = t.Elem()
+	if t.Kind() != reflect.Struct {
+		return false
+	}
+	if t.Name() != "FormData" {
+		return false
+	}
+	_, hasFields := t.FieldByName("Fields")
+	_, hasFiles := t.FieldByName("Files")
+	return hasFields && hasFiles
 }

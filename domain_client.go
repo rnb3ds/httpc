@@ -277,7 +277,7 @@ func (dc *DomainClient) SetCookie(cookie *http.Cookie) error {
 	if cookie == nil {
 		return fmt.Errorf("cookie cannot be nil")
 	}
-	if err := validateCookie(cookie); err != nil {
+	if err := validation.ValidateCookie(cookie); err != nil {
 		return fmt.Errorf("invalid cookie: %w", err)
 	}
 
@@ -293,7 +293,7 @@ func (dc *DomainClient) SetCookies(cookies []*http.Cookie) error {
 		if cookie == nil {
 			return fmt.Errorf("cookie at index %d is nil", i)
 		}
-		if err := validateCookie(cookie); err != nil {
+		if err := validation.ValidateCookie(cookie); err != nil {
 			return fmt.Errorf("invalid cookie at index %d: %w", i, err)
 		}
 	}

@@ -23,6 +23,7 @@ const (
 	maxUserAgentLen     = 512                // User-Agent header limit
 	maxHeaderKeyLen     = 256                // Header key length limit
 	maxHeaderValueLen   = 8192               // Header value length limit
+	maxURLLen           = 2048               // Maximum URL length
 )
 
 type Config struct {
@@ -30,6 +31,9 @@ type Config struct {
 	MaxIdleConns    int
 	MaxConnsPerHost int
 	ProxyURL        string
+
+	// System proxy configuration
+	EnableSystemProxy bool // Automatically detect and use system proxy settings
 
 	TLSConfig           *tls.Config
 	MinTLSVersion       uint16
@@ -49,6 +53,10 @@ type Config struct {
 	MaxRedirects    int
 	EnableHTTP2     bool
 	EnableCookies   bool
+
+	// DNS configuration
+	EnableDoH   bool          // Enable DNS-over-HTTPS
+	DoHCacheTTL time.Duration // DoH cache TTL (default: 5 minutes)
 }
 
 type RequestOption func(*Request) error
@@ -162,9 +170,4 @@ func isValidHeaderString(s string) bool {
 		}
 	}
 	return true
-}
-
-func isValidHeaderByte(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-		(c >= '0' && c <= '9') || c == '-'
 }

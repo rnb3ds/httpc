@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/cybergodev/httpc/internal/netutil"
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
@@ -121,13 +122,13 @@ func (v *Validator) validateHost(host string) error {
 	}
 
 	// Check for localhost variations
-	if isLocalhost(hostname) {
+	if netutil.IsLocalhost(hostname) {
 		return fmt.Errorf("localhost access blocked for security")
 	}
 
 	// If hostname is an IP address, validate it directly
 	if ip := net.ParseIP(hostname); ip != nil {
-		if isPrivateOrReservedIP(ip) {
+		if err := netutil.ValidateIP(ip); err != nil {
 			return fmt.Errorf("private/reserved IP blocked: %s", ip.String())
 		}
 		return nil
@@ -136,41 +137,6 @@ func (v *Validator) validateHost(host string) error {
 	// For domain names, we rely on the connection pool's DNS resolution validation
 	// This provides defense in depth against DNS rebinding attacks
 	return nil
-}
-
-// isLocalhost detects localhost variations.
-func isLocalhost(hostname string) bool {
-	switch hostname {
-	case "localhost", "127.0.0.1", "::1", "0.0.0.0", "::":
-		return true
-	}
-
-	if len(hostname) > 4 && hostname[:4] == "127." {
-		return true
-	}
-
-	if len(hostname) > 10 && strings.HasPrefix(strings.ToLower(hostname), "localhost.") {
-		return true
-	}
-
-	return false
-}
-
-// isPrivateOrReservedIP checks for private and reserved IP ranges.
-func isPrivateOrReservedIP(ip net.IP) bool {
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
-		return true
-	}
-
-	if ip4 := ip.To4(); ip4 != nil {
-		if ip4[0] >= 240 || ip4[0] == 0 || (ip4[0] == 100 && (ip4[1]&0xC0) == 64) ||
-			(ip4[0] == 198 && (ip4[1] == 18 || ip4[1] == 19)) {
-			return true
-		}
-	}
-
-	return false
 }
 
 func (v *Validator) validateHeader(key, value string) error {

@@ -7,6 +7,55 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ---
 
+## v1.3.7 - DNS-over-HTTPS, Proxy Detection & Code Quality (2026-01-22)
+
+### Added
+- **DNS-over-HTTPS (DoH) Resolver**: Encrypted DNS resolution with multiple providers (Cloudflare, Google, AliDNS)
+  - Built-in caching with configurable TTL (default: 5 minutes)
+  - Automatic fallback to system DNS when DoH fails
+  - Helps bypass DNS pollution and prevents DNS hijacking
+  - Configurable via `EnableDoH` and `DoHCacheTTL` options
+- **Configurable System Proxy Detection**: New `EnableSystemProxy` option for explicit control over automatic system proxy detection
+  - Supports Windows Registry, macOS system settings, and environment variables
+  - Proxy priority: Manual ProxyURL > System Proxy > Direct Connection
+  - Default: `false` (requires explicit opt-in)
+- **Cross-Platform System Proxy Detection**: Automatic detection across Windows, macOS, and Linux platforms
+  - Windows: Reads from Registry (`Internet Settings`)
+  - All platforms: Falls back to `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` env vars
+- **New `internal/netutil` Package**: Shared IP validation utilities
+  - `IsPrivateOrReservedIP()` for private/reserved IP detection
+  - `ValidateIP()` for SSRF protection
+  - `IsLocalhost()` for localhost detection
+  - Single source of truth for network security checks
+
+### Changed
+- **IP Validation Logic**: Consolidated duplicate IP validation code (~60 lines) into shared `netutil` package
+- **Cookie Validation**: Centralized in `internal/validation/common.go`, removed duplication from `public_options.go` and `domain_client.go`
+- **Cross-Platform Path Validation**: Enhanced `isSystemPath()` with platform-specific system paths for Windows, macOS, and Linux
+  - Environment variable expansion on Windows (`%SystemRoot%`, `%windir%`)
+  - Proper case-insensitive comparison on Windows, case-sensitive on Unix
+- **FormData Performance**: Replaced JSON serialization/deserialization with type reflection-based detection
+- **Constants**: Added `maxURLLen` constant, replaced hard-coded timeout values with named constants
+- **Metrics**: Removed unused `idleConns` field and `IdleConnections` metric
+
+### Fixed
+- **Windows Proxy Detection**: Replaced deprecated `syscall.StringToUTF16Ptr()` with `windows.UTF16PtrFromString()` from `golang.org/x/sys/windows`
+- **Dead Code**: Removed unused `isValidHeaderByte()` function from `types.go`
+
+### API Compatibility
+- **Breaking Change**: System proxy detection no longer automatic by default
+  - Set `EnableSystemProxy: true` to restore old behavior
+  - Code relying on implicit system proxy detection needs migration
+- **No Breaking Changes to Public API**: All modifications are internal refactoring except `EnableSystemProxy` default behavior
+
+### Impact
+- **Maintainability**: Reduced code duplication by ~150 lines through package consolidation
+- **Cross-Platform**: System path detection works correctly on Windows, macOS, and Linux
+- **Testability**: `GetOS` variable allows OS mocking for unit tests
+- **Security**: Consistent IP and cookie validation across all code paths
+
+---
+
 ## v1.3.6 - Code Quality, Cross-Platform Compatibility & Documentation (2026-01-19)
 
 ### Security

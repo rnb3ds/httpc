@@ -119,10 +119,11 @@ httpc.WithQueryMap(map[string]interface{}{"page": 1, "limit": 20})
 // 请求体
 httpc.WithJSON(data)              // JSON 请求体
 httpc.WithXML(data)               // XML 请求体
-httpc.WithForm(formData)          // 表单数据
+httpc.WithForm(formData)          // 表单数据（URL 编码）
+httpc.WithFormData(data)          // 多部分表单数据（用于文件上传）
 httpc.WithText("content")         // 纯文本
 httpc.WithBinary(data, "image/png")  // 二进制数据（带内容类型）
-httpc.WithFile("file", "doc.pdf", content)  // 文件上传
+httpc.WithFile("file", "doc.pdf", content)  // 单个文件上传
 
 // Cookies
 httpc.WithCookieString("session=abc123; token=xyz789")  // 解析 cookie 字符串
@@ -136,7 +137,7 @@ httpc.WithMaxRedirects(5)         // 限制最大重定向次数（0-50）
 
 // 超时和重试
 httpc.WithTimeout(30*time.Second)
-httpc.WithMaxRetries(3)
+httpc.WithMaxRetries(3)         // 允许 0-10 次重试
 httpc.WithContext(ctx)
 
 // 组合多个选项
@@ -209,15 +210,19 @@ fmt.Printf("Body: %s\n", result.Body())
 fmt.Printf("Duration: %v\n", result.Meta.Duration)
 fmt.Printf("Attempts: %d\n", result.Meta.Attempts)
 
-// 使用 cookies
+// 使用响应 cookies
 cookie := result.GetCookie("session_id")
 if result.HasCookie("session_id") {
     fmt.Println("找到 Session cookie")
 }
+responseCookies := result.ResponseCookies()  // 获取所有响应 cookies
 
 // 访问请求 cookies
-requestCookies := result.RequestCookies()
+requestCookies := result.RequestCookies()  // 获取所有请求 cookies
 requestCookie := result.GetRequestCookie("auth_token")
+
+// 结果的字符串表示
+fmt.Println(result.String())
 
 // 访问详细响应信息
 fmt.Printf("Content-Length: %d\n", result.Response.ContentLength)
@@ -246,10 +251,18 @@ fmt.Printf("原始编码: %s\n", result.Response.Headers.Get("Content-Encoding")
 **支持的编码：**
 - ✅ **gzip** - 完全支持（compress/gzip）
 - ✅ **deflate** - 完全支持（compress/flate）
+- ❌ **br** (Brotli) - 不支持
+- ❌ **compress** (LZW) - 不支持
 
 **注意：** 当服务器发送 `Content-Encoding` 头时，解压缩是自动的。库透明地处理这个过程，因此您始终接收解压缩后的内容。
 
 ### 文件下载
+
+文件下载包含内置的安全保护功能：
+- **UNC 路径阻止** - 防止访问 Windows 网络路径
+- **系统路径保护** - 阻止写入关键系统目录
+- **路径遍历检测** - 防止目录逃逸攻击
+- **恢复支持** - 自动恢复中断的下载
 
 ```go
 // 简单下载
@@ -300,6 +313,7 @@ client, err := httpc.NewPerformance()
 client, err := httpc.NewMinimal()
 
 // Testing - 开发测试宽松配置（切勿用于生产环境）
+// 警告：禁用 TLS 验证，降低安全性
 client, err := httpc.New(httpc.TestingConfig())
 ```
 
@@ -466,6 +480,8 @@ cookie := &http.Cookie{
 result, err = httpc.Get("https://api.example.com/data", httpc.WithCookie(cookie))
 ```
 
+**注意：** 对于需要跨多个请求自动管理 cookie 状态的情况，建议使用 `DomainClient`，它会自动处理 cookie 持久化。
+
 **[📖 Cookie API 参考](docs/cookie-api-reference.md)**
 
 ### Domain Client - 自动状态管理
@@ -494,6 +510,12 @@ resp2, err := client.Get("/profile")  // Cookies 自动包含
 // 设置持久 headers（用于所有请求）
 client.SetHeader("Authorization", "Bearer "+token)
 client.SetHeader("x-api-key", "your-api-key")
+
+// 一次设置多个 headers
+err = client.SetHeaders(map[string]string{
+    "Authorization": "Bearer " + token,
+    "x-api-key": "your-api-key",
+})
 
 // 所有后续请求包含这些 headers
 resp3, err := client.Get("/data")  // Headers + Cookies 自动包含
@@ -588,8 +610,96 @@ result, err = client.DownloadWithOptions("/files/large-file.zip", opts)
 - **线程安全** - 所有操作都是 goroutine 安全的
 - **手动控制** - 完整的 API 用于检查和修改状态
 - **文件下载支持** - 下载文件时自动状态管理（cookies/headers）
+- **自动启用 Cookie** - `NewDomain()` 会自动启用 cookies，无论配置如何
 
 **[📖 查看完整示例](examples/03_advanced/domain_client.go)**
+
+### 代理配置
+
+HTTPC 支持灵活的代理配置，提供三种模式：
+
+#### 代理优先级
+
+```
+优先级 1: ProxyURL（手动代理）        - 最高优先级
+优先级 2: EnableSystemProxy（自动检测系统代理）
+优先级 3: 直连（无代理）              - 默认
+```
+
+#### 1. 手动代理（最高优先级）
+
+直接指定代理 URL。此优先级高于所有其他代理设置。
+
+```go
+// 直接指定代理
+config := &httpc.Config{
+    ProxyURL: "http://127.0.0.1:1234",
+    Timeout:  30 * time.Second,
+}
+client, err := httpc.New(config)
+
+// SOCKS5 代理
+config := &httpc.Config{
+    ProxyURL: "socks5://127.0.0.1:1080",
+}
+client, err := httpc.New(config)
+
+// 带认证的企业代理
+config := &httpc.Config{
+    ProxyURL: "http://user:pass@proxy.company.com:8080",
+}
+client, err := httpc.New(config)
+```
+
+#### 2. 系统代理检测
+
+启用自动检测系统代理设置。包括：
+
+- **Windows**: 从注册表读取 (`HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Internet Settings`)
+- **macOS**: 从系统偏好设置读取
+- **Linux**: 从系统设置读取
+- **所有平台**: 回退到环境变量 (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`)
+
+```go
+// 启用系统代理检测
+config := &httpc.Config{
+    EnableSystemProxy: true,
+}
+client, err := httpc.New(config)
+// 如果配置了系统代理，将自动使用
+```
+
+**环境变量：**
+
+```bash
+# 通过环境变量设置代理
+export HTTP_PROXY=http://127.0.0.1:1234
+export HTTPS_PROXY=http://127.0.0.1:1234
+export NO_PROXY=localhost,127.0.0.1,.local.com
+
+# 然后在代码中启用系统代理检测
+config := &httpc.Config{
+    EnableSystemProxy: true,  // 将从环境变量读取
+}
+```
+
+#### 3. 直连模式（默认）
+
+当 `ProxyURL` 为空且 `EnableSystemProxy` 为 `false` 时，直接连接而不使用任何代理。
+
+```go
+// 默认行为 - 直连
+client, err := httpc.New()
+
+// 显式直连
+config := &httpc.Config{
+    // ProxyURL 为空（默认）
+    // EnableSystemProxy 为 false（默认）
+}
+client, err := httpc.New(config)
+```
+
+**[📖 查看完整示例](examples/03_advanced/proxy_configuration.go)**
 
 ## 安全与性能
 

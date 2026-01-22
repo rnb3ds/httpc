@@ -4,6 +4,8 @@ import (
 	"net"
 	"strings"
 	"testing"
+
+	"github.com/cybergodev/httpc/internal/netutil"
 )
 
 // ============================================================================
@@ -90,9 +92,9 @@ func TestIsPrivateOrReservedIP(t *testing.T) {
 			if ip == nil {
 				t.Fatalf("Failed to parse IP: %s", tt.ip)
 			}
-			result := isPrivateOrReservedIP(ip)
+			result := netutil.IsPrivateOrReservedIP(ip)
 			if result != tt.expected {
-				t.Errorf("isPrivateOrReservedIP(%s) = %v, want %v", tt.ip, result, tt.expected)
+				t.Errorf("IsPrivateOrReservedIP(%s) = %v, want %v", tt.ip, result, tt.expected)
 			}
 		})
 	}

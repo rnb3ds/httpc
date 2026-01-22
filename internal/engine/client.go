@@ -47,6 +47,9 @@ type Config struct {
 	MaxConnsPerHost       int
 	ProxyURL              string
 
+	// System proxy configuration
+	EnableSystemProxy bool // Automatically detect and use system proxy settings
+
 	TLSConfig           any
 	MinTLSVersion       uint16
 	MaxTLSVersion       uint16
@@ -71,6 +74,10 @@ type Config struct {
 
 	CookieJar     any
 	EnableCookies bool
+
+	// DNS configuration
+	EnableDoH   bool
+	DoHCacheTTL time.Duration
 }
 
 type Request struct {
@@ -130,8 +137,11 @@ func NewClient(config *Config) (*Client, error) {
 	connConfig.InsecureSkipVerify = config.InsecureSkipVerify
 	connConfig.EnableHTTP2 = config.EnableHTTP2
 	connConfig.ProxyURL = config.ProxyURL
+	connConfig.EnableSystemProxy = config.EnableSystemProxy
 	connConfig.CookieJar = config.CookieJar
 	connConfig.AllowPrivateIPs = config.AllowPrivateIPs
+	connConfig.EnableDoH = config.EnableDoH
+	connConfig.DoHCacheTTL = config.DoHCacheTTL
 
 	client.connectionPool, err = connection.NewPoolManager(connConfig)
 	if err != nil {

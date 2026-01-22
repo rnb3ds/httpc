@@ -120,10 +120,11 @@ httpc.WithQueryMap(map[string]interface{}{"page": 1, "limit": 20})
 // Request Body
 httpc.WithJSON(data)              // JSON body
 httpc.WithXML(data)               // XML body
-httpc.WithForm(formData)          // Form data
+httpc.WithForm(formData)          // Form data (URL-encoded)
+httpc.WithFormData(data)          // Multipart form data (for file uploads)
 httpc.WithText("content")         // Plain text
 httpc.WithBinary(data, "image/png")  // Binary data with content type
-httpc.WithFile("file", "doc.pdf", content)  // File upload
+httpc.WithFile("file", "doc.pdf", content)  // Single file upload
 
 // Cookies
 httpc.WithCookieString("session=abc123; token=xyz789")  // Parse cookie string
@@ -137,7 +138,7 @@ httpc.WithMaxRedirects(5)         // Limit maximum redirects (0-50)
 
 // Timeout & Retry
 httpc.WithTimeout(30*time.Second)
-httpc.WithMaxRetries(3)
+httpc.WithMaxRetries(3)         // 0-10 retries allowed
 httpc.WithContext(ctx)
 
 // Combine multiple options
@@ -210,15 +211,19 @@ fmt.Printf("Body: %s\n", result.Body())
 fmt.Printf("Duration: %v\n", result.Meta.Duration)
 fmt.Printf("Attempts: %d\n", result.Meta.Attempts)
 
-// Work with cookies
+// Work with response cookies
 cookie := result.GetCookie("session_id")
 if result.HasCookie("session_id") {
     fmt.Println("Session cookie found")
 }
+responseCookies := result.ResponseCookies()  // Get all response cookies
 
 // Access request cookies
-requestCookies := result.RequestCookies()
+requestCookies := result.RequestCookies()  // Get all request cookies
 requestCookie := result.GetRequestCookie("auth_token")
+
+// String representation of result
+fmt.Println(result.String())
 
 // Access detailed response information
 fmt.Printf("Content-Length: %d\n", result.Response.ContentLength)
@@ -247,10 +252,18 @@ fmt.Printf("Original encoding: %s\n", result.Response.Headers.Get("Content-Encod
 **Supported Encodings:**
 - ✅ **gzip** - Fully supported (compress/gzip)
 - ✅ **deflate** - Fully supported (compress/flate)
+- ❌ **br** (Brotli) - Not supported
+- ❌ **compress** (LZW) - Not supported
 
 **Note:** Decompression is automatic when the server sends a `Content-Encoding` header. The library handles this transparently, so you always receive decompressed content.
 
 ### File Download
+
+File downloads include built-in security protections:
+- **UNC path blocking** - Prevents access to Windows network paths
+- **System path protection** - Blocks writes to critical system directories
+- **Path traversal detection** - Prevents directory escape attacks
+- **Resume support** - Automatically resumes interrupted downloads
 
 ```go
 // Simple download
@@ -258,7 +271,7 @@ result, err := httpc.DownloadFile(
     "https://example.com/file.zip",
     "downloads/file.zip",
 )
-fmt.Printf("Downloaded: %s at %s\n", 
+fmt.Printf("Downloaded: %s at %s\n",
     httpc.FormatBytes(result.BytesWritten),
     httpc.FormatSpeed(result.AverageSpeed))
 
@@ -301,6 +314,7 @@ client, err := httpc.NewPerformance()
 client, err := httpc.NewMinimal()
 
 // Testing - Permissive for development (NEVER use in production)
+// WARNING: Disables TLS verification, reduces security
 client, err := httpc.New(httpc.TestingConfig())
 ```
 
@@ -467,6 +481,8 @@ cookie := &http.Cookie{
 result, err = httpc.Get("https://api.example.com/data", httpc.WithCookie(cookie))
 ```
 
+**Note:** For automatic cookie state management across multiple requests, consider using `DomainClient` which automatically handles cookie persistence.
+
 **[📖 Cookie API Reference](docs/cookie-api-reference.md)**
 
 ### Domain Client - Automatic State Management
@@ -495,6 +511,12 @@ resp2, err := client.Get("/profile")  // Cookies automatically included
 // Set persistent headers (sent with all requests)
 client.SetHeader("Authorization", "Bearer "+token)
 client.SetHeader("x-api-key", "your-api-key")
+
+// Set multiple headers at once
+err = client.SetHeaders(map[string]string{
+    "Authorization": "Bearer " + token,
+    "x-api-key": "your-api-key",
+})
 
 // All subsequent requests include these headers
 resp3, err := client.Get("/data")  // Headers + Cookies automatically included
@@ -589,8 +611,96 @@ result, err = client.DownloadWithOptions("/files/large-file.zip", opts)
 - **Per-Request Overrides** - Use `WithCookies()` and `WithHeaderMap()` to override for specific requests
 - **Thread-Safe** - All operations are goroutine-safe
 - **Manual Control** - Full API for inspecting and modifying state
+- **Automatic Cookie Enabling** - `NewDomain()` automatically enables cookies regardless of config
 
 **[📖 See full example](examples/03_advanced/domain_client.go)**
+
+### Proxy Configuration
+
+HTTPC supports flexible proxy configuration with three modes:
+
+#### Proxy Priority
+
+```
+Priority 1: ProxyURL (manual proxy)        - Highest priority
+Priority 2: EnableSystemProxy (auto-detect system proxy)
+Priority 3: Direct connection (no proxy)   - Default
+```
+
+#### 1. Manual Proxy (Highest Priority)
+
+Specify a proxy URL directly. This takes priority over all other proxy settings.
+
+```go
+// Direct proxy specification
+config := &httpc.Config{
+    ProxyURL: "http://127.0.0.1:1234",
+    Timeout:  30 * time.Second,
+}
+client, err := httpc.New(config)
+
+// SOCKS5 proxy
+config := &httpc.Config{
+    ProxyURL: "socks5://127.0.0.1:1080",
+}
+client, err := httpc.New(config)
+
+// Corporate proxy with authentication
+config := &httpc.Config{
+    ProxyURL: "http://user:pass@proxy.company.com:8080",
+}
+client, err := httpc.New(config)
+```
+
+#### 2. System Proxy Detection
+
+Enable automatic detection of system proxy settings. This includes:
+
+- **Windows**: Reads from Registry
+- **macOS**: Reads from System Preferences
+_- **Linux**: Reads from system settings
+- **All Platforms**: Falls back to environment variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`)
+
+```go
+// Enable system proxy detection
+config := &httpc.Config{
+    EnableSystemProxy: true,
+}
+client, err := httpc.New(config)
+// Will automatically use system proxy if configured
+```
+
+**Environment Variables:**
+
+```bash
+# Set proxy via environment variables
+export HTTP_PROXY=http://127.0.0.1:1234
+export HTTPS_PROXY=http://127.0.0.1:1234
+export NO_PROXY=localhost,127.0.0.1,.local.com
+
+# Then enable system proxy detection in code
+config := &httpc.Config{
+    EnableSystemProxy: true,
+}
+```
+
+#### 3. Direct Connection (Default)
+
+When `ProxyURL` is empty and `EnableSystemProxy` is `false`, connections are made directly without any proxy.
+
+```go
+// Default behavior - direct connection
+client, err := httpc.New()
+
+// Explicit direct connection
+config := &httpc.Config{
+    // ProxyURL is empty (default)
+    // EnableSystemProxy is false (default)
+}
+client, err := httpc.New(config)
+```
+
+**[📖 See full example](examples/03_advanced/proxy_configuration.go)**
 
 ## Security & Performance
 
