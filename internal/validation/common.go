@@ -2,6 +2,7 @@ package validation
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 )
 
@@ -145,5 +146,45 @@ func ValidateCookieValue(value string) error {
 			return fmt.Errorf("cookie value contains invalid characters")
 		}
 	}
+	return nil
+}
+
+// ValidateCookie performs comprehensive validation of an HTTP cookie including
+// name, value, domain, and path attributes.
+func ValidateCookie(cookie *http.Cookie) error {
+	if err := ValidateCookieName(cookie.Name); err != nil {
+		return err
+	}
+
+	if err := ValidateCookieValue(cookie.Value); err != nil {
+		return err
+	}
+
+	// Validate domain if set
+	if cookie.Domain != "" {
+		domainLen := len(cookie.Domain)
+		if domainLen > MaxCookieDomainLen {
+			return fmt.Errorf("cookie domain too long (max %d)", MaxCookieDomainLen)
+		}
+		for i, r := range cookie.Domain {
+			if r < 0x20 || r == 0x7F {
+				return fmt.Errorf("cookie domain contains invalid characters at position %d", i)
+			}
+		}
+	}
+
+	// Validate path if set
+	if cookie.Path != "" {
+		pathLen := len(cookie.Path)
+		if pathLen > MaxCookiePathLen {
+			return fmt.Errorf("cookie path too long (max %d)", MaxCookiePathLen)
+		}
+		for i, r := range cookie.Path {
+			if r < 0x20 || r == 0x7F {
+				return fmt.Errorf("cookie path contains invalid characters at position %d", i)
+			}
+		}
+	}
+
 	return nil
 }

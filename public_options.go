@@ -62,44 +62,6 @@ func WithXMLAccept() RequestOption {
 	return WithAccept("application/xml")
 }
 
-func validateCookie(cookie *http.Cookie) error {
-	if err := validation.ValidateCookieName(cookie.Name); err != nil {
-		return err
-	}
-
-	if err := validation.ValidateCookieValue(cookie.Value); err != nil {
-		return err
-	}
-
-	// Validate domain if set
-	if cookie.Domain != "" {
-		domainLen := len(cookie.Domain)
-		if domainLen > validation.MaxCookieDomainLen {
-			return fmt.Errorf("cookie domain too long (max %d)", validation.MaxCookieDomainLen)
-		}
-		for i, r := range cookie.Domain {
-			if r < 0x20 || r == 0x7F {
-				return fmt.Errorf("cookie domain contains invalid characters at position %d", i)
-			}
-		}
-	}
-
-	// Validate path if set
-	if cookie.Path != "" {
-		pathLen := len(cookie.Path)
-		if pathLen > validation.MaxCookiePathLen {
-			return fmt.Errorf("cookie path too long (max %d)", validation.MaxCookiePathLen)
-		}
-		for i, r := range cookie.Path {
-			if r < 0x20 || r == 0x7F {
-				return fmt.Errorf("cookie path contains invalid characters at position %d", i)
-			}
-		}
-	}
-
-	return nil
-}
-
 func WithBasicAuth(username, password string) RequestOption {
 	return func(r *Request) error {
 		if username == "" {
@@ -291,8 +253,8 @@ func WithTimeout(timeout time.Duration) RequestOption {
 		if timeout < 0 {
 			return fmt.Errorf("%w: cannot be negative", ErrInvalidTimeout)
 		}
-		if timeout > 30*time.Minute {
-			return fmt.Errorf("%w: exceeds 30 minutes", ErrInvalidTimeout)
+		if timeout > maxTimeout {
+			return fmt.Errorf("%w: exceeds %v", ErrInvalidTimeout, maxTimeout)
 		}
 		r.Timeout = timeout
 		return nil
@@ -367,7 +329,7 @@ func WithBinary(data []byte, contentType ...string) RequestOption {
 
 func WithCookie(cookie http.Cookie) RequestOption {
 	return func(r *Request) error {
-		if err := validateCookie(&cookie); err != nil {
+		if err := validation.ValidateCookie(&cookie); err != nil {
 			return fmt.Errorf("invalid cookie: %w", err)
 		}
 
@@ -390,7 +352,7 @@ func WithCookies(cookies []http.Cookie) RequestOption {
 		}
 
 		for i := range cookies {
-			if err := validateCookie(&cookies[i]); err != nil {
+			if err := validation.ValidateCookie(&cookies[i]); err != nil {
 				return fmt.Errorf("invalid cookie at index %d: %w", i, err)
 			}
 			r.Cookies = append(r.Cookies, cookies[i])
@@ -406,7 +368,7 @@ func WithCookieValue(name, value string) RequestOption {
 			Value: value,
 		}
 
-		if err := validateCookie(&cookie); err != nil {
+		if err := validation.ValidateCookie(&cookie); err != nil {
 			return err
 		}
 
@@ -438,7 +400,7 @@ func WithCookieString(cookieString string) RequestOption {
 		}
 
 		for i := range cookies {
-			if err := validateCookie(&cookies[i]); err != nil {
+			if err := validation.ValidateCookie(&cookies[i]); err != nil {
 				return fmt.Errorf("invalid cookie %s: %w", cookies[i].Name, err)
 			}
 			r.Cookies = append(r.Cookies, cookies[i])
