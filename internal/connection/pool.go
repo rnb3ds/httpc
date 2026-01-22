@@ -10,6 +10,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/cybergodev/httpc/internal/dns"
+	"github.com/cybergodev/httpc/internal/netutil"
+	"github.com/cybergodev/httpc/internal/proxy"
 )
 
 // PoolManager provides intelligent connection pool management with monitoring
@@ -17,9 +21,9 @@ type PoolManager struct {
 	config *Config
 
 	transport *http.Transport
+	dohResolver *dns.DoHResolver
 
 	activeConns   int64
-	idleConns     int64
 	totalConns    int64
 	rejectedConns int64
 
@@ -53,6 +57,9 @@ type Config struct {
 	EnableHTTP2 bool
 	ProxyURL    string
 
+	// System proxy configuration
+	EnableSystemProxy bool // Automatically detect and use system proxy settings
+
 	AllowPrivateIPs bool
 
 	DisableCompression bool
@@ -60,6 +67,10 @@ type Config struct {
 	ForceAttemptHTTP2  bool
 
 	CookieJar interface{}
+
+	// DNS configuration
+	EnableDoH        bool          // Enable DNS-over-HTTPS
+	DoHCacheTTL      time.Duration // DoH cache TTL
 }
 
 // HostStats tracks per-host connection statistics
@@ -76,7 +87,6 @@ type HostStats struct {
 // Metrics provides connection pool performance metrics
 type Metrics struct {
 	ActiveConnections   int64
-	IdleConnections     int64
 	TotalConnections    int64
 	RejectedConnections int64
 	ConnectionHitRate   float64
@@ -123,6 +133,11 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 		metrics: &Metrics{},
 	}
 
+	// Initialize DoH resolver if enabled
+	if config.EnableDoH {
+		pm.dohResolver = dns.NewDoHResolver(nil, config.DoHCacheTTL)
+	}
+
 	transport := &http.Transport{
 		DialContext:           pm.createDialer(),
 		TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
@@ -137,13 +152,28 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 		DisableCompression:    true, // Always disable automatic decompression - we handle it manually
 		DisableKeepAlives:     config.DisableKeepAlives,
 	}
+	// Configure proxy settings with priority:
+	// 1. Manual proxy URL (highest priority)
+	// 2. System proxy detection (if enabled)
+	// 3. Direct connection (no proxy)
 	if config.ProxyURL != "" {
+		// User explicitly specified a proxy URL - use it
 		proxyURL, err := url.Parse(config.ProxyURL)
 		if err != nil {
 			return nil, fmt.Errorf("invalid proxy URL: %w", err)
 		}
 		transport.Proxy = http.ProxyURL(proxyURL)
+	} else if config.EnableSystemProxy {
+		// No manual proxy, but system proxy detection is enabled
+		// Automatically detect system proxy settings (reads from Windows registry,
+		// macOS system settings, environment variables, etc.)
+		detector := proxy.NewDetector()
+		if proxyFunc := detector.GetProxyFunc(); proxyFunc != nil {
+			transport.Proxy = proxyFunc
+		}
+		// If proxyFunc is nil, transport.Proxy remains nil (direct connection)
 	}
+	// If neither condition is met, transport.Proxy remains nil (direct connection)
 
 	pm.transport = transport
 	return pm, nil
@@ -161,6 +191,56 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		startTime := time.Now()
 
+		// If DoH is enabled, resolve the address using DoH and dial the IP directly
+		if pm.dohResolver != nil {
+			host, port, err := net.SplitHostPort(address)
+			if err != nil {
+				host = address
+				port = "443"
+			}
+
+			// Use DoH resolver for DNS lookup
+			ips, err := pm.dohResolver.LookupIPAddr(ctx, host)
+			if err != nil {
+				atomic.AddInt64(&pm.rejectedConns, 1)
+				return nil, fmt.Errorf("DoH DNS resolution failed: %w", err)
+			}
+
+			// SSRF protection check
+			if !pm.config.AllowPrivateIPs {
+				for _, ip := range ips {
+					if err := netutil.ValidateIP(ip.IP); err != nil {
+						atomic.AddInt64(&pm.rejectedConns, 1)
+						return nil, fmt.Errorf("SSRF protection: %w", err)
+					}
+				}
+			}
+
+			// Try to connect to each resolved IP until one succeeds
+			var lastErr error
+			for _, ipAddr := range ips {
+				ipAddress := net.JoinHostPort(ipAddr.IP.String(), port)
+				conn, err := dialer.DialContext(ctx, network, ipAddress)
+				connTime := time.Since(startTime).Nanoseconds()
+				pm.updateConnectionMetrics(address, connTime, err == nil)
+
+				if err == nil {
+					atomic.AddInt64(&pm.totalConns, 1)
+					atomic.AddInt64(&pm.activeConns, 1)
+					return &trackedConn{
+						Conn: conn,
+						pm:   pm,
+						host: address,
+					}, nil
+				}
+				lastErr = err
+			}
+
+			atomic.AddInt64(&pm.rejectedConns, 1)
+			return nil, fmt.Errorf("connection failed after trying %d IPs: %w", len(ips), lastErr)
+		}
+
+		// Standard path without DoH
 		// Perform SSRF protection check before dialing if enabled
 		if !pm.config.AllowPrivateIPs {
 			if err := pm.validateAddressBeforeDial(address); err != nil {
@@ -200,7 +280,7 @@ func (pm *PoolManager) validateAddressBeforeDial(address string) error {
 
 	// If the address is already an IP, validate it directly
 	if ip := net.ParseIP(host); ip != nil {
-		return pm.validateResolvedIP(ip)
+		return netutil.ValidateIP(ip)
 	}
 
 	// For domain names, we need to resolve them first to check all potential IPs
@@ -214,25 +294,8 @@ func (pm *PoolManager) validateAddressBeforeDial(address string) error {
 
 	// Check all resolved IPs - if any point to a private/reserved address, block it
 	for _, ip := range ips {
-		if err := pm.validateResolvedIP(ip); err != nil {
+		if err := netutil.ValidateIP(ip); err != nil {
 			return fmt.Errorf("domain %s resolves to blocked address: %w", host, err)
-		}
-	}
-
-	return nil
-}
-
-// validateResolvedIP performs IP validation to prevent SSRF attacks.
-func (pm *PoolManager) validateResolvedIP(ip net.IP) error {
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
-		return fmt.Errorf("blocked IP: %s", ip.String())
-	}
-
-	if ip4 := ip.To4(); ip4 != nil {
-		if ip4[0] >= 240 || ip4[0] == 0 || (ip4[0] == 100 && (ip4[1]&0xC0) == 64) ||
-			(ip4[0] == 198 && (ip4[1] == 18 || ip4[1] == 19)) {
-			return fmt.Errorf("reserved IP blocked: %s", ip.String())
 		}
 	}
 
@@ -327,7 +390,6 @@ func (pm *PoolManager) GetMetrics() Metrics {
 
 	return Metrics{
 		ActiveConnections:   atomic.LoadInt64(&pm.activeConns),
-		IdleConnections:     atomic.LoadInt64(&pm.idleConns),
 		TotalConnections:    total,
 		RejectedConnections: rejected,
 		ConnectionHitRate:   hitRate,

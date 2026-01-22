@@ -375,6 +375,7 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		MaxIdleConnsPerHost:   idleConnsPerHost,
 		MaxConnsPerHost:       cfg.MaxConnsPerHost,
 		ProxyURL:              cfg.ProxyURL,
+		EnableSystemProxy:     cfg.EnableSystemProxy,
 		TLSConfig:             cfg.TLSConfig,
 		MinTLSVersion:         minTLSVersion,
 		MaxTLSVersion:         maxTLSVersion,
@@ -396,6 +397,8 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		EnableHTTP2:           cfg.EnableHTTP2,
 		CookieJar:             cookieJar,
 		EnableCookies:         cfg.EnableCookies,
+		EnableDoH:             cfg.EnableDoH,
+		DoHCacheTTL:           cfg.DoHCacheTTL,
 	}, nil
 }
 
