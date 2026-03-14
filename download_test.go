@@ -26,7 +26,7 @@ func TestDownload_Basic(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -70,7 +70,7 @@ func TestDownload_LargeFile(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -101,7 +101,7 @@ func TestDownload_WithProgress(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -141,8 +141,8 @@ func TestDownload_WithTimeout(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
-	config.Timeout = 100 * time.Millisecond
+	config.Security.AllowPrivateIPs = true
+	config.Timeouts.Request = 100 * time.Millisecond
 	client, _ := New(config)
 	defer client.Close()
 
@@ -166,7 +166,7 @@ func TestDownload_ResumeNotSupported(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -212,7 +212,7 @@ func TestDownload_PartialContent(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -245,7 +245,7 @@ func TestDownload_InvalidPath(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -265,7 +265,7 @@ func TestDownload_FileAlreadyExists(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -304,7 +304,7 @@ func TestDownload_HTTPError(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -326,7 +326,7 @@ func TestDownload_CreateDirectories(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -357,7 +357,7 @@ func TestResult_SaveToFile(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 

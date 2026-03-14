@@ -13,18 +13,12 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
+
+	"github.com/cybergodev/httpc/internal/types"
 )
 
-type FormData struct {
-	Fields map[string]string
-	Files  map[string]*FileData
-}
-
-type FileData struct {
-	Filename    string
-	Content     []byte
-	ContentType string
-}
+// FormData and FileData are now defined in internal/types package.
+// Use types.FormData and types.FileData for type checking.
 
 type RequestProcessor struct {
 	config *Config
@@ -208,6 +202,11 @@ func isFormData(v any) bool {
 	if v == nil {
 		return false
 	}
+	// Check if it's a pointer to types.FormData
+	if _, ok := v.(*types.FormData); ok {
+		return true
+	}
+	// Fallback to reflection for compatible types from different packages
 	t := reflect.TypeOf(v)
 	if t.Kind() != reflect.Ptr {
 		return false

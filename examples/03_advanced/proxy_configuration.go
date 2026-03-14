@@ -15,11 +15,17 @@ func main() {
 	fmt.Println("Example 1: Manual proxy URL")
 	fmt.Println("When ProxyURL is set, it will be used regardless of EnableSystemProxy")
 	client1, err := httpc.New(&httpc.Config{
-		ProxyURL:      "http://127.0.0.1:7890",
-		Timeout:       10 * time.Second,
-		BackoffFactor: 2.0,
-		MaxRetries:    3,
-		RetryDelay:    1 * time.Second,
+		Connections: httpc.ConnectionConfig{
+			ProxyURL: "http://127.0.0.1:7890",
+		},
+		Timeouts: httpc.TimeoutConfig{
+			Request: 10 * time.Second,
+		},
+		Retry: httpc.RetryConfig{
+			BackoffFactor: 2.0,
+			MaxRetries:    3,
+			Delay:         1 * time.Second,
+		},
 	})
 	if err != nil {
 		fmt.Printf("Failed to create client: %v\n", err)
@@ -35,11 +41,17 @@ func main() {
 	fmt.Println("the client will automatically detect system proxy settings")
 	fmt.Println("(Windows registry, environment variables, etc.)")
 	client2, err := httpc.New(&httpc.Config{
-		EnableSystemProxy: true,
-		Timeout:           10 * time.Second,
-		BackoffFactor:     2.0,
-		MaxRetries:        3,
-		RetryDelay:        1 * time.Second,
+		Connections: httpc.ConnectionConfig{
+			EnableSystemProxy: true,
+		},
+		Timeouts: httpc.TimeoutConfig{
+			Request: 10 * time.Second,
+		},
+		Retry: httpc.RetryConfig{
+			BackoffFactor: 2.0,
+			MaxRetries:    3,
+			Delay:         1 * time.Second,
+		},
 	})
 	if err != nil {
 		fmt.Printf("Failed to create client: %v\n", err)
@@ -55,10 +67,14 @@ func main() {
 	fmt.Println("When both ProxyURL is empty and EnableSystemProxy is false,")
 	fmt.Println("the client will connect directly without any proxy")
 	client3, err := httpc.New(&httpc.Config{
-		Timeout:       10 * time.Second,
-		BackoffFactor: 2.0,
-		MaxRetries:    3,
-		RetryDelay:    1 * time.Second,
+		Timeouts: httpc.TimeoutConfig{
+			Request: 10 * time.Second,
+		},
+		Retry: httpc.RetryConfig{
+			BackoffFactor: 2.0,
+			MaxRetries:    3,
+			Delay:         1 * time.Second,
+		},
 	})
 	if err != nil {
 		fmt.Printf("Failed to create client: %v\n", err)
@@ -73,12 +89,18 @@ func main() {
 	fmt.Println("Even when EnableSystemProxy is true,")
 	fmt.Println("manual ProxyURL takes priority")
 	client4, err := httpc.New(&httpc.Config{
-		ProxyURL:          "http://127.0.0.1:7890",
-		EnableSystemProxy: true, // This is ignored because ProxyURL is set
-		Timeout:           10 * time.Second,
-		BackoffFactor:     2.0,
-		MaxRetries:        3,
-		RetryDelay:        1 * time.Second,
+		Connections: httpc.ConnectionConfig{
+			ProxyURL:          "http://127.0.0.1:7890",
+			EnableSystemProxy: true, // This is ignored because ProxyURL is set
+		},
+		Timeouts: httpc.TimeoutConfig{
+			Request: 10 * time.Second,
+		},
+		Retry: httpc.RetryConfig{
+			BackoffFactor: 2.0,
+			MaxRetries:    3,
+			Delay:         1 * time.Second,
+		},
 	})
 	if err != nil {
 		fmt.Printf("Failed to create client: %v\n", err)
@@ -100,12 +122,16 @@ func main() {
 	fmt.Println()
 	fmt.Println("Case A: Behind a corporate proxy")
 	fmt.Println("  config := httpc.Config{")
-	fmt.Println("      ProxyURL: \"http://proxy.company.com:8080\",")
+	fmt.Println("      Connections: httpc.ConnectionConfig{")
+	fmt.Println("          ProxyURL: \"http://proxy.company.com:8080\",")
+	fmt.Println("      },")
 	fmt.Println("  }")
 	fmt.Println()
 	fmt.Println("Case B: Using system proxy (Windows/Mac/Linux)")
 	fmt.Println("  config := httpc.Config{")
-	fmt.Println("      EnableSystemProxy: true,")
+	fmt.Println("      Connections: httpc.ConnectionConfig{")
+	fmt.Println("          EnableSystemProxy: true,")
+	fmt.Println("      },")
 	fmt.Println("  }")
 	fmt.Println()
 	fmt.Println("Case C: Direct connection (default)")
@@ -117,10 +143,14 @@ func main() {
 	fmt.Println("  Option 1: Use environment variables")
 	fmt.Println("    // set HTTPS_PROXY=http://127.0.0.1:7890")
 	fmt.Println("    config := httpc.Config{")
-	fmt.Println("        EnableSystemProxy: true, // Will read env vars")
+	fmt.Println("        Connections: httpc.ConnectionConfig{")
+	fmt.Println("            EnableSystemProxy: true, // Will read env vars")
+	fmt.Println("        },")
 	fmt.Println("    }")
 	fmt.Println("  Option 2: Specify proxy directly")
 	fmt.Println("    config := httpc.Config{")
-	fmt.Println("        ProxyURL: \"http://127.0.0.1:7890\",")
+	fmt.Println("        Connections: httpc.ConnectionConfig{")
+	fmt.Println("            ProxyURL: \"http://127.0.0.1:7890\",")
+	fmt.Println("        },")
 	fmt.Println("    }")
 }

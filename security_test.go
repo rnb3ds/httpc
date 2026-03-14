@@ -75,11 +75,11 @@ func TestSecurity_TLSConfiguration(t *testing.T) {
 	t.Run("DefaultTLSVersion", func(t *testing.T) {
 		config := DefaultConfig()
 
-		if config.MinTLSVersion < tls.VersionTLS12 {
+		if config.Security.MinTLSVersion < tls.VersionTLS12 {
 			t.Error("Default config should enforce TLS 1.2 minimum")
 		}
 
-		if config.InsecureSkipVerify {
+		if config.Security.InsecureSkipVerify {
 			t.Error("Default config should not skip TLS verification")
 		}
 	})
@@ -87,13 +87,13 @@ func TestSecurity_TLSConfiguration(t *testing.T) {
 	t.Run("SecureConfig", func(t *testing.T) {
 		config := SecureConfig()
 
-		if config.MinTLSVersion < tls.VersionTLS12 {
+		if config.Security.MinTLSVersion < tls.VersionTLS12 {
 			t.Error("Secure config should enforce TLS 1.2+")
 		}
-		if config.InsecureSkipVerify {
+		if config.Security.InsecureSkipVerify {
 			t.Error("Secure config should not skip TLS verification")
 		}
-		if config.AllowPrivateIPs {
+		if config.Security.AllowPrivateIPs {
 			t.Error("Secure config should not allow private IPs")
 		}
 	})
@@ -121,7 +121,7 @@ func TestSecurity_PrivateIPBlocking(t *testing.T) {
 
 func TestSecurity_AllowPrivateIPs(t *testing.T) {
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -138,7 +138,7 @@ func TestSecurity_AllowPrivateIPs(t *testing.T) {
 
 func TestSecurity_SSRFProtection(t *testing.T) {
 	config := DefaultConfig()
-	config.AllowPrivateIPs = false
+	config.Security.AllowPrivateIPs = false
 	client, _ := New(config)
 	defer client.Close()
 
@@ -179,7 +179,7 @@ func TestSecurity_UserAgentValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			config := DefaultConfig()
-			config.UserAgent = tt.userAgent
+			config.Middleware.UserAgent = tt.userAgent
 			client, err := New(config)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)

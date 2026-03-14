@@ -33,8 +33,8 @@ func TestClient_Creation(t *testing.T) {
 
 	t.Run("WithConfig", func(t *testing.T) {
 		config := DefaultConfig()
-		config.Timeout = 10 * time.Second
-		config.MaxRetries = 2
+		config.Timeouts.Request = 10 * time.Second
+		config.Retry.MaxRetries = 2
 		client, err := New(config)
 		if err != nil {
 			t.Fatalf("Failed to create client: %v", err)
@@ -44,7 +44,7 @@ func TestClient_Creation(t *testing.T) {
 
 	t.Run("WithTLSConfig", func(t *testing.T) {
 		config := DefaultConfig()
-		config.TLSConfig = &tls.Config{
+		config.Security.TLSConfig = &tls.Config{
 			MinVersion: tls.VersionTLS12,
 			MaxVersion: tls.VersionTLS13,
 		}
@@ -240,8 +240,8 @@ func TestClient_Concurrency(t *testing.T) {
 		defer server.Close()
 
 		cfg := DefaultConfig()
-		cfg.AllowPrivateIPs = true
-		cfg.Headers = map[string]string{"X-Initial": "value"}
+		cfg.Security.AllowPrivateIPs = true
+		cfg.Middleware.Headers = map[string]string{"X-Initial": "value"}
 
 		client, err := New(cfg)
 		if err != nil {
@@ -265,8 +265,8 @@ func TestClient_Concurrency(t *testing.T) {
 
 		// Modify original config (should not affect client)
 		for i := 0; i < 50; i++ {
-			cfg.Headers["X-Modified"] = "new-value"
-			cfg.Timeout = time.Duration(i) * time.Second
+			cfg.Middleware.Headers["X-Modified"] = "new-value"
+			cfg.Timeouts.Request = time.Duration(i) * time.Second
 		}
 
 		wg.Wait()
@@ -285,7 +285,7 @@ func TestClient_Concurrency(t *testing.T) {
 func TestPackageLevel_Functions(t *testing.T) {
 	// Setup default client for package-level tests
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	_ = SetDefaultClient(client)
 	defer CloseDefaultClient()
@@ -328,15 +328,20 @@ func TestPackageLevel_Functions(t *testing.T) {
 
 func TestTypes(t *testing.T) {
 	t.Run("HTTPError", func(t *testing.T) {
-		err := &HTTPError{
-			StatusCode: 404,
-			Status:     "Not Found",
+		// HTTPError is now an alias for ClientError
+		// Test that we can check HTTP errors using ClientError
+		err := &ClientError{
+			Type:       ErrorTypeHTTP,
+			Message:    "Not Found",
 			Method:     "GET",
 			URL:        "https://example.com",
+			StatusCode: 404,
 		}
-		expected := "HTTP 404: GET https://example.com"
-		if err.Error() != expected {
-			t.Errorf("HTTPError.Error() = %q, want %q", err.Error(), expected)
+		if err.StatusCode != 404 {
+			t.Errorf("ClientError.StatusCode = %d, want 404", err.StatusCode)
+		}
+		if err.Type != ErrorTypeHTTP {
+			t.Errorf("ClientError.Type = %v, want %v", err.Type, ErrorTypeHTTP)
 		}
 	})
 
@@ -387,8 +392,8 @@ func TestClient_ErrorHandling(t *testing.T) {
 
 	t.Run("NetworkError", func(t *testing.T) {
 		config := DefaultConfig()
-		config.Timeout = 1 * time.Second
-		config.AllowPrivateIPs = true
+		config.Timeouts.Request = 1 * time.Second
+		config.Security.AllowPrivateIPs = true
 		client, _ := New(config)
 		defer client.Close()
 

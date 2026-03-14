@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/cybergodev/httpc/internal/connection"
 	"github.com/cybergodev/httpc/internal/security"
+	"github.com/cybergodev/httpc/internal/types"
 )
 
 type Client struct {
@@ -27,11 +29,10 @@ type Client struct {
 	// requestPool reduces allocations for Request objects
 	requestPool sync.Pool
 
-	closed             int32
-	totalRequests      int64
-	successfulRequests int64
-	failedRequests     int64
-	averageLatency     int64
+	// metrics tracks request statistics
+	metrics *Metrics
+
+	closed int32
 
 	closeOnce sync.Once
 }
@@ -53,7 +54,7 @@ type Config struct {
 	// System proxy configuration
 	EnableSystemProxy bool // Automatically detect and use system proxy settings
 
-	TLSConfig           any
+	TLSConfig           *tls.Config
 	MinTLSVersion       uint16
 	MaxTLSVersion       uint16
 	InsecureSkipVerify  bool
@@ -69,22 +70,29 @@ type Config struct {
 	BackoffFactor float64
 	Jitter        bool
 
+	// CustomRetryPolicy allows providing a custom retry policy implementation.
+	// If set, it overrides the built-in retry logic.
+	CustomRetryPolicy types.RetryPolicy
+
 	UserAgent       string
 	Headers         map[string]string
 	FollowRedirects bool
 	MaxRedirects    int
 	EnableHTTP2     bool
 
-	CookieJar     any
+	CookieJar     http.CookieJar
 	EnableCookies bool
 
 	// DNS configuration
 	EnableDoH   bool
 	DoHCacheTTL time.Duration
-
-	// Middleware configuration
-	Middlewares any // []MiddlewareFunc from public package (uses interface types)
 }
+
+// RequestCallback is a callback function invoked before a request is sent.
+type RequestCallback func(req *Request) error
+
+// ResponseCallback is a callback function invoked after a response is received.
+type ResponseCallback func(resp *Response) error
 
 type Request struct {
 	method          string
@@ -98,10 +106,12 @@ type Request struct {
 	cookies         []http.Cookie
 	followRedirects *bool
 	maxRedirects    *int
+	onRequest       RequestCallback
+	onResponse      ResponseCallback
 }
 
 // Compile-time interface check
-var _ RequestMutator = (*Request)(nil)
+var _ types.RequestMutator = (*Request)(nil)
 
 // Accessors (implement RequestMutator)
 func (r *Request) Method() string              { return r.method }
@@ -135,6 +145,12 @@ func (r *Request) SetCookies(v []http.Cookie)      { r.cookies = v }
 func (r *Request) SetFollowRedirects(v *bool)      { r.followRedirects = v }
 func (r *Request) SetMaxRedirects(v *int)          { r.maxRedirects = v }
 
+// Callback accessors
+func (r *Request) OnRequest() RequestCallback        { return r.onRequest }
+func (r *Request) OnResponse() ResponseCallback      { return r.onResponse }
+func (r *Request) SetOnRequest(cb RequestCallback)   { r.onRequest = cb }
+func (r *Request) SetOnResponse(cb ResponseCallback) { r.onResponse = cb }
+
 // Response represents an HTTP response.
 // Response objects are safe to read from multiple goroutines after they are returned.
 type Response struct {
@@ -154,7 +170,7 @@ type Response struct {
 }
 
 // Compile-time interface check
-var _ ResponseMutator = (*Response)(nil)
+var _ types.ResponseMutator = (*Response)(nil)
 
 // Accessors (implement ResponseAccessor)
 func (r *Response) StatusCode() int             { return r.statusCode }
@@ -206,7 +222,8 @@ func NewClient(config *Config, opts ...ClientOption) (*Client, error) {
 	}
 
 	client := &Client{
-		config: config,
+		config:  config,
+		metrics: &Metrics{},
 		requestPool: sync.Pool{
 			New: func() any {
 				return &Request{}
@@ -272,7 +289,6 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 		return nil, fmt.Errorf("client is closed")
 	}
 
-	atomic.AddInt64(&c.totalRequests, 1)
 	startTime := time.Now()
 
 	// Get Request from pool and reset fields
@@ -296,7 +312,7 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 	for _, option := range options {
 		if option != nil {
 			if err := option(req); err != nil {
-				atomic.AddInt64(&c.failedRequests, 1)
+				c.metrics.RecordRequest(time.Since(startTime).Nanoseconds(), false)
 				return nil, fmt.Errorf("failed to apply request option: %w", err)
 			}
 		}
@@ -310,20 +326,19 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 		Body:        req.Body(),
 	}
 	if err := c.validator.ValidateRequest(secReq); err != nil {
-		atomic.AddInt64(&c.failedRequests, 1)
+		c.metrics.RecordRequest(time.Since(startTime).Nanoseconds(), false)
 		return nil, fmt.Errorf("request validation failed: %w", err)
 	}
 
 	response, err := c.executeWithRetry(req)
 	duration := time.Since(startTime)
-	c.updateLatencyMetrics(duration.Nanoseconds())
 
 	if err != nil {
-		atomic.AddInt64(&c.failedRequests, 1)
+		c.metrics.RecordRequest(duration.Nanoseconds(), false)
 		return nil, err
 	}
 
-	atomic.AddInt64(&c.successfulRequests, 1)
+	c.metrics.RecordRequest(duration.Nanoseconds(), true)
 	response.SetDuration(duration)
 	return response, nil
 }
@@ -399,21 +414,16 @@ func (c *Client) sleepWithContext(ctx context.Context, duration time.Duration) e
 	}
 }
 
-// updateLatencyMetrics updates the rolling average latency using lock-free atomic operations.
-func (c *Client) updateLatencyMetrics(latency int64) {
-	for {
-		current := atomic.LoadInt64(&c.averageLatency)
-		newAvg := (current*9 + latency) / 10
-		if atomic.CompareAndSwapInt64(&c.averageLatency, current, newAvg) {
-			break
-		}
-	}
-}
-
 // executeWithRetry executes a request with intelligent retry logic.
 // Optimized for performance with minimal allocations and efficient error handling.
 func (c *Client) executeWithRetry(req *Request) (*Response, error) {
-	maxRetries := c.config.MaxRetries
+	// Determine which retry policy to use
+	policy := types.RetryPolicy(c.retryEngine)
+	if c.config.CustomRetryPolicy != nil {
+		policy = c.config.CustomRetryPolicy
+	}
+
+	maxRetries := policy.MaxRetries()
 	if req.MaxRetries() > 0 {
 		maxRetries = req.MaxRetries()
 	}
@@ -435,13 +445,13 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 			}
 
 			// Check retry policy
-			if !c.retryEngine.ShouldRetry(nil, err, attempt) {
+			if !policy.ShouldRetry(nil, err, attempt) {
 				clientErr.Attempts = attempt + 1
 				return nil, clientErr
 			}
 
 			// Calculate delay and sleep
-			delay := c.retryEngine.GetDelay(attempt)
+			delay := policy.GetDelay(attempt)
 			if sleepErr := c.sleepWithContext(req.Context(), delay); sleepErr != nil {
 				return nil, ClassifyError(sleepErr, req.URL(), req.Method(), attempt+1)
 			}
@@ -451,9 +461,9 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 		if resp != nil {
 			lastResp = resp
 
-			// Check if response status is retryable
+			// Check if response status is retryable using policy
 			if c.retryEngine.isRetryableStatus(resp.StatusCode()) && attempt < maxRetries {
-				if c.retryEngine.ShouldRetry(resp, nil, attempt) {
+				if policy.ShouldRetry(resp, nil, attempt) {
 					delay := c.retryEngine.GetDelayWithResponse(attempt, resp)
 					if sleepErr := c.sleepWithContext(req.Context(), delay); sleepErr != nil {
 						return nil, ClassifyError(sleepErr, req.URL(), req.Method(), attempt+1)
@@ -529,6 +539,8 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 		cookies:         req.cookies,
 		followRedirects: req.followRedirects,
 		maxRedirects:    req.maxRedirects,
+		onRequest:       req.onRequest,
+		onResponse:      req.onResponse,
 	}
 
 	followRedirects := c.config.FollowRedirects
@@ -541,6 +553,13 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 	}
 	// Set redirect policy via context for thread-safety
 	reqCopy.context = c.transport.SetRedirectPolicy(execCtx, followRedirects, maxRedirects)
+
+	// Invoke OnRequest callback before building the HTTP request
+	if reqCopy.onRequest != nil {
+		if err := reqCopy.onRequest(reqCopy); err != nil {
+			return nil, ClassifyError(fmt.Errorf("onRequest callback failed: %w", err), req.URL(), req.Method(), 0)
+		}
+	}
 
 	httpReq, err := c.requestProcessor.Build(reqCopy)
 	if err != nil {
@@ -593,44 +612,25 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 	}
 
 	resp.SetDuration(duration)
+
+	// Invoke OnResponse callback after response processing
+	if reqCopy.onResponse != nil {
+		if err := reqCopy.onResponse(resp); err != nil {
+			return nil, ClassifyError(fmt.Errorf("onResponse callback failed: %w", err), req.URL(), req.Method(), 0)
+		}
+	}
+
 	return resp, nil
 }
 
-// HealthStatus represents basic health metrics
-type HealthStatus struct {
-	Healthy            bool
-	TotalRequests      int64
-	SuccessfulRequests int64
-	FailedRequests     int64
-	AverageLatency     time.Duration
-	ErrorRate          float64
-}
-
+// GetHealthStatus returns the current health status of the client.
 func (c *Client) GetHealthStatus() HealthStatus {
-	total := atomic.LoadInt64(&c.totalRequests)
-	success := atomic.LoadInt64(&c.successfulRequests)
-	failed := atomic.LoadInt64(&c.failedRequests)
-	avgLatNs := atomic.LoadInt64(&c.averageLatency)
-
-	var errorRate float64
-	if total > 0 {
-		errorRate = float64(failed) / float64(total)
-	}
-
-	healthy := errorRate < 0.1
-
-	return HealthStatus{
-		Healthy:            healthy,
-		TotalRequests:      total,
-		SuccessfulRequests: success,
-		FailedRequests:     failed,
-		AverageLatency:     time.Duration(avgLatNs),
-		ErrorRate:          errorRate,
-	}
+	return c.metrics.GetHealthStatus()
 }
 
+// IsHealthy returns true if the client is healthy (error rate < 10%).
 func (c *Client) IsHealthy() bool {
-	return c.GetHealthStatus().Healthy
+	return c.metrics.IsHealthy()
 }
 
 func (c *Client) Close() error {

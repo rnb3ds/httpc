@@ -52,9 +52,7 @@ func NewTransport(config *Config, pool *connection.PoolManager) (*Transport, err
 
 	// Set cookie jar if enabled and provided
 	if config.EnableCookies && config.CookieJar != nil {
-		if jar, ok := config.CookieJar.(http.CookieJar); ok {
-			httpClient.Jar = jar
-		}
+		httpClient.Jar = config.CookieJar
 	}
 
 	// Set a single redirect policy that reads from context

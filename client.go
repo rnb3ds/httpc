@@ -85,6 +85,35 @@ type Client interface {
 	Close() error
 }
 
+// DomainClienter extends Client with domain-scoped operations.
+// It provides session management for cookies and headers across requests
+// to a specific domain.
+type DomainClienter interface {
+	Client
+
+	// URL accessors
+	URL() string
+	Domain() string
+
+	// Session header management
+	SetHeader(key, value string) error
+	SetHeaders(headers map[string]string) error
+	DeleteHeader(key string)
+	ClearHeaders()
+	GetHeaders() map[string]string
+
+	// Session cookie management
+	SetCookie(cookie *http.Cookie) error
+	SetCookies(cookies []*http.Cookie) error
+	DeleteCookie(name string)
+	ClearCookies()
+	GetCookies() []*http.Cookie
+	GetCookie(name string) *http.Cookie
+
+	// Session access
+	Session() *SessionManager
+}
+
 type clientImpl struct {
 	engine          *engine.Client
 	middlewareChain Handler
@@ -114,12 +143,12 @@ func New(config ...*Config) (Client, error) {
 
 	client := &clientImpl{
 		engine:         engineClient,
-		hasMiddlewares: len(cfg.Middlewares) > 0,
+		hasMiddlewares: len(cfg.Middleware.Middlewares) > 0,
 	}
 
 	// Build middleware chain if middlewares are configured
 	if client.hasMiddlewares {
-		client.middlewareChain = client.buildMiddlewareChain(cfg.Middlewares)
+		client.middlewareChain = client.buildMiddlewareChain(cfg.Middleware.Middlewares)
 	}
 
 	return client, nil
@@ -132,9 +161,9 @@ func New(config ...*Config) (Client, error) {
 func deepCopyConfig(src *Config) *Config {
 	dst := *src
 
-	if src.Headers != nil {
-		dst.Headers = make(map[string]string, len(src.Headers))
-		maps.Copy(dst.Headers, src.Headers)
+	if src.Middleware.Headers != nil {
+		dst.Middleware.Headers = make(map[string]string, len(src.Middleware.Headers))
+		maps.Copy(dst.Middleware.Headers, src.Middleware.Headers)
 	}
 
 	return &dst
@@ -159,31 +188,24 @@ func NewMinimal() (Client, error) {
 // The final handler executes the actual HTTP request via the engine.
 func (c *clientImpl) buildMiddlewareChain(middlewares []MiddlewareFunc) Handler {
 	// Final handler that executes the actual request
-	finalHandler := func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
-		// Type assert to get the underlying engine.Request
-		engineReq, ok := req.(*engine.Request)
-		if !ok {
-			return nil, fmt.Errorf("invalid request type")
-		}
-
+	finalHandler := func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 		// Use the context from the request (may have been modified by middleware)
 		reqCtx := req.Context()
 		if reqCtx == nil {
 			reqCtx = ctx
 		}
 
-		// Execute the request via engine - since engine.Request now implements RequestMutator,
-		// we can pass it directly
-		resp, err := c.engine.Request(reqCtx, engineReq.Method(), engineReq.URL(),
+		// Execute the request via engine using interface methods
+		resp, err := c.engine.Request(reqCtx, req.Method(), req.URL(),
 			func(r *engine.Request) error {
-				r.SetHeaders(engineReq.Headers())
-				r.SetQueryParams(engineReq.QueryParams())
-				r.SetBody(engineReq.Body())
-				r.SetTimeout(engineReq.Timeout())
-				r.SetMaxRetries(engineReq.MaxRetries())
-				r.SetCookies(engineReq.Cookies())
-				r.SetFollowRedirects(engineReq.FollowRedirects())
-				r.SetMaxRedirects(engineReq.MaxRedirects())
+				r.SetHeaders(req.Headers())
+				r.SetQueryParams(req.QueryParams())
+				r.SetBody(req.Body())
+				r.SetTimeout(req.Timeout())
+				r.SetMaxRetries(req.MaxRetries())
+				r.SetCookies(req.Cookies())
+				r.SetFollowRedirects(req.FollowRedirects())
+				r.SetMaxRedirects(req.MaxRedirects())
 				return nil
 			})
 		if err != nil {
@@ -238,12 +260,11 @@ func (c *clientImpl) doRequest(method, url string, options []RequestOption) (*Re
 	}
 
 	// Direct path when no middlewares (zero overhead)
-	engineOptions := convertRequestOptions(options)
-	resp, err := c.engine.Request(ctx, method, url, engineOptions...)
+	resp, err := c.engine.Request(ctx, method, url, options...)
 	if err != nil {
 		return nil, err
 	}
-	return convertEngineResponseToResult(resp), nil
+	return convertResponseToResult(resp), nil
 }
 
 func (c *clientImpl) Request(ctx context.Context, method, url string, options ...RequestOption) (*Result, error) {
@@ -253,12 +274,11 @@ func (c *clientImpl) Request(ctx context.Context, method, url string, options ..
 	}
 
 	// Direct path when no middlewares (zero overhead)
-	engineOptions := convertRequestOptions(options)
-	resp, err := c.engine.Request(ctx, method, url, engineOptions...)
+	resp, err := c.engine.Request(ctx, method, url, options...)
 	if err != nil {
 		return nil, err
 	}
-	return convertEngineResponseToResult(resp), nil
+	return convertResponseToResult(resp), nil
 }
 
 // executeWithMiddleware executes a request through the middleware chain.
@@ -269,8 +289,8 @@ func (c *clientImpl) executeWithMiddleware(ctx context.Context, method, url stri
 	engineReq.SetURL(url)
 	engineReq.SetContext(ctx)
 
-	// Apply request options
-	for _, opt := range convertRequestOptions(options) {
+	// Apply request options directly (no conversion needed with unified types)
+	for _, opt := range options {
 		if opt != nil {
 			if err := opt(engineReq); err != nil {
 				return nil, fmt.Errorf("failed to apply request option: %w", err)
@@ -284,12 +304,7 @@ func (c *clientImpl) executeWithMiddleware(ctx context.Context, method, url stri
 		return nil, err
 	}
 
-	// Type assert to get the engine.Response
-	engineResp, ok := respAccessor.(*engine.Response)
-	if !ok {
-		return nil, fmt.Errorf("invalid response type")
-	}
-	return convertEngineResponseToResult(engineResp), nil
+	return convertResponseToResult(respAccessor), nil
 }
 
 func (c *clientImpl) Close() error {
@@ -299,37 +314,28 @@ func (c *clientImpl) Close() error {
 var (
 	defaultClient   atomic.Pointer[clientImpl]
 	defaultClientMu sync.Mutex
-	defaultOnce     sync.Once
-	defaultInitErr  error
 )
 
 func getDefaultClient() (Client, error) {
-	defaultOnce.Do(func() {
-		newClient, err := New()
-		if err != nil {
-			defaultInitErr = fmt.Errorf("failed to initialize default client: %w", err)
-			return
-		}
+	defaultClientMu.Lock()
+	defer defaultClientMu.Unlock()
 
-		impl, ok := newClient.(*clientImpl)
-		if !ok {
-			defaultInitErr = fmt.Errorf("unexpected client type")
-			return
-		}
-
-		defaultClient.Store(impl)
-	})
-
-	if defaultInitErr != nil {
-		return nil, defaultInitErr
+	if defaultClient.Load() != nil {
+		return defaultClient.Load(), nil
 	}
 
-	client := defaultClient.Load()
-	if client == nil {
-		return nil, fmt.Errorf("default client not initialized")
+	newClient, err := New()
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize default client: %w", err)
 	}
 
-	return client, nil
+	impl, ok := newClient.(*clientImpl)
+	if !ok {
+		return nil, fmt.Errorf("unexpected client type")
+	}
+
+	defaultClient.Store(impl)
+	return impl, nil
 }
 
 // CloseDefaultClient closes the default client and resets it.
@@ -346,9 +352,6 @@ func CloseDefaultClient() error {
 
 	err := client.Close()
 	defaultClient.Store(nil)
-	defaultOnce = sync.Once{}
-	defaultInitErr = nil
-
 	return err
 }
 
@@ -430,8 +433,6 @@ func SetDefaultClient(client Client) error {
 	}
 
 	defaultClient.Store(impl)
-	defaultOnce = sync.Once{}
-	defaultInitErr = nil
 	return closeErr
 }
 
@@ -446,19 +447,19 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		cfg = DefaultConfig()
 	}
 
-	idleConnsPerHost := cfg.MaxConnsPerHost / 2
+	idleConnsPerHost := cfg.Connections.MaxConnsPerHost / 2
 	if idleConnsPerHost < minIdleConnsPerHost {
 		idleConnsPerHost = minIdleConnsPerHost
 	} else if idleConnsPerHost > maxIdleConnsPerHostCap {
 		idleConnsPerHost = maxIdleConnsPerHostCap
 	}
 
-	minTLSVersion := cfg.MinTLSVersion
+	minTLSVersion := cfg.Security.MinTLSVersion
 	if minTLSVersion == 0 {
 		minTLSVersion = tls.VersionTLS12
 	}
 
-	maxTLSVersion := cfg.MaxTLSVersion
+	maxTLSVersion := cfg.Security.MaxTLSVersion
 	if maxTLSVersion == 0 {
 		maxTLSVersion = tls.VersionTLS13
 	}
@@ -468,101 +469,81 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		absoluteMaxRetryDelay = 30 * time.Second
 	)
 	maxRetryDelay := defaultMaxRetryDelay
-	if cfg.RetryDelay > 0 && cfg.BackoffFactor > 0 {
-		calculated := time.Duration(float64(cfg.RetryDelay) * cfg.BackoffFactor * retryDelayMultiplier)
+	if cfg.Retry.Delay > 0 && cfg.Retry.BackoffFactor > 0 {
+		calculated := time.Duration(float64(cfg.Retry.Delay) * cfg.Retry.BackoffFactor * retryDelayMultiplier)
 		maxRetryDelay = min(calculated, absoluteMaxRetryDelay)
 	}
 
-	cookieJar, err := createCookieJar(cfg.EnableCookies)
+	cookieJar, err := createCookieJar(cfg.Connections.EnableCookies)
 	if err != nil {
 		return nil, err
 	}
 
 	return &engine.Config{
-		Timeout:               cfg.Timeout,
-		DialTimeout:           10 * time.Second,
+		Timeout:               cfg.Timeouts.Request,
+		DialTimeout:           cfg.Timeouts.Dial,
 		KeepAlive:             30 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
-		IdleConnTimeout:       90 * time.Second,
-		MaxIdleConns:          cfg.MaxIdleConns,
+		TLSHandshakeTimeout:   cfg.Timeouts.TLSHandshake,
+		ResponseHeaderTimeout: cfg.Timeouts.ResponseHeader,
+		IdleConnTimeout:       cfg.Timeouts.IdleConn,
+		MaxIdleConns:          cfg.Connections.MaxIdleConns,
 		MaxIdleConnsPerHost:   idleConnsPerHost,
-		MaxConnsPerHost:       cfg.MaxConnsPerHost,
-		ProxyURL:              cfg.ProxyURL,
-		EnableSystemProxy:     cfg.EnableSystemProxy,
-		TLSConfig:             cfg.TLSConfig,
+		MaxConnsPerHost:       cfg.Connections.MaxConnsPerHost,
+		ProxyURL:              cfg.Connections.ProxyURL,
+		EnableSystemProxy:     cfg.Connections.EnableSystemProxy,
+		TLSConfig:             cfg.Security.TLSConfig,
 		MinTLSVersion:         minTLSVersion,
 		MaxTLSVersion:         maxTLSVersion,
-		InsecureSkipVerify:    cfg.InsecureSkipVerify,
-		MaxResponseBodySize:   cfg.MaxResponseBodySize,
-		ValidateURL:           true,
-		ValidateHeaders:       true,
-		AllowPrivateIPs:       cfg.AllowPrivateIPs,
-		StrictContentLength:   cfg.StrictContentLength,
-		MaxRetries:            cfg.MaxRetries,
-		RetryDelay:            cfg.RetryDelay,
+		InsecureSkipVerify:    cfg.Security.InsecureSkipVerify,
+		MaxResponseBodySize:   cfg.Security.MaxResponseBodySize,
+		ValidateURL:           cfg.Security.ValidateURL,
+		ValidateHeaders:       cfg.Security.ValidateHeaders,
+		AllowPrivateIPs:       cfg.Security.AllowPrivateIPs,
+		StrictContentLength:   cfg.Security.StrictContentLength,
+		MaxRetries:            cfg.Retry.MaxRetries,
+		RetryDelay:            cfg.Retry.Delay,
 		MaxRetryDelay:         maxRetryDelay,
-		BackoffFactor:         cfg.BackoffFactor,
-		Jitter:                true,
-		UserAgent:             cfg.UserAgent,
-		Headers:               cfg.Headers,
-		FollowRedirects:       cfg.FollowRedirects,
-		MaxRedirects:          cfg.MaxRedirects,
-		EnableHTTP2:           cfg.EnableHTTP2,
+		BackoffFactor:         cfg.Retry.BackoffFactor,
+		Jitter:                cfg.Retry.EnableJitter,
+		CustomRetryPolicy:     cfg.Retry.CustomRetryPolicy,
+		UserAgent:             cfg.Middleware.UserAgent,
+		Headers:               cfg.Middleware.Headers,
+		FollowRedirects:       cfg.Middleware.FollowRedirects,
+		MaxRedirects:          cfg.Middleware.MaxRedirects,
+		EnableHTTP2:           cfg.Connections.EnableHTTP2,
 		CookieJar:             cookieJar,
-		EnableCookies:         cfg.EnableCookies,
-		EnableDoH:             cfg.EnableDoH,
-		DoHCacheTTL:           cfg.DoHCacheTTL,
+		EnableCookies:         cfg.Connections.EnableCookies,
+		EnableDoH:             cfg.Connections.EnableDoH,
+		DoHCacheTTL:           cfg.Connections.DoHCacheTTL,
 	}, nil
 }
 
-// convertRequestOptions converts public RequestOptions to internal engine options.
-func convertRequestOptions(options []RequestOption) []engine.RequestOption {
-	if len(options) == 0 {
+func convertResponseToResult(resp ResponseMutator) *Result {
+	if resp == nil {
 		return nil
 	}
 
-	engineOptions := make([]engine.RequestOption, 0, len(options))
-
-	for _, opt := range options {
-		if opt == nil {
-			continue
-		}
-
-		engineOptions = append(engineOptions, func(req *engine.Request) error {
-			// engine.Request now implements RequestMutator, so we can pass it directly
-			return opt(req)
-		})
-	}
-	return engineOptions
-}
-
-func convertEngineResponseToResult(engineResp *engine.Response) *Result {
-	if engineResp == nil {
-		return nil
-	}
-
-	requestCookies := extractRequestCookies(engineResp.RequestHeaders())
+	requestCookies := extractRequestCookies(resp.RequestHeaders())
 
 	return &Result{
 		Request: &RequestInfo{
-			Headers: engineResp.RequestHeaders(),
+			Headers: resp.RequestHeaders(),
 			Cookies: requestCookies,
 		},
 		Response: &ResponseInfo{
-			StatusCode:    engineResp.StatusCode(),
-			Status:        engineResp.Status(),
-			Headers:       engineResp.Headers(),
-			Body:          engineResp.Body(),
-			RawBody:       engineResp.RawBody(),
-			ContentLength: engineResp.ContentLength(),
-			Cookies:       engineResp.Cookies(),
+			StatusCode:    resp.StatusCode(),
+			Status:        resp.Status(),
+			Headers:       resp.Headers(),
+			Body:          resp.Body(),
+			RawBody:       resp.RawBody(),
+			ContentLength: resp.ContentLength(),
+			Cookies:       resp.Cookies(),
 		},
 		Meta: &RequestMeta{
-			Duration:      engineResp.Duration(),
-			Attempts:      engineResp.Attempts(),
-			RedirectChain: engineResp.RedirectChain(),
-			RedirectCount: engineResp.RedirectCount(),
+			Duration:      resp.Duration(),
+			Attempts:      resp.Attempts(),
+			RedirectChain: resp.RedirectChain(),
+			RedirectCount: resp.RedirectCount(),
 		},
 	}
 }
@@ -580,7 +561,7 @@ func extractRequestCookies(headers http.Header) []*http.Cookie {
 	return parseCookieHeader(cookieHeader)
 }
 
-func createCookieJar(enableCookies bool) (any, error) {
+func createCookieJar(enableCookies bool) (http.CookieJar, error) {
 	if !enableCookies {
 		return nil, nil
 	}

@@ -296,8 +296,8 @@ func TestStress_HighConcurrency(t *testing.T) {
 
 	// Use more lenient configuration
 	config := DefaultConfig()
-	config.Timeout = 30 * time.Second // Increase timeout
-	config.AllowPrivateIPs = true     // Allow access to test server
+	config.Timeouts.Request = 30 * time.Second // Increase timeout
+	config.Security.AllowPrivateIPs = true     // Allow access to test server
 	client, err := New(config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)

@@ -126,6 +126,18 @@ func isValidHeaderChar(r rune) bool {
 	return IsValidHeaderChar(r)
 }
 
+// IsValidHeaderString checks if a string contains only valid characters for HTTP headers.
+// It returns true if the string contains no control characters (except tab), DEL, or CR/LF.
+func IsValidHeaderString(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < 0x20 && c != 0x09) || c == 0x7F || c == '\r' || c == '\n' {
+			return false
+		}
+	}
+	return true
+}
+
 // ValidateCookieName validates HTTP cookie names.
 func ValidateCookieName(name string) error {
 	return ValidateInputString(name, MaxCookieNameLen, "cookie name", func(r rune) error {

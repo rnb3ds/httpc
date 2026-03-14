@@ -1,14 +1,13 @@
 package httpc
 
 import (
-	"context"
-	"crypto/tls"
 	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"time"
 
 	"github.com/cybergodev/httpc/internal/engine"
+	"github.com/cybergodev/httpc/internal/types"
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
@@ -24,90 +23,94 @@ const (
 	maxUserAgentLen     = 512                // User-Agent header limit
 )
 
+// Config defines the HTTP client configuration.
+// All duration values use time.Duration (e.g., 30 * time.Second).
+//
+// Configuration values are used as follows:
+//   - Timeouts: Request and connection timeout settings
+//   - Connections: Connection pool and proxy settings
+//   - Security: TLS, SSRF protection, and validation settings
+//   - Retry: Retry behavior and custom policies
+//   - Middleware: Middleware, headers, and redirect settings
+//
+// Use DefaultConfig() for production-ready defaults, or use preset
+// configurations like SecureConfig(), PerformanceConfig(), or MinimalConfig().
+//
+// Example:
+//
+//	cfg := httpc.DefaultConfig()
+//	cfg.Timeouts.Request = 60 * time.Second
+//	cfg.Retry.MaxRetries = 5
+//	client, err := httpc.New(cfg)
 type Config struct {
-	Timeout         time.Duration
-	MaxIdleConns    int
-	MaxConnsPerHost int
-	ProxyURL        string
+	// Timeouts groups all timeout-related configuration options.
+	Timeouts TimeoutConfig
 
-	// System proxy configuration
-	EnableSystemProxy bool // Automatically detect and use system proxy settings
+	// Connections groups all connection-related configuration options.
+	Connections ConnectionConfig
 
-	TLSConfig           *tls.Config
-	MinTLSVersion       uint16
-	MaxTLSVersion       uint16
-	InsecureSkipVerify  bool
-	MaxResponseBodySize int64
-	AllowPrivateIPs     bool
-	StrictContentLength bool
+	// Security groups all security-related configuration options.
+	Security SecurityConfig
 
-	MaxRetries    int
-	RetryDelay    time.Duration
-	BackoffFactor float64
+	// Retry groups all retry-related configuration options.
+	Retry RetryConfig
 
-	UserAgent       string
-	Headers         map[string]string
-	FollowRedirects bool
-	MaxRedirects    int
-	EnableHTTP2     bool
-	EnableCookies   bool
-
-	// DNS configuration
-	EnableDoH   bool          // Enable DNS-over-HTTPS
-	DoHCacheTTL time.Duration // DoH cache TTL (default: 5 minutes)
-
-	// Middleware configuration
-	Middlewares []MiddlewareFunc
+	// Middleware groups all middleware-related configuration options.
+	Middleware MiddlewareConfig
 }
 
 // RequestOption is a function that modifies a request.
-type RequestOption func(engine.RequestMutator) error
+// This is a type alias to the engine's RequestOption for unified type handling.
+type RequestOption = engine.RequestOption
 
-type Request struct {
-	Method          string
-	URL             string
-	Headers         map[string]string
-	QueryParams     map[string]any
-	Body            any
-	Timeout         time.Duration
-	MaxRetries      int
-	Context         context.Context
-	Cookies         []http.Cookie
-	FollowRedirects *bool // Override client's FollowRedirects setting (nil = use client default)
-	MaxRedirects    *int  // Override client's MaxRedirects setting (nil = use client default)
-}
+// TimeoutConfig groups all timeout-related configuration options.
+// This is a type alias to types.TimeoutConfig for convenience.
+type TimeoutConfig = types.TimeoutConfig
 
-type FormData struct {
-	Fields map[string]string
-	Files  map[string]*FileData
-}
+// ConnectionConfig groups all connection-related configuration options.
+// This is a type alias to types.ConnectionConfig for convenience.
+type ConnectionConfig = types.ConnectionConfig
 
-type FileData struct {
-	Filename    string
-	Content     []byte
-	ContentType string
-}
+// SecurityConfig groups all security-related configuration options.
+// This is a type alias to types.SecurityConfig for convenience.
+type SecurityConfig = types.SecurityConfig
+
+// RetryConfig groups all retry-related configuration options.
+// This is a type alias to types.RetryConfig for convenience.
+type RetryConfig = types.RetryConfig
+
+// MiddlewareConfig groups all middleware-related configuration options.
+// This is a type alias to types.MiddlewareConfig for convenience.
+type MiddlewareConfig = types.MiddlewareConfig
+
+// RetryPolicy defines the interface for custom retry behavior.
+// This is a type alias to types.RetryPolicy for convenience.
+type RetryPolicy = types.RetryPolicy
+
+// FormData represents multipart form data for HTTP requests.
+// This is a type alias to types.FormData for backward compatibility.
+//
+// Example:
+//
+//	form := &httpc.FormData{
+//	    Fields: map[string]string{"key": "value"},
+//	    Files: map[string]*httpc.FileData{
+//	        "file": {Filename: "test.txt", Content: []byte("hello")},
+//	    },
+//	}
+type FormData = types.FormData
+
+// FileData represents a file to be uploaded in a multipart form.
+// This is a type alias to types.FileData for backward compatibility.
+type FileData = types.FileData
 
 func DefaultConfig() *Config {
 	return &Config{
-		Timeout:             30 * time.Second,
-		MaxIdleConns:        50,
-		MaxConnsPerHost:     10,
-		MinTLSVersion:       tls.VersionTLS12,
-		MaxTLSVersion:       tls.VersionTLS13,
-		InsecureSkipVerify:  false,
-		MaxResponseBodySize: 10 * 1024 * 1024,
-		AllowPrivateIPs:     true,
-		StrictContentLength: true,
-		MaxRetries:          3,
-		RetryDelay:          1 * time.Second,
-		BackoffFactor:       2.0,
-		UserAgent:           "httpc/1.0",
-		Headers:             make(map[string]string),
-		FollowRedirects:     true,
-		MaxRedirects:        10,
-		EnableHTTP2:         true,
-		EnableCookies:       false,
+		Timeouts:    types.DefaultTimeoutConfig(),
+		Connections: types.DefaultConnectionConfig(),
+		Security:    types.DefaultSecurityConfig(),
+		Retry:       types.DefaultRetryConfig(),
+		Middleware:  types.DefaultMiddlewareConfig(),
 	}
 }
 
@@ -122,40 +125,57 @@ func ValidateConfig(cfg *Config) error {
 		return ErrNilConfig
 	}
 
-	if cfg.Timeout < 0 || cfg.Timeout > maxTimeout {
-		return fmt.Errorf("%w: must be 0-%v, got %v", ErrInvalidTimeout, maxTimeout, cfg.Timeout)
+	// Validate TimeoutConfig
+	if cfg.Timeouts.Request < 0 || cfg.Timeouts.Request > maxTimeout {
+		return fmt.Errorf("%w: Request must be 0-%v, got %v", ErrInvalidTimeout, maxTimeout, cfg.Timeouts.Request)
+	}
+	if cfg.Timeouts.Dial < 0 || cfg.Timeouts.Dial > maxTimeout {
+		return fmt.Errorf("DialTimeout must be 0-%v, got %v", maxTimeout, cfg.Timeouts.Dial)
+	}
+	if cfg.Timeouts.TLSHandshake < 0 || cfg.Timeouts.TLSHandshake > maxTimeout {
+		return fmt.Errorf("TLSHandshakeTimeout must be 0-%v, got %v", maxTimeout, cfg.Timeouts.TLSHandshake)
+	}
+	if cfg.Timeouts.ResponseHeader < 0 || cfg.Timeouts.ResponseHeader > maxTimeout {
+		return fmt.Errorf("ResponseHeaderTimeout must be 0-%v, got %v", maxTimeout, cfg.Timeouts.ResponseHeader)
+	}
+	if cfg.Timeouts.IdleConn < 0 || cfg.Timeouts.IdleConn > maxTimeout {
+		return fmt.Errorf("IdleConnTimeout must be 0-%v, got %v", maxTimeout, cfg.Timeouts.IdleConn)
 	}
 
-	if cfg.MaxIdleConns < 0 || cfg.MaxIdleConns > maxIdleConns {
-		return fmt.Errorf("MaxIdleConns must be 0-%d, got %d", maxIdleConns, cfg.MaxIdleConns)
+	// Validate ConnectionConfig
+	if cfg.Connections.MaxIdleConns < 0 || cfg.Connections.MaxIdleConns > maxIdleConns {
+		return fmt.Errorf("MaxIdleConns must be 0-%d, got %d", maxIdleConns, cfg.Connections.MaxIdleConns)
 	}
-	if cfg.MaxConnsPerHost < 0 || cfg.MaxConnsPerHost > maxConnsPerHost {
-		return fmt.Errorf("MaxConnsPerHost must be 0-%d, got %d", maxConnsPerHost, cfg.MaxConnsPerHost)
-	}
-
-	if cfg.MaxResponseBodySize < 0 || cfg.MaxResponseBodySize > maxResponseBodySize {
-		return fmt.Errorf("MaxResponseBodySize must be 0-1GB, got %d", cfg.MaxResponseBodySize)
+	if cfg.Connections.MaxConnsPerHost < 0 || cfg.Connections.MaxConnsPerHost > maxConnsPerHost {
+		return fmt.Errorf("MaxConnsPerHost must be 0-%d, got %d", maxConnsPerHost, cfg.Connections.MaxConnsPerHost)
 	}
 
-	if cfg.MaxRetries < 0 || cfg.MaxRetries > maxRetries {
-		return fmt.Errorf("%w: must be 0-%d, got %d", ErrInvalidRetry, maxRetries, cfg.MaxRetries)
+	// Validate SecurityConfig
+	if cfg.Security.MaxResponseBodySize < 0 || cfg.Security.MaxResponseBodySize > maxResponseBodySize {
+		return fmt.Errorf("MaxResponseBodySize must be 0-1GB, got %d", cfg.Security.MaxResponseBodySize)
 	}
-	if cfg.RetryDelay < 0 {
+
+	// Validate RetryConfig
+	if cfg.Retry.MaxRetries < 0 || cfg.Retry.MaxRetries > maxRetries {
+		return fmt.Errorf("%w: must be 0-%d, got %d", ErrInvalidRetry, maxRetries, cfg.Retry.MaxRetries)
+	}
+	if cfg.Retry.Delay < 0 {
 		return fmt.Errorf("%w: delay cannot be negative", ErrInvalidRetry)
 	}
-	if cfg.BackoffFactor < minBackoffFactor || cfg.BackoffFactor > maxBackoffFactor {
-		return fmt.Errorf("%w: factor must be %.1f-%.1f, got %.1f", ErrInvalidRetry, minBackoffFactor, maxBackoffFactor, cfg.BackoffFactor)
+	if cfg.Retry.BackoffFactor < minBackoffFactor || cfg.Retry.BackoffFactor > maxBackoffFactor {
+		return fmt.Errorf("%w: factor must be %.1f-%.1f, got %.1f", ErrInvalidRetry, minBackoffFactor, maxBackoffFactor, cfg.Retry.BackoffFactor)
 	}
 
-	if cfg.MaxRedirects < 0 || cfg.MaxRedirects > 50 {
-		return fmt.Errorf("MaxRedirects must be 0-50, got %d", cfg.MaxRedirects)
+	// Validate MiddlewareConfig
+	if cfg.Middleware.MaxRedirects < 0 || cfg.Middleware.MaxRedirects > 50 {
+		return fmt.Errorf("MaxRedirects must be 0-50, got %d", cfg.Middleware.MaxRedirects)
 	}
 
-	if len(cfg.UserAgent) > maxUserAgentLen || !isValidHeaderString(cfg.UserAgent) {
+	if len(cfg.Middleware.UserAgent) > maxUserAgentLen || !validation.IsValidHeaderString(cfg.Middleware.UserAgent) {
 		return fmt.Errorf("UserAgent invalid: max %d chars, no control characters", maxUserAgentLen)
 	}
 
-	for key, value := range cfg.Headers {
+	for key, value := range cfg.Middleware.Headers {
 		if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
 			return fmt.Errorf("%w: %s: %v", ErrInvalidHeader, key, err)
 		}
@@ -164,12 +184,35 @@ func ValidateConfig(cfg *Config) error {
 	return nil
 }
 
-func isValidHeaderString(s string) bool {
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c < 0x20 && c != 0x09) || c == 0x7F || c == '\r' || c == '\n' {
-			return false
-		}
-	}
-	return true
-}
+// RequestMutator provides read-write access to request data for middleware.
+// Middleware can inspect and modify request properties before the request is sent.
+//
+// This is a type alias to the shared types package, ensuring compile-time
+// type compatibility between public and internal layers.
+type RequestMutator = types.RequestMutator
+
+// ResponseMutator provides read-write access to response data.
+// Middleware can inspect and modify response properties after the request completes.
+// This is useful for:
+//   - Response caching middleware
+//   - Response transformation (e.g., JSON pretty-printing)
+//   - Content encoding/decoding
+//   - Response filtering
+//
+// This is a type alias to the shared types package, ensuring compile-time
+// type compatibility between public and internal layers.
+type ResponseMutator = types.ResponseMutator
+
+// Handler processes an HTTP request and returns a response.
+// This is the core function signature for request processing in the middleware chain.
+//
+// This is a type alias to the shared types package, ensuring compile-time
+// type compatibility between public and internal layers.
+type Handler = types.Handler
+
+// MiddlewareFunc wraps a Handler with additional functionality.
+// Middleware can inspect/modify requests, handle responses, add logging, etc.
+//
+// This is a type alias to the shared types package, ensuring compile-time
+// type compatibility between public and internal layers.
+type MiddlewareFunc = types.MiddlewareFunc

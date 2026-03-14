@@ -66,7 +66,7 @@ type Config struct {
 	DisableKeepAlives  bool
 	ForceAttemptHTTP2  bool
 
-	CookieJar interface{}
+	CookieJar http.CookieJar
 
 	// DNS configuration
 	EnableDoH   bool          // Enable DNS-over-HTTPS

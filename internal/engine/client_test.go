@@ -199,8 +199,9 @@ func TestClient_Statistics(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	// Test that client tracks basic statistics
-	if client.totalRequests < 0 {
+	// Test that client tracks basic statistics via health status
+	status := client.GetHealthStatus()
+	if status.TotalRequests < 0 {
 		t.Error("TotalRequests should be non-negative")
 	}
 }

@@ -26,7 +26,7 @@ func Chain(middlewares ...MiddlewareFunc) MiddlewareFunc {
 // The log function receives formatted log messages (similar to log.Printf).
 func LoggingMiddleware(log func(format string, args ...any)) MiddlewareFunc {
 	return func(next Handler) Handler {
-		return func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
+		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 			start := time.Now()
 			resp, err := next(ctx, req)
 			duration := time.Since(start)
@@ -51,7 +51,7 @@ func LoggingMiddleware(log func(format string, args ...any)) MiddlewareFunc {
 // If a panic occurs, it is converted to an error and returned.
 func RecoveryMiddleware() MiddlewareFunc {
 	return func(next Handler) Handler {
-		return func(ctx context.Context, req RequestMutator) (resp ResponseAccessor, err error) {
+		return func(ctx context.Context, req RequestMutator) (resp ResponseMutator, err error) {
 			defer func() {
 				if r := recover(); r != nil {
 					if e, ok := r.(error); ok {
@@ -77,7 +77,7 @@ func RequestIDMiddleware(headerName string, generator func() string) MiddlewareF
 	}
 
 	return func(next Handler) Handler {
-		return func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
+		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 			headers := req.Headers()
 			if _, exists := headers[headerName]; !exists {
 				req.SetHeader(headerName, generator())
@@ -93,7 +93,7 @@ func RequestIDMiddleware(headerName string, generator func() string) MiddlewareF
 // This timeout applies at the middleware level, before the client's built-in timeout.
 func TimeoutMiddleware(timeout time.Duration) MiddlewareFunc {
 	return func(next Handler) Handler {
-		return func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
+		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 			if timeout <= 0 {
 				return next(ctx, req)
 			}
@@ -113,7 +113,7 @@ func TimeoutMiddleware(timeout time.Duration) MiddlewareFunc {
 // Existing headers with the same keys will be overwritten.
 func HeaderMiddleware(headers map[string]string) MiddlewareFunc {
 	return func(next Handler) Handler {
-		return func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
+		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 			for key, value := range headers {
 				req.SetHeader(key, value)
 			}
@@ -127,7 +127,7 @@ func HeaderMiddleware(headers map[string]string) MiddlewareFunc {
 // The onMetrics callback is invoked with metrics after each request completes.
 func MetricsMiddleware(onMetrics func(method, url string, statusCode int, duration time.Duration, err error)) MiddlewareFunc {
 	return func(next Handler) Handler {
-		return func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
+		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 			start := time.Now()
 			resp, err := next(ctx, req)
 			duration := time.Since(start)

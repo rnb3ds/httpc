@@ -3,25 +3,37 @@ package httpc
 import (
 	"context"
 	"fmt"
-	"maps"
 	"net/http"
 	"net/url"
 	stdpath "path"
-	"sync"
-
-	"github.com/cybergodev/httpc/internal/engine"
-	"github.com/cybergodev/httpc/internal/validation"
 )
 
+// DomainClient provides a client scoped to a specific domain with session management.
+// It maintains cookies and headers across requests and provides convenient methods
+// for making HTTP requests relative to a base URL.
 type DomainClient struct {
 	client  Client
 	baseURL string
 	domain  string
-	mu      sync.RWMutex
-	cookies map[string]*http.Cookie
-	headers map[string]string
+	session *SessionManager
 }
 
+// NewDomain creates a new DomainClient scoped to the specified base URL.
+// The client automatically manages cookies and headers across requests.
+//
+// Example:
+//
+//	dc, err := httpc.NewDomain("https://api.example.com")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer dc.Close()
+//
+//	// Set session headers
+//	dc.SetHeader("Authorization", "Bearer token")
+//
+//	// Make requests relative to base URL
+//	result, err := dc.Get("/users")
 func NewDomain(baseURL string, config ...*Config) (*DomainClient, error) {
 	parsedURL, err := url.Parse(baseURL)
 	if err != nil {
@@ -39,7 +51,7 @@ func NewDomain(baseURL string, config ...*Config) (*DomainClient, error) {
 	} else {
 		cfg = DefaultConfig()
 	}
-	cfg.EnableCookies = true
+	cfg.Connections.EnableCookies = true
 
 	client, err := New(cfg)
 	if err != nil {
@@ -50,57 +62,88 @@ func NewDomain(baseURL string, config ...*Config) (*DomainClient, error) {
 		client:  client,
 		baseURL: baseURL,
 		domain:  parsedURL.Hostname(),
-		cookies: make(map[string]*http.Cookie),
-		headers: make(map[string]string),
+		session: NewSessionManager(),
 	}, nil
 }
 
+// Get makes a GET request to the specified path.
 func (dc *DomainClient) Get(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("GET", path, options...)
 }
 
+// Post makes a POST request to the specified path.
 func (dc *DomainClient) Post(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("POST", path, options...)
 }
 
+// Put makes a PUT request to the specified path.
 func (dc *DomainClient) Put(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("PUT", path, options...)
 }
 
+// Patch makes a PATCH request to the specified path.
 func (dc *DomainClient) Patch(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("PATCH", path, options...)
 }
 
+// Delete makes a DELETE request to the specified path.
 func (dc *DomainClient) Delete(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("DELETE", path, options...)
 }
 
+// Head makes a HEAD request to the specified path.
 func (dc *DomainClient) Head(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("HEAD", path, options...)
 }
 
+// Options makes an OPTIONS request to the specified path.
 func (dc *DomainClient) Options(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("OPTIONS", path, options...)
 }
 
+// Request makes an HTTP request with the specified method and path.
+// The context parameter allows for timeout and cancellation control.
+// This method makes DomainClient compatible with the Client interface.
+func (dc *DomainClient) Request(ctx context.Context, method, path string, options ...RequestOption) (*Result, error) {
+	fullURL := dc.buildURL(path)
+
+	managedOptions := dc.session.PrepareOptions()
+	allOptions := append(managedOptions, options...)
+
+	dc.session.CaptureFromOptions(options)
+
+	result, err := dc.client.Request(ctx, method, fullURL, allOptions...)
+	if err != nil {
+		return nil, err
+	}
+
+	if result != nil {
+		dc.session.UpdateFromResult(result)
+	}
+
+	return result, nil
+}
+
+// DownloadFile downloads a file from the specified path to the given file path.
 func (dc *DomainClient) DownloadFile(path string, filePath string, options ...RequestOption) (*DownloadResult, error) {
 	fullURL := dc.buildURL(path)
 
-	managedOptions := dc.prepareManagedOptions()
+	managedOptions := dc.session.PrepareOptions()
 	allOptions := append(managedOptions, options...)
 
-	dc.captureRequestOptions(options)
+	dc.session.CaptureFromOptions(options)
 
 	return dc.client.DownloadFile(fullURL, filePath, allOptions...)
 }
 
+// DownloadWithOptions downloads a file with custom download options.
 func (dc *DomainClient) DownloadWithOptions(path string, downloadOpts *DownloadOptions, options ...RequestOption) (*DownloadResult, error) {
 	fullURL := dc.buildURL(path)
 
-	managedOptions := dc.prepareManagedOptions()
+	managedOptions := dc.session.PrepareOptions()
 	allOptions := append(managedOptions, options...)
 
-	dc.captureRequestOptions(options)
+	dc.session.CaptureFromOptions(options)
 
 	return dc.client.DownloadWithOptions(fullURL, downloadOpts, allOptions...)
 }
@@ -108,10 +151,10 @@ func (dc *DomainClient) DownloadWithOptions(path string, downloadOpts *DownloadO
 func (dc *DomainClient) request(method, path string, options ...RequestOption) (*Result, error) {
 	fullURL := dc.buildURL(path)
 
-	managedOptions := dc.prepareManagedOptions()
+	managedOptions := dc.session.PrepareOptions()
 	allOptions := append(managedOptions, options...)
 
-	dc.captureRequestOptions(options)
+	dc.session.CaptureFromOptions(options)
 
 	result, err := dc.client.Request(context.Background(), method, fullURL, allOptions...)
 	if err != nil {
@@ -119,7 +162,7 @@ func (dc *DomainClient) request(method, path string, options ...RequestOption) (
 	}
 
 	if result != nil {
-		dc.updateFromResult(result)
+		dc.session.UpdateFromResult(result)
 	}
 
 	return result, nil
@@ -149,203 +192,82 @@ func (dc *DomainClient) buildURL(pathStr string) string {
 	return baseURL.String()
 }
 
-func (dc *DomainClient) prepareManagedOptions() []RequestOption {
-	dc.mu.RLock()
-	defer dc.mu.RUnlock()
-
-	cookieCount := len(dc.cookies)
-	headerCount := len(dc.headers)
-
-	if cookieCount == 0 && headerCount == 0 {
-		return nil
-	}
-
-	options := make([]RequestOption, 0, 2)
-
-	if cookieCount > 0 {
-		cookies := make([]http.Cookie, 0, cookieCount)
-		for _, cookie := range dc.cookies {
-			cookies = append(cookies, *cookie)
-		}
-		options = append(options, WithCookies(cookies))
-	}
-
-	if headerCount > 0 {
-		headersCopy := make(map[string]string, headerCount)
-		maps.Copy(headersCopy, dc.headers)
-		options = append(options, WithHeaderMap(headersCopy))
-	}
-
-	return options
-}
-
-func (dc *DomainClient) captureRequestOptions(options []RequestOption) {
-	if len(options) == 0 {
-		return
-	}
-
-	// Use engine.Request which implements RequestMutator
-	tempReq := &engine.Request{}
-
-	for _, opt := range options {
-		if opt != nil {
-			_ = opt(tempReq)
-		}
-	}
-
-	cookies := tempReq.Cookies()
-	headers := tempReq.Headers()
-
-	if len(cookies) == 0 && len(headers) == 0 {
-		return
-	}
-
-	dc.mu.Lock()
-	defer dc.mu.Unlock()
-
-	for i := range cookies {
-		cookie := &cookies[i]
-		dc.cookies[cookie.Name] = cookie
-	}
-
-	for key, value := range headers {
-		dc.headers[key] = value
-	}
-}
-
-func (dc *DomainClient) updateFromResult(result *Result) {
-	dc.mu.Lock()
-	defer dc.mu.Unlock()
-
-	if result.Response != nil && len(result.Response.Cookies) > 0 {
-		for _, cookie := range result.Response.Cookies {
-			if cookie != nil {
-				dc.cookies[cookie.Name] = cookie
-			}
-		}
-	}
-}
-
+// SetHeader adds or updates a header in the session.
 func (dc *DomainClient) SetHeader(key, value string) error {
-	if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
-		return fmt.Errorf("invalid header: %w", err)
-	}
-
-	dc.mu.Lock()
-	defer dc.mu.Unlock()
-
-	dc.headers[key] = value
-	return nil
+	return dc.session.SetHeader(key, value)
 }
 
+// SetHeaders adds or updates multiple headers in the session.
 func (dc *DomainClient) SetHeaders(headers map[string]string) error {
-	for k, v := range headers {
-		if err := validation.ValidateHeaderKeyValue(k, v); err != nil {
-			return fmt.Errorf("invalid header %s: %w", k, err)
-		}
-	}
-
-	dc.mu.Lock()
-	defer dc.mu.Unlock()
-
-	maps.Copy(dc.headers, headers)
-	return nil
+	return dc.session.SetHeaders(headers)
 }
 
+// DeleteHeader removes a header from the session.
 func (dc *DomainClient) DeleteHeader(key string) {
-	dc.mu.Lock()
-	defer dc.mu.Unlock()
-
-	delete(dc.headers, key)
+	dc.session.DeleteHeader(key)
 }
 
+// ClearHeaders removes all headers from the session.
 func (dc *DomainClient) ClearHeaders() {
-	dc.mu.Lock()
-	defer dc.mu.Unlock()
-
-	dc.headers = make(map[string]string)
+	dc.session.ClearHeaders()
 }
 
+// GetHeaders returns a copy of all session headers.
 func (dc *DomainClient) GetHeaders() map[string]string {
-	dc.mu.RLock()
-	defer dc.mu.RUnlock()
-
-	headers := make(map[string]string, len(dc.headers))
-	maps.Copy(headers, dc.headers)
-	return headers
+	return dc.session.GetHeaders()
 }
 
+// SetCookie adds or updates a cookie in the session.
 func (dc *DomainClient) SetCookie(cookie *http.Cookie) error {
-	if cookie == nil {
-		return fmt.Errorf("cookie cannot be nil")
-	}
-	if err := validation.ValidateCookie(cookie); err != nil {
-		return fmt.Errorf("invalid cookie: %w", err)
-	}
-
-	dc.mu.Lock()
-	defer dc.mu.Unlock()
-
-	dc.cookies[cookie.Name] = cookie
-	return nil
+	return dc.session.SetCookie(cookie)
 }
 
+// SetCookies adds or updates multiple cookies in the session.
 func (dc *DomainClient) SetCookies(cookies []*http.Cookie) error {
-	for i, cookie := range cookies {
-		if cookie == nil {
-			return fmt.Errorf("cookie at index %d is nil", i)
-		}
-		if err := validation.ValidateCookie(cookie); err != nil {
-			return fmt.Errorf("invalid cookie at index %d: %w", i, err)
-		}
-	}
-
-	dc.mu.Lock()
-	defer dc.mu.Unlock()
-
-	for _, cookie := range cookies {
-		dc.cookies[cookie.Name] = cookie
-	}
-	return nil
+	return dc.session.SetCookies(cookies)
 }
 
+// DeleteCookie removes a cookie from the session by name.
 func (dc *DomainClient) DeleteCookie(name string) {
-	dc.mu.Lock()
-	defer dc.mu.Unlock()
-
-	delete(dc.cookies, name)
+	dc.session.DeleteCookie(name)
 }
 
+// ClearCookies removes all cookies from the session.
 func (dc *DomainClient) ClearCookies() {
-	dc.mu.Lock()
-	defer dc.mu.Unlock()
-
-	dc.cookies = make(map[string]*http.Cookie)
+	dc.session.ClearCookies()
 }
 
+// GetCookies returns a copy of all session cookies.
 func (dc *DomainClient) GetCookies() []*http.Cookie {
-	dc.mu.RLock()
-	defer dc.mu.RUnlock()
-
-	cookies := make([]*http.Cookie, 0, len(dc.cookies))
-	for _, cookie := range dc.cookies {
-		cookieCopy := *cookie
-		cookies = append(cookies, &cookieCopy)
-	}
-	return cookies
+	return dc.session.GetCookies()
 }
 
+// GetCookie returns a copy of a cookie by name, or nil if not found.
 func (dc *DomainClient) GetCookie(name string) *http.Cookie {
-	dc.mu.RLock()
-	defer dc.mu.RUnlock()
-
-	if cookie, ok := dc.cookies[name]; ok {
-		cookieCopy := *cookie
-		return &cookieCopy
-	}
-	return nil
+	return dc.session.GetCookie(name)
 }
 
+// URL returns the base URL
+func (dc *DomainClient) URL() string { return dc.baseURL }
+
+// Domain returns the domain name (host without port)
+func (dc *DomainClient) Domain() string { return dc.domain }
+
+// Session returns the underlying SessionManager for advanced session management.
+func (dc *DomainClient) Session() *SessionManager {
+	return dc.session
+}
+
+// Compile-time interface check to ensure DomainClient implements Client.
+var _ Client = (*DomainClient)(nil)
+
+// Compile-time interface check to ensure DomainClient implements DomainClienter.
+var _ DomainClienter = (*DomainClient)(nil)
+
+// Close closes the underlying HTTP client and releases resources.
 func (dc *DomainClient) Close() error {
 	return dc.client.Close()
 }
+
+// Compile-time interface check to ensure DomainClient implements Client.
+var _ Client = (*DomainClient)(nil)

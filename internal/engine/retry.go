@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/cybergodev/httpc/internal/types"
 )
 
 type RetryEngine struct {
@@ -18,7 +20,7 @@ type RetryEngine struct {
 }
 
 // Compile-time interface check
-var _ RetryPolicy = (*RetryEngine)(nil)
+var _ types.RetryPolicy = (*RetryEngine)(nil)
 
 func NewRetryEngine(config *Config) *RetryEngine {
 	return &RetryEngine{
@@ -27,7 +29,8 @@ func NewRetryEngine(config *Config) *RetryEngine {
 	}
 }
 
-func (r *RetryEngine) ShouldRetry(resp *Response, err error, attempt int) bool {
+// ShouldRetry implements types.RetryPolicy interface.
+func (r *RetryEngine) ShouldRetry(resp types.ResponseReader, err error, attempt int) bool {
 	if attempt >= r.config.MaxRetries {
 		return false
 	}

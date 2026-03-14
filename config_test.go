@@ -50,13 +50,13 @@ func TestConfig_Presets(t *testing.T) {
 
 	t.Run("TestingConfig", func(t *testing.T) {
 		cfg := TestingConfig()
-		if cfg.Timeout != 30*time.Second {
-			t.Errorf("Expected timeout 30s, got %v", cfg.Timeout)
+		if cfg.Timeouts.Request != 30*time.Second {
+			t.Errorf("Expected timeout 30s, got %v", cfg.Timeouts.Request)
 		}
-		if !cfg.AllowPrivateIPs {
+		if !cfg.Security.AllowPrivateIPs {
 			t.Error("Expected AllowPrivateIPs to be true")
 		}
-		if !cfg.InsecureSkipVerify {
+		if !cfg.Security.InsecureSkipVerify {
 			t.Error("Expected InsecureSkipVerify to be true for testing")
 		}
 	})
@@ -72,16 +72,16 @@ func TestConfig_Defaults(t *testing.T) {
 	if config == nil {
 		t.Fatal("DefaultConfig should not return nil")
 	}
-	if config.Timeout <= 0 {
+	if config.Timeouts.Request <= 0 {
 		t.Error("Default timeout should be positive")
 	}
-	if config.MaxRetries < 0 {
+	if config.Retry.MaxRetries < 0 {
 		t.Error("Default max retries should be non-negative")
 	}
-	if config.MaxIdleConns <= 0 {
+	if config.Connections.MaxIdleConns <= 0 {
 		t.Error("Default max idle connections should be positive")
 	}
-	if config.UserAgent == "" {
+	if config.Middleware.UserAgent == "" {
 		t.Error("Default user agent should not be empty")
 	}
 }
@@ -100,7 +100,7 @@ func TestConfig_TLSVersions(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				config := DefaultConfig()
-				config.MinTLSVersion = tt.minVersion
+				config.Security.MinTLSVersion = tt.minVersion
 				client, err := New(config)
 				if (err != nil) != tt.wantErr {
 					t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
@@ -125,7 +125,7 @@ func TestConfig_TLSVersions(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				config := DefaultConfig()
-				config.MaxTLSVersion = tt.maxVersion
+				config.Security.MaxTLSVersion = tt.maxVersion
 				client, err := New(config)
 				if (err != nil) != tt.wantErr {
 					t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
@@ -151,8 +151,8 @@ func TestConfig_TLSVersions(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				config := DefaultConfig()
-				config.MinTLSVersion = tt.minVersion
-				config.MaxTLSVersion = tt.maxVersion
+				config.Security.MinTLSVersion = tt.minVersion
+				config.Security.MaxTLSVersion = tt.maxVersion
 				client, err := New(config)
 				if (err != nil) != tt.wantErr {
 					t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
@@ -166,9 +166,9 @@ func TestConfig_TLSVersions(t *testing.T) {
 
 	t.Run("WithTLSConfig", func(t *testing.T) {
 		config := DefaultConfig()
-		config.MinTLSVersion = tls.VersionTLS12
-		config.MaxTLSVersion = tls.VersionTLS13
-		config.TLSConfig = &tls.Config{
+		config.Security.MinTLSVersion = tls.VersionTLS12
+		config.Security.MaxTLSVersion = tls.VersionTLS13
+		config.Security.TLSConfig = &tls.Config{
 			MinVersion: tls.VersionTLS13,
 		}
 
@@ -196,7 +196,7 @@ func TestConfig_Validation(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				config := DefaultConfig()
-				config.Timeout = tt.timeout
+				config.Timeouts.Request = tt.timeout
 				_, err := New(config)
 				if (err != nil) != tt.wantErr {
 					t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
@@ -220,7 +220,7 @@ func TestConfig_Validation(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				config := DefaultConfig()
-				config.MaxRetries = tt.maxRetries
+				config.Retry.MaxRetries = tt.maxRetries
 				_, err := New(config)
 				if (err != nil) != tt.wantErr {
 					t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
@@ -244,8 +244,8 @@ func TestConfig_Validation(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				config := DefaultConfig()
-				config.MaxIdleConns = tt.maxIdleConns
-				config.MaxConnsPerHost = tt.maxConns
+				config.Connections.MaxIdleConns = tt.maxIdleConns
+				config.Connections.MaxConnsPerHost = tt.maxConns
 				client, err := New(config)
 				if (err != nil) != tt.wantErr {
 					t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
@@ -270,7 +270,7 @@ func TestConfig_Validation(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				config := DefaultConfig()
-				config.UserAgent = tt.userAgent
+				config.Middleware.UserAgent = tt.userAgent
 				client, err := New(config)
 				if (err != nil) != tt.wantErr {
 					t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
@@ -286,33 +286,33 @@ func TestConfig_Validation(t *testing.T) {
 func TestConfig_PresetConfigs(t *testing.T) {
 	t.Run("SecureConfig", func(t *testing.T) {
 		config := SecureConfig()
-		if config.MinTLSVersion < tls.VersionTLS12 {
+		if config.Security.MinTLSVersion < tls.VersionTLS12 {
 			t.Error("Secure config should enforce TLS 1.2+")
 		}
-		if config.InsecureSkipVerify {
+		if config.Security.InsecureSkipVerify {
 			t.Error("Secure config should not skip TLS verification")
 		}
-		if config.AllowPrivateIPs {
+		if config.Security.AllowPrivateIPs {
 			t.Error("Secure config should not allow private IPs")
 		}
 	})
 
 	t.Run("PerformanceConfig", func(t *testing.T) {
 		config := PerformanceConfig()
-		if config.MaxIdleConns <= 0 {
+		if config.Connections.MaxIdleConns <= 0 {
 			t.Error("Performance config should have connection pooling")
 		}
-		if !config.EnableHTTP2 {
+		if !config.Connections.EnableHTTP2 {
 			t.Error("Performance config should enable HTTP/2")
 		}
 	})
 
 	t.Run("MinimalConfig", func(t *testing.T) {
 		config := MinimalConfig()
-		if config.MaxRetries != 0 {
+		if config.Retry.MaxRetries != 0 {
 			t.Error("Minimal config should have no retries")
 		}
-		if config.FollowRedirects {
+		if config.Middleware.FollowRedirects {
 			t.Error("Minimal config should not follow redirects")
 		}
 	})
@@ -320,7 +320,7 @@ func TestConfig_PresetConfigs(t *testing.T) {
 
 func TestConfig_Modification(t *testing.T) {
 	config := DefaultConfig()
-	originalTimeout := config.Timeout
+	originalTimeout := config.Timeouts.Request
 
 	client, err := New(config)
 	if err != nil {
@@ -329,11 +329,11 @@ func TestConfig_Modification(t *testing.T) {
 	defer client.Close()
 
 	// Modify config after client creation
-	config.Timeout = 1 * time.Second
-	config.MaxRetries = 10
+	config.Timeouts.Request = 1 * time.Second
+	config.Retry.MaxRetries = 10
 
 	// Original client should not be affected
-	if config.Timeout == originalTimeout {
+	if config.Timeouts.Request == originalTimeout {
 		t.Log("Config modification does not affect existing client")
 	}
 }

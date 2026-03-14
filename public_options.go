@@ -15,7 +15,7 @@ import (
 )
 
 func WithHeader(key, value string) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
 			return fmt.Errorf("invalid header: %w", err)
 		}
@@ -26,7 +26,7 @@ func WithHeader(key, value string) RequestOption {
 }
 
 func WithHeaderMap(headers map[string]string) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		for k, v := range headers {
 			if err := validation.ValidateHeaderKeyValue(k, v); err != nil {
 				return fmt.Errorf("invalid header %s: %w", k, err)
@@ -58,7 +58,7 @@ func WithXMLAccept() RequestOption {
 }
 
 func WithBasicAuth(username, password string) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		if username == "" {
 			return fmt.Errorf("username cannot be empty")
 		}
@@ -77,7 +77,7 @@ func WithBasicAuth(username, password string) RequestOption {
 }
 
 func WithBearerToken(token string) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		if token == "" {
 			return fmt.Errorf("token cannot be empty")
 		}
@@ -91,7 +91,7 @@ func WithBearerToken(token string) RequestOption {
 }
 
 func WithQuery(key string, value any) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		if err := validation.ValidateQueryKey(key); err != nil {
 			return err
 		}
@@ -114,7 +114,7 @@ func WithQuery(key string, value any) RequestOption {
 }
 
 func WithQueryMap(params map[string]any) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		existing := r.QueryParams()
 		if existing == nil {
 			existing = make(map[string]any, len(params))
@@ -139,7 +139,7 @@ func WithQueryMap(params map[string]any) RequestOption {
 }
 
 func WithJSON(data any) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		if data == nil {
 			return fmt.Errorf("JSON data cannot be nil")
 		}
@@ -150,7 +150,7 @@ func WithJSON(data any) RequestOption {
 }
 
 func WithXML(data any) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		if data == nil {
 			return fmt.Errorf("XML data cannot be nil")
 		}
@@ -161,7 +161,7 @@ func WithXML(data any) RequestOption {
 }
 
 func WithText(content string) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		r.SetBody(content)
 		r.SetHeader("Content-Type", "text/plain")
 		return nil
@@ -169,7 +169,7 @@ func WithText(content string) RequestOption {
 }
 
 func WithForm(data map[string]string) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		if data == nil {
 			return fmt.Errorf("form data cannot be nil")
 		}
@@ -184,7 +184,7 @@ func WithForm(data map[string]string) RequestOption {
 }
 
 func WithFormData(data *FormData) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		if data == nil {
 			return fmt.Errorf("form data cannot be nil")
 		}
@@ -194,7 +194,7 @@ func WithFormData(data *FormData) RequestOption {
 }
 
 func WithFile(fieldName, filename string, content []byte) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		if fieldName == "" {
 			return fmt.Errorf("field name cannot be empty")
 		}
@@ -227,7 +227,7 @@ func WithFile(fieldName, filename string, content []byte) RequestOption {
 }
 
 func WithTimeout(timeout time.Duration) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		if timeout < 0 {
 			return fmt.Errorf("%w: cannot be negative", ErrInvalidTimeout)
 		}
@@ -240,7 +240,7 @@ func WithTimeout(timeout time.Duration) RequestOption {
 }
 
 func WithContext(ctx context.Context) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		if ctx == nil {
 			return fmt.Errorf("context cannot be nil")
 		}
@@ -250,7 +250,7 @@ func WithContext(ctx context.Context) RequestOption {
 }
 
 func WithMaxRetries(maxRetries int) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		if maxRetries < 0 || maxRetries > 10 {
 			return fmt.Errorf("%w: must be 0-10, got %d", ErrInvalidRetry, maxRetries)
 		}
@@ -260,21 +260,21 @@ func WithMaxRetries(maxRetries int) RequestOption {
 }
 
 func WithBody(body any) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		r.SetBody(body)
 		return nil
 	}
 }
 
 func WithFollowRedirects(follow bool) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		r.SetFollowRedirects(&follow)
 		return nil
 	}
 }
 
 func WithMaxRedirects(maxRedirects int) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		if maxRedirects < 0 {
 			return fmt.Errorf("maxRedirects cannot be negative")
 		}
@@ -287,7 +287,7 @@ func WithMaxRedirects(maxRedirects int) RequestOption {
 }
 
 func WithBinary(data []byte, contentType ...string) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		if data == nil {
 			return fmt.Errorf("binary data cannot be nil")
 		}
@@ -304,7 +304,7 @@ func WithBinary(data []byte, contentType ...string) RequestOption {
 }
 
 func WithCookie(cookie http.Cookie) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		if err := validation.ValidateCookie(&cookie); err != nil {
 			return fmt.Errorf("invalid cookie: %w", err)
 		}
@@ -317,7 +317,7 @@ func WithCookie(cookie http.Cookie) RequestOption {
 }
 
 func WithCookies(cookies []http.Cookie) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		if len(cookies) == 0 {
 			return nil
 		}
@@ -335,7 +335,7 @@ func WithCookies(cookies []http.Cookie) RequestOption {
 }
 
 func WithCookieValue(name, value string) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		cookie := http.Cookie{
 			Name:  name,
 			Value: value,
@@ -353,7 +353,7 @@ func WithCookieValue(name, value string) RequestOption {
 }
 
 func WithCookieString(cookieString string) RequestOption {
-	return func(r engine.RequestMutator) error {
+	return func(r *engine.Request) error {
 		if cookieString == "" {
 			return nil
 		}
@@ -405,10 +405,10 @@ func parseCookieString(cookieString string) ([]http.Cookie, error) {
 			return nil, fmt.Errorf("cookie value too long for %s", cookie.Name)
 		}
 
-		// Validate cookie name characters
+		// Validate cookie name characters (excluding '=' which is valid in cookie string format)
 		for j := 0; j < nameLen; j++ {
 			c := cookie.Name[j]
-			if c < 0x20 || c == 0x7F || c == ';' || c == ',' || c == '=' {
+			if c < 0x20 || c == 0x7F || c == ';' || c == ',' {
 				return nil, fmt.Errorf("invalid character in cookie name: %s", cookie.Name)
 			}
 		}
@@ -420,4 +420,72 @@ func parseCookieString(cookieString string) ([]http.Cookie, error) {
 	}
 
 	return cookies, nil
+}
+
+// WithOnRequest registers a callback invoked before the request is sent.
+// The callback receives the request mutator, allowing inspection or modification
+// of the request before it's transmitted.
+//
+// Multiple callbacks can be chained - they are executed in the order added.
+// If any callback returns an error, the request is aborted.
+//
+// Example:
+//
+//	result, err := client.Get("https://api.example.com",
+//	    httpc.WithOnRequest(func(req httpc.RequestMutator) error {
+//	        log.Printf("Sending %s request to %s", req.Method(), req.URL())
+//	        return nil
+//	    }),
+//	)
+func WithOnRequest(callback func(req RequestMutator) error) RequestOption {
+	return func(r *engine.Request) error {
+		if callback == nil {
+			return fmt.Errorf("onRequest callback cannot be nil")
+		}
+
+		existing := r.OnRequest()
+		r.SetOnRequest(func(req *engine.Request) error {
+			if existing != nil {
+				if err := existing(req); err != nil {
+					return err
+				}
+			}
+			return callback(req)
+		})
+		return nil
+	}
+}
+
+// WithOnResponse registers a callback invoked after the response is received.
+// The callback receives the response mutator, allowing inspection or modification
+// of the response before it's returned to the caller.
+//
+// Multiple callbacks can be chained - they are executed in the order added.
+// If any callback returns an error, the request fails with that error.
+//
+// Example:
+//
+//	result, err := client.Get("https://api.example.com",
+//	    httpc.WithOnResponse(func(resp httpc.ResponseMutator) error {
+//	        log.Printf("Received response: %d %s", resp.StatusCode(), resp.Status())
+//	        return nil
+//	    }),
+//	)
+func WithOnResponse(callback func(resp ResponseMutator) error) RequestOption {
+	return func(r *engine.Request) error {
+		if callback == nil {
+			return fmt.Errorf("onResponse callback cannot be nil")
+		}
+
+		existing := r.OnResponse()
+		r.SetOnResponse(func(resp *engine.Response) error {
+			if existing != nil {
+				if err := existing(resp); err != nil {
+					return err
+				}
+			}
+			return callback(resp)
+		})
+		return nil
+	}
 }

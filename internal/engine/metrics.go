@@ -13,6 +13,16 @@ type MetricsSnapshot struct {
 	AverageLatency     time.Duration
 }
 
+// HealthStatus represents basic health metrics for the client.
+type HealthStatus struct {
+	Healthy            bool
+	TotalRequests      int64
+	SuccessfulRequests int64
+	FailedRequests     int64
+	AverageLatency     time.Duration
+	ErrorRate          float64
+}
+
 // Metrics collects and tracks HTTP client performance metrics.
 // All methods are safe for concurrent use.
 type Metrics struct {
@@ -61,4 +71,34 @@ func (m *Metrics) Reset() {
 	atomic.StoreInt64(&m.successfulRequests, 0)
 	atomic.StoreInt64(&m.failedRequests, 0)
 	atomic.StoreInt64(&m.averageLatency, 0)
+}
+
+// GetHealthStatus returns the current health status of the client.
+// A client is considered healthy if its error rate is below 10%.
+func (m *Metrics) GetHealthStatus() HealthStatus {
+	total := atomic.LoadInt64(&m.totalRequests)
+	success := atomic.LoadInt64(&m.successfulRequests)
+	failed := atomic.LoadInt64(&m.failedRequests)
+	avgLatNs := atomic.LoadInt64(&m.averageLatency)
+
+	var errorRate float64
+	if total > 0 {
+		errorRate = float64(failed) / float64(total)
+	}
+
+	healthy := errorRate < 0.1
+
+	return HealthStatus{
+		Healthy:            healthy,
+		TotalRequests:      total,
+		SuccessfulRequests: success,
+		FailedRequests:     failed,
+		AverageLatency:     time.Duration(avgLatNs),
+		ErrorRate:          errorRate,
+	}
+}
+
+// IsHealthy returns true if the client is healthy (error rate < 10%).
+func (m *Metrics) IsHealthy() bool {
+	return m.GetHealthStatus().Healthy
 }

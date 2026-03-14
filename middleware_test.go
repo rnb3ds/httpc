@@ -17,7 +17,7 @@ func TestChain(t *testing.T) {
 	var mu sync.Mutex
 
 	middleware1 := func(next Handler) Handler {
-		return func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
+		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 			mu.Lock()
 			order = append(order, "m1-before")
 			mu.Unlock()
@@ -30,7 +30,7 @@ func TestChain(t *testing.T) {
 	}
 
 	middleware2 := func(next Handler) Handler {
-		return func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
+		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 			mu.Lock()
 			order = append(order, "m2-before")
 			mu.Unlock()
@@ -42,7 +42,7 @@ func TestChain(t *testing.T) {
 		}
 	}
 
-	finalHandler := func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
+	finalHandler := func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 		mu.Lock()
 		order = append(order, "handler")
 		mu.Unlock()
@@ -82,7 +82,7 @@ func TestLoggingMiddleware(t *testing.T) {
 	defer ts.Close()
 
 	cfg := DefaultConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		LoggingMiddleware(logger),
 	}
 
@@ -111,13 +111,13 @@ func TestLoggingMiddleware(t *testing.T) {
 
 func TestRecoveryMiddleware(t *testing.T) {
 	panicMiddleware := func(next Handler) Handler {
-		return func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
+		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 			panic("test panic")
 		}
 	}
 
 	cfg := DefaultConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		RecoveryMiddleware(),
 		panicMiddleware,
 	}
@@ -152,7 +152,7 @@ func TestRequestIDMiddleware(t *testing.T) {
 	defer ts.Close()
 
 	cfg := DefaultConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		RequestIDMiddleware("X-Request-ID", func() string {
 			return "test-request-id-123"
 		}),
@@ -182,8 +182,8 @@ func TestTimeoutMiddleware(t *testing.T) {
 	defer ts.Close()
 
 	cfg := DefaultConfig()
-	cfg.Timeout = 5 * time.Second
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Timeouts.Request = 5 * time.Second
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		TimeoutMiddleware(10 * time.Millisecond),
 	}
 
@@ -218,7 +218,7 @@ func TestHeaderMiddleware(t *testing.T) {
 	defer ts.Close()
 
 	cfg := DefaultConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		HeaderMiddleware(map[string]string{
 			"X-Custom-Header": "custom-value",
 			"Authorization":   "Bearer test-token",
@@ -261,7 +261,7 @@ func TestMetricsMiddleware(t *testing.T) {
 	defer ts.Close()
 
 	cfg := DefaultConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		MetricsMiddleware(func(method, url string, statusCode int, duration time.Duration, err error) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -316,7 +316,7 @@ func TestMultipleMiddlewares(t *testing.T) {
 
 	createMiddleware := func(name string) MiddlewareFunc {
 		return func(next Handler) Handler {
-			return func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
+			return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 				mu.Lock()
 				order = append(order, name+"-before")
 				mu.Unlock()
@@ -330,7 +330,7 @@ func TestMultipleMiddlewares(t *testing.T) {
 	}
 
 	cfg := DefaultConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		createMiddleware("A"),
 		createMiddleware("B"),
 		createMiddleware("C"),
@@ -396,9 +396,9 @@ func TestMiddlewareCanModifyRequest(t *testing.T) {
 	defer ts.Close()
 
 	cfg := DefaultConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		func(next Handler) Handler {
-			return func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
+			return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 				req.SetHeader("X-Modified-By-Middleware", "modified-value")
 				return next(ctx, req)
 			}
@@ -429,9 +429,9 @@ func TestMiddlewareCanModifyResponse(t *testing.T) {
 	defer ts.Close()
 
 	cfg := DefaultConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		func(next Handler) Handler {
-			return func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
+			return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 				resp, err := next(ctx, req)
 				if resp != nil {
 					resp.(ResponseMutator).SetHeader("X-Modified", "modified-value")
@@ -477,9 +477,9 @@ func BenchmarkMiddlewareOverhead(b *testing.B) {
 
 	b.Run("WithMiddleware", func(b *testing.B) {
 		cfg := DefaultConfig()
-		cfg.Middlewares = []MiddlewareFunc{
+		cfg.Middleware.Middlewares = []MiddlewareFunc{
 			func(next Handler) Handler {
-				return func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
+				return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 					return next(ctx, req)
 				}
 			},
@@ -495,19 +495,19 @@ func BenchmarkMiddlewareOverhead(b *testing.B) {
 
 	b.Run("WithThreeMiddlewares", func(b *testing.B) {
 		cfg := DefaultConfig()
-		cfg.Middlewares = []MiddlewareFunc{
+		cfg.Middleware.Middlewares = []MiddlewareFunc{
 			func(next Handler) Handler {
-				return func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
+				return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 					return next(ctx, req)
 				}
 			},
 			func(next Handler) Handler {
-				return func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
+				return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 					return next(ctx, req)
 				}
 			},
 			func(next Handler) Handler {
-				return func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
+				return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 					return next(ctx, req)
 				}
 			},
@@ -531,9 +531,9 @@ func TestConcurrentMiddlewareAccess(t *testing.T) {
 	var callCount int64
 
 	cfg := DefaultConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		func(next Handler) Handler {
-			return func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
+			return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 				atomic.AddInt64(&callCount, 1)
 				return next(ctx, req)
 			}
@@ -577,19 +577,20 @@ type mockRequest struct {
 	maxRedirects    *int
 }
 
-func (m *mockRequest) Method() string              { return m.method }
-func (m *mockRequest) URL() string                 { return m.url }
-func (m *mockRequest) Headers() map[string]string  { return m.headers }
-func (m *mockRequest) QueryParams() map[string]any { return m.queryParams }
-func (m *mockRequest) Body() any                   { return m.body }
-func (m *mockRequest) Timeout() time.Duration      { return m.timeout }
-func (m *mockRequest) MaxRetries() int             { return m.maxRetries }
-func (m *mockRequest) Context() context.Context    { return m.ctx }
-func (m *mockRequest) Cookies() []http.Cookie      { return m.cookies }
-func (m *mockRequest) FollowRedirects() *bool      { return m.followRedirects }
-func (m *mockRequest) MaxRedirects() *int          { return m.maxRedirects }
-func (m *mockRequest) SetMethod(v string)          { m.method = v }
-func (m *mockRequest) SetURL(v string)             { m.url = v }
+func (m *mockRequest) Method() string                 { return m.method }
+func (m *mockRequest) URL() string                    { return m.url }
+func (m *mockRequest) Headers() map[string]string     { return m.headers }
+func (m *mockRequest) QueryParams() map[string]any    { return m.queryParams }
+func (m *mockRequest) Body() any                      { return m.body }
+func (m *mockRequest) Timeout() time.Duration         { return m.timeout }
+func (m *mockRequest) MaxRetries() int                { return m.maxRetries }
+func (m *mockRequest) Context() context.Context       { return m.ctx }
+func (m *mockRequest) Cookies() []http.Cookie         { return m.cookies }
+func (m *mockRequest) FollowRedirects() *bool         { return m.followRedirects }
+func (m *mockRequest) MaxRedirects() *int             { return m.maxRedirects }
+func (m *mockRequest) SetMethod(v string)             { m.method = v }
+func (m *mockRequest) SetURL(v string)                { m.url = v }
+func (m *mockRequest) SetHeaders(v map[string]string) { m.headers = v }
 func (m *mockRequest) SetHeader(k, v string) {
 	if m.headers == nil {
 		m.headers = make(map[string]string)
@@ -605,38 +606,49 @@ func (m *mockRequest) SetCookies(v []http.Cookie)      { m.cookies = v }
 func (m *mockRequest) SetFollowRedirects(v *bool)      { m.followRedirects = v }
 func (m *mockRequest) SetMaxRedirects(v *int)          { m.maxRedirects = v }
 
-// mockResponse implements ResponseAccessor for testing
+// mockResponse implements ResponseMutator for testing
 type mockResponse struct {
-	statusCode    int
-	status        string
-	headers       http.Header
-	body          string
-	rawBody       []byte
-	contentLength int64
-	duration      time.Duration
-	attempts      int
-	cookies       []*http.Cookie
-	redirectChain []string
-	redirectCount int
+	statusCode     int
+	status         string
+	headers        http.Header
+	body           string
+	rawBody        []byte
+	contentLength  int64
+	duration       time.Duration
+	attempts       int
+	cookies        []*http.Cookie
+	redirectChain  []string
+	redirectCount  int
+	requestHeaders http.Header
 }
 
-func (m *mockResponse) StatusCode() int         { return m.statusCode }
-func (m *mockResponse) Status() string          { return m.status }
-func (m *mockResponse) Headers() http.Header    { return m.headers }
-func (m *mockResponse) Body() string            { return m.body }
-func (m *mockResponse) RawBody() []byte         { return m.rawBody }
-func (m *mockResponse) ContentLength() int64    { return m.contentLength }
-func (m *mockResponse) Duration() time.Duration { return m.duration }
-func (m *mockResponse) Attempts() int           { return m.attempts }
-func (m *mockResponse) Cookies() []*http.Cookie { return m.cookies }
-func (m *mockResponse) RedirectChain() []string { return m.redirectChain }
-func (m *mockResponse) RedirectCount() int      { return m.redirectCount }
-func (m *mockResponse) SetStatusCode(v int)     { m.statusCode = v }
+func (m *mockResponse) StatusCode() int             { return m.statusCode }
+func (m *mockResponse) Status() string              { return m.status }
+func (m *mockResponse) Headers() http.Header        { return m.headers }
+func (m *mockResponse) Body() string                { return m.body }
+func (m *mockResponse) RawBody() []byte             { return m.rawBody }
+func (m *mockResponse) ContentLength() int64        { return m.contentLength }
+func (m *mockResponse) Duration() time.Duration     { return m.duration }
+func (m *mockResponse) Attempts() int               { return m.attempts }
+func (m *mockResponse) Cookies() []*http.Cookie     { return m.cookies }
+func (m *mockResponse) RedirectChain() []string     { return m.redirectChain }
+func (m *mockResponse) RedirectCount() int          { return m.redirectCount }
+func (m *mockResponse) RequestHeaders() http.Header { return m.requestHeaders }
+func (m *mockResponse) SetStatusCode(v int)         { m.statusCode = v }
+func (m *mockResponse) SetStatus(v string)          { m.status = v }
+func (m *mockResponse) SetHeaders(v http.Header)    { m.headers = v }
 func (m *mockResponse) SetHeader(k string, v ...string) {
 	if m.headers == nil {
 		m.headers = make(http.Header)
 	}
 	m.headers[k] = v
 }
-func (m *mockResponse) SetBody(v string)            { m.body = v }
-func (m *mockResponse) SetDuration(v time.Duration) { m.duration = v }
+func (m *mockResponse) SetBody(v string)                { m.body = v }
+func (m *mockResponse) SetRawBody(v []byte)             { m.rawBody = v }
+func (m *mockResponse) SetContentLength(v int64)        { m.contentLength = v }
+func (m *mockResponse) SetDuration(v time.Duration)     { m.duration = v }
+func (m *mockResponse) SetAttempts(v int)               { m.attempts = v }
+func (m *mockResponse) SetCookies(v []*http.Cookie)     { m.cookies = v }
+func (m *mockResponse) SetRedirectChain(v []string)     { m.redirectChain = v }
+func (m *mockResponse) SetRedirectCount(v int)          { m.redirectCount = v }
+func (m *mockResponse) SetRequestHeaders(v http.Header) { m.requestHeaders = v }
