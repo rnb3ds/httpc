@@ -9,6 +9,7 @@ import (
 	stdpath "path"
 	"sync"
 
+	"github.com/cybergodev/httpc/internal/engine"
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
@@ -183,10 +184,8 @@ func (dc *DomainClient) captureRequestOptions(options []RequestOption) {
 		return
 	}
 
-	tempReq := &Request{
-		Headers: make(map[string]string, 4),
-		Cookies: make([]http.Cookie, 0, 4),
-	}
+	// Use engine.Request which implements RequestMutator
+	tempReq := &engine.Request{}
 
 	for _, opt := range options {
 		if opt != nil {
@@ -194,19 +193,22 @@ func (dc *DomainClient) captureRequestOptions(options []RequestOption) {
 		}
 	}
 
-	if len(tempReq.Cookies) == 0 && len(tempReq.Headers) == 0 {
+	cookies := tempReq.Cookies()
+	headers := tempReq.Headers()
+
+	if len(cookies) == 0 && len(headers) == 0 {
 		return
 	}
 
 	dc.mu.Lock()
 	defer dc.mu.Unlock()
 
-	for i := range tempReq.Cookies {
-		cookie := &tempReq.Cookies[i]
+	for i := range cookies {
+		cookie := &cookies[i]
 		dc.cookies[cookie.Name] = cookie
 	}
 
-	for key, value := range tempReq.Headers {
+	for key, value := range headers {
 		dc.headers[key] = value
 	}
 }

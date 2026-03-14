@@ -4,17 +4,11 @@ import (
 	"context"
 	"fmt"
 	"time"
-
-	"github.com/cybergodev/httpc/internal/engine"
 )
 
-// Handler processes an HTTP request and returns a response.
-// This is the core function signature for request processing in the middleware chain.
-type Handler func(ctx context.Context, req *engine.Request) (*engine.Response, error)
-
-// MiddlewareFunc wraps a Handler with additional functionality.
-// Middleware can inspect/modify requests, handle responses, add logging, etc.
-type MiddlewareFunc func(Handler) Handler
+// Note: engine.Request now directly implements the RequestMutator interface,
+// and engine.Response now directly implements the ResponseMutator interface.
+// The adapters have been removed to eliminate the GC overhead.
 
 // Chain combines multiple middlewares into a single middleware.
 // Middlewares are executed in the order they are provided (first to last).
@@ -32,20 +26,20 @@ func Chain(middlewares ...MiddlewareFunc) MiddlewareFunc {
 // The log function receives formatted log messages (similar to log.Printf).
 func LoggingMiddleware(log func(format string, args ...any)) MiddlewareFunc {
 	return func(next Handler) Handler {
-		return func(ctx context.Context, req *engine.Request) (*engine.Response, error) {
+		return func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
 			start := time.Now()
 			resp, err := next(ctx, req)
 			duration := time.Since(start)
 
 			status := 0
 			if resp != nil {
-				status = resp.StatusCode
+				status = resp.StatusCode()
 			}
 
 			if err != nil {
-				log("%s %s -> error: %v (%v)", req.Method, req.URL, err, duration)
+				log("%s %s -> error: %v (%v)", req.Method(), req.URL(), err, duration)
 			} else {
-				log("%s %s -> %d (%v)", req.Method, req.URL, status, duration)
+				log("%s %s -> %d (%v)", req.Method(), req.URL(), status, duration)
 			}
 
 			return resp, err
@@ -57,7 +51,7 @@ func LoggingMiddleware(log func(format string, args ...any)) MiddlewareFunc {
 // If a panic occurs, it is converted to an error and returned.
 func RecoveryMiddleware() MiddlewareFunc {
 	return func(next Handler) Handler {
-		return func(ctx context.Context, req *engine.Request) (resp *engine.Response, err error) {
+		return func(ctx context.Context, req RequestMutator) (resp ResponseAccessor, err error) {
 			defer func() {
 				if r := recover(); r != nil {
 					if e, ok := r.(error); ok {
@@ -83,13 +77,10 @@ func RequestIDMiddleware(headerName string, generator func() string) MiddlewareF
 	}
 
 	return func(next Handler) Handler {
-		return func(ctx context.Context, req *engine.Request) (*engine.Response, error) {
-			if req.Headers == nil {
-				req.Headers = make(map[string]string)
-			}
-
-			if _, exists := req.Headers[headerName]; !exists {
-				req.Headers[headerName] = generator()
+		return func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
+			headers := req.Headers()
+			if _, exists := headers[headerName]; !exists {
+				req.SetHeader(headerName, generator())
 			}
 
 			return next(ctx, req)
@@ -102,13 +93,16 @@ func RequestIDMiddleware(headerName string, generator func() string) MiddlewareF
 // This timeout applies at the middleware level, before the client's built-in timeout.
 func TimeoutMiddleware(timeout time.Duration) MiddlewareFunc {
 	return func(next Handler) Handler {
-		return func(ctx context.Context, req *engine.Request) (*engine.Response, error) {
+		return func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
 			if timeout <= 0 {
 				return next(ctx, req)
 			}
 
 			timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
+
+			// Also set the request timeout so the engine respects it
+			req.SetTimeout(timeout)
 
 			return next(timeoutCtx, req)
 		}
@@ -119,13 +113,9 @@ func TimeoutMiddleware(timeout time.Duration) MiddlewareFunc {
 // Existing headers with the same keys will be overwritten.
 func HeaderMiddleware(headers map[string]string) MiddlewareFunc {
 	return func(next Handler) Handler {
-		return func(ctx context.Context, req *engine.Request) (*engine.Response, error) {
-			if req.Headers == nil {
-				req.Headers = make(map[string]string)
-			}
-
+		return func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
 			for key, value := range headers {
-				req.Headers[key] = value
+				req.SetHeader(key, value)
 			}
 
 			return next(ctx, req)
@@ -137,17 +127,17 @@ func HeaderMiddleware(headers map[string]string) MiddlewareFunc {
 // The onMetrics callback is invoked with metrics after each request completes.
 func MetricsMiddleware(onMetrics func(method, url string, statusCode int, duration time.Duration, err error)) MiddlewareFunc {
 	return func(next Handler) Handler {
-		return func(ctx context.Context, req *engine.Request) (*engine.Response, error) {
+		return func(ctx context.Context, req RequestMutator) (ResponseAccessor, error) {
 			start := time.Now()
 			resp, err := next(ctx, req)
 			duration := time.Since(start)
 
 			statusCode := 0
 			if resp != nil {
-				statusCode = resp.StatusCode
+				statusCode = resp.StatusCode()
 			}
 
-			onMetrics(req.Method, req.URL, statusCode, duration, err)
+			onMetrics(req.Method(), req.URL(), statusCode, duration, err)
 
 			return resp, err
 		}

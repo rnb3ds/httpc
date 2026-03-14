@@ -37,22 +37,22 @@ func NewRequestProcessor(config *Config) *RequestProcessor {
 }
 
 func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
-	if req.Method == "" {
-		req.Method = "GET"
+	if req.Method() == "" {
+		req.SetMethod("GET")
 	}
 
-	if req.Context == nil {
-		req.Context = context.Background()
+	if req.Context() == nil {
+		req.SetContext(context.Background())
 	}
 
-	parsedURL, err := url.Parse(req.URL)
+	parsedURL, err := url.Parse(req.URL())
 	if err != nil {
 		return nil, fmt.Errorf("invalid URL: %w", err)
 	}
 
-	if len(req.QueryParams) > 0 {
+	if len(req.QueryParams()) > 0 {
 		query := parsedURL.Query()
-		for key, value := range req.QueryParams {
+		for key, value := range req.QueryParams() {
 			query.Add(key, fmt.Sprintf("%v", value))
 		}
 		parsedURL.RawQuery = query.Encode()
@@ -61,8 +61,8 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 	var body io.Reader
 	var contentType string
 
-	if req.Body != nil {
-		switch v := req.Body.(type) {
+	if req.Body() != nil {
+		switch v := req.Body().(type) {
 		case string:
 			body = strings.NewReader(v)
 			contentType = "text/plain"
@@ -73,8 +73,8 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 			body = v
 		default:
 			existingContentType := ""
-			if req.Headers != nil {
-				existingContentType = req.Headers["Content-Type"]
+			if req.Headers() != nil {
+				existingContentType = req.Headers()["Content-Type"]
 			}
 
 			if existingContentType == "application/xml" {
@@ -163,12 +163,12 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 		}
 	}
 
-	httpReq, err := http.NewRequest(req.Method, parsedURL.String(), body)
+	httpReq, err := http.NewRequest(req.Method(), parsedURL.String(), body)
 	if err != nil {
 		return nil, fmt.Errorf("create HTTP request failed: %w", err)
 	}
 
-	httpReq = httpReq.WithContext(req.Context)
+	httpReq = httpReq.WithContext(req.Context())
 
 	if contentType != "" && httpReq.Header.Get("Content-Type") == "" {
 		httpReq.Header.Set("Content-Type", contentType)
@@ -180,7 +180,7 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 		}
 	}
 
-	for key, value := range req.Headers {
+	for key, value := range req.Headers() {
 		httpReq.Header.Set(key, value)
 	}
 
@@ -192,8 +192,9 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 	// Note: If EnableCookies is true and a CookieJar is configured,
 	// the cookies will be managed by the jar automatically.
 	// We still add them here for immediate use in this request.
-	for i := range req.Cookies {
-		httpReq.AddCookie(&req.Cookies[i])
+	cookies := req.Cookies()
+	for i := range cookies {
+		httpReq.AddCookie(&cookies[i])
 	}
 
 	return httpReq, nil

@@ -12,15 +12,15 @@ import (
 	"time"
 
 	"github.com/cybergodev/httpc/internal/dns"
-	"github.com/cybergodev/httpc/internal/netutil"
 	"github.com/cybergodev/httpc/internal/proxy"
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // PoolManager provides intelligent connection pool management with monitoring
 type PoolManager struct {
 	config *Config
 
-	transport *http.Transport
+	transport   *http.Transport
 	dohResolver *dns.DoHResolver
 
 	activeConns   int64
@@ -69,8 +69,8 @@ type Config struct {
 	CookieJar interface{}
 
 	// DNS configuration
-	EnableDoH        bool          // Enable DNS-over-HTTPS
-	DoHCacheTTL      time.Duration // DoH cache TTL
+	EnableDoH   bool          // Enable DNS-over-HTTPS
+	DoHCacheTTL time.Duration // DoH cache TTL
 }
 
 // HostStats tracks per-host connection statistics
@@ -209,7 +209,7 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 			// SSRF protection check
 			if !pm.config.AllowPrivateIPs {
 				for _, ip := range ips {
-					if err := netutil.ValidateIP(ip.IP); err != nil {
+					if err := validation.ValidateIP(ip.IP); err != nil {
 						atomic.AddInt64(&pm.rejectedConns, 1)
 						return nil, fmt.Errorf("SSRF protection: %w", err)
 					}
@@ -280,7 +280,7 @@ func (pm *PoolManager) validateAddressBeforeDial(address string) error {
 
 	// If the address is already an IP, validate it directly
 	if ip := net.ParseIP(host); ip != nil {
-		return netutil.ValidateIP(ip)
+		return validation.ValidateIP(ip)
 	}
 
 	// For domain names, we need to resolve them first to check all potential IPs
@@ -294,7 +294,7 @@ func (pm *PoolManager) validateAddressBeforeDial(address string) error {
 
 	// Check all resolved IPs - if any point to a private/reserved address, block it
 	for _, ip := range ips {
-		if err := netutil.ValidateIP(ip); err != nil {
+		if err := validation.ValidateIP(ip); err != nil {
 			return fmt.Errorf("domain %s resolves to blocked address: %w", host, err)
 		}
 	}

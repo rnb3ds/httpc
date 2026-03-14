@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/cybergodev/httpc/internal/engine"
 )
 
 // testConfig returns a config suitable for testing with localhost
@@ -350,7 +352,7 @@ func TestRedirect_OptionValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := &Request{}
+			req := &engine.Request{}
 			opt := WithMaxRedirects(tt.maxRedirect)
 			err := opt(req)
 			if (err != nil) != tt.wantErr {

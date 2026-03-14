@@ -20,6 +20,9 @@ type DoHResolver struct {
 	cacheTTL  time.Duration
 }
 
+// Compile-time interface check
+var _ Resolver = (*DoHResolver)(nil)
+
 // DoHProvider represents a DoH service provider
 type DoHProvider struct {
 	Name     string
@@ -29,8 +32,8 @@ type DoHProvider struct {
 
 // CacheEntry holds cached DNS resolution results
 type CacheEntry struct {
-	IPs      []net.IPAddr
-	Expires  time.Time
+	IPs     []net.IPAddr
+	Expires time.Time
 }
 
 // DefaultDoHProviders returns common DoH providers
@@ -71,11 +74,11 @@ func NewDoHResolver(providers []*DoHProvider, cacheTTL time.Duration) *DoHResolv
 					Timeout:   5 * time.Second,
 					KeepAlive: 30 * time.Second,
 				}).DialContext,
-				MaxIdleConns:        10,
-				IdleConnTimeout:     30 * time.Second,
-				DisableCompression:  true,
-				DisableKeepAlives:   false,
-				ForceAttemptHTTP2:   true,
+				MaxIdleConns:       10,
+				IdleConnTimeout:    30 * time.Second,
+				DisableCompression: true,
+				DisableKeepAlives:  false,
+				ForceAttemptHTTP2:  true,
 			},
 		},
 		providers: providers,
@@ -171,8 +174,8 @@ func (r *DoHResolver) parseResponse(resp *http.Response, provider *DoHProvider, 
 // parseJSONResponse parses JSON DoH response (Google and AliDNS format)
 func (r *DoHResolver) parseJSONResponse(body []byte, host string) ([]net.IPAddr, error) {
 	type DNSResponse struct {
-		Status  int `json:"Status"`
-		Answer  []struct {
+		Status int `json:"Status"`
+		Answer []struct {
 			Name string `json:"name"`
 			Type int    `json:"type"`
 			Data string `json:"data"`

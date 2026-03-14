@@ -8,7 +8,7 @@ import (
 
 // Detector provides automatic system proxy detection
 type Detector struct {
-	cache  *proxyConfig
+	cache   *proxyConfig
 	cacheMu sync.RWMutex
 }
 

@@ -1431,7 +1431,7 @@ func TestDomainClient_DownloadWithOptions_Overwrite(t *testing.T) {
 
 func TestDomainClient_DownloadWithOptions_Resume(t *testing.T) {
 	fullContent := []byte(strings.Repeat("x", 1024*10)) // 10KB
-	partialContent := fullContent[:5*1024]               // First 5KB
+	partialContent := fullContent[:5*1024]              // First 5KB
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rangeHeader := r.Header.Get("Range")

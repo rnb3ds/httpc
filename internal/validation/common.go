@@ -21,6 +21,7 @@ const (
 
 	MaxHeaderKeyLen   = 256
 	MaxHeaderValueLen = 8192
+	MaxURLLen         = 2048 // Maximum URL length
 )
 
 // ValidateInputString performs common string validation to prevent injection attacks.

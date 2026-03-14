@@ -114,8 +114,8 @@ func TestClient_Request(t *testing.T) {
 		t.Fatalf("Request failed: %v", err)
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	if resp.StatusCode() != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode())
 	}
 }
 
@@ -145,10 +145,7 @@ func TestClient_RequestWithOptions(t *testing.T) {
 
 	// Create a request option that adds a header
 	headerOption := func(req *Request) error {
-		if req.Headers == nil {
-			req.Headers = make(map[string]string)
-		}
-		req.Headers["X-Test"] = "test-value"
+		req.SetHeader("X-Test", "test-value")
 		return nil
 	}
 
@@ -157,8 +154,8 @@ func TestClient_RequestWithOptions(t *testing.T) {
 		t.Fatalf("Request failed: %v", err)
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	if resp.StatusCode() != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode())
 	}
 }
 
@@ -280,8 +277,8 @@ func TestClient_TLSConfig(t *testing.T) {
 		t.Fatalf("HTTPS request failed: %v", err)
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	if resp.StatusCode() != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode())
 	}
 }
 
@@ -378,7 +375,7 @@ func TestClient_LargeResponse(t *testing.T) {
 		t.Fatalf("Request failed: %v", err)
 	}
 
-	if len(resp.RawBody) != len(largeContent) {
-		t.Errorf("Expected response size %d, got %d", len(largeContent), len(resp.RawBody))
+	if len(resp.RawBody()) != len(largeContent) {
+		t.Errorf("Expected response size %d, got %d", len(largeContent), len(resp.RawBody()))
 	}
 }

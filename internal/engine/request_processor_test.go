@@ -34,14 +34,14 @@ func TestRequestProcessor_Build(t *testing.T) {
 	}{
 		{
 			name: "Simple GET request",
-			request: &Request{
-				Method:  "GET",
-				URL:     "https://api.example.com/users",
-				Context: context.Background(),
-				Headers: map[string]string{
+			request: testRequestBuilder().
+				Method("GET").
+				URL("https://api.example.com/users").
+				Context(context.Background()).
+				Headers(map[string]string{
 					"Accept": "application/json",
-				},
-			},
+				}).
+				Build(),
 			validate: func(t *testing.T, req *http.Request) {
 				if req.Method != "GET" {
 					t.Errorf("Expected method GET, got %s", req.Method)
@@ -56,18 +56,18 @@ func TestRequestProcessor_Build(t *testing.T) {
 		},
 		{
 			name: "POST with JSON body",
-			request: &Request{
-				Method:  "POST",
-				URL:     "https://api.example.com/users",
-				Context: context.Background(),
-				Headers: map[string]string{
+			request: testRequestBuilder().
+				Method("POST").
+				URL("https://api.example.com/users").
+				Context(context.Background()).
+				Headers(map[string]string{
 					"Content-Type": "application/json",
-				},
-				Body: map[string]interface{}{
+				}).
+				Body(map[string]interface{}{
 					"name":  "John Doe",
 					"email": "john@example.com",
-				},
-			},
+				}).
+				Build(),
 			validate: func(t *testing.T, req *http.Request) {
 				if req.Method != "POST" {
 					t.Errorf("Expected method POST, got %s", req.Method)
@@ -97,16 +97,16 @@ func TestRequestProcessor_Build(t *testing.T) {
 		},
 		{
 			name: "Request with query parameters",
-			request: &Request{
-				Method:  "GET",
-				URL:     "https://api.example.com/users",
-				Context: context.Background(),
-				QueryParams: map[string]any{
+			request: testRequestBuilder().
+				Method("GET").
+				URL("https://api.example.com/users").
+				Context(context.Background()).
+				QueryParams(map[string]any{
 					"page":   1,
 					"limit":  10,
 					"filter": "active",
-				},
-			},
+				}).
+				Build(),
 			validate: func(t *testing.T, req *http.Request) {
 				query := req.URL.Query()
 				if query.Get("page") != "1" {
@@ -122,15 +122,15 @@ func TestRequestProcessor_Build(t *testing.T) {
 		},
 		{
 			name: "Request with cookies",
-			request: &Request{
-				Method:  "GET",
-				URL:     "https://api.example.com/users",
-				Context: context.Background(),
-				Cookies: []http.Cookie{
+			request: testRequestBuilder().
+				Method("GET").
+				URL("https://api.example.com/users").
+				Context(context.Background()).
+				Cookies([]http.Cookie{
 					{Name: "session_id", Value: "abc123"},
 					{Name: "user_pref", Value: "dark_mode"},
-				},
-			},
+				}).
+				Build(),
 			validate: func(t *testing.T, req *http.Request) {
 				cookies := req.Cookies()
 				if len(cookies) != 2 {
@@ -158,15 +158,15 @@ func TestRequestProcessor_Build(t *testing.T) {
 		},
 		{
 			name: "Request with string body",
-			request: &Request{
-				Method:  "POST",
-				URL:     "https://api.example.com/data",
-				Context: context.Background(),
-				Headers: map[string]string{
+			request: testRequestBuilder().
+				Method("POST").
+				URL("https://api.example.com/data").
+				Context(context.Background()).
+				Headers(map[string]string{
 					"Content-Type": "text/plain",
-				},
-				Body: "Hello, World!",
-			},
+				}).
+				Body("Hello, World!").
+				Build(),
 			validate: func(t *testing.T, req *http.Request) {
 				if req.Body == nil {
 					t.Error("Expected request body, got nil")
@@ -184,15 +184,15 @@ func TestRequestProcessor_Build(t *testing.T) {
 		},
 		{
 			name: "Request with byte array body",
-			request: &Request{
-				Method:  "POST",
-				URL:     "https://api.example.com/data",
-				Context: context.Background(),
-				Headers: map[string]string{
+			request: testRequestBuilder().
+				Method("POST").
+				URL("https://api.example.com/data").
+				Context(context.Background()).
+				Headers(map[string]string{
 					"Content-Type": "application/octet-stream",
-				},
-				Body: []byte{0x48, 0x65, 0x6c, 0x6c, 0x6f}, // "Hello"
-			},
+				}).
+				Body([]byte{0x48, 0x65, 0x6c, 0x6c, 0x6f}). // "Hello"
+				Build(),
 			validate: func(t *testing.T, req *http.Request) {
 				if req.Body == nil {
 					t.Error("Expected request body, got nil")
@@ -240,29 +240,28 @@ func TestRequestProcessor_BuildErrors(t *testing.T) {
 	}{
 		{
 			name: "Invalid URL",
-			request: &Request{
-				Method:  "GET",
-				URL:     "://invalid-url",
-				Context: context.Background(),
-			},
+			request: testRequestBuilder().
+				Method("GET").
+				URL("://invalid-url").
+				Context(context.Background()).
+				Build(),
 			expectError: true,
 		},
 		{
 			name: "Empty method",
-			request: &Request{
-				Method:  "",
-				URL:     "https://api.example.com/users",
-				Context: context.Background(),
-			},
+			request: testRequestBuilder().
+				Method("").
+				URL("https://api.example.com/users").
+				Context(context.Background()).
+				Build(),
 			expectError: false, // Actually empty method might be allowed
 		},
 		{
 			name: "Nil context",
-			request: &Request{
-				Method:  "GET",
-				URL:     "https://api.example.com/users",
-				Context: nil,
-			},
+			request: testRequestBuilder().
+				Method("GET").
+				URL("https://api.example.com/users").
+				Build(),
 			expectError: false, // Actually nil context might be allowed
 		},
 	}
@@ -369,12 +368,12 @@ func TestRequestProcessor_BodySerialization(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			request := &Request{
-				Method:  "POST",
-				URL:     "https://api.example.com/data",
-				Context: context.Background(),
-				Body:    tt.body,
-			}
+			request := testRequestBuilder().
+				Method("POST").
+				URL("https://api.example.com/data").
+				Context(context.Background()).
+				Body(tt.body).
+				Build()
 
 			httpReq, err := processor.Build(request)
 			if err != nil {
@@ -402,15 +401,15 @@ func TestRequestProcessor_HeaderHandling(t *testing.T) {
 
 	processor := NewRequestProcessor(config)
 
-	request := &Request{
-		Method:  "GET",
-		URL:     "https://api.example.com/users",
-		Context: context.Background(),
-		Headers: map[string]string{
+	request := testRequestBuilder().
+		Method("GET").
+		URL("https://api.example.com/users").
+		Context(context.Background()).
+		Headers(map[string]string{
 			"Accept":          "application/json",
 			"X-Custom-Header": "custom-value",
-		},
-	}
+		}).
+		Build()
 
 	httpReq, err := processor.Build(request)
 	if err != nil {
@@ -485,12 +484,12 @@ func TestRequestProcessor_QueryParameterHandling(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			request := &Request{
-				Method:      "GET",
-				URL:         tt.baseURL,
-				Context:     context.Background(),
-				QueryParams: tt.queryParams,
-			}
+			request := testRequestBuilder().
+				Method("GET").
+				URL(tt.baseURL).
+				Context(context.Background()).
+				QueryParams(tt.queryParams).
+				Build()
 
 			httpReq, err := processor.Build(request)
 			if err != nil {

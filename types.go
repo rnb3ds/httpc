@@ -8,6 +8,7 @@ import (
 	"net/http/cookiejar"
 	"time"
 
+	"github.com/cybergodev/httpc/internal/engine"
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
@@ -21,9 +22,6 @@ const (
 	minBackoffFactor    = 1.0                // Minimum backoff multiplier
 	maxBackoffFactor    = 10.0               // Maximum backoff multiplier
 	maxUserAgentLen     = 512                // User-Agent header limit
-	maxHeaderKeyLen     = 256                // Header key length limit
-	maxHeaderValueLen   = 8192               // Header value length limit
-	maxURLLen           = 2048               // Maximum URL length
 )
 
 type Config struct {
@@ -57,9 +55,13 @@ type Config struct {
 	// DNS configuration
 	EnableDoH   bool          // Enable DNS-over-HTTPS
 	DoHCacheTTL time.Duration // DoH cache TTL (default: 5 minutes)
+
+	// Middleware configuration
+	Middlewares []MiddlewareFunc
 }
 
-type RequestOption func(*Request) error
+// RequestOption is a function that modifies a request.
+type RequestOption func(engine.RequestMutator) error
 
 type Request struct {
 	Method          string

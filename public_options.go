@@ -10,33 +10,28 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cybergodev/httpc/internal/engine"
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
 func WithHeader(key, value string) RequestOption {
-	return func(r *Request) error {
+	return func(r engine.RequestMutator) error {
 		if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
 			return fmt.Errorf("invalid header: %w", err)
 		}
 
-		if r.Headers == nil {
-			r.Headers = make(map[string]string)
-		}
-		r.Headers[key] = value
+		r.SetHeader(key, value)
 		return nil
 	}
 }
 
 func WithHeaderMap(headers map[string]string) RequestOption {
-	return func(r *Request) error {
-		if r.Headers == nil {
-			r.Headers = make(map[string]string)
-		}
+	return func(r engine.RequestMutator) error {
 		for k, v := range headers {
 			if err := validation.ValidateHeaderKeyValue(k, v); err != nil {
 				return fmt.Errorf("invalid header %s: %w", k, err)
 			}
-			r.Headers[k] = v
+			r.SetHeader(k, v)
 		}
 		return nil
 	}
@@ -63,7 +58,7 @@ func WithXMLAccept() RequestOption {
 }
 
 func WithBasicAuth(username, password string) RequestOption {
-	return func(r *Request) error {
+	return func(r engine.RequestMutator) error {
 		if username == "" {
 			return fmt.Errorf("username cannot be empty")
 		}
@@ -74,19 +69,15 @@ func WithBasicAuth(username, password string) RequestOption {
 			return fmt.Errorf("invalid password: %w", err)
 		}
 
-		if r.Headers == nil {
-			r.Headers = make(map[string]string, 1)
-		}
-
 		// Efficient string concatenation and encoding
 		creds := username + ":" + password
-		r.Headers["Authorization"] = "Basic " + base64.StdEncoding.EncodeToString([]byte(creds))
+		r.SetHeader("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(creds)))
 		return nil
 	}
 }
 
 func WithBearerToken(token string) RequestOption {
-	return func(r *Request) error {
+	return func(r engine.RequestMutator) error {
 		if token == "" {
 			return fmt.Errorf("token cannot be empty")
 		}
@@ -94,16 +85,13 @@ func WithBearerToken(token string) RequestOption {
 			return err
 		}
 
-		if r.Headers == nil {
-			r.Headers = make(map[string]string, 1)
-		}
-		r.Headers["Authorization"] = "Bearer " + token
+		r.SetHeader("Authorization", "Bearer "+token)
 		return nil
 	}
 }
 
 func WithQuery(key string, value any) RequestOption {
-	return func(r *Request) error {
+	return func(r engine.RequestMutator) error {
 		if err := validation.ValidateQueryKey(key); err != nil {
 			return err
 		}
@@ -115,19 +103,23 @@ func WithQuery(key string, value any) RequestOption {
 			}
 		}
 
-		if r.QueryParams == nil {
-			r.QueryParams = make(map[string]any)
+		params := r.QueryParams()
+		if params == nil {
+			params = make(map[string]any)
 		}
-		r.QueryParams[key] = value
+		params[key] = value
+		r.SetQueryParams(params)
 		return nil
 	}
 }
 
 func WithQueryMap(params map[string]any) RequestOption {
-	return func(r *Request) error {
-		if r.QueryParams == nil {
-			r.QueryParams = make(map[string]any, len(params))
+	return func(r engine.RequestMutator) error {
+		existing := r.QueryParams()
+		if existing == nil {
+			existing = make(map[string]any, len(params))
 		}
+
 		for k, v := range params {
 			if err := validation.ValidateQueryKey(k); err != nil {
 				return fmt.Errorf("invalid key %s: %w", k, err)
@@ -139,53 +131,45 @@ func WithQueryMap(params map[string]any) RequestOption {
 					return fmt.Errorf("query value too long for key %s (max %d)", k, validation.MaxValueLen)
 				}
 			}
-			r.QueryParams[k] = v
+			existing[k] = v
 		}
+		r.SetQueryParams(existing)
 		return nil
 	}
 }
 
 func WithJSON(data any) RequestOption {
-	return func(r *Request) error {
+	return func(r engine.RequestMutator) error {
 		if data == nil {
 			return fmt.Errorf("JSON data cannot be nil")
 		}
-		r.Body = data
-		if r.Headers == nil {
-			r.Headers = make(map[string]string)
-		}
-		r.Headers["Content-Type"] = "application/json"
+		r.SetBody(data)
+		r.SetHeader("Content-Type", "application/json")
 		return nil
 	}
 }
 
 func WithXML(data any) RequestOption {
-	return func(r *Request) error {
+	return func(r engine.RequestMutator) error {
 		if data == nil {
 			return fmt.Errorf("XML data cannot be nil")
 		}
-		r.Body = data
-		if r.Headers == nil {
-			r.Headers = make(map[string]string)
-		}
-		r.Headers["Content-Type"] = "application/xml"
+		r.SetBody(data)
+		r.SetHeader("Content-Type", "application/xml")
 		return nil
 	}
 }
 
 func WithText(content string) RequestOption {
-	return func(r *Request) error {
-		r.Body = content
-		if r.Headers == nil {
-			r.Headers = make(map[string]string)
-		}
-		r.Headers["Content-Type"] = "text/plain"
+	return func(r engine.RequestMutator) error {
+		r.SetBody(content)
+		r.SetHeader("Content-Type", "text/plain")
 		return nil
 	}
 }
 
 func WithForm(data map[string]string) RequestOption {
-	return func(r *Request) error {
+	return func(r engine.RequestMutator) error {
 		if data == nil {
 			return fmt.Errorf("form data cannot be nil")
 		}
@@ -193,30 +177,24 @@ func WithForm(data map[string]string) RequestOption {
 		for k, v := range data {
 			values.Set(k, v)
 		}
-		r.Body = values.Encode()
-		if r.Headers == nil {
-			r.Headers = make(map[string]string)
-		}
-		r.Headers["Content-Type"] = "application/x-www-form-urlencoded"
+		r.SetBody(values.Encode())
+		r.SetHeader("Content-Type", "application/x-www-form-urlencoded")
 		return nil
 	}
 }
 
 func WithFormData(data *FormData) RequestOption {
-	return func(r *Request) error {
+	return func(r engine.RequestMutator) error {
 		if data == nil {
 			return fmt.Errorf("form data cannot be nil")
 		}
-		r.Body = data
-		if r.Headers == nil {
-			r.Headers = make(map[string]string)
-		}
+		r.SetBody(data)
 		return nil
 	}
 }
 
 func WithFile(fieldName, filename string, content []byte) RequestOption {
-	return func(r *Request) error {
+	return func(r engine.RequestMutator) error {
 		if fieldName == "" {
 			return fmt.Errorf("field name cannot be empty")
 		}
@@ -235,7 +213,7 @@ func WithFile(fieldName, filename string, content []byte) RequestOption {
 			return fmt.Errorf("invalid filename")
 		}
 
-		r.Body = &FormData{
+		r.SetBody(&FormData{
 			Fields: make(map[string]string),
 			Files: map[string]*FileData{
 				fieldName: {
@@ -243,126 +221,121 @@ func WithFile(fieldName, filename string, content []byte) RequestOption {
 					Content:  content,
 				},
 			},
-		}
+		})
 		return nil
 	}
 }
 
 func WithTimeout(timeout time.Duration) RequestOption {
-	return func(r *Request) error {
+	return func(r engine.RequestMutator) error {
 		if timeout < 0 {
 			return fmt.Errorf("%w: cannot be negative", ErrInvalidTimeout)
 		}
 		if timeout > maxTimeout {
 			return fmt.Errorf("%w: exceeds %v", ErrInvalidTimeout, maxTimeout)
 		}
-		r.Timeout = timeout
+		r.SetTimeout(timeout)
 		return nil
 	}
 }
 
 func WithContext(ctx context.Context) RequestOption {
-	return func(r *Request) error {
+	return func(r engine.RequestMutator) error {
 		if ctx == nil {
 			return fmt.Errorf("context cannot be nil")
 		}
-		r.Context = ctx
+		r.SetContext(ctx)
 		return nil
 	}
 }
 
 func WithMaxRetries(maxRetries int) RequestOption {
-	return func(r *Request) error {
+	return func(r engine.RequestMutator) error {
 		if maxRetries < 0 || maxRetries > 10 {
 			return fmt.Errorf("%w: must be 0-10, got %d", ErrInvalidRetry, maxRetries)
 		}
-		r.MaxRetries = maxRetries
+		r.SetMaxRetries(maxRetries)
 		return nil
 	}
 }
 
 func WithBody(body any) RequestOption {
-	return func(r *Request) error {
-		r.Body = body
+	return func(r engine.RequestMutator) error {
+		r.SetBody(body)
 		return nil
 	}
 }
 
 func WithFollowRedirects(follow bool) RequestOption {
-	return func(r *Request) error {
-		r.FollowRedirects = &follow
+	return func(r engine.RequestMutator) error {
+		r.SetFollowRedirects(&follow)
 		return nil
 	}
 }
 
 func WithMaxRedirects(maxRedirects int) RequestOption {
-	return func(r *Request) error {
+	return func(r engine.RequestMutator) error {
 		if maxRedirects < 0 {
 			return fmt.Errorf("maxRedirects cannot be negative")
 		}
 		if maxRedirects > 50 {
-			return fmt.Errorf("maxRedirects exceeds maximum of 50")
+			return fmt.Errorf("maxRedirects exceeds maximum 50")
 		}
-		r.MaxRedirects = &maxRedirects
+		r.SetMaxRedirects(&maxRedirects)
 		return nil
 	}
 }
 
 func WithBinary(data []byte, contentType ...string) RequestOption {
-	return func(r *Request) error {
+	return func(r engine.RequestMutator) error {
 		if data == nil {
 			return fmt.Errorf("binary data cannot be nil")
 		}
-		r.Body = data
-		if r.Headers == nil {
-			r.Headers = make(map[string]string)
-		}
+
+		r.SetBody(data)
 
 		ct := "application/octet-stream"
 		if len(contentType) > 0 && contentType[0] != "" {
 			ct = contentType[0]
 		}
-		r.Headers["Content-Type"] = ct
+		r.SetHeader("Content-Type", ct)
 		return nil
 	}
 }
 
 func WithCookie(cookie http.Cookie) RequestOption {
-	return func(r *Request) error {
+	return func(r engine.RequestMutator) error {
 		if err := validation.ValidateCookie(&cookie); err != nil {
 			return fmt.Errorf("invalid cookie: %w", err)
 		}
 
-		if r.Cookies == nil {
-			r.Cookies = make([]http.Cookie, 0, 1)
-		}
-		r.Cookies = append(r.Cookies, cookie)
+		cookies := r.Cookies()
+		cookies = append(cookies, cookie)
+		r.SetCookies(cookies)
 		return nil
 	}
 }
 
 func WithCookies(cookies []http.Cookie) RequestOption {
-	return func(r *Request) error {
+	return func(r engine.RequestMutator) error {
 		if len(cookies) == 0 {
 			return nil
 		}
 
-		if r.Cookies == nil {
-			r.Cookies = make([]http.Cookie, 0, len(cookies))
-		}
-
+		existing := r.Cookies()
 		for i := range cookies {
 			if err := validation.ValidateCookie(&cookies[i]); err != nil {
 				return fmt.Errorf("invalid cookie at index %d: %w", i, err)
 			}
-			r.Cookies = append(r.Cookies, cookies[i])
+			existing = append(existing, cookies[i])
 		}
+		r.SetCookies(existing)
 		return nil
 	}
 }
 
 func WithCookieValue(name, value string) RequestOption {
-	return func(r *Request) error {
+	return func(r engine.RequestMutator) error {
 		cookie := http.Cookie{
 			Name:  name,
 			Value: value,
@@ -372,16 +345,15 @@ func WithCookieValue(name, value string) RequestOption {
 			return err
 		}
 
-		if r.Cookies == nil {
-			r.Cookies = make([]http.Cookie, 0, 1)
-		}
-		r.Cookies = append(r.Cookies, cookie)
+		cookies := r.Cookies()
+		cookies = append(cookies, cookie)
+		r.SetCookies(cookies)
 		return nil
 	}
 }
 
 func WithCookieString(cookieString string) RequestOption {
-	return func(r *Request) error {
+	return func(r engine.RequestMutator) error {
 		if cookieString == "" {
 			return nil
 		}
@@ -395,16 +367,14 @@ func WithCookieString(cookieString string) RequestOption {
 			return nil
 		}
 
-		if r.Cookies == nil {
-			r.Cookies = make([]http.Cookie, 0, len(cookies))
-		}
-
+		existing := r.Cookies()
 		for i := range cookies {
 			if err := validation.ValidateCookie(&cookies[i]); err != nil {
 				return fmt.Errorf("invalid cookie %s: %w", cookies[i].Name, err)
 			}
-			r.Cookies = append(r.Cookies, cookies[i])
+			existing = append(existing, cookies[i])
 		}
+		r.SetCookies(existing)
 
 		return nil
 	}

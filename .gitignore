@@ -10,6 +10,7 @@ go.work.sum
 dev_test/
 downloads/
 change_logs.md
+changes.log
 
 # ============================================================
 # Sensitive Files and Credentials

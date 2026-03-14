@@ -1,12 +1,43 @@
 package engine
 
 import (
+	"bytes"
 	"compress/flate"
 	"compress/gzip"
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 )
+
+const (
+	// defaultBufferSize is the initial size for buffer pool buffers
+	defaultBufferSize = 4 * 1024 // 4KB - good balance for most responses
+	// maxBufferSize caps the buffer size to prevent memory bloat
+	maxBufferSize = 512 * 1024 // 512KB
+)
+
+// bufferPool reuses byte buffers for response body reading
+var bufferPool = sync.Pool{
+	New: func() any {
+		return bytes.NewBuffer(make([]byte, 0, defaultBufferSize))
+	},
+}
+
+// getBuffer retrieves a buffer from the pool
+func getBuffer() *bytes.Buffer {
+	buf := bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	return buf
+}
+
+// putBuffer returns a buffer to the pool if it's not too large
+func putBuffer(buf *bytes.Buffer) {
+	if buf.Cap() <= maxBufferSize {
+		bufferPool.Put(buf)
+	}
+	// Let large buffers be garbage collected to prevent memory bloat
+}
 
 type ResponseProcessor struct {
 	config *Config
@@ -41,19 +72,21 @@ func (p *ResponseProcessor) Process(httpResp *http.Response) (*Response, error) 
 		contentLength = int64(len(body))
 	}
 
-	return &Response{
-		StatusCode:    httpResp.StatusCode,
-		Status:        httpResp.Status,
-		Headers:       httpResp.Header,
-		Body:          string(body),
-		RawBody:       body,
-		ContentLength: contentLength,
-		Proto:         httpResp.Proto,
-		Cookies:       httpResp.Cookies(),
-	}, nil
+	resp := &Response{}
+	resp.SetStatusCode(httpResp.StatusCode)
+	resp.SetStatus(httpResp.Status)
+	resp.SetHeaders(httpResp.Header)
+	resp.SetBody(string(body))
+	resp.SetRawBody(body)
+	resp.SetContentLength(contentLength)
+	resp.SetProto(httpResp.Proto)
+	resp.SetCookies(httpResp.Cookies())
+
+	return resp, nil
 }
 
 // readBody reads and optionally decompresses the response body with size limits.
+// Uses a buffer pool to reduce heap allocations for response bodies.
 func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 	if httpResp.Body == nil {
 		return nil, nil
@@ -73,16 +106,25 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 		reader = io.LimitReader(reader, maxSize+1)
 	}
 
-	body, err := io.ReadAll(reader)
+	// Use pooled buffer for reading
+	buf := getBuffer()
+	defer putBuffer(buf)
+
+	_, err := io.Copy(buf, reader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
+
+	body := buf.Bytes()
 
 	if maxSize := p.config.MaxResponseBodySize; maxSize > 0 && int64(len(body)) > maxSize {
 		return nil, fmt.Errorf("response body exceeds limit of %d bytes", maxSize)
 	}
 
-	return body, nil
+	// Must copy the bytes since buffer is returned to pool
+	result := make([]byte, len(body))
+	copy(result, body)
+	return result, nil
 }
 
 // createDecompressor creates an appropriate decompressor based on the encoding type.

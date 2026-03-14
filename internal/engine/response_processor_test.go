@@ -42,20 +42,20 @@ func TestResponseProcessor_Process(t *testing.T) {
 				Request: &http.Request{}, // Add Request to avoid nil pointer
 			},
 			validate: func(t *testing.T, resp *Response) {
-				if resp.StatusCode != 200 {
-					t.Errorf("Expected status code 200, got %d", resp.StatusCode)
+				if resp.StatusCode() != 200 {
+					t.Errorf("Expected status code 200, got %d", resp.StatusCode())
 				}
-				if resp.Status != "200 OK" {
-					t.Errorf("Expected status '200 OK', got '%s'", resp.Status)
+				if resp.Status() != "200 OK" {
+					t.Errorf("Expected status '200 OK', got '%s'", resp.Status())
 				}
-				if resp.Body != `{"message":"success","code":200}` {
-					t.Errorf("Expected body '..success..', got '%s'", resp.Body)
+				if resp.Body() != `{"message":"success","code":200}` {
+					t.Errorf("Expected body '..success..', got '%s'", resp.Body())
 				}
-				if len(resp.RawBody) == 0 {
+				if len(resp.RawBody()) == 0 {
 					t.Error("RawBody should not be empty")
 				}
-				if resp.ContentLength != 32 {
-					t.Errorf("Expected content length 32, got %d", resp.ContentLength)
+				if resp.ContentLength() != 32 {
+					t.Errorf("Expected content length 32, got %d", resp.ContentLength())
 				}
 			},
 		},
@@ -71,13 +71,13 @@ func TestResponseProcessor_Process(t *testing.T) {
 				Request: &http.Request{}, // Add Request to avoid nil pointer
 			},
 			validate: func(t *testing.T, resp *Response) {
-				if resp.StatusCode != 404 {
-					t.Errorf("Expected status code 404, got %d", resp.StatusCode)
+				if resp.StatusCode() != 404 {
+					t.Errorf("Expected status code 404, got %d", resp.StatusCode())
 				}
-				if resp.Status != "404 Not Found" {
-					t.Errorf("Expected status '404 Not Found', got '%s'", resp.Status)
+				if resp.Status() != "404 Not Found" {
+					t.Errorf("Expected status '404 Not Found', got '%s'", resp.Status())
 				}
-				if !strings.Contains(resp.Body, "not found") {
+				if !strings.Contains(resp.Body(), "not found") {
 					t.Error("Response body should contain 'not found'")
 				}
 			},
@@ -97,13 +97,14 @@ func TestResponseProcessor_Process(t *testing.T) {
 				Request: &http.Request{}, // Add Request to avoid nil pointer
 			},
 			validate: func(t *testing.T, resp *Response) {
-				if len(resp.Cookies) != 2 {
-					t.Errorf("Expected 2 cookies, got %d", len(resp.Cookies))
+				cookies := resp.Cookies()
+				if len(cookies) != 2 {
+					t.Errorf("Expected 2 cookies, got %d", len(cookies))
 				}
 
 				foundSession := false
 				foundPref := false
-				for _, cookie := range resp.Cookies {
+				for _, cookie := range cookies {
 					if cookie.Name == "session_id" && cookie.Value == "abc123" {
 						foundSession = true
 					}
@@ -130,14 +131,14 @@ func TestResponseProcessor_Process(t *testing.T) {
 				Request:    &http.Request{}, // Add Request to avoid nil pointer
 			},
 			validate: func(t *testing.T, resp *Response) {
-				if resp.StatusCode != 204 {
-					t.Errorf("Expected status code 204, got %d", resp.StatusCode)
+				if resp.StatusCode() != 204 {
+					t.Errorf("Expected status code 204, got %d", resp.StatusCode())
 				}
-				if resp.Body != "" {
-					t.Errorf("Expected empty body, got '%s'", resp.Body)
+				if resp.Body() != "" {
+					t.Errorf("Expected empty body, got '%s'", resp.Body())
 				}
-				if len(resp.RawBody) != 0 {
-					t.Errorf("Expected empty RawBody, got %d bytes", len(resp.RawBody))
+				if len(resp.RawBody()) != 0 {
+					t.Errorf("Expected empty RawBody, got %d bytes", len(resp.RawBody()))
 				}
 			},
 		},
@@ -153,13 +154,13 @@ func TestResponseProcessor_Process(t *testing.T) {
 				Request: &http.Request{},                                                                       // Add Request to avoid nil pointer
 			},
 			validate: func(t *testing.T, resp *Response) {
-				if resp.StatusCode != 200 {
-					t.Errorf("Expected status code 200, got %d", resp.StatusCode)
+				if resp.StatusCode() != 200 {
+					t.Errorf("Expected status code 200, got %d", resp.StatusCode())
 				}
 
 				expectedBytes := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
-				if !bytes.Equal(resp.RawBody, expectedBytes) {
-					t.Errorf("Expected binary data %v, got %v", expectedBytes, resp.RawBody)
+				if !bytes.Equal(resp.RawBody(), expectedBytes) {
+					t.Errorf("Expected binary data %v, got %v", expectedBytes, resp.RawBody())
 				}
 			},
 		},
@@ -238,21 +239,22 @@ func TestResponseProcessor_HeaderProcessing(t *testing.T) {
 	}
 
 	// Check if headers are correctly copied
-	if len(resp.Headers["Content-Type"]) == 0 || resp.Headers["Content-Type"][0] != "application/json" {
-		t.Errorf("Expected Content-Type 'application/json', got %v", resp.Headers["Content-Type"])
+	headers := resp.Headers()
+	if len(headers["Content-Type"]) == 0 || headers["Content-Type"][0] != "application/json" {
+		t.Errorf("Expected Content-Type 'application/json', got %v", headers["Content-Type"])
 	}
 
-	if len(resp.Headers["X-Custom-Header"]) == 0 || resp.Headers["X-Custom-Header"][0] != "custom-value" {
-		t.Errorf("Expected X-Custom-Header 'custom-value', got %v", resp.Headers["X-Custom-Header"])
+	if len(headers["X-Custom-Header"]) == 0 || headers["X-Custom-Header"][0] != "custom-value" {
+		t.Errorf("Expected X-Custom-Header 'custom-value', got %v", headers["X-Custom-Header"])
 	}
 
-	if len(resp.Headers["Cache-Control"]) == 0 || resp.Headers["Cache-Control"][0] != "no-cache, no-store" {
-		t.Errorf("Expected Cache-Control 'no-cache, no-store', got %v", resp.Headers["Cache-Control"])
+	if len(headers["Cache-Control"]) == 0 || headers["Cache-Control"][0] != "no-cache, no-store" {
+		t.Errorf("Expected Cache-Control 'no-cache, no-store', got %v", headers["Cache-Control"])
 	}
 
 	// Check if Content-Length is correctly set
-	if resp.ContentLength != 13 {
-		t.Errorf("Expected content length 13, got %d", resp.ContentLength)
+	if resp.ContentLength() != 13 {
+		t.Errorf("Expected content length 13, got %d", resp.ContentLength())
 	}
 }
 
@@ -390,7 +392,7 @@ func TestResponseProcessor_CookieProcessing(t *testing.T) {
 				t.Fatalf("Failed to process response: %v", err)
 			}
 
-			tt.validate(t, resp.Cookies)
+			tt.validate(t, resp.Cookies())
 		})
 	}
 }
@@ -502,8 +504,8 @@ func TestResponseProcessor_ContentLengthHandling(t *testing.T) {
 				t.Fatalf("Failed to process response: %v", err)
 			}
 
-			if resp.ContentLength != tt.expectedLength {
-				t.Errorf("Expected content length %d, got %d", tt.expectedLength, resp.ContentLength)
+			if resp.ContentLength() != tt.expectedLength {
+				t.Errorf("Expected content length %d, got %d", tt.expectedLength, resp.ContentLength())
 			}
 		})
 	}

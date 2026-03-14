@@ -2,6 +2,11 @@
 
 package proxy
 
+import (
+	"net/http"
+	"net/url"
+)
+
 // detectOther handles proxy detection for unsupported platforms
 func (d *Detector) detectOther() func(*http.Request) (*url.URL, error) {
 	// For unsupported platforms, just use environment variables

@@ -16,13 +16,16 @@ import (
 type Client struct {
 	config *Config
 
-	transport         *Transport
+	transport         TransportManager
 	requestProcessor  *RequestProcessor
 	responseProcessor *ResponseProcessor
 	retryEngine       *RetryEngine
 	validator         *security.Validator
 
 	connectionPool *connection.PoolManager
+
+	// requestPool reduces allocations for Request objects
+	requestPool sync.Pool
 
 	closed             int32
 	totalRequests      int64
@@ -78,79 +81,175 @@ type Config struct {
 	// DNS configuration
 	EnableDoH   bool
 	DoHCacheTTL time.Duration
+
+	// Middleware configuration
+	Middlewares any // []MiddlewareFunc from public package (uses interface types)
 }
 
 type Request struct {
-	Method          string
-	URL             string
-	Headers         map[string]string
-	QueryParams     map[string]any
-	Body            any
-	Timeout         time.Duration
-	MaxRetries      int
-	Context         context.Context
-	Cookies         []http.Cookie
-	FollowRedirects *bool
-	MaxRedirects    *int
+	method          string
+	url             string
+	headers         map[string]string
+	queryParams     map[string]any
+	body            any
+	timeout         time.Duration
+	maxRetries      int
+	context         context.Context
+	cookies         []http.Cookie
+	followRedirects *bool
+	maxRedirects    *int
 }
+
+// Compile-time interface check
+var _ RequestMutator = (*Request)(nil)
+
+// Accessors (implement RequestMutator)
+func (r *Request) Method() string              { return r.method }
+func (r *Request) URL() string                 { return r.url }
+func (r *Request) Headers() map[string]string  { return r.headers }
+func (r *Request) QueryParams() map[string]any { return r.queryParams }
+func (r *Request) Body() any                   { return r.body }
+func (r *Request) Timeout() time.Duration      { return r.timeout }
+func (r *Request) MaxRetries() int             { return r.maxRetries }
+func (r *Request) Context() context.Context    { return r.context }
+func (r *Request) Cookies() []http.Cookie      { return r.cookies }
+func (r *Request) FollowRedirects() *bool      { return r.followRedirects }
+func (r *Request) MaxRedirects() *int          { return r.maxRedirects }
+
+// Mutators
+func (r *Request) SetMethod(v string)             { r.method = v }
+func (r *Request) SetURL(v string)                { r.url = v }
+func (r *Request) SetHeaders(v map[string]string) { r.headers = v }
+func (r *Request) SetHeader(key, value string) {
+	if r.headers == nil {
+		r.headers = make(map[string]string)
+	}
+	r.headers[key] = value
+}
+func (r *Request) SetQueryParams(v map[string]any) { r.queryParams = v }
+func (r *Request) SetBody(v any)                   { r.body = v }
+func (r *Request) SetTimeout(v time.Duration)      { r.timeout = v }
+func (r *Request) SetMaxRetries(v int)             { r.maxRetries = v }
+func (r *Request) SetContext(v context.Context)    { r.context = v }
+func (r *Request) SetCookies(v []http.Cookie)      { r.cookies = v }
+func (r *Request) SetFollowRedirects(v *bool)      { r.followRedirects = v }
+func (r *Request) SetMaxRedirects(v *int)          { r.maxRedirects = v }
 
 // Response represents an HTTP response.
 // Response objects are safe to read from multiple goroutines after they are returned.
 type Response struct {
-	StatusCode     int
-	Status         string
-	Headers        map[string][]string
-	Body           string
-	RawBody        []byte
-	ContentLength  int64
-	Proto          string
-	Duration       time.Duration
-	Attempts       int
-	Cookies        []*http.Cookie
-	RedirectChain  []string
-	RedirectCount  int
-	RequestHeaders map[string][]string // Actual headers sent with the request
+	statusCode     int
+	status         string
+	headers        http.Header
+	body           string
+	rawBody        []byte
+	contentLength  int64
+	proto          string
+	duration       time.Duration
+	attempts       int
+	cookies        []*http.Cookie
+	redirectChain  []string
+	redirectCount  int
+	requestHeaders http.Header // Actual headers sent with the request
 }
 
-func NewClient(config *Config) (*Client, error) {
+// Compile-time interface check
+var _ ResponseMutator = (*Response)(nil)
+
+// Accessors (implement ResponseAccessor)
+func (r *Response) StatusCode() int             { return r.statusCode }
+func (r *Response) Status() string              { return r.status }
+func (r *Response) Headers() http.Header        { return r.headers }
+func (r *Response) Body() string                { return r.body }
+func (r *Response) RawBody() []byte             { return r.rawBody }
+func (r *Response) ContentLength() int64        { return r.contentLength }
+func (r *Response) Proto() string               { return r.proto }
+func (r *Response) Duration() time.Duration     { return r.duration }
+func (r *Response) Attempts() int               { return r.attempts }
+func (r *Response) Cookies() []*http.Cookie     { return r.cookies }
+func (r *Response) RedirectChain() []string     { return r.redirectChain }
+func (r *Response) RedirectCount() int          { return r.redirectCount }
+func (r *Response) RequestHeaders() http.Header { return r.requestHeaders }
+
+// Mutators (implement ResponseMutator)
+func (r *Response) SetStatusCode(v int)             { r.statusCode = v }
+func (r *Response) SetStatus(v string)              { r.status = v }
+func (r *Response) SetHeaders(v http.Header)        { r.headers = v }
+func (r *Response) SetBody(v string)                { r.body = v }
+func (r *Response) SetRawBody(v []byte)             { r.rawBody = v }
+func (r *Response) SetContentLength(v int64)        { r.contentLength = v }
+func (r *Response) SetProto(v string)               { r.proto = v }
+func (r *Response) SetDuration(v time.Duration)     { r.duration = v }
+func (r *Response) SetAttempts(v int)               { r.attempts = v }
+func (r *Response) SetCookies(v []*http.Cookie)     { r.cookies = v }
+func (r *Response) SetRedirectChain(v []string)     { r.redirectChain = v }
+func (r *Response) SetRedirectCount(v int)          { r.redirectCount = v }
+func (r *Response) SetRequestHeaders(v http.Header) { r.requestHeaders = v }
+
+// SetHeader sets a header with multiple values (implements ResponseMutator)
+func (r *Response) SetHeader(key string, values ...string) {
+	if r.headers == nil {
+		r.headers = make(http.Header)
+	}
+	r.headers[key] = values
+}
+
+func NewClient(config *Config, opts ...ClientOption) (*Client, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
 
+	// Process options
+	options := &clientOptions{}
+	for _, opt := range opts {
+		opt(options)
+	}
+
 	client := &Client{
 		config: config,
+		requestPool: sync.Pool{
+			New: func() any {
+				return &Request{}
+			},
+		},
 	}
 
 	var err error
 
-	connConfig := connection.DefaultConfig()
-	connConfig.MaxIdleConns = config.MaxIdleConns
-	connConfig.MaxIdleConnsPerHost = config.MaxIdleConnsPerHost
-	connConfig.MaxConnsPerHost = config.MaxConnsPerHost
-	connConfig.DialTimeout = config.DialTimeout
-	connConfig.KeepAlive = config.KeepAlive
-	connConfig.TLSHandshakeTimeout = config.TLSHandshakeTimeout
-	connConfig.ResponseHeaderTimeout = config.ResponseHeaderTimeout
-	connConfig.IdleConnTimeout = config.IdleConnTimeout
-	connConfig.MinTLSVersion = config.MinTLSVersion
-	connConfig.MaxTLSVersion = config.MaxTLSVersion
-	connConfig.InsecureSkipVerify = config.InsecureSkipVerify
-	connConfig.EnableHTTP2 = config.EnableHTTP2
-	connConfig.ProxyURL = config.ProxyURL
-	connConfig.EnableSystemProxy = config.EnableSystemProxy
-	connConfig.CookieJar = config.CookieJar
-	connConfig.AllowPrivateIPs = config.AllowPrivateIPs
-	connConfig.EnableDoH = config.EnableDoH
-	connConfig.DoHCacheTTL = config.DoHCacheTTL
+	// Use custom transport if provided, otherwise create default
+	if options.customTransport != nil {
+		client.transport = options.customTransport
+		// Connection pool not needed for custom transport
+	} else {
+		connConfig := connection.DefaultConfig()
+		connConfig.MaxIdleConns = config.MaxIdleConns
+		connConfig.MaxIdleConnsPerHost = config.MaxIdleConnsPerHost
+		connConfig.MaxConnsPerHost = config.MaxConnsPerHost
+		connConfig.DialTimeout = config.DialTimeout
+		connConfig.KeepAlive = config.KeepAlive
+		connConfig.TLSHandshakeTimeout = config.TLSHandshakeTimeout
+		connConfig.ResponseHeaderTimeout = config.ResponseHeaderTimeout
+		connConfig.IdleConnTimeout = config.IdleConnTimeout
+		connConfig.MinTLSVersion = config.MinTLSVersion
+		connConfig.MaxTLSVersion = config.MaxTLSVersion
+		connConfig.InsecureSkipVerify = config.InsecureSkipVerify
+		connConfig.EnableHTTP2 = config.EnableHTTP2
+		connConfig.ProxyURL = config.ProxyURL
+		connConfig.EnableSystemProxy = config.EnableSystemProxy
+		connConfig.CookieJar = config.CookieJar
+		connConfig.AllowPrivateIPs = config.AllowPrivateIPs
+		connConfig.EnableDoH = config.EnableDoH
+		connConfig.DoHCacheTTL = config.DoHCacheTTL
 
-	client.connectionPool, err = connection.NewPoolManager(connConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create connection pool: %w", err)
-	}
+		client.connectionPool, err = connection.NewPoolManager(connConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create connection pool: %w", err)
+		}
 
-	client.transport, err = NewTransport(config, client.connectionPool)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create transport: %w", err)
+		client.transport, err = NewTransport(config, client.connectionPool)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create transport: %w", err)
+		}
 	}
 
 	client.requestProcessor = NewRequestProcessor(config)
@@ -176,11 +275,23 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 	atomic.AddInt64(&c.totalRequests, 1)
 	startTime := time.Now()
 
-	req := &Request{
-		Method:  method,
-		URL:     url,
-		Context: ctx,
-	}
+	// Get Request from pool and reset fields
+	req := c.getRequest()
+	req.SetMethod(method)
+	req.SetURL(url)
+	req.SetContext(ctx)
+	// Reset other fields to zero values
+	req.SetHeaders(nil)
+	req.SetQueryParams(nil)
+	req.SetBody(nil)
+	req.SetTimeout(0)
+	req.SetMaxRetries(0)
+	req.SetCookies(nil)
+	req.SetFollowRedirects(nil)
+	req.SetMaxRedirects(nil)
+
+	// Ensure request is returned to pool after processing
+	defer c.putRequest(req)
 
 	for _, option := range options {
 		if option != nil {
@@ -192,11 +303,11 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 	}
 
 	secReq := &security.Request{
-		Method:      req.Method,
-		URL:         req.URL,
-		Headers:     req.Headers,
-		QueryParams: req.QueryParams,
-		Body:        req.Body,
+		Method:      req.Method(),
+		URL:         req.URL(),
+		Headers:     req.Headers(),
+		QueryParams: req.QueryParams(),
+		Body:        req.Body(),
 	}
 	if err := c.validator.ValidateRequest(secReq); err != nil {
 		atomic.AddInt64(&c.failedRequests, 1)
@@ -213,8 +324,21 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 	}
 
 	atomic.AddInt64(&c.successfulRequests, 1)
-	response.Duration = duration
+	response.SetDuration(duration)
 	return response, nil
+}
+
+// getRequest retrieves a Request object from the pool
+func (c *Client) getRequest() *Request {
+	return c.requestPool.Get().(*Request)
+}
+
+// putRequest returns a Request object to the pool
+func (c *Client) putRequest(req *Request) {
+	// Clear sensitive data before returning to pool
+	req.SetContext(nil)
+	req.SetBody(nil)
+	c.requestPool.Put(req)
 }
 
 func (c *Client) Get(url string, options ...RequestOption) (*Response, error) {
@@ -290,8 +414,8 @@ func (c *Client) updateLatencyMetrics(latency int64) {
 // Optimized for performance with minimal allocations and efficient error handling.
 func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 	maxRetries := c.config.MaxRetries
-	if req.MaxRetries > 0 {
-		maxRetries = req.MaxRetries
+	if req.MaxRetries() > 0 {
+		maxRetries = req.MaxRetries()
 	}
 
 	var lastErr error
@@ -301,7 +425,7 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 		resp, err := c.executeRequest(req)
 
 		if err != nil {
-			clientErr := ClassifyError(err, req.URL, req.Method, attempt+1)
+			clientErr := ClassifyError(err, req.URL(), req.Method(), attempt+1)
 			lastErr = clientErr
 
 			// Fast path: non-retryable errors
@@ -318,8 +442,8 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 
 			// Calculate delay and sleep
 			delay := c.retryEngine.GetDelay(attempt)
-			if sleepErr := c.sleepWithContext(req.Context, delay); sleepErr != nil {
-				return nil, ClassifyError(sleepErr, req.URL, req.Method, attempt+1)
+			if sleepErr := c.sleepWithContext(req.Context(), delay); sleepErr != nil {
+				return nil, ClassifyError(sleepErr, req.URL(), req.Method(), attempt+1)
 			}
 			continue
 		}
@@ -328,25 +452,25 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 			lastResp = resp
 
 			// Check if response status is retryable
-			if c.retryEngine.isRetryableStatus(resp.StatusCode) && attempt < maxRetries {
+			if c.retryEngine.isRetryableStatus(resp.StatusCode()) && attempt < maxRetries {
 				if c.retryEngine.ShouldRetry(resp, nil, attempt) {
 					delay := c.retryEngine.GetDelayWithResponse(attempt, resp)
-					if sleepErr := c.sleepWithContext(req.Context, delay); sleepErr != nil {
-						return nil, ClassifyError(sleepErr, req.URL, req.Method, attempt+1)
+					if sleepErr := c.sleepWithContext(req.Context(), delay); sleepErr != nil {
+						return nil, ClassifyError(sleepErr, req.URL(), req.Method(), attempt+1)
 					}
 					continue
 				}
 			}
 
 			// Success - set attempt count and return
-			resp.Attempts = attempt + 1
+			resp.SetAttempts(attempt + 1)
 			return resp, nil
 		}
 	}
 
 	// Handle final failure cases
 	if lastResp != nil {
-		lastResp.Attempts = maxRetries + 1
+		lastResp.SetAttempts(maxRetries + 1)
 		return lastResp, nil
 	}
 
@@ -368,12 +492,12 @@ const (
 // executeRequest executes a single HTTP request with comprehensive error handling.
 func (c *Client) executeRequest(req *Request) (*Response, error) {
 	// Context setup with timeout handling
-	execCtx := req.Context
+	execCtx := req.Context()
 	if execCtx == nil {
 		execCtx = context.Background()
 	}
 
-	timeout := req.Timeout
+	timeout := req.Timeout()
 	if timeout <= 0 && c.config.Timeout > 0 {
 		timeout = c.config.Timeout
 	}
@@ -388,26 +512,39 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 
 	select {
 	case <-execCtx.Done():
-		return nil, ClassifyError(execCtx.Err(), req.URL, req.Method, 0)
+		return nil, ClassifyError(execCtx.Err(), req.URL(), req.Method(), 0)
 	default:
 	}
 
-	reqCopy := *req
-	reqCopy.Context = execCtx
+	// Create a copy of the request with updated context
+	reqCopy := &Request{
+		method:          req.method,
+		url:             req.url,
+		headers:         req.headers,
+		queryParams:     req.queryParams,
+		body:            req.body,
+		timeout:         req.timeout,
+		maxRetries:      req.maxRetries,
+		context:         execCtx,
+		cookies:         req.cookies,
+		followRedirects: req.followRedirects,
+		maxRedirects:    req.maxRedirects,
+	}
 
 	followRedirects := c.config.FollowRedirects
-	if req.FollowRedirects != nil {
-		followRedirects = *req.FollowRedirects
+	if req.FollowRedirects() != nil {
+		followRedirects = *req.FollowRedirects()
 	}
 	maxRedirects := c.config.MaxRedirects
-	if req.MaxRedirects != nil {
-		maxRedirects = *req.MaxRedirects
+	if req.MaxRedirects() != nil {
+		maxRedirects = *req.MaxRedirects()
 	}
-	c.transport.SetRedirectPolicy(followRedirects, maxRedirects)
+	// Set redirect policy via context for thread-safety
+	reqCopy.context = c.transport.SetRedirectPolicy(execCtx, followRedirects, maxRedirects)
 
-	httpReq, err := c.requestProcessor.Build(&reqCopy)
+	httpReq, err := c.requestProcessor.Build(reqCopy)
 	if err != nil {
-		return nil, ClassifyError(fmt.Errorf("build request failed: %w", err), req.URL, req.Method, 0)
+		return nil, ClassifyError(fmt.Errorf("build request failed: %w", err), req.URL(), req.Method(), 0)
 	}
 
 	start := time.Now()
@@ -415,7 +552,7 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 	duration := time.Since(start)
 
 	if err != nil {
-		return nil, ClassifyError(fmt.Errorf("transport failed: %w", err), req.URL, req.Method, 0)
+		return nil, ClassifyError(fmt.Errorf("transport failed: %w", err), req.URL(), req.Method(), 0)
 	}
 
 	defer func() {
@@ -431,22 +568,31 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 
 	resp, err := c.responseProcessor.Process(httpResp)
 	if err != nil {
-		return nil, ClassifyError(fmt.Errorf("process response failed: %w", err), req.URL, req.Method, 0)
+		return nil, ClassifyError(fmt.Errorf("process response failed: %w", err), req.URL(), req.Method(), 0)
 	}
 
-	if redirectChain := c.transport.GetRedirectChain(); len(redirectChain) > 0 {
-		resp.RedirectChain = redirectChain
-		resp.RedirectCount = len(redirectChain)
+	if redirectChain := c.transport.GetRedirectChain(reqCopy.context); len(redirectChain) > 0 {
+		resp.SetRedirectChain(redirectChain)
+		resp.SetRedirectCount(len(redirectChain))
 	}
 
 	if httpResp.Request != nil {
-		resp.RequestHeaders = make(map[string][]string, len(httpResp.Request.Header))
-		for key, values := range httpResp.Request.Header {
-			resp.RequestHeaders[key] = append([]string(nil), values...)
+		// Copy headers - this is necessary since the underlying map may be reused
+		// Pre-allocate with exact size to avoid growth
+		headerLen := len(httpResp.Request.Header)
+		if headerLen > 0 {
+			requestHeaders := make(http.Header, headerLen)
+			for key, values := range httpResp.Request.Header {
+				// Copy the slice to prevent aliasing issues
+				copiedValues := make([]string, len(values))
+				copy(copiedValues, values)
+				requestHeaders[key] = copiedValues
+			}
+			resp.SetRequestHeaders(requestHeaders)
 		}
 	}
 
-	resp.Duration = duration
+	resp.SetDuration(duration)
 	return resp, nil
 }
 
@@ -510,3 +656,18 @@ func (c *Client) Close() error {
 }
 
 type RequestOption func(*Request) error
+
+// ClientOption is a functional option for configuring the Client.
+type ClientOption func(*clientOptions)
+
+type clientOptions struct {
+	customTransport TransportManager
+}
+
+// WithTransport sets a custom transport for the client.
+// This is useful for testing with mock transports or for custom protocols.
+func WithTransport(transport TransportManager) ClientOption {
+	return func(opts *clientOptions) {
+		opts.customTransport = transport
+	}
+}

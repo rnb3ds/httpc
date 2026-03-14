@@ -1,7 +1,4 @@
-// Package netutil provides common network utility functions used across
-// the httpc library. It includes IP validation, localhost detection, and
-// security-related network checks.
-package netutil
+package validation
 
 import (
 	"fmt"
@@ -58,7 +55,7 @@ func IsLocalhost(hostname string) bool {
 	}
 
 	// Check for localhost. prefix
-	if len(hostname) > 10 {
+	if len(hostname) >= 10 {
 		hostnameLower := hostname
 		for i := range hostnameLower {
 			if hostnameLower[i] >= 'A' && hostnameLower[i] <= 'Z' {

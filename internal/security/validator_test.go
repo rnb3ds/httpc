@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cybergodev/httpc/internal/netutil"
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // ============================================================================
@@ -92,7 +92,7 @@ func TestIsPrivateOrReservedIP(t *testing.T) {
 			if ip == nil {
 				t.Fatalf("Failed to parse IP: %s", tt.ip)
 			}
-			result := netutil.IsPrivateOrReservedIP(ip)
+			result := validation.IsPrivateOrReservedIP(ip)
 			if result != tt.expected {
 				t.Errorf("IsPrivateOrReservedIP(%s) = %v, want %v", tt.ip, result, tt.expected)
 			}
@@ -268,7 +268,7 @@ func TestValidator_ValidateHeaders(t *testing.T) {
 				"   ": "value",
 			},
 			shouldErr: true,
-			errMsg:    "cannot be empty",
+			errMsg:    "invalid character",
 		},
 	}
 
@@ -551,4 +551,3 @@ func TestValidateURL_WithAllowPrivateIPs(t *testing.T) {
 		})
 	}
 }
-

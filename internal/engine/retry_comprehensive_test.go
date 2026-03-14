@@ -91,9 +91,8 @@ func TestRetryEngine_BasicRetry(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resp := &Response{
-				StatusCode: tt.statusCode,
-			}
+			resp := &Response{}
+			resp.SetStatusCode(tt.statusCode)
 
 			shouldRetry := engine.ShouldRetry(resp, nil, 0)
 			if shouldRetry != tt.shouldRetry {
@@ -243,7 +242,8 @@ func TestRetryEngine_MaxRetriesLimit(t *testing.T) {
 
 	engine := NewRetryEngine(config)
 
-	resp := &Response{StatusCode: 500}
+	resp := &Response{}
+	resp.SetStatusCode(500)
 
 	// Test within maximum retry attempts
 	for attempt := 0; attempt < config.MaxRetries; attempt++ {
@@ -303,17 +303,17 @@ func TestRetryEngine_IntegrationWithClient(t *testing.T) {
 		t.Fatalf("Request failed: %v", err)
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	if resp.StatusCode() != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode())
 	}
 
-	if resp.Body != "Success" {
-		t.Errorf("Expected body 'Success', got '%s'", resp.Body)
+	if resp.Body() != "Success" {
+		t.Errorf("Expected body 'Success', got '%s'", resp.Body())
 	}
 
 	// Check retry count
-	if resp.Attempts != int(successAfterAttempts) {
-		t.Errorf("Expected %d attempts, got %d", successAfterAttempts, resp.Attempts)
+	if resp.Attempts() != int(successAfterAttempts) {
+		t.Errorf("Expected %d attempts, got %d", successAfterAttempts, resp.Attempts())
 	}
 
 	// Check number of requests received by server
@@ -362,7 +362,7 @@ func TestRetryEngine_ContextCancellation(t *testing.T) {
 	if err == nil {
 		t.Error("Expected context cancellation error, got nil")
 		if resp != nil {
-			t.Logf("Unexpected success response: %d", resp.StatusCode)
+			t.Logf("Unexpected success response: %d", resp.StatusCode())
 		}
 	}
 
@@ -425,17 +425,17 @@ func TestRetryEngine_RetryAfterHeader(t *testing.T) {
 		t.Fatalf("Request failed: %v", err)
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	if resp.StatusCode() != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode())
 	}
 
-	if resp.Body != "Success" {
-		t.Errorf("Expected body 'Success', got '%s'", resp.Body)
+	if resp.Body() != "Success" {
+		t.Errorf("Expected body 'Success', got '%s'", resp.Body())
 	}
 
 	// Check if retry was performed
-	if resp.Attempts != 2 {
-		t.Errorf("Expected 2 attempts, got %d", resp.Attempts)
+	if resp.Attempts() != 2 {
+		t.Errorf("Expected 2 attempts, got %d", resp.Attempts())
 	}
 
 	// Check total time (should have waited at least the time specified by Retry-After)
@@ -443,7 +443,7 @@ func TestRetryEngine_RetryAfterHeader(t *testing.T) {
 		t.Errorf("Expected to wait at least 1 second due to Retry-After, but took %v", duration)
 	}
 
-	t.Logf("Request completed in %v with %d attempts", duration, resp.Attempts)
+	t.Logf("Request completed in %v with %d attempts", duration, resp.Attempts())
 }
 
 func TestRetryEngine_CustomRetryConditions(t *testing.T) {
@@ -512,7 +512,8 @@ func TestRetryEngine_CustomRetryConditions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var resp *Response
 			if tt.statusCode > 0 {
-				resp = &Response{StatusCode: tt.statusCode}
+				resp = &Response{}
+				resp.SetStatusCode(tt.statusCode)
 			}
 
 			shouldRetry := engine.ShouldRetry(resp, tt.error, tt.attempt)

@@ -17,6 +17,9 @@ type RetryEngine struct {
 	counter int64 // Atomic counter for jitter variation
 }
 
+// Compile-time interface check
+var _ RetryPolicy = (*RetryEngine)(nil)
+
 func NewRetryEngine(config *Config) *RetryEngine {
 	return &RetryEngine{
 		config:  config,
@@ -34,7 +37,7 @@ func (r *RetryEngine) ShouldRetry(resp *Response, err error, attempt int) bool {
 	}
 
 	if resp != nil {
-		return r.isRetryableStatus(resp.StatusCode)
+		return r.isRetryableStatus(resp.StatusCode())
 	}
 
 	return false
@@ -45,8 +48,8 @@ func (r *RetryEngine) GetDelay(attempt int) time.Duration {
 }
 
 func (r *RetryEngine) GetDelayWithResponse(attempt int, resp *Response) time.Duration {
-	if resp != nil && resp.Headers != nil {
-		if retryAfterValues, exists := resp.Headers["Retry-After"]; exists && len(retryAfterValues) > 0 {
+	if resp != nil && resp.Headers() != nil {
+		if retryAfterValues, exists := resp.Headers()["Retry-After"]; exists && len(retryAfterValues) > 0 {
 			retryAfter := retryAfterValues[0]
 			if seconds, err := strconv.Atoi(retryAfter); err == nil && seconds > 0 {
 				return time.Duration(seconds) * time.Second
