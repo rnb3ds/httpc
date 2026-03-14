@@ -161,28 +161,26 @@ func New(config ...*Config) (Client, error) {
 func deepCopyConfig(src *Config) *Config {
 	dst := *src
 
+	// Deep copy middleware headers
 	if src.Middleware.Headers != nil {
 		dst.Middleware.Headers = make(map[string]string, len(src.Middleware.Headers))
 		maps.Copy(dst.Middleware.Headers, src.Middleware.Headers)
 	}
 
+	// Deep copy middleware slice
+	if len(src.Middleware.Middlewares) > 0 {
+		dst.Middleware.Middlewares = make([]MiddlewareFunc, len(src.Middleware.Middlewares))
+		copy(dst.Middleware.Middlewares, src.Middleware.Middlewares)
+	}
+
+	// Clone TLS config if present
+	if src.Security.TLSConfig != nil {
+		dst.Security.TLSConfig = src.Security.TLSConfig.Clone()
+	}
+
 	return &dst
 }
 
-// NewSecure creates a new client with security-focused configuration.
-func NewSecure() (Client, error) {
-	return New(SecureConfig())
-}
-
-// NewPerformance creates a new client optimized for high-throughput scenarios.
-func NewPerformance() (Client, error) {
-	return New(PerformanceConfig())
-}
-
-// NewMinimal creates a new client with minimal features and lightweight configuration.
-func NewMinimal() (Client, error) {
-	return New(MinimalConfig())
-}
 
 // buildMiddlewareChain constructs a middleware chain from the provided middlewares.
 // The final handler executes the actual HTTP request via the engine.
@@ -411,6 +409,23 @@ func Options(url string, options ...RequestOption) (*Result, error) {
 	return client.Options(url, options...)
 }
 
+// Request executes an HTTP request with the given method using the default client.
+// The context parameter allows for timeout and cancellation control.
+//
+// Example:
+//
+//	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+//	defer cancel()
+//
+//	result, err := httpc.Request(ctx, "GET", "https://api.example.com/data")
+func Request(ctx context.Context, method, url string, options ...RequestOption) (*Result, error) {
+	client, err := getDefaultClient()
+	if err != nil {
+		return nil, err
+	}
+	return client.Request(ctx, method, url, options...)
+}
+
 // SetDefaultClient sets a custom client as the default for package-level functions.
 // The previous default client is closed automatically.
 // Only *clientImpl instances created by this package are supported.
@@ -533,6 +548,7 @@ func convertResponseToResult(resp ResponseMutator) *Result {
 		Response: &ResponseInfo{
 			StatusCode:    resp.StatusCode(),
 			Status:        resp.Status(),
+			Proto:         resp.Proto(),
 			Headers:       resp.Headers(),
 			Body:          resp.Body(),
 			RawBody:       resp.RawBody(),

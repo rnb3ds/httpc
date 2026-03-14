@@ -301,16 +301,16 @@ result, err := httpc.DownloadFile(url, "file.zip",
 
 ```go
 // Default - 生产环境平衡配置（推荐）
-client, err := httpc.New()
+client, err := httpc.New(httpc.DefaultConfig())
 
 // Secure - 最大安全性（严格验证、最少重试）
-client, err := httpc.NewSecure()
+client, err := httpc.New(httpc.SecureConfig())
 
 // Performance - 高吞吐量优化
-client, err := httpc.NewPerformance()
+client, err := httpc.New(httpc.PerformanceConfig())
 
 // Minimal - 轻量级简单请求
-client, err := httpc.NewMinimal()
+client, err := httpc.New(httpc.MinimalConfig())
 
 // Testing - 开发测试宽松配置（切勿用于生产环境）
 // 警告：禁用 TLS 验证，降低安全性

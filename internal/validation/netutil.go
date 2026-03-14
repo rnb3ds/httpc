@@ -3,6 +3,7 @@ package validation
 import (
 	"fmt"
 	"net"
+	"strings"
 )
 
 // IsPrivateOrReservedIP checks if an IP address is private, reserved, or
@@ -37,14 +38,16 @@ func ValidateIP(ip net.IP) error {
 }
 
 // IsLocalhost detects localhost variations including:
-// - "localhost"
+// - "localhost" (case-insensitive)
 // - 127.0.0.1
 // - ::1
 // - 0.0.0.0
 // - ::
 // - 127.x.x.x range
+// - localhost.* subdomains (case-insensitive)
 func IsLocalhost(hostname string) bool {
-	switch hostname {
+	// Check exact matches (case-insensitive for localhost)
+	switch strings.ToLower(hostname) {
 	case "localhost", "127.0.0.1", "::1", "0.0.0.0", "::":
 		return true
 	}
@@ -54,33 +57,9 @@ func IsLocalhost(hostname string) bool {
 		return true
 	}
 
-	// Check for localhost. prefix
-	if len(hostname) >= 10 {
-		hostnameLower := hostname
-		for i := range hostnameLower {
-			if hostnameLower[i] >= 'A' && hostnameLower[i] <= 'Z' {
-				if i == 0 {
-					// For case-insensitive comparison without allocating new string
-					c := hostnameLower[i] + 32
-					if c < 'a' || c > 'z' {
-						break
-					}
-				}
-			}
-		}
-		if len(hostnameLower) >= 10 &&
-			(hostnameLower[0] == 'l' || hostnameLower[0] == 'L') &&
-			(hostnameLower[1] == 'o' || hostnameLower[1] == 'O') &&
-			(hostnameLower[2] == 'c' || hostnameLower[2] == 'C') &&
-			(hostnameLower[3] == 'a' || hostnameLower[3] == 'A') &&
-			(hostnameLower[4] == 'l' || hostnameLower[4] == 'L') &&
-			(hostnameLower[5] == 'h' || hostnameLower[5] == 'H') &&
-			(hostnameLower[6] == 'o' || hostnameLower[6] == 'O') &&
-			(hostnameLower[7] == 's' || hostnameLower[7] == 'S') &&
-			(hostnameLower[8] == 't' || hostnameLower[8] == 'T') &&
-			(hostnameLower[9] == '.') {
-			return true
-		}
+	// Check for localhost.* subdomains (case-insensitive)
+	if strings.HasPrefix(strings.ToLower(hostname), "localhost.") {
+		return true
 	}
 
 	return false

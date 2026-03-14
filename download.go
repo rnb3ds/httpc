@@ -173,7 +173,7 @@ const (
 
 // getSystemPaths returns platform-specific system paths that should be protected.
 func getSystemPaths() []string {
-	switch GetOS() {
+	switch getOS() {
 	case "windows":
 		return []string{
 			"c:\\windows\\", "c:\\system32\\",
@@ -198,16 +198,8 @@ func getSystemPaths() []string {
 	}
 }
 
-// GetOS returns the current operating system. Useful for testing.
-var GetOS = func() string {
-	return getOS()
-}
-
+// getOS returns the current operating system.
 func getOS() string {
-	// Check if the OS is Windows by looking at PATH separator
-	// This is a runtime check that works better than build tags for this case
-	// since the binary may be compiled for cross-platform use
-	// We'll use the runtime.GOOS as the primary method
 	return runtime.GOOS
 }
 

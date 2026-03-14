@@ -180,7 +180,7 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
-		clientErr.Type = ErrorTypeNetwork
+		clientErr.Type = ErrorTypeDNS
 		if dnsErr.IsTimeout {
 			clientErr.Message = "DNS resolution timed out"
 		} else {

@@ -51,7 +51,7 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 ### Impact
 - **Maintainability**: Reduced code duplication by ~150 lines through package consolidation
 - **Cross-Platform**: System path detection works correctly on Windows, macOS, and Linux
-- **Testability**: `GetOS` variable allows OS mocking for unit tests
+- **Testability**: `getOS()` function provides OS detection for internal use
 - **Security**: Consistent IP and cookie validation across all code paths
 
 ---

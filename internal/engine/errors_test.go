@@ -259,7 +259,7 @@ func TestClassifyError_NetworkErrors(t *testing.T) {
 		{
 			name:         "DNSError",
 			err:          &net.DNSError{Name: "example.com", Err: "no such host"},
-			expectedType: ErrorTypeNetwork,
+			expectedType: ErrorTypeDNS,
 		},
 	}
 

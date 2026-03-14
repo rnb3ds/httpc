@@ -82,7 +82,7 @@ func (r *RetryEngine) GetDelayWithResponse(attempt int, resp *Response) time.Dur
 
 	if r.config.Jitter {
 		jitterRange := exponentialDelay / 10
-		jitter := r.getSecureJitter(jitterRange * 2)
+		jitter := r.getJitter(jitterRange * 2)
 		exponentialDelay = exponentialDelay - jitterRange + jitter
 	}
 
@@ -136,8 +136,10 @@ func (r *RetryEngine) isRetryableError(err error) bool {
 		strings.Contains(errMsg, "no such host")
 }
 
-// getSecureJitter generates jitter for retry delays using atomic operations.
-func (r *RetryEngine) getSecureJitter(maxJitter time.Duration) time.Duration {
+// getJitter generates pseudo-random jitter for retry delays using a combination
+// of atomic counter and timestamp. This is NOT cryptographically secure but is
+// sufficient for retry delay randomization to avoid thundering herd problems.
+func (r *RetryEngine) getJitter(maxJitter time.Duration) time.Duration {
 	if maxJitter <= 0 {
 		return 0
 	}

@@ -34,7 +34,7 @@ func TestErrorClassification_NetworkErrors(t *testing.T) {
 		{
 			name:         "DNS resolution failure",
 			err:          &net.DNSError{Err: "no such host", Name: "nonexistent.example.com"},
-			expectedType: ErrorTypeNetwork,
+			expectedType: ErrorTypeDNS,
 			isRetryable:  true,
 		},
 		{

@@ -15,10 +15,10 @@ import (
 // ----------------------------------------------------------------------------
 
 func TestConfig_Presets(t *testing.T) {
-	t.Run("NewSecure", func(t *testing.T) {
-		client, err := NewSecure()
+	t.Run("SecureConfig", func(t *testing.T) {
+		client, err := New(SecureConfig())
 		if err != nil {
-			t.Fatalf("NewSecure failed: %v", err)
+			t.Fatalf("New(SecureConfig()) failed: %v", err)
 		}
 		defer client.Close()
 		if client == nil {
@@ -26,10 +26,10 @@ func TestConfig_Presets(t *testing.T) {
 		}
 	})
 
-	t.Run("NewPerformance", func(t *testing.T) {
-		client, err := NewPerformance()
+	t.Run("PerformanceConfig", func(t *testing.T) {
+		client, err := New(PerformanceConfig())
 		if err != nil {
-			t.Fatalf("NewPerformance failed: %v", err)
+			t.Fatalf("New(PerformanceConfig()) failed: %v", err)
 		}
 		defer client.Close()
 		if client == nil {
@@ -37,10 +37,10 @@ func TestConfig_Presets(t *testing.T) {
 		}
 	})
 
-	t.Run("NewMinimal", func(t *testing.T) {
-		client, err := NewMinimal()
+	t.Run("MinimalConfig", func(t *testing.T) {
+		client, err := New(MinimalConfig())
 		if err != nil {
-			t.Fatalf("NewMinimal failed: %v", err)
+			t.Fatalf("New(MinimalConfig()) failed: %v", err)
 		}
 		defer client.Close()
 		if client == nil {

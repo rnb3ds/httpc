@@ -610,6 +610,7 @@ func (m *mockRequest) SetMaxRedirects(v *int)          { m.maxRedirects = v }
 type mockResponse struct {
 	statusCode     int
 	status         string
+	proto          string
 	headers        http.Header
 	body           string
 	rawBody        []byte
@@ -624,6 +625,7 @@ type mockResponse struct {
 
 func (m *mockResponse) StatusCode() int             { return m.statusCode }
 func (m *mockResponse) Status() string              { return m.status }
+func (m *mockResponse) Proto() string               { return m.proto }
 func (m *mockResponse) Headers() http.Header        { return m.headers }
 func (m *mockResponse) Body() string                { return m.body }
 func (m *mockResponse) RawBody() []byte             { return m.rawBody }
@@ -636,6 +638,7 @@ func (m *mockResponse) RedirectCount() int          { return m.redirectCount }
 func (m *mockResponse) RequestHeaders() http.Header { return m.requestHeaders }
 func (m *mockResponse) SetStatusCode(v int)         { m.statusCode = v }
 func (m *mockResponse) SetStatus(v string)          { m.status = v }
+func (m *mockResponse) SetProto(v string)           { m.proto = v }
 func (m *mockResponse) SetHeaders(v http.Header)    { m.headers = v }
 func (m *mockResponse) SetHeader(k string, v ...string) {
 	if m.headers == nil {

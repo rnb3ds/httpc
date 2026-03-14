@@ -268,6 +268,3 @@ var _ DomainClienter = (*DomainClient)(nil)
 func (dc *DomainClient) Close() error {
 	return dc.client.Close()
 }
-
-// Compile-time interface check to ensure DomainClient implements Client.
-var _ Client = (*DomainClient)(nil)

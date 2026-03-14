@@ -58,6 +58,7 @@ type RequestMutator interface {
 type ResponseReader interface {
 	StatusCode() int
 	Status() string
+	Proto() string
 	Headers() http.Header
 	Body() string
 	RawBody() []byte
@@ -76,6 +77,7 @@ type ResponseReader interface {
 type ResponseWriter interface {
 	SetStatusCode(int)
 	SetStatus(string)
+	SetProto(string)
 	SetHeaders(http.Header)
 	SetBody(string)
 	SetRawBody([]byte)

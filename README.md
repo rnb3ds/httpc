@@ -302,16 +302,16 @@ result, err := httpc.DownloadFile(url, "file.zip",
 
 ```go
 // Default - Balanced for production (recommended)
-client, err := httpc.New()
+client, err := httpc.New(httpc.DefaultConfig())
 
 // Secure - Maximum security (strict validation, minimal retries)
-client, err := httpc.NewSecure()
+client, err := httpc.New(httpc.SecureConfig())
 
 // Performance - Optimized for high throughput
-client, err := httpc.NewPerformance()
+client, err := httpc.New(httpc.PerformanceConfig())
 
 // Minimal - Lightweight for simple requests
-client, err := httpc.NewMinimal()
+client, err := httpc.New(httpc.MinimalConfig())
 
 // Testing - Permissive for development (NEVER use in production)
 // WARNING: Disables TLS verification, reduces security

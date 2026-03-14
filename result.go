@@ -25,6 +25,7 @@ type RequestInfo struct {
 type ResponseInfo struct {
 	StatusCode    int
 	Status        string
+	Proto         string
 	Headers       http.Header
 	Body          string
 	RawBody       []byte
@@ -58,6 +59,14 @@ func (r *Result) StatusCode() int {
 		return 0
 	}
 	return r.Response.StatusCode
+}
+
+// Proto returns the HTTP protocol version (e.g., "HTTP/1.1", "HTTP/2.0").
+func (r *Result) Proto() string {
+	if r == nil || r.Response == nil {
+		return ""
+	}
+	return r.Response.Proto
 }
 
 func (r *Result) RequestCookies() []*http.Cookie {

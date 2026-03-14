@@ -431,7 +431,7 @@ func TestRetryEngine_IsRetryableError(t *testing.T) {
 
 // Note: mockNetError is defined in errors_test.go and shared across test files
 
-func TestRetryEngine_GetSecureJitter(t *testing.T) {
+func TestRetryEngine_GetJitter(t *testing.T) {
 	config := &Config{}
 	engine := NewRetryEngine(config)
 
@@ -439,7 +439,7 @@ func TestRetryEngine_GetSecureJitter(t *testing.T) {
 
 	// Test multiple times to ensure randomness
 	for i := 0; i < 10; i++ {
-		jitter := engine.getSecureJitter(maxJitter)
+		jitter := engine.getJitter(maxJitter)
 
 		if jitter < 0 {
 			t.Errorf("Jitter should not be negative, got %v", jitter)
@@ -451,11 +451,11 @@ func TestRetryEngine_GetSecureJitter(t *testing.T) {
 	}
 }
 
-func TestRetryEngine_GetSecureJitter_ZeroMax(t *testing.T) {
+func TestRetryEngine_GetJitter_ZeroMax(t *testing.T) {
 	config := &Config{}
 	engine := NewRetryEngine(config)
 
-	jitter := engine.getSecureJitter(0)
+	jitter := engine.getJitter(0)
 
 	if jitter != 0 {
 		t.Errorf("Expected 0 jitter for 0 maxJitter, got %v", jitter)
