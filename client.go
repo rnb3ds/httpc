@@ -143,12 +143,12 @@ func New(config ...*Config) (Client, error) {
 
 	client := &clientImpl{
 		engine:         engineClient,
-		hasMiddlewares: len(cfg.Middleware.Middlewares) > 0,
+		hasMiddlewares: len(cfg.Middlewares) > 0,
 	}
 
 	// Build middleware chain if middlewares are configured
 	if client.hasMiddlewares {
-		client.middlewareChain = client.buildMiddlewareChain(cfg.Middleware.Middlewares)
+		client.middlewareChain = client.buildMiddlewareChain(cfg.Middlewares)
 	}
 
 	return client, nil
@@ -161,21 +161,21 @@ func New(config ...*Config) (Client, error) {
 func deepCopyConfig(src *Config) *Config {
 	dst := *src
 
-	// Deep copy middleware headers
-	if src.Middleware.Headers != nil {
-		dst.Middleware.Headers = make(map[string]string, len(src.Middleware.Headers))
-		maps.Copy(dst.Middleware.Headers, src.Middleware.Headers)
+	// Deep copy headers
+	if src.Headers != nil {
+		dst.Headers = make(map[string]string, len(src.Headers))
+		maps.Copy(dst.Headers, src.Headers)
 	}
 
-	// Deep copy middleware slice
-	if len(src.Middleware.Middlewares) > 0 {
-		dst.Middleware.Middlewares = make([]MiddlewareFunc, len(src.Middleware.Middlewares))
-		copy(dst.Middleware.Middlewares, src.Middleware.Middlewares)
+	// Deep copy middlewares slice
+	if len(src.Middlewares) > 0 {
+		dst.Middlewares = make([]MiddlewareFunc, len(src.Middlewares))
+		copy(dst.Middlewares, src.Middlewares)
 	}
 
 	// Clone TLS config if present
-	if src.Security.TLSConfig != nil {
-		dst.Security.TLSConfig = src.Security.TLSConfig.Clone()
+	if src.TLSConfig != nil {
+		dst.TLSConfig = src.TLSConfig.Clone()
 	}
 
 	return &dst
@@ -305,7 +305,12 @@ func (c *clientImpl) executeWithMiddleware(ctx context.Context, method, url stri
 }
 
 func (c *clientImpl) Close() error {
-	return c.engine.Close()
+	// engine.Close() handles all resource cleanup including connection pool and transport
+	// If it fails, we wrap the error for better context
+	if err := c.engine.Close(); err != nil {
+		return fmt.Errorf("failed to close client: %w", err)
+	}
+	return nil
 }
 
 var (
@@ -462,13 +467,13 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 	}
 
 	// Calculate idle connections per host with proper bounds
-	idleConnsPerHost := cfg.Connections.MaxConnsPerHost / 2
+	idleConnsPerHost := cfg.MaxConnsPerHost / 2
 
 	// Handle edge cases for MaxConnsPerHost
 	// - If 0 (unlimited), use default idle connections
 	// - If very small (< 2*minIdleConnsPerHost), use minimum
 	// - Otherwise, use half of MaxConnsPerHost
-	if cfg.Connections.MaxConnsPerHost == 0 {
+	if cfg.MaxConnsPerHost == 0 {
 		// Unlimited max connections - use reasonable default for idle
 		idleConnsPerHost = maxIdleConnsPerHostCap
 	} else if idleConnsPerHost < minIdleConnsPerHost {
@@ -477,12 +482,12 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		idleConnsPerHost = maxIdleConnsPerHostCap
 	}
 
-	minTLSVersion := cfg.Security.MinTLSVersion
+	minTLSVersion := cfg.MinTLSVersion
 	if minTLSVersion == 0 {
 		minTLSVersion = tls.VersionTLS12
 	}
 
-	maxTLSVersion := cfg.Security.MaxTLSVersion
+	maxTLSVersion := cfg.MaxTLSVersion
 	if maxTLSVersion == 0 {
 		maxTLSVersion = tls.VersionTLS13
 	}
@@ -492,52 +497,52 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		absoluteMaxRetryDelay = 30 * time.Second
 	)
 	maxRetryDelay := defaultMaxRetryDelay
-	if cfg.Retry.Delay > 0 && cfg.Retry.BackoffFactor > 0 {
-		calculated := time.Duration(float64(cfg.Retry.Delay) * cfg.Retry.BackoffFactor * retryDelayMultiplier)
+	if cfg.RetryDelay > 0 && cfg.BackoffFactor > 0 {
+		calculated := time.Duration(float64(cfg.RetryDelay) * cfg.BackoffFactor * retryDelayMultiplier)
 		maxRetryDelay = min(calculated, absoluteMaxRetryDelay)
 	}
 
-	cookieJar, err := createCookieJar(cfg.Connections.EnableCookies)
+	cookieJar, err := createCookieJar(cfg.EnableCookies)
 	if err != nil {
 		return nil, err
 	}
 
 	return &engine.Config{
-		Timeout:               cfg.Timeouts.Request,
-		DialTimeout:           cfg.Timeouts.Dial,
+		Timeout:               cfg.Timeout,
+		DialTimeout:           cfg.DialTimeout,
 		KeepAlive:             30 * time.Second,
-		TLSHandshakeTimeout:   cfg.Timeouts.TLSHandshake,
-		ResponseHeaderTimeout: cfg.Timeouts.ResponseHeader,
-		IdleConnTimeout:       cfg.Timeouts.IdleConn,
-		MaxIdleConns:          cfg.Connections.MaxIdleConns,
+		TLSHandshakeTimeout:   cfg.TLSHandshakeTimeout,
+		ResponseHeaderTimeout: cfg.ResponseHeaderTimeout,
+		IdleConnTimeout:       cfg.IdleConnTimeout,
+		MaxIdleConns:          cfg.MaxIdleConns,
 		MaxIdleConnsPerHost:   idleConnsPerHost,
-		MaxConnsPerHost:       cfg.Connections.MaxConnsPerHost,
-		ProxyURL:              cfg.Connections.ProxyURL,
-		EnableSystemProxy:     cfg.Connections.EnableSystemProxy,
-		TLSConfig:             cfg.Security.TLSConfig,
+		MaxConnsPerHost:       cfg.MaxConnsPerHost,
+		ProxyURL:              cfg.ProxyURL,
+		EnableSystemProxy:     cfg.EnableSystemProxy,
+		TLSConfig:             cfg.TLSConfig,
 		MinTLSVersion:         minTLSVersion,
 		MaxTLSVersion:         maxTLSVersion,
-		InsecureSkipVerify:    cfg.Security.InsecureSkipVerify,
-		MaxResponseBodySize:   cfg.Security.MaxResponseBodySize,
-		ValidateURL:           cfg.Security.ValidateURL,
-		ValidateHeaders:       cfg.Security.ValidateHeaders,
-		AllowPrivateIPs:       cfg.Security.AllowPrivateIPs,
-		StrictContentLength:   cfg.Security.StrictContentLength,
-		MaxRetries:            cfg.Retry.MaxRetries,
-		RetryDelay:            cfg.Retry.Delay,
+		InsecureSkipVerify:    cfg.InsecureSkipVerify,
+		MaxResponseBodySize:   cfg.MaxResponseBodySize,
+		ValidateURL:           cfg.ValidateURL,
+		ValidateHeaders:       cfg.ValidateHeaders,
+		AllowPrivateIPs:       cfg.AllowPrivateIPs,
+		StrictContentLength:   cfg.StrictContentLength,
+		MaxRetries:            cfg.MaxRetries,
+		RetryDelay:            cfg.RetryDelay,
 		MaxRetryDelay:         maxRetryDelay,
-		BackoffFactor:         cfg.Retry.BackoffFactor,
-		Jitter:                cfg.Retry.EnableJitter,
-		CustomRetryPolicy:     cfg.Retry.CustomRetryPolicy,
-		UserAgent:             cfg.Middleware.UserAgent,
-		Headers:               cfg.Middleware.Headers,
-		FollowRedirects:       cfg.Middleware.FollowRedirects,
-		MaxRedirects:          cfg.Middleware.MaxRedirects,
-		EnableHTTP2:           cfg.Connections.EnableHTTP2,
+		BackoffFactor:         cfg.BackoffFactor,
+		Jitter:                cfg.EnableJitter,
+		CustomRetryPolicy:     cfg.CustomRetryPolicy,
+		UserAgent:             cfg.UserAgent,
+		Headers:               cfg.Headers,
+		FollowRedirects:       cfg.FollowRedirects,
+		MaxRedirects:          cfg.MaxRedirects,
+		EnableHTTP2:           cfg.EnableHTTP2,
 		CookieJar:             cookieJar,
-		EnableCookies:         cfg.Connections.EnableCookies,
-		EnableDoH:             cfg.Connections.EnableDoH,
-		DoHCacheTTL:           cfg.Connections.DoHCacheTTL,
+		EnableCookies:         cfg.EnableCookies,
+		EnableDoH:             cfg.EnableDoH,
+		DoHCacheTTL:           cfg.DoHCacheTTL,
 	}, nil
 }
 

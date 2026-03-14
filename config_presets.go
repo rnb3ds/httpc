@@ -38,43 +38,67 @@ func warnTestingConfigInProduction() {
 	}
 }
 
+// SecureConfig returns a configuration optimized for security-critical applications.
+// This config uses stricter timeouts, disables redirects, and has SSRF protection enabled.
 func SecureConfig() *Config {
 	cfg := DefaultConfig()
-	cfg.Timeouts.Request = 15 * time.Second
-	cfg.Connections.MaxIdleConns = 20
-	cfg.Connections.MaxConnsPerHost = 5
-	cfg.Security.MaxResponseBodySize = 5 * 1024 * 1024
-	cfg.Security.AllowPrivateIPs = false // Strict SSRF protection for security-critical applications
-	cfg.Retry.MaxRetries = 1
-	cfg.Retry.Delay = 2 * time.Second
-	cfg.Middleware.FollowRedirects = false
-	cfg.Timeouts.Dial = 5 * time.Second
-	cfg.Timeouts.TLSHandshake = 5 * time.Second
-	cfg.Timeouts.ResponseHeader = 10 * time.Second
-	cfg.Timeouts.IdleConn = 30 * time.Second
-	cfg.Security.ValidateURL = true
-	cfg.Security.ValidateHeaders = true
-	cfg.Retry.EnableJitter = true
+
+	// Timeouts - stricter for security
+	cfg.Timeout = 15 * time.Second
+	cfg.DialTimeout = 5 * time.Second
+	cfg.TLSHandshakeTimeout = 5 * time.Second
+	cfg.ResponseHeaderTimeout = 10 * time.Second
+	cfg.IdleConnTimeout = 30 * time.Second
+
+	// Connection - conservative limits
+	cfg.MaxIdleConns = 20
+	cfg.MaxConnsPerHost = 5
+
+	// Security - strict settings
+	cfg.AllowPrivateIPs = false               // Strict SSRF protection
+	cfg.MaxResponseBodySize = 5 * 1024 * 1024 // 5MB limit
+	cfg.ValidateURL = true
+	cfg.ValidateHeaders = true
+
+	// Retry - minimal retries
+	cfg.MaxRetries = 1
+	cfg.RetryDelay = 2 * time.Second
+	cfg.EnableJitter = true
+
+	// Middleware - no redirects for security
+	cfg.FollowRedirects = false
+
 	return cfg
 }
 
+// PerformanceConfig returns a configuration optimized for high-throughput scenarios.
+// This config uses larger connection pools, longer timeouts, and relaxed validation.
 func PerformanceConfig() *Config {
 	cfg := DefaultConfig()
-	cfg.Timeouts.Request = 60 * time.Second
-	cfg.Connections.MaxIdleConns = 100
-	cfg.Connections.MaxConnsPerHost = 20
-	cfg.Security.MaxResponseBodySize = 50 * 1024 * 1024
-	cfg.Security.StrictContentLength = false
-	cfg.Retry.Delay = 500 * time.Millisecond
-	cfg.Retry.BackoffFactor = 1.5
-	cfg.Connections.EnableCookies = true
-	cfg.Timeouts.Dial = 15 * time.Second
-	cfg.Timeouts.TLSHandshake = 15 * time.Second
-	cfg.Timeouts.ResponseHeader = 60 * time.Second
-	cfg.Timeouts.IdleConn = 120 * time.Second
-	cfg.Security.ValidateURL = true
-	cfg.Security.ValidateHeaders = false
-	cfg.Retry.EnableJitter = true
+
+	// Timeouts - longer for throughput
+	cfg.Timeout = 60 * time.Second
+	cfg.DialTimeout = 15 * time.Second
+	cfg.TLSHandshakeTimeout = 15 * time.Second
+	cfg.ResponseHeaderTimeout = 60 * time.Second
+	cfg.IdleConnTimeout = 120 * time.Second
+
+	// Connection - larger pools for throughput
+	cfg.MaxIdleConns = 100
+	cfg.MaxConnsPerHost = 20
+	cfg.EnableCookies = true
+
+	// Security - relaxed for performance
+	cfg.MaxResponseBodySize = 50 * 1024 * 1024 // 50MB
+	cfg.StrictContentLength = false
+	cfg.ValidateURL = true
+	cfg.ValidateHeaders = false
+
+	// Retry - faster retries
+	cfg.RetryDelay = 500 * time.Millisecond
+	cfg.BackoffFactor = 1.5
+	cfg.EnableJitter = true
+
 	return cfg
 }
 
@@ -89,22 +113,33 @@ func TestingConfig() *Config {
 	warnTestingConfigInProduction()
 
 	cfg := DefaultConfig()
-	cfg.Security.InsecureSkipVerify = true
-	cfg.Security.AllowPrivateIPs = true
-	cfg.Connections.MaxIdleConns = 10
-	cfg.Connections.MaxConnsPerHost = 5
-	cfg.Retry.MaxRetries = 1
-	cfg.Retry.Delay = 100 * time.Millisecond
-	cfg.Middleware.UserAgent = "httpc-test/1.0"
-	cfg.Connections.EnableHTTP2 = false
-	cfg.Connections.EnableCookies = true
-	cfg.Timeouts.Dial = 5 * time.Second
-	cfg.Timeouts.TLSHandshake = 5 * time.Second
-	cfg.Timeouts.ResponseHeader = 10 * time.Second
-	cfg.Timeouts.IdleConn = 30 * time.Second
-	cfg.Security.ValidateURL = false
-	cfg.Security.ValidateHeaders = false
-	cfg.Retry.EnableJitter = false
+
+	// Timeouts - shorter for faster tests
+	cfg.DialTimeout = 5 * time.Second
+	cfg.TLSHandshakeTimeout = 5 * time.Second
+	cfg.ResponseHeaderTimeout = 10 * time.Second
+	cfg.IdleConnTimeout = 30 * time.Second
+
+	// Connection - minimal for testing
+	cfg.MaxIdleConns = 10
+	cfg.MaxConnsPerHost = 5
+	cfg.EnableHTTP2 = false
+	cfg.EnableCookies = true
+
+	// Security - DISABLED for testing only
+	cfg.InsecureSkipVerify = true
+	cfg.AllowPrivateIPs = true // Allow localhost/private IPs
+	cfg.ValidateURL = false
+	cfg.ValidateHeaders = false
+
+	// Retry - minimal for faster tests
+	cfg.MaxRetries = 1
+	cfg.RetryDelay = 100 * time.Millisecond
+	cfg.EnableJitter = false
+
+	// Middleware - test user agent
+	cfg.UserAgent = "httpc-test/1.0"
+
 	return cfg
 }
 
@@ -112,19 +147,30 @@ func TestingConfig() *Config {
 // Use this for simple, one-off requests where you don't need retries or advanced features.
 func MinimalConfig() *Config {
 	cfg := DefaultConfig()
-	cfg.Connections.MaxIdleConns = 10
-	cfg.Connections.MaxConnsPerHost = 2
-	cfg.Security.MaxResponseBodySize = 1 * 1024 * 1024
-	cfg.Retry.MaxRetries = 0
-	cfg.Retry.Delay = 0
-	cfg.Retry.BackoffFactor = 1.0
-	cfg.Middleware.FollowRedirects = false
-	cfg.Timeouts.Dial = 5 * time.Second
-	cfg.Timeouts.TLSHandshake = 5 * time.Second
-	cfg.Timeouts.ResponseHeader = 10 * time.Second
-	cfg.Timeouts.IdleConn = 30 * time.Second
-	cfg.Security.ValidateURL = true
-	cfg.Security.ValidateHeaders = true
-	cfg.Retry.EnableJitter = false
+
+	// Timeouts - reasonable defaults
+	cfg.DialTimeout = 5 * time.Second
+	cfg.TLSHandshakeTimeout = 5 * time.Second
+	cfg.ResponseHeaderTimeout = 10 * time.Second
+	cfg.IdleConnTimeout = 30 * time.Second
+
+	// Connection - minimal
+	cfg.MaxIdleConns = 10
+	cfg.MaxConnsPerHost = 2
+
+	// Security - standard validation
+	cfg.MaxResponseBodySize = 1 * 1024 * 1024 // 1MB
+	cfg.ValidateURL = true
+	cfg.ValidateHeaders = true
+
+	// Retry - disabled
+	cfg.MaxRetries = 0
+	cfg.RetryDelay = 0
+	cfg.BackoffFactor = 1.0
+	cfg.EnableJitter = false
+
+	// Middleware - no redirects
+	cfg.FollowRedirects = false
+
 	return cfg
 }

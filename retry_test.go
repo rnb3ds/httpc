@@ -23,8 +23,8 @@ func TestRetry_Behavior(t *testing.T) {
 		defer server.Close()
 
 		config := DefaultConfig()
-		config.Retry.MaxRetries = 3
-		config.Security.AllowPrivateIPs = true
+		config.MaxRetries = 3
+		config.AllowPrivateIPs = true
 		client, _ := New(config)
 		defer client.Close()
 
@@ -50,9 +50,9 @@ func TestRetry_Behavior(t *testing.T) {
 		defer server.Close()
 
 		config := DefaultConfig()
-		config.Retry.MaxRetries = 3
-		config.Retry.Delay = 10 * time.Millisecond
-		config.Security.AllowPrivateIPs = true
+		config.MaxRetries = 3
+		config.RetryDelay = 10 * time.Millisecond
+		config.AllowPrivateIPs = true
 		client, _ := New(config)
 		defer client.Close()
 
@@ -74,9 +74,9 @@ func TestRetry_Behavior(t *testing.T) {
 		defer server.Close()
 
 		config := DefaultConfig()
-		config.Retry.MaxRetries = 2
-		config.Retry.Delay = 10 * time.Millisecond
-		config.Security.AllowPrivateIPs = true
+		config.MaxRetries = 3
+		config.RetryDelay = 10 * time.Millisecond
+		config.AllowPrivateIPs = true
 		client, _ := New(config)
 		defer client.Close()
 
@@ -87,8 +87,9 @@ func TestRetry_Behavior(t *testing.T) {
 		if resp.StatusCode() != http.StatusInternalServerError {
 			t.Errorf("Expected status 500, got %d", resp.StatusCode())
 		}
-		if atomic.LoadInt32(&attemptCount) != 3 {
-			t.Errorf("Expected 3 attempts (1 + 2 retries), got %d", atomic.LoadInt32(&attemptCount))
+		// MaxRetries=3 means: 1 initial + 3 retries = 4 total attempts
+		if atomic.LoadInt32(&attemptCount) != 4 {
+			t.Errorf("Expected 4 attempts (1 initial + 3 retries), got %d", atomic.LoadInt32(&attemptCount))
 		}
 	})
 
@@ -101,8 +102,8 @@ func TestRetry_Behavior(t *testing.T) {
 		defer server.Close()
 
 		config := DefaultConfig()
-		config.Retry.MaxRetries = 0
-		config.Security.AllowPrivateIPs = true
+		config.MaxRetries = 0
+		config.AllowPrivateIPs = true
 		client, _ := New(config)
 		defer client.Close()
 
@@ -139,9 +140,9 @@ func TestRetry_StatusCodes(t *testing.T) {
 				defer server.Close()
 
 				config := DefaultConfig()
-				config.Retry.MaxRetries = 2
-				config.Retry.Delay = 10 * time.Millisecond
-				config.Security.AllowPrivateIPs = true
+				config.MaxRetries = 2
+				config.RetryDelay = 10 * time.Millisecond
+				config.AllowPrivateIPs = true
 				client, _ := New(config)
 				defer client.Close()
 
@@ -181,9 +182,9 @@ func TestRetry_StatusCodes(t *testing.T) {
 				defer server.Close()
 
 				config := DefaultConfig()
-				config.Retry.MaxRetries = 2
-				config.Retry.Delay = 10 * time.Millisecond
-				config.Security.AllowPrivateIPs = true
+				config.MaxRetries = 2
+				config.RetryDelay = 10 * time.Millisecond
+				config.AllowPrivateIPs = true
 				client, _ := New(config)
 				defer client.Close()
 
@@ -217,10 +218,10 @@ func TestRetry_Backoff(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.Retry.MaxRetries = 3
-	config.Retry.Delay = 100 * time.Millisecond
-	config.Retry.BackoffFactor = 2.0
-	config.Security.AllowPrivateIPs = true
+	config.MaxRetries = 3
+	config.RetryDelay = 100 * time.Millisecond
+	config.BackoffFactor = 2.0
+	config.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -242,7 +243,7 @@ func TestRetry_Backoff(t *testing.T) {
 	// Verify delays increase exponentially
 	for i := 1; i < len(attemptTimes); i++ {
 		delay := attemptTimes[i].Sub(attemptTimes[i-1])
-		expectedMin := time.Duration(float64(config.Retry.Delay) * float64(i) * 0.5) // Allow jitter
+		expectedMin := time.Duration(float64(config.RetryDelay) * float64(i) * 0.5) // Allow jitter
 		if delay < expectedMin {
 			t.Logf("Delay %d: %v (expected min %v)", i, delay, expectedMin)
 		}

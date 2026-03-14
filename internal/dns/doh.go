@@ -8,17 +8,19 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // DoHResolver provides DNS-over-HTTPS resolution
 type DoHResolver struct {
-	client     *http.Client
-	providers  []*DoHProvider
-	cache      sync.Map
-	cacheTTL   time.Duration
-	cacheSize  int64 // Atomic counter for cache size tracking
+	client    *http.Client
+	providers []*DoHProvider
+	cache     sync.Map
+	cacheTTL  time.Duration
+	cacheSize atomic.Int64 // O(1) cache size tracking
 }
 
 // Compile-time interface check
@@ -71,7 +73,7 @@ func DefaultDoHProviders() []*DoHProvider {
 
 // NewDoHResolver creates a new DoH resolver
 func NewDoHResolver(providers []*DoHProvider, cacheTTL time.Duration) *DoHResolver {
-	if providers == nil || len(providers) == 0 {
+	if len(providers) == 0 {
 		providers = DefaultDoHProviders()
 	}
 	if cacheTTL == 0 {
@@ -107,6 +109,7 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 		if !ok || entry == nil {
 			// Invalid cache entry type - delete and continue with fresh lookup
 			r.cache.Delete(host)
+			r.cacheSize.Add(-1)
 		} else if time.Now().Before(entry.Expires) {
 			// Return a copy to prevent caller from modifying cached data
 			ips := make([]net.IPAddr, len(entry.IPs))
@@ -115,6 +118,7 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 		} else {
 			// Entry expired - delete it (safe: we're just cleaning up stale data)
 			r.cache.Delete(host)
+			r.cacheSize.Add(-1)
 		}
 	}
 
@@ -125,12 +129,12 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 		if err == nil && len(ips) > 0 {
 			// SECURITY: Only cache if we haven't exceeded the cache size limit
 			// This prevents unbounded memory growth
-			currentSize := r.getCacheSize()
-			if currentSize < maxDoHCacheSize {
+			if r.cacheSize.Load() < maxDoHCacheSize {
 				r.cache.Store(host, &CacheEntry{
 					IPs:     ips,
 					Expires: time.Now().Add(r.cacheTTL),
 				})
+				r.cacheSize.Add(1)
 			}
 			return ips, nil
 		}
@@ -141,14 +145,9 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 	return r.fallbackLookup(ctx, host, lastErr)
 }
 
-// getCacheSize returns the current number of entries in the cache
-func (r *DoHResolver) getCacheSize() int {
-	count := 0
-	r.cache.Range(func(_, _ interface{}) bool {
-		count++
-		return true
-	})
-	return count
+// CacheSize returns the current number of entries in the cache (O(1) via atomic counter)
+func (r *DoHResolver) CacheSize() int64 {
+	return r.cacheSize.Load()
 }
 
 // lookupWithProvider performs DNS lookup using a specific DoH provider
@@ -369,15 +368,8 @@ func parseDomain(msg []byte, offset int) (string, int, error) {
 		offset += length
 	}
 
-	domain := ""
-	for i, label := range labels {
-		if i > 0 {
-			domain += "."
-		}
-		domain += label
-	}
-
-	return domain, offset, nil
+	// Use strings.Join for O(n) allocation instead of O(n²) iterative concatenation
+	return strings.Join(labels, "."), offset, nil
 }
 
 // getUint16 parses a big-endian 16-bit unsigned integer
@@ -405,6 +397,7 @@ func (r *DoHResolver) ClearCache() {
 		r.cache.Delete(key)
 		return true
 	})
+	r.cacheSize.Store(0)
 }
 
 // SetCacheTTL sets the cache TTL duration

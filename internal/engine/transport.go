@@ -24,9 +24,9 @@ type redirectSettings struct {
 
 // Transport manages HTTP transport with comprehensive security and optimal performance
 type Transport struct {
-	transport     *http.Transport
-	httpClient    *http.Client
-	config        *Config
+	transport       *http.Transport
+	httpClient      *http.Client
+	config          *Config
 	allowPrivateIPs bool // Cached for performance in redirect checks
 }
 

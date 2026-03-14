@@ -26,8 +26,6 @@ func TestIntegration_RESTfulAPI(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 
-		fmt.Println(r.URL.Path)
-
 		switch r.Method {
 		case "GET":
 			if strings.HasPrefix(r.URL.Path, "/users/") {
@@ -296,8 +294,8 @@ func TestStress_HighConcurrency(t *testing.T) {
 
 	// Use more lenient configuration
 	config := DefaultConfig()
-	config.Timeouts.Request = 30 * time.Second // Increase timeout
-	config.Security.AllowPrivateIPs = true     // Allow access to test server
+	config.Timeout = 30 * time.Second // Increase timeout
+	config.AllowPrivateIPs = true     // Allow access to test server
 	client, err := New(config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)

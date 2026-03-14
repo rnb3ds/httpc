@@ -221,6 +221,8 @@ func (s *SessionManager) CaptureFromOptions(options []RequestOption) {
 
 	for _, opt := range options {
 		if opt != nil {
+			// Best effort: ignore errors during option capture for session persistence.
+			// Errors from individual options are handled during actual request execution.
 			_ = opt(tempReq)
 		}
 	}

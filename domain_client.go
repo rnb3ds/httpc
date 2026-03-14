@@ -12,10 +12,11 @@ import (
 // It maintains cookies and headers across requests and provides convenient methods
 // for making HTTP requests relative to a base URL.
 type DomainClient struct {
-	client  Client
-	baseURL string
-	domain  string
-	session *SessionManager
+	client    Client
+	baseURL   string
+	parsedURL *url.URL // Cached parsed URL for efficient URL building
+	domain    string
+	session   *SessionManager
 }
 
 // NewDomain creates a new DomainClient scoped to the specified base URL.
@@ -51,7 +52,7 @@ func NewDomain(baseURL string, config ...*Config) (*DomainClient, error) {
 	} else {
 		cfg = DefaultConfig()
 	}
-	cfg.Connections.EnableCookies = true
+	cfg.EnableCookies = true
 
 	client, err := New(cfg)
 	if err != nil {
@@ -59,10 +60,11 @@ func NewDomain(baseURL string, config ...*Config) (*DomainClient, error) {
 	}
 
 	return &DomainClient{
-		client:  client,
-		baseURL: baseURL,
-		domain:  parsedURL.Hostname(),
-		session: NewSessionManager(),
+		client:    client,
+		baseURL:   baseURL,
+		parsedURL: parsedURL, // Cache parsed URL for efficient URL building
+		domain:    parsedURL.Hostname(),
+		session:   NewSessionManager(),
 	}, nil
 }
 
@@ -89,6 +91,31 @@ func (dc *DomainClient) Patch(path string, options ...RequestOption) (*Result, e
 // Delete makes a DELETE request to the specified path.
 func (dc *DomainClient) Delete(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("DELETE", path, options...)
+}
+
+// GetWithContext makes a GET request with context for cancellation control.
+func (dc *DomainClient) GetWithContext(ctx context.Context, path string, options ...RequestOption) (*Result, error) {
+	return dc.Request(ctx, "GET", path, options...)
+}
+
+// PostWithContext makes a POST request with context for cancellation control.
+func (dc *DomainClient) PostWithContext(ctx context.Context, path string, options ...RequestOption) (*Result, error) {
+	return dc.Request(ctx, "POST", path, options...)
+}
+
+// PutWithContext makes a PUT request with context for cancellation control.
+func (dc *DomainClient) PutWithContext(ctx context.Context, path string, options ...RequestOption) (*Result, error) {
+	return dc.Request(ctx, "PUT", path, options...)
+}
+
+// PatchWithContext makes a PATCH request with context for cancellation control.
+func (dc *DomainClient) PatchWithContext(ctx context.Context, path string, options ...RequestOption) (*Result, error) {
+	return dc.Request(ctx, "PATCH", path, options...)
+}
+
+// DeleteWithContext makes a DELETE request with context for cancellation control.
+func (dc *DomainClient) DeleteWithContext(ctx context.Context, path string, options ...RequestOption) (*Result, error) {
+	return dc.Request(ctx, "DELETE", path, options...)
 }
 
 // Head makes a HEAD request to the specified path.
@@ -185,23 +212,34 @@ func (dc *DomainClient) buildURL(pathStr string) (string, error) {
 		return dc.baseURL, nil
 	}
 
-	parsedURL, err := url.Parse(pathStr)
-	if err == nil && parsedURL.Scheme != "" && parsedURL.Host != "" {
-		// Validate URL scheme for security
-		// Only allow http and https schemes to prevent potential SSRF attacks
-		if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-			// Reject URLs with disallowed schemes (file:, data:, javascript:, etc.)
-			return "", fmt.Errorf("invalid URL scheme: %q: only http and https are allowed", parsedURL.Scheme)
+	// Check if pathStr is already a full URL
+	if len(pathStr) > 7 && (pathStr[:7] == "http://" || pathStr[:8] == "https://") {
+		parsedURL, err := url.Parse(pathStr)
+		if err == nil && parsedURL.Scheme != "" && parsedURL.Host != "" {
+			// Validate URL scheme for security
+			// Only allow http and https schemes to prevent potential SSRF attacks
+			if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+				// Reject URLs with disallowed schemes (file:, data:, javascript:, etc.)
+				return "", fmt.Errorf("invalid URL scheme: %q: only http and https are allowed", parsedURL.Scheme)
+			}
+			return pathStr, nil
 		}
-		return pathStr, nil
 	}
 
-	baseURL, err := url.Parse(dc.baseURL)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse base URL: %w", err)
+	// Use cached parsed URL for efficiency
+	if dc.parsedURL == nil {
+		// Fallback: should not happen if NewDomain was used
+		baseURL, err := url.Parse(dc.baseURL)
+		if err != nil {
+			return "", fmt.Errorf("failed to parse base URL: %w", err)
+		}
+		dc.parsedURL = baseURL
 	}
-	baseURL.Path = stdpath.Join(baseURL.Path, pathStr)
-	return baseURL.String(), nil
+
+	// Clone the cached URL to avoid modifying the original
+	result := *dc.parsedURL
+	result.Path = stdpath.Join(dc.parsedURL.Path, pathStr)
+	return result.String(), nil
 }
 
 // SetHeader adds or updates a header in the session.

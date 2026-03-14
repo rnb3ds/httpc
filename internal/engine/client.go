@@ -364,7 +364,7 @@ func (c *Client) getRequest() *Request {
 func (c *Client) putRequest(req *Request) {
 	// Clear sensitive data and callbacks before returning to pool
 	// to prevent memory leaks from callback closures
-	req.SetContext(nil)
+	req.SetContext(context.Background())
 	req.SetBody(nil)
 	req.SetOnRequest(nil)
 	req.SetOnResponse(nil)

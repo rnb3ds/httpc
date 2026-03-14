@@ -79,7 +79,14 @@ func ValidateQueryKey(key string) error {
 }
 
 // ValidateFieldName validates form field names and filenames.
+// It checks for dangerous characters and path traversal patterns to prevent
+// directory traversal attacks and injection vulnerabilities.
 func ValidateFieldName(name string, fieldType string) error {
+	// Check for path traversal patterns before character validation
+	if strings.Contains(name, "..") || strings.ContainsAny(name, "/\\") {
+		return fmt.Errorf("field contains path traversal characters")
+	}
+
 	return ValidateInputString(name, MaxFilenameLen, fieldType, func(r rune) error {
 		if r == '"' || r == '\'' || r == '<' || r == '>' || r == '&' {
 			return fmt.Errorf("field contains dangerous characters")

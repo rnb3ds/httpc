@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"runtime"
 	"sync/atomic"
 	"time"
 )
@@ -45,14 +46,21 @@ func (m *Metrics) RecordRequest(latencyNs int64, success bool) {
 }
 
 // updateLatencyMetrics updates the rolling average latency using lock-free atomic operations.
+// Includes backoff strategy to prevent CPU spinning under high contention.
 func (m *Metrics) updateLatencyMetrics(latency int64) {
-	for {
+	const maxRetries = 100
+	for i := 0; i < maxRetries; i++ {
 		current := atomic.LoadInt64(&m.averageLatency)
 		newAvg := (current*9 + latency) / 10
 		if atomic.CompareAndSwapInt64(&m.averageLatency, current, newAvg) {
-			break
+			return
+		}
+		// Backoff: yield CPU after several failed attempts to reduce contention
+		if i > 10 {
+			runtime.Gosched()
 		}
 	}
+	// If we exhausted retries, the update is skipped (acceptable for metrics)
 }
 
 // Snapshot returns a point-in-time copy of the current metrics.

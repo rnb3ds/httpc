@@ -144,14 +144,6 @@ func TestCookie_StringParsing(t *testing.T) {
 				"empty": "",
 			},
 		},
-		{
-			name:          "empty value",
-			cookieString:  "empty=",
-			expectedCount: 1,
-			expectedCookies: map[string]string{
-				"empty": "",
-			},
-		},
 	}
 
 	for _, tt := range tests {

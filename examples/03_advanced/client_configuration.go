@@ -129,15 +129,15 @@ func demonstratePerformanceConfig() {
 func demonstrateCustomConfig() {
 	fmt.Println("--- Example 4: Custom Configuration ---")
 
-	// Create custom configuration
+	// Create custom configuration with flat fields (v2.x API)
 	config := httpc.DefaultConfig()
-	config.Timeouts.Request = 15 * time.Second
-	config.Retry.MaxRetries = 5
-	config.Connections.MaxIdleConns = 200
-	config.Connections.MaxConnsPerHost = 50
-	config.Middleware.UserAgent = "MyApp/1.0"
-	config.Middleware.FollowRedirects = true
-	config.Connections.EnableCookies = true
+	config.Timeout = 15 * time.Second
+	config.MaxRetries = 5
+	config.MaxIdleConns = 200
+	config.MaxConnsPerHost = 50
+	config.UserAgent = "MyApp/1.0"
+	config.FollowRedirects = true
+	config.EnableCookies = true
 
 	client, err := httpc.New(config)
 	if err != nil {

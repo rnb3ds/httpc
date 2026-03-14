@@ -375,7 +375,7 @@ func TestMiddleware_ConcurrentExecution(t *testing.T) {
 	defer server.Close()
 
 	cfg := testConfig()
-	cfg.Middleware.Middlewares = []MiddlewareFunc{
+	cfg.Middlewares = []MiddlewareFunc{
 		LoggingMiddleware(func(format string, args ...any) {
 			atomic.AddInt64(&callCount, 1)
 		}),
@@ -480,8 +480,8 @@ func TestConnectionPool_ConcurrentConnections(t *testing.T) {
 	defer server.Close()
 
 	cfg := testConfig()
-	cfg.Connections.MaxIdleConns = 50
-	cfg.Connections.MaxConnsPerHost = 20
+	cfg.MaxIdleConns = 50
+	cfg.MaxConnsPerHost = 20
 
 	client, err := New(cfg)
 	if err != nil {
@@ -520,8 +520,8 @@ func TestDoHCache_ConcurrentLookups(t *testing.T) {
 	t.Parallel()
 
 	cfg := testConfig()
-	cfg.Connections.EnableDoH = true
-	cfg.Connections.DoHCacheTTL = 1 * time.Minute
+	cfg.EnableDoH = true
+	cfg.DoHCacheTTL = 1 * time.Minute
 
 	client, err := New(cfg)
 	if err != nil {

@@ -17,13 +17,6 @@ type RoundTripper interface {
 	RoundTrip(req *http.Request) (*http.Response, error)
 }
 
-// TransportConfig holds configuration for creating a transport.
-type TransportConfig struct {
-	// RedirectPolicy handles redirect behavior
-	FollowRedirects bool
-	MaxRedirects    int
-}
-
 // TransportManager extends RoundTripper with redirect and lifecycle management.
 type TransportManager interface {
 	RoundTripper

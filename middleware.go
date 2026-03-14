@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // Note: engine.Request now directly implements the RequestMutator interface,
@@ -113,7 +115,20 @@ func TimeoutMiddleware(timeout time.Duration) MiddlewareFunc {
 
 // HeaderMiddleware creates a middleware that adds static headers to every request.
 // Existing headers with the same keys will be overwritten.
+// Headers are validated for security (CRLF injection prevention) before being set.
 func HeaderMiddleware(headers map[string]string) MiddlewareFunc {
+	// Pre-validate all headers at middleware creation time
+	for key, value := range headers {
+		if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
+			// Return a middleware that always returns the validation error
+			return func(next Handler) Handler {
+				return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
+					return nil, fmt.Errorf("invalid header %s: %w", key, err)
+				}
+			}
+		}
+	}
+
 	return func(next Handler) Handler {
 		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 			for key, value := range headers {

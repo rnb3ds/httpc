@@ -195,8 +195,37 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 	return httpReq, nil
 }
 
+// escapeQuotes escapes backslashes and double quotes in filenames per RFC 7578.
+// Optimized to use single-pass with strings.Builder for better performance.
 func escapeQuotes(s string) string {
-	return strings.ReplaceAll(s, `"`, `\"`)
+	// Fast path: no escapes needed
+	var hasEscape bool
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' || s[i] == '"' {
+			hasEscape = true
+			break
+		}
+	}
+	if !hasEscape {
+		return s
+	}
+
+	// Slow path: build escaped string
+	var b strings.Builder
+	b.Grow(len(s) + len(s)/10) // Pre-allocate ~10% extra for escapes
+
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			b.WriteString("\\\\")
+		case '"':
+			b.WriteString("\\\"")
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+
+	return b.String()
 }
 
 // formatQueryParam converts a value to string for query parameters.
