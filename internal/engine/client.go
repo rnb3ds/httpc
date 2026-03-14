@@ -28,6 +28,8 @@ type Client struct {
 
 	// requestPool reduces allocations for Request objects
 	requestPool sync.Pool
+	// execRequestPool reduces allocations for Request copies in executeRequest
+	execRequestPool sync.Pool
 
 	// metrics tracks request statistics
 	metrics *Metrics
@@ -229,6 +231,11 @@ func NewClient(config *Config, opts ...ClientOption) (*Client, error) {
 				return &Request{}
 			},
 		},
+		execRequestPool: sync.Pool{
+			New: func() any {
+				return &Request{}
+			},
+		},
 	}
 
 	var err error
@@ -343,17 +350,54 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 	return response, nil
 }
 
-// getRequest retrieves a Request object from the pool
+// getRequest retrieves a Request object from the pool with safe type assertion
 func (c *Client) getRequest() *Request {
-	return c.requestPool.Get().(*Request)
+	req, ok := c.requestPool.Get().(*Request)
+	if !ok || req == nil {
+		// Fallback to new allocation if pool returns wrong type (defensive)
+		return &Request{}
+	}
+	return req
 }
 
 // putRequest returns a Request object to the pool
 func (c *Client) putRequest(req *Request) {
-	// Clear sensitive data before returning to pool
+	// Clear sensitive data and callbacks before returning to pool
+	// to prevent memory leaks from callback closures
 	req.SetContext(nil)
 	req.SetBody(nil)
+	req.SetOnRequest(nil)
+	req.SetOnResponse(nil)
 	c.requestPool.Put(req)
+}
+
+// getExecRequest retrieves a Request object from the exec pool for request copies with safe type assertion
+func (c *Client) getExecRequest() *Request {
+	req, ok := c.execRequestPool.Get().(*Request)
+	if !ok || req == nil {
+		// Fallback to new allocation if pool returns wrong type (defensive)
+		return &Request{}
+	}
+	return req
+}
+
+// putExecRequest returns a Request object to the exec pool
+func (c *Client) putExecRequest(req *Request) {
+	// Clear all fields to prevent memory leaks
+	req.method = ""
+	req.url = ""
+	req.headers = nil
+	req.queryParams = nil
+	req.body = nil
+	req.timeout = 0
+	req.maxRetries = 0
+	req.context = nil
+	req.cookies = nil
+	req.followRedirects = nil
+	req.maxRedirects = nil
+	req.onRequest = nil
+	req.onResponse = nil
+	c.execRequestPool.Put(req)
 }
 
 func (c *Client) Get(url string, options ...RequestOption) (*Response, error) {
@@ -526,22 +570,24 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 	default:
 	}
 
-	// Create a copy of the request with updated context
-	reqCopy := &Request{
-		method:          req.method,
-		url:             req.url,
-		headers:         req.headers,
-		queryParams:     req.queryParams,
-		body:            req.body,
-		timeout:         req.timeout,
-		maxRetries:      req.maxRetries,
-		context:         execCtx,
-		cookies:         req.cookies,
-		followRedirects: req.followRedirects,
-		maxRedirects:    req.maxRedirects,
-		onRequest:       req.onRequest,
-		onResponse:      req.onResponse,
-	}
+	// Get a pooled Request copy and populate it
+	reqCopy := c.getExecRequest()
+	reqCopy.method = req.method
+	reqCopy.url = req.url
+	reqCopy.headers = req.headers
+	reqCopy.queryParams = req.queryParams
+	reqCopy.body = req.body
+	reqCopy.timeout = req.timeout
+	reqCopy.maxRetries = req.maxRetries
+	reqCopy.context = execCtx
+	reqCopy.cookies = req.cookies
+	reqCopy.followRedirects = req.followRedirects
+	reqCopy.maxRedirects = req.maxRedirects
+	reqCopy.onRequest = req.onRequest
+	reqCopy.onResponse = req.onResponse
+
+	// Ensure request copy is returned to pool after processing
+	defer c.putExecRequest(reqCopy)
 
 	followRedirects := c.config.FollowRedirects
 	if req.FollowRedirects() != nil {

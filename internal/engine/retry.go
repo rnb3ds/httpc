@@ -146,12 +146,14 @@ func (r *RetryEngine) getJitter(maxJitter time.Duration) time.Duration {
 
 	count := atomic.AddInt64(&r.counter, 1)
 	nanos := time.Now().UnixNano()
-	mixed := (count ^ nanos) * 1103515245
 
-	jitter := mixed % int64(maxJitter)
-	if jitter < 0 {
-		jitter = -jitter
-	}
+	// Use XOR mixing and multiplication with overflow-safe arithmetic
+	// The constant 1103515245 is from LCG (Linear Congruential Generator)
+	mixed := uint64(count) ^ uint64(nanos)
+	mixed = mixed * 1103515245
+
+	// Use unsigned modulo to avoid negative results
+	jitter := mixed % uint64(maxJitter)
 
 	return time.Duration(jitter)
 }

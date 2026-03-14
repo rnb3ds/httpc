@@ -12,6 +12,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/cybergodev/httpc/internal/types"
@@ -47,7 +48,7 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 	if len(req.QueryParams()) > 0 {
 		query := parsedURL.Query()
 		for key, value := range req.QueryParams() {
-			query.Add(key, fmt.Sprintf("%v", value))
+			query.Add(key, formatQueryParam(value))
 		}
 		parsedURL.RawQuery = query.Encode()
 	}
@@ -196,6 +197,40 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 
 func escapeQuotes(s string) string {
 	return strings.ReplaceAll(s, `"`, `\"`)
+}
+
+// formatQueryParam converts a value to string for query parameters.
+// Optimized to avoid fmt.Sprintf allocations for common types.
+func formatQueryParam(v any) string {
+	if v == nil {
+		return ""
+	}
+	switch val := v.(type) {
+	case string:
+		return val
+	case int:
+		return strconv.Itoa(val)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case int32:
+		return strconv.FormatInt(int64(val), 10)
+	case uint:
+		return strconv.FormatUint(uint64(val), 10)
+	case uint64:
+		return strconv.FormatUint(val, 10)
+	case uint32:
+		return strconv.FormatUint(uint64(val), 10)
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(val), 'f', -1, 32)
+	case bool:
+		return strconv.FormatBool(val)
+	case fmt.Stringer:
+		return val.String()
+	default:
+		return fmt.Sprintf("%v", val)
+	}
 }
 
 func isFormData(v any) bool {

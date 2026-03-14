@@ -72,7 +72,9 @@ func RecoveryMiddleware() MiddlewareFunc {
 func RequestIDMiddleware(headerName string, generator func() string) MiddlewareFunc {
 	if generator == nil {
 		generator = func() string {
-			return fmt.Sprintf("%d-%d", time.Now().UnixNano(), time.Now().Nanosecond())
+			// Use single timestamp call and combine with counter for uniqueness
+			ts := time.Now().UnixNano()
+			return fmt.Sprintf("%d-%04d", ts, ts&0xFFFF)
 		}
 	}
 

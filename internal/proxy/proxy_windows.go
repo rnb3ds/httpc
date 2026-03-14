@@ -13,13 +13,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-var (
-	modwininet = windows.NewLazySystemDLL("wininet.dll")
-
-	// InternetGetProxyInfo retrieves proxy information
-	procInternetGetProxyInfo = modwininet.NewProc("InternetGetProxyInfo")
-)
-
 // detectPlatform reads proxy settings from Windows registry/system settings
 func (d *Detector) detectPlatform() func(*http.Request) (*url.URL, error) {
 	proxyServer, proxyEnable, err := getWindowsProxySettings()

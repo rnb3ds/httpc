@@ -88,12 +88,16 @@ func NewDoHResolver(providers []*DoHProvider, cacheTTL time.Duration) *DoHResolv
 
 // LookupIPAddr resolves a host name to IP addresses using DoH
 func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
-	// Check cache first
+	// Check cache first - TOCTOU safe: return cached data if valid, don't delete in read path
 	if cached, ok := r.cache.Load(host); ok {
 		entry := cached.(*CacheEntry)
 		if time.Now().Before(entry.Expires) {
-			return entry.IPs, nil
+			// Return a copy to prevent caller from modifying cached data
+			ips := make([]net.IPAddr, len(entry.IPs))
+			copy(ips, entry.IPs)
+			return ips, nil
 		}
+		// Entry expired - delete it (safe: we're just cleaning up stale data)
 		r.cache.Delete(host)
 	}
 

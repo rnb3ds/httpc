@@ -105,7 +105,10 @@ func (dc *DomainClient) Options(path string, options ...RequestOption) (*Result,
 // The context parameter allows for timeout and cancellation control.
 // This method makes DomainClient compatible with the Client interface.
 func (dc *DomainClient) Request(ctx context.Context, method, path string, options ...RequestOption) (*Result, error) {
-	fullURL := dc.buildURL(path)
+	fullURL, err := dc.buildURL(path)
+	if err != nil {
+		return nil, err
+	}
 
 	managedOptions := dc.session.PrepareOptions()
 	allOptions := append(managedOptions, options...)
@@ -126,7 +129,10 @@ func (dc *DomainClient) Request(ctx context.Context, method, path string, option
 
 // DownloadFile downloads a file from the specified path to the given file path.
 func (dc *DomainClient) DownloadFile(path string, filePath string, options ...RequestOption) (*DownloadResult, error) {
-	fullURL := dc.buildURL(path)
+	fullURL, err := dc.buildURL(path)
+	if err != nil {
+		return nil, err
+	}
 
 	managedOptions := dc.session.PrepareOptions()
 	allOptions := append(managedOptions, options...)
@@ -138,7 +144,10 @@ func (dc *DomainClient) DownloadFile(path string, filePath string, options ...Re
 
 // DownloadWithOptions downloads a file with custom download options.
 func (dc *DomainClient) DownloadWithOptions(path string, downloadOpts *DownloadOptions, options ...RequestOption) (*DownloadResult, error) {
-	fullURL := dc.buildURL(path)
+	fullURL, err := dc.buildURL(path)
+	if err != nil {
+		return nil, err
+	}
 
 	managedOptions := dc.session.PrepareOptions()
 	allOptions := append(managedOptions, options...)
@@ -149,7 +158,10 @@ func (dc *DomainClient) DownloadWithOptions(path string, downloadOpts *DownloadO
 }
 
 func (dc *DomainClient) request(method, path string, options ...RequestOption) (*Result, error) {
-	fullURL := dc.buildURL(path)
+	fullURL, err := dc.buildURL(path)
+	if err != nil {
+		return nil, err
+	}
 
 	managedOptions := dc.session.PrepareOptions()
 	allOptions := append(managedOptions, options...)
@@ -168,9 +180,9 @@ func (dc *DomainClient) request(method, path string, options ...RequestOption) (
 	return result, nil
 }
 
-func (dc *DomainClient) buildURL(pathStr string) string {
+func (dc *DomainClient) buildURL(pathStr string) (string, error) {
 	if pathStr == "" {
-		return dc.baseURL
+		return dc.baseURL, nil
 	}
 
 	parsedURL, err := url.Parse(pathStr)
@@ -179,17 +191,17 @@ func (dc *DomainClient) buildURL(pathStr string) string {
 		// Only allow http and https schemes to prevent potential SSRF attacks
 		if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
 			// Reject URLs with disallowed schemes (file:, data:, javascript:, etc.)
-			return dc.baseURL
+			return "", fmt.Errorf("invalid URL scheme: %q: only http and https are allowed", parsedURL.Scheme)
 		}
-		return pathStr
+		return pathStr, nil
 	}
 
 	baseURL, err := url.Parse(dc.baseURL)
 	if err != nil {
-		return dc.baseURL
+		return "", fmt.Errorf("failed to parse base URL: %w", err)
 	}
 	baseURL.Path = stdpath.Join(baseURL.Path, pathStr)
-	return baseURL.String()
+	return baseURL.String(), nil
 }
 
 // SetHeader adds or updates a header in the session.

@@ -91,7 +91,7 @@ func ValidateFieldName(name string, fieldType string) error {
 // ValidateHeaderKeyValue validates HTTP header keys and values.
 func ValidateHeaderKeyValue(key, value string) error {
 	if err := ValidateInputString(key, MaxHeaderKeyLen, "header key", func(r rune) error {
-		if !isValidHeaderChar(r) {
+		if !IsValidHeaderChar(r) {
 			return fmt.Errorf("invalid character in header key")
 		}
 		return nil
@@ -120,10 +120,6 @@ func ValidateHeaderKeyValue(key, value string) error {
 func IsValidHeaderChar(r rune) bool {
 	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
 		(r >= '0' && r <= '9') || r == '-'
-}
-
-func isValidHeaderChar(r rune) bool {
-	return IsValidHeaderChar(r)
 }
 
 // IsValidHeaderString checks if a string contains only valid characters for HTTP headers.

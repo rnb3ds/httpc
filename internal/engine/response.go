@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"unsafe"
 )
 
 const (
@@ -62,7 +63,10 @@ func (p *ResponseProcessor) Process(httpResp *http.Response) (*Response, error) 
 	}
 
 	contentLength := httpResp.ContentLength
+	// Strict content-length validation: skip for HEAD requests (no body expected)
+	// and compressed responses (body size differs from Content-Length header)
 	if !wasCompressed && p.config.StrictContentLength && contentLength > 0 && contentLength != int64(len(body)) {
+		// Safe nil check with short-circuit evaluation before accessing Method
 		if httpResp.Request == nil || httpResp.Request.Method != "HEAD" {
 			return nil, fmt.Errorf("content-length mismatch: expected %d, got %d", contentLength, len(body))
 		}
@@ -76,13 +80,24 @@ func (p *ResponseProcessor) Process(httpResp *http.Response) (*Response, error) 
 	resp.SetStatusCode(httpResp.StatusCode)
 	resp.SetStatus(httpResp.Status)
 	resp.SetHeaders(httpResp.Header)
-	resp.SetBody(string(body))
+	// Use zero-copy conversion for body string since body is already a fresh copy.
+	// This saves one allocation compared to string(body).
+	resp.SetBody(bytesToString(body))
 	resp.SetRawBody(body)
 	resp.SetContentLength(contentLength)
 	resp.SetProto(httpResp.Proto)
 	resp.SetCookies(httpResp.Cookies())
 
 	return resp, nil
+}
+
+// bytesToString performs a zero-allocation conversion from []byte to string.
+// SAFE because the input slice must be a fresh copy that will not be modified.
+func bytesToString(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	return unsafe.String(&b[0], len(b))
 }
 
 // readBody reads and optionally decompresses the response body with size limits.

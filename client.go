@@ -181,7 +181,6 @@ func deepCopyConfig(src *Config) *Config {
 	return &dst
 }
 
-
 // buildMiddlewareChain constructs a middleware chain from the provided middlewares.
 // The final handler executes the actual HTTP request via the engine.
 func (c *clientImpl) buildMiddlewareChain(middlewares []MiddlewareFunc) Handler {
@@ -462,8 +461,17 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		cfg = DefaultConfig()
 	}
 
+	// Calculate idle connections per host with proper bounds
 	idleConnsPerHost := cfg.Connections.MaxConnsPerHost / 2
-	if idleConnsPerHost < minIdleConnsPerHost {
+
+	// Handle edge cases for MaxConnsPerHost
+	// - If 0 (unlimited), use default idle connections
+	// - If very small (< 2*minIdleConnsPerHost), use minimum
+	// - Otherwise, use half of MaxConnsPerHost
+	if cfg.Connections.MaxConnsPerHost == 0 {
+		// Unlimited max connections - use reasonable default for idle
+		idleConnsPerHost = maxIdleConnsPerHostCap
+	} else if idleConnsPerHost < minIdleConnsPerHost {
 		idleConnsPerHost = minIdleConnsPerHost
 	} else if idleConnsPerHost > maxIdleConnsPerHostCap {
 		idleConnsPerHost = maxIdleConnsPerHostCap

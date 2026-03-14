@@ -66,10 +66,10 @@ func (d *Detector) detectFromEnvironment() func(*http.Request) (*url.URL, error)
 		URL: testURL,
 	}
 
-	if proxyFunc := http.ProxyFromEnvironment; proxyFunc != nil {
-		if u, err := proxyFunc(testReq); err == nil && u != nil {
-			return proxyFunc
-		}
+	// http.ProxyFromEnvironment is a function, not a pointer - it's never nil
+	// Test if it returns a valid proxy for our test request
+	if u, err := http.ProxyFromEnvironment(testReq); err == nil && u != nil {
+		return http.ProxyFromEnvironment
 	}
 	return nil
 }

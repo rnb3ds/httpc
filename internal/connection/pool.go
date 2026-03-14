@@ -334,27 +334,45 @@ func (pm *PoolManager) createTLSConfig() *tls.Config {
 
 type trackedConn struct {
 	net.Conn
-	pm   *PoolManager
-	host string
+	pm        *PoolManager
+	host      string
+	closeOnce sync.Once
+	closed    int32 // Atomic flag for fast double-close detection
 }
 
 func (tc *trackedConn) Close() error {
-	atomic.AddInt64(&tc.pm.activeConns, -1)
-	if value, ok := tc.pm.hostConns.Load(tc.host); ok {
-		stats := value.(*HostStats)
-		atomic.AddInt64(&stats.ActiveConns, -1)
+	// Fast path: check if already closed (atomic check before sync.Once overhead)
+	if atomic.LoadInt32(&tc.closed) == 1 {
+		return nil
 	}
-	return tc.Conn.Close()
+
+	var closeErr error
+	tc.closeOnce.Do(func() {
+		atomic.StoreInt32(&tc.closed, 1)
+		atomic.AddInt64(&tc.pm.activeConns, -1)
+		if value, ok := tc.pm.hostConns.Load(tc.host); ok {
+			if stats, ok := value.(*HostStats); ok && stats != nil {
+				atomic.AddInt64(&stats.ActiveConns, -1)
+			}
+		}
+		closeErr = tc.Conn.Close()
+	})
+	return closeErr
 }
 
 // updateConnectionMetrics efficiently updates per-host connection statistics.
 func (pm *PoolManager) updateConnectionMetrics(host string, connTime int64, success bool) {
+	// Use a pre-allocated stats pointer to avoid allocation in the hot path
 	value, _ := pm.hostConns.LoadOrStore(host, &HostStats{
 		Host:     host,
 		LastUsed: time.Now().Unix(),
 	})
 
-	stats := value.(*HostStats)
+	// Safe type assertion with defensive check
+	stats, ok := value.(*HostStats)
+	if !ok || stats == nil {
+		return // Defensive: skip update if type assertion fails
+	}
 
 	if success {
 		atomic.AddInt64(&stats.TotalConns, 1)
