@@ -108,6 +108,16 @@ func TestDefaultClient_ConcurrentAccess(t *testing.T) {
 	// Reset default client first
 	CloseDefaultClient()
 
+	// Set up default client with testing config for localhost access
+	testClient, err := New(testConfig())
+	if err != nil {
+		t.Fatalf("Failed to create test client: %v", err)
+	}
+	if err := SetDefaultClient(testClient); err != nil {
+		t.Fatalf("Failed to set default client: %v", err)
+	}
+	defer CloseDefaultClient()
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
@@ -156,7 +166,7 @@ func TestSetDefaultClient_Concurrent(t *testing.T) {
 	for i := 0; i < numGoroutines; i++ {
 		go func() {
 			defer wg.Done()
-			client, err := New()
+			client, err := New(testConfig())
 			if err != nil {
 				atomic.AddInt64(&setErrors, 1)
 				return
@@ -274,7 +284,7 @@ func TestBufferPool_ConcurrentAccess(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := New()
+	client, err := New(testConfig())
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -314,7 +324,7 @@ func TestRequestPool_ConcurrentRequests(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	client, err := New(cfg)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
@@ -364,7 +374,7 @@ func TestMiddleware_ConcurrentExecution(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		LoggingMiddleware(func(format string, args ...any) {
 			atomic.AddInt64(&callCount, 1)
@@ -469,7 +479,7 @@ func TestConnectionPool_ConcurrentConnections(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Connections.MaxIdleConns = 50
 	cfg.Connections.MaxConnsPerHost = 20
 
@@ -509,7 +519,7 @@ func TestConnectionPool_ConcurrentConnections(t *testing.T) {
 func TestDoHCache_ConcurrentLookups(t *testing.T) {
 	t.Parallel()
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Connections.EnableDoH = true
 	cfg.Connections.DoHCacheTTL = 1 * time.Minute
 
@@ -548,7 +558,7 @@ func TestClient_ConcurrentClose(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := New()
+	client, err := New(testConfig())
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -580,7 +590,7 @@ func TestClient_MixedConcurrentOperations(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := New()
+	client, err := New(testConfig())
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}

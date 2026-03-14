@@ -5,8 +5,11 @@ import (
 	"time"
 )
 
-func newTestClient() (Client, error) {
-	config := &Config{
+// testConfig returns a configuration suitable for testing with localhost servers.
+// SECURITY: This configuration allows private IPs and skips TLS verification.
+// DO NOT use in production.
+func testConfig() *Config {
+	return &Config{
 		Timeouts: TimeoutConfig{
 			Request: 60 * time.Second,
 		},
@@ -19,7 +22,7 @@ func newTestClient() (Client, error) {
 		Security: SecurityConfig{
 			InsecureSkipVerify:  true,
 			MaxResponseBodySize: 10 * 1024 * 1024,
-			AllowPrivateIPs:     true,
+			AllowPrivateIPs:     true, // Required for localhost testing
 			TLSConfig: &tls.Config{
 				InsecureSkipVerify: true,
 			},
@@ -35,6 +38,8 @@ func newTestClient() (Client, error) {
 			FollowRedirects: true,
 		},
 	}
+}
 
-	return New(config)
+func newTestClient() (Client, error) {
+	return New(testConfig())
 }

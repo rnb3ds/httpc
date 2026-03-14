@@ -90,8 +90,8 @@ type SecurityConfig struct {
 	MaxResponseBodySize int64
 
 	// AllowPrivateIPs permits connections to private IP addresses (SSRF protection).
-	// Set to false in production to prevent Server-Side Request Forgery.
-	// Default: true (for development convenience).
+	// SECURITY: Set to false by default to prevent Server-Side Request Forgery.
+	// Set to true only for development environments or when accessing internal services.
 	AllowPrivateIPs bool
 
 	// ValidateURL enables URL validation before sending requests.
@@ -181,6 +181,9 @@ func DefaultConnectionConfig() ConnectionConfig {
 }
 
 // DefaultSecurityConfig returns a SecurityConfig with production-ready defaults.
+// SECURITY: AllowPrivateIPs is set to false by default to prevent SSRF attacks.
+// Set to true only for development environments or when you explicitly need
+// to access internal services.
 func DefaultSecurityConfig() SecurityConfig {
 	return SecurityConfig{
 		MinTLSVersion:       tls.VersionTLS12,
@@ -189,7 +192,7 @@ func DefaultSecurityConfig() SecurityConfig {
 		ValidateURL:         true,
 		ValidateHeaders:     true,
 		StrictContentLength: true,
-		AllowPrivateIPs:     true,
+		AllowPrivateIPs:     false, // SECURITY: Block private IPs by default to prevent SSRF
 	}
 }
 

@@ -272,6 +272,9 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 // validateAddressBeforeDial performs address validation before dialing to prevent SSRF attacks.
 // This method validates both IP addresses and domain names to ensure they don't point
 // to private, reserved, or local addresses when SSRF protection is enabled.
+//
+// SECURITY: DNS resolution failures result in connection blocking to prevent
+// DNS-based SSRF bypass attacks where an attacker controls DNS responses.
 func (pm *PoolManager) validateAddressBeforeDial(address string) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
@@ -287,9 +290,9 @@ func (pm *PoolManager) validateAddressBeforeDial(address string) error {
 	// This provides defense in depth against DNS rebinding attacks
 	ips, err := net.LookupIP(host)
 	if err != nil {
-		// If DNS resolution fails, we'll let the connection attempt proceed
-		// The dialer will handle the actual connection and report the error
-		return nil
+		// SECURITY: Block on DNS resolution failure instead of allowing connection
+		// This prevents attackers from using DNS failures to bypass SSRF protection
+		return fmt.Errorf("DNS resolution failed for SSRF validation of %s: %w", host, err)
 	}
 
 	// Check all resolved IPs - if any point to a private/reserved address, block it

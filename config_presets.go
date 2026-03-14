@@ -1,8 +1,42 @@
 package httpc
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 )
+
+// isTestEnvironment detects if the code is running in a test environment.
+// This is used to warn against using TestingConfig in production.
+func isTestEnvironment() bool {
+	executable := filepath.Base(os.Args[0])
+	// Check for common test executable patterns
+	if strings.HasSuffix(executable, ".test") ||
+		strings.HasSuffix(executable, ".test.exe") ||
+		strings.Contains(executable, ".test.") {
+		return true
+	}
+	// Check for Go test environment
+	if os.Getenv("GO_TEST") != "" || strings.Contains(os.Getenv("GOTEST"), "1") {
+		return true
+	}
+	return false
+}
+
+// warnTestingConfigInProduction logs a warning if TestingConfig is used outside of a test environment.
+// This is a security measure to prevent accidental use of insecure settings in production.
+func warnTestingConfigInProduction() {
+	if !isTestEnvironment() {
+		fmt.Fprintf(os.Stderr, "[SECURITY WARNING] TestingConfig is being used in a non-test environment!\n")
+		fmt.Fprintf(os.Stderr, "[SECURITY WARNING] This configuration disables critical security features:\n")
+		fmt.Fprintf(os.Stderr, "[SECURITY WARNING]   - TLS certificate verification is DISABLED\n")
+		fmt.Fprintf(os.Stderr, "[SECURITY WARNING]   - SSRF protection is DISABLED\n")
+		fmt.Fprintf(os.Stderr, "[SECURITY WARNING]   - URL/Header validation is DISABLED\n")
+		fmt.Fprintf(os.Stderr, "[SECURITY WARNING] Use SecureConfig() or DefaultConfig() for production!\n")
+	}
+}
 
 func SecureConfig() *Config {
 	cfg := DefaultConfig()
@@ -47,7 +81,13 @@ func PerformanceConfig() *Config {
 // TestingConfig returns a configuration optimized for testing environments.
 // WARNING: This config disables security features and should NEVER be used in production.
 // Use this ONLY for local development and testing with localhost/private networks.
+//
+// SECURITY: This function will log a warning if called outside of a test environment.
+// For production, use SecureConfig() or DefaultConfig() instead.
 func TestingConfig() *Config {
+	// Security warning for non-test environments
+	warnTestingConfigInProduction()
+
 	cfg := DefaultConfig()
 	cfg.Security.InsecureSkipVerify = true
 	cfg.Security.AllowPrivateIPs = true

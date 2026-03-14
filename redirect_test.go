@@ -8,13 +8,6 @@ import (
 	"github.com/cybergodev/httpc/internal/engine"
 )
 
-// testConfig returns a config suitable for testing with localhost
-func testRedirectConfig() *Config {
-	config := DefaultConfig()
-	config.Security.AllowPrivateIPs = true
-	return config
-}
-
 func TestRedirect_AutoFollow(t *testing.T) {
 	t.Parallel()
 
@@ -36,7 +29,7 @@ func TestRedirect_AutoFollow(t *testing.T) {
 	}))
 	defer redirectServer.Close()
 
-	config := testRedirectConfig()
+	config := testConfig()
 	config.Middleware.FollowRedirects = true
 	config.Middleware.MaxRedirects = 10
 	client, err := New(config)
@@ -81,7 +74,7 @@ func TestRedirect_NoFollow(t *testing.T) {
 	}))
 	defer redirectServer.Close()
 
-	config := testRedirectConfig()
+	config := testConfig()
 	config.Middleware.FollowRedirects = false
 	client, err := New(config)
 	if err != nil {
@@ -121,7 +114,7 @@ func TestRedirect_MaxRedirectsLimit(t *testing.T) {
 	}))
 	defer redirectServer.Close()
 
-	config := testRedirectConfig()
+	config := testConfig()
 	config.Middleware.FollowRedirects = true
 	config.Middleware.MaxRedirects = 3
 	client, err := New(config)
@@ -151,7 +144,7 @@ func TestRedirect_PerRequestOverride(t *testing.T) {
 	defer redirectServer.Close()
 
 	// Client configured to follow redirects
-	config := testRedirectConfig()
+	config := testConfig()
 	config.Middleware.FollowRedirects = true
 	client, err := New(config)
 	if err != nil {
@@ -185,7 +178,7 @@ func TestRedirect_MaxRedirectsPerRequest(t *testing.T) {
 	}))
 	defer redirectServer.Close()
 
-	config := testRedirectConfig()
+	config := testConfig()
 	config.Middleware.FollowRedirects = true
 	config.Middleware.MaxRedirects = 10
 	client, err := New(config)
@@ -234,7 +227,7 @@ func TestRedirect_DifferentStatusCodes(t *testing.T) {
 			}))
 			defer redirectServer.Close()
 
-			config := testRedirectConfig()
+			config := testConfig()
 			config.Middleware.FollowRedirects = true
 			client, err := New(config)
 			if err != nil {
@@ -277,7 +270,7 @@ func TestRedirect_ChainTracking(t *testing.T) {
 	}))
 	defer server1.Close()
 
-	config := testRedirectConfig()
+	config := testConfig()
 	config.Middleware.FollowRedirects = true
 	client, err := New(config)
 	if err != nil {

@@ -81,7 +81,7 @@ func TestLoggingMiddleware(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		LoggingMiddleware(logger),
 	}
@@ -116,7 +116,7 @@ func TestRecoveryMiddleware(t *testing.T) {
 		}
 	}
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		RecoveryMiddleware(),
 		panicMiddleware,
@@ -151,7 +151,7 @@ func TestRequestIDMiddleware(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		RequestIDMiddleware("X-Request-ID", func() string {
 			return "test-request-id-123"
@@ -181,7 +181,7 @@ func TestTimeoutMiddleware(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Timeouts.Request = 5 * time.Second
 	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		TimeoutMiddleware(10 * time.Millisecond),
@@ -217,7 +217,7 @@ func TestHeaderMiddleware(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		HeaderMiddleware(map[string]string{
 			"X-Custom-Header": "custom-value",
@@ -260,7 +260,7 @@ func TestMetricsMiddleware(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		MetricsMiddleware(func(method, url string, statusCode int, duration time.Duration, err error) {
 			mu.Lock()
@@ -329,7 +329,7 @@ func TestMultipleMiddlewares(t *testing.T) {
 		}
 	}
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		createMiddleware("A"),
 		createMiddleware("B"),
@@ -373,7 +373,7 @@ func TestZeroOverheadNoMiddleware(t *testing.T) {
 	defer ts.Close()
 
 	// Client without middlewares
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	client, err := New(cfg)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
@@ -395,7 +395,7 @@ func TestMiddlewareCanModifyRequest(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		func(next Handler) Handler {
 			return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
@@ -428,7 +428,7 @@ func TestMiddlewareCanModifyResponse(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		func(next Handler) Handler {
 			return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
@@ -465,7 +465,7 @@ func BenchmarkMiddlewareOverhead(b *testing.B) {
 	defer ts.Close()
 
 	b.Run("NoMiddleware", func(b *testing.B) {
-		cfg := DefaultConfig()
+		cfg := testConfig()
 		client, _ := New(cfg)
 		defer client.Close()
 
@@ -476,7 +476,7 @@ func BenchmarkMiddlewareOverhead(b *testing.B) {
 	})
 
 	b.Run("WithMiddleware", func(b *testing.B) {
-		cfg := DefaultConfig()
+		cfg := testConfig()
 		cfg.Middleware.Middlewares = []MiddlewareFunc{
 			func(next Handler) Handler {
 				return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
@@ -494,7 +494,7 @@ func BenchmarkMiddlewareOverhead(b *testing.B) {
 	})
 
 	b.Run("WithThreeMiddlewares", func(b *testing.B) {
-		cfg := DefaultConfig()
+		cfg := testConfig()
 		cfg.Middleware.Middlewares = []MiddlewareFunc{
 			func(next Handler) Handler {
 				return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
@@ -530,7 +530,7 @@ func TestConcurrentMiddlewareAccess(t *testing.T) {
 
 	var callCount int64
 
-	cfg := DefaultConfig()
+	cfg := testConfig()
 	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		func(next Handler) Handler {
 			return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {

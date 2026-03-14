@@ -14,10 +14,11 @@ import (
 
 // DoHResolver provides DNS-over-HTTPS resolution
 type DoHResolver struct {
-	client    *http.Client
-	providers []*DoHProvider
-	cache     sync.Map
-	cacheTTL  time.Duration
+	client     *http.Client
+	providers  []*DoHProvider
+	cache      sync.Map
+	cacheTTL   time.Duration
+	cacheSize  int64 // Atomic counter for cache size tracking
 }
 
 // Compile-time interface check
@@ -35,6 +36,17 @@ type CacheEntry struct {
 	IPs     []net.IPAddr
 	Expires time.Time
 }
+
+// Security constants for DoH
+const (
+	// maxDoHResponseSize limits the maximum size of a DoH response to prevent
+	// memory exhaustion attacks from malicious DNS servers
+	maxDoHResponseSize = 64 * 1024 // 64KB - DNS responses should never be this large
+
+	// maxDoHCacheSize limits the number of cached DNS entries to prevent
+	// unbounded memory growth
+	maxDoHCacheSize = 1000
+)
 
 // DefaultDoHProviders returns common DoH providers
 func DefaultDoHProviders() []*DoHProvider {
@@ -90,15 +102,20 @@ func NewDoHResolver(providers []*DoHProvider, cacheTTL time.Duration) *DoHResolv
 func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
 	// Check cache first - TOCTOU safe: return cached data if valid, don't delete in read path
 	if cached, ok := r.cache.Load(host); ok {
-		entry := cached.(*CacheEntry)
-		if time.Now().Before(entry.Expires) {
+		// Safe type assertion to prevent potential panic from corrupted cache
+		entry, ok := cached.(*CacheEntry)
+		if !ok || entry == nil {
+			// Invalid cache entry type - delete and continue with fresh lookup
+			r.cache.Delete(host)
+		} else if time.Now().Before(entry.Expires) {
 			// Return a copy to prevent caller from modifying cached data
 			ips := make([]net.IPAddr, len(entry.IPs))
 			copy(ips, entry.IPs)
 			return ips, nil
+		} else {
+			// Entry expired - delete it (safe: we're just cleaning up stale data)
+			r.cache.Delete(host)
 		}
-		// Entry expired - delete it (safe: we're just cleaning up stale data)
-		r.cache.Delete(host)
 	}
 
 	// Try each provider until one succeeds
@@ -106,11 +123,15 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 	for _, provider := range r.providers {
 		ips, err := r.lookupWithProvider(ctx, provider, host)
 		if err == nil && len(ips) > 0 {
-			// Cache the result
-			r.cache.Store(host, &CacheEntry{
-				IPs:     ips,
-				Expires: time.Now().Add(r.cacheTTL),
-			})
+			// SECURITY: Only cache if we haven't exceeded the cache size limit
+			// This prevents unbounded memory growth
+			currentSize := r.getCacheSize()
+			if currentSize < maxDoHCacheSize {
+				r.cache.Store(host, &CacheEntry{
+					IPs:     ips,
+					Expires: time.Now().Add(r.cacheTTL),
+				})
+			}
 			return ips, nil
 		}
 		lastErr = err
@@ -118,6 +139,16 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 
 	// Fallback to system resolver if all providers fail
 	return r.fallbackLookup(ctx, host, lastErr)
+}
+
+// getCacheSize returns the current number of entries in the cache
+func (r *DoHResolver) getCacheSize() int {
+	count := 0
+	r.cache.Range(func(_, _ interface{}) bool {
+		count++
+		return true
+	})
+	return count
 }
 
 // lookupWithProvider performs DNS lookup using a specific DoH provider
@@ -148,11 +179,18 @@ func (r *DoHResolver) lookupWithProvider(ctx context.Context, provider *DoHProvi
 	return r.parseResponse(resp, provider, host)
 }
 
-// parseResponse parses DoH response
+// parseResponse parses DoH response with size limits to prevent memory exhaustion
 func (r *DoHResolver) parseResponse(resp *http.Response, provider *DoHProvider, host string) ([]net.IPAddr, error) {
-	body, err := io.ReadAll(resp.Body)
+	// SECURITY: Limit response body size to prevent memory exhaustion attacks
+	limitedReader := io.LimitReader(resp.Body, maxDoHResponseSize+1)
+	body, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return nil, fmt.Errorf("read response body failed: %w", err)
+	}
+
+	// SECURITY: Check if response exceeded size limit
+	if len(body) > maxDoHResponseSize {
+		return nil, fmt.Errorf("DoH response exceeds maximum size limit (%d bytes)", maxDoHResponseSize)
 	}
 
 	// Check response type

@@ -16,6 +16,11 @@ const (
 	defaultBufferSize = 4 * 1024 // 4KB - good balance for most responses
 	// maxBufferSize caps the buffer size to prevent memory bloat
 	maxBufferSize = 512 * 1024 // 512KB
+
+	// SECURITY: maxCompressedSize limits the size of compressed response data
+	// to prevent decompression bomb (zip bomb) attacks. A highly compressed
+	// malicious payload could exhaust memory during decompression.
+	maxCompressedSize = 100 * 1024 * 1024 // 100MB compressed data limit
 )
 
 // bufferPool reuses byte buffers for response body reading
@@ -25,9 +30,15 @@ var bufferPool = sync.Pool{
 	},
 }
 
-// getBuffer retrieves a buffer from the pool
+// getBuffer retrieves a buffer from the pool with safe type assertion.
+// Returns a new buffer if the pool contains an unexpected type (defensive).
 func getBuffer() *bytes.Buffer {
-	buf := bufferPool.Get().(*bytes.Buffer)
+	pooled := bufferPool.Get()
+	buf, ok := pooled.(*bytes.Buffer)
+	if !ok || buf == nil {
+		// Defensive: create new buffer if pool returns wrong type
+		return bytes.NewBuffer(make([]byte, 0, defaultBufferSize))
+	}
 	buf.Reset()
 	return buf
 }
@@ -102,21 +113,27 @@ func bytesToString(b []byte) string {
 
 // readBody reads and optionally decompresses the response body with size limits.
 // Uses a buffer pool to reduce heap allocations for response bodies.
+// SECURITY: Implements protection against decompression bomb attacks.
 func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 	if httpResp.Body == nil {
 		return nil, nil
 	}
 
 	reader := io.Reader(httpResp.Body)
+	isCompressed := false
 
 	if encoding := httpResp.Header.Get("Content-Encoding"); encoding != "" {
+		isCompressed = true
 		var err error
-		reader, err = p.createDecompressor(reader, encoding)
+		// SECURITY: Limit compressed data size before decompression to prevent zip bombs
+		limitedCompressedReader := io.LimitReader(httpResp.Body, maxCompressedSize+1)
+		reader, err = p.createDecompressor(limitedCompressedReader, encoding)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create decompressor for %s: %w", encoding, err)
 		}
 	}
 
+	// Apply decompressed size limit
 	if maxSize := p.config.MaxResponseBodySize; maxSize > 0 {
 		reader = io.LimitReader(reader, maxSize+1)
 	}
@@ -132,6 +149,12 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 
 	body := buf.Bytes()
 
+	// SECURITY: Check compressed size limit for zip bomb protection
+	if isCompressed && len(body) > maxCompressedSize {
+		return nil, fmt.Errorf("compressed response body exceeds security limit of %d bytes (potential zip bomb)", maxCompressedSize)
+	}
+
+	// Check decompressed size limit
 	if maxSize := p.config.MaxResponseBodySize; maxSize > 0 && int64(len(body)) > maxSize {
 		return nil, fmt.Errorf("response body exceeds limit of %d bytes", maxSize)
 	}

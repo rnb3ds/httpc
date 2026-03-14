@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
@@ -399,5 +400,239 @@ func TestPoolManager_ContextCancellation(t *testing.T) {
 	_, err = client.Do(req)
 	if err == nil {
 		t.Error("Expected error due to context cancellation")
+	}
+}
+
+// ============================================================================
+// SSRF Protection Tests
+// ============================================================================
+
+func TestPoolManager_SSRFProtection(t *testing.T) {
+	t.Run("BlockPrivateIPs", func(t *testing.T) {
+		config := &Config{
+			AllowPrivateIPs: false, // SSRF protection enabled
+		}
+		pm, err := NewPoolManager(config)
+		if err != nil {
+			t.Fatalf("Expected no error, got: %v", err)
+		}
+		defer func() { _ = pm.Close() }()
+
+		// Verify that SSRF protection is enabled
+		if pm.config.AllowPrivateIPs {
+			t.Error("AllowPrivateIPs should be false")
+		}
+	})
+
+	t.Run("AllowPrivateIPs", func(t *testing.T) {
+		config := &Config{
+			AllowPrivateIPs: true,
+		}
+		pm, err := NewPoolManager(config)
+		if err != nil {
+			t.Fatalf("Expected no error, got: %v", err)
+		}
+		defer func() { _ = pm.Close() }()
+
+		if !pm.config.AllowPrivateIPs {
+			t.Error("AllowPrivateIPs should be true")
+		}
+	})
+}
+
+func TestPoolManager_SystemProxy(t *testing.T) {
+	config := &Config{
+		EnableSystemProxy: true,
+	}
+
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	// Transport should be created (proxy detection may or may not find a proxy)
+	if pm.transport == nil {
+		t.Error("Transport should not be nil")
+	}
+}
+
+// ============================================================================
+// Metrics Tests
+// ============================================================================
+
+func TestPoolManager_MetricsTracking(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.AllowPrivateIPs = true
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	client := &http.Client{
+		Transport: pm.GetTransport(),
+		Timeout:   5 * time.Second,
+	}
+
+	// Make a request
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	// Check metrics after request
+	metrics := pm.GetMetrics()
+	// Metrics might not update immediately due to async tracking
+	// Just verify the method doesn't panic
+	_ = metrics.TotalConnections
+	_ = metrics.ActiveConnections
+}
+
+// ============================================================================
+// Concurrent Access Tests
+// ============================================================================
+
+func TestPoolManager_ConcurrentRequests(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.AllowPrivateIPs = true
+	config.MaxIdleConns = 50
+	config.MaxConnsPerHost = 20
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	client := &http.Client{
+		Transport: pm.GetTransport(),
+		Timeout:   5 * time.Second,
+	}
+
+	const numRequests = 20
+	var wg sync.WaitGroup
+	errChan := make(chan error, numRequests)
+
+	for i := 0; i < numRequests; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := client.Get(server.URL)
+			if err != nil {
+				errChan <- err
+				return
+			}
+			_ = resp.Body.Close()
+		}()
+	}
+
+	wg.Wait()
+	close(errChan)
+
+	for err := range errChan {
+		t.Errorf("Concurrent request failed: %v", err)
+	}
+}
+
+func TestPoolManager_ConcurrentClose(t *testing.T) {
+	pm, err := NewPoolManager(nil)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	const numClosers = 5
+	var wg sync.WaitGroup
+	wg.Add(numClosers)
+
+	for i := 0; i < numClosers; i++ {
+		go func() {
+			defer wg.Done()
+			_ = pm.Close() // Should be safe to call multiple times
+		}()
+	}
+
+	wg.Wait()
+}
+
+// ============================================================================
+// Edge Cases Tests
+// ============================================================================
+
+func TestPoolManager_NilConfig(t *testing.T) {
+	pm, err := NewPoolManager(nil)
+	if err != nil {
+		t.Fatalf("Expected no error with nil config, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	// Should use default config
+	if pm.config == nil {
+		t.Error("Config should not be nil after initialization")
+	}
+}
+
+func TestPoolManager_ZeroTimeouts(t *testing.T) {
+	config := &Config{
+		DialTimeout:           0,
+		TLSHandshakeTimeout:   0,
+		ResponseHeaderTimeout: 0,
+		IdleConnTimeout:       0,
+	}
+
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	// Should handle zero timeouts gracefully
+	if pm.transport == nil {
+		t.Error("Transport should not be nil")
+	}
+}
+
+func TestPoolManager_HighConnectionLimits(t *testing.T) {
+	config := &Config{
+		MaxIdleConns:        1000,
+		MaxIdleConnsPerHost: 100,
+		MaxConnsPerHost:     200,
+	}
+
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	if pm.transport.MaxIdleConns != 1000 {
+		t.Errorf("Expected MaxIdleConns 1000, got %d", pm.transport.MaxIdleConns)
+	}
+}
+
+func TestPoolManager_HTTP2Disabled(t *testing.T) {
+	config := &Config{
+		EnableHTTP2: false,
+	}
+
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	// When HTTP/2 is disabled, ForceAttemptHTTP2 should be false
+	if pm.transport.ForceAttemptHTTP2 {
+		t.Error("ForceAttemptHTTP2 should be false when HTTP/2 is disabled")
 	}
 }
