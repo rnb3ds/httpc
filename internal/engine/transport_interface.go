@@ -28,6 +28,10 @@ type TransportManager interface {
 	// GetRedirectChain returns the list of URLs followed during redirects.
 	GetRedirectChain(ctx context.Context) []string
 
+	// CleanupRedirectSettings releases redirect settings back to the pool.
+	// This MUST be called after the request completes to prevent memory leaks.
+	CleanupRedirectSettings(ctx context.Context)
+
 	// Close releases resources held by the transport.
 	Close() error
 }

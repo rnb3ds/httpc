@@ -273,7 +273,7 @@ func BenchmarkClient_WithHeaders(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		_, err := client.Get(server.URL, WithHeaderMap(headers))
+		_, err := client.Get(server.URL, WithHeaders(headers))
 		if err != nil {
 			b.Fatal(err)
 		}

@@ -3,6 +3,7 @@ package connection
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net"
 	"net/http"
@@ -33,6 +34,11 @@ type PoolManager struct {
 
 	closed int32
 	mu     sync.RWMutex
+}
+
+// CertPinner defines the interface for certificate pinning
+type CertPinner interface {
+	VerifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error
 }
 
 // Config defines connection pool configuration
@@ -71,6 +77,9 @@ type Config struct {
 	// DNS configuration
 	EnableDoH   bool          // Enable DNS-over-HTTPS
 	DoHCacheTTL time.Duration // DoH cache TTL
+
+	// Certificate pinning
+	CertPinner CertPinner
 }
 
 // HostStats tracks per-host connection statistics
@@ -306,8 +315,14 @@ func (pm *PoolManager) validateAddressBeforeDial(address string) error {
 }
 
 func (pm *PoolManager) createTLSConfig() *tls.Config {
+	// If a custom TLS config is provided, use it (but add cert pinning if configured)
 	if pm.config.TLSConfig != nil {
-		return pm.config.TLSConfig.Clone()
+		tlsConfig := pm.config.TLSConfig.Clone()
+		// Add certificate pinning verification if configured
+		if pm.config.CertPinner != nil {
+			tlsConfig.VerifyPeerCertificate = pm.createVerifyPeerCertificate(tlsConfig)
+		}
+		return tlsConfig
 	}
 
 	tlsConfig := &tls.Config{
@@ -332,7 +347,32 @@ func (pm *PoolManager) createTLSConfig() *tls.Config {
 		},
 	}
 
+	// Add certificate pinning verification if configured
+	if pm.config.CertPinner != nil {
+		tlsConfig.VerifyPeerCertificate = pm.createVerifyPeerCertificate(tlsConfig)
+	}
+
 	return tlsConfig
+}
+
+// createVerifyPeerCertificate creates a certificate verification function
+// that combines standard verification with certificate pinning
+func (pm *PoolManager) createVerifyPeerCertificate(tlsConfig *tls.Config) func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+	return func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+		// First, run the pinner verification
+		if err := pm.config.CertPinner.VerifyPeerCertificate(rawCerts, verifiedChains); err != nil {
+			return fmt.Errorf("certificate pinning failed: %w", err)
+		}
+
+		// If InsecureSkipVerify is true, we skip standard verification
+		if tlsConfig.InsecureSkipVerify {
+			return nil
+		}
+
+		// Otherwise, standard TLS verification is performed by Go's TLS implementation
+		// This function only adds the pinning check on top of standard verification
+		return nil
+	}
 }
 
 type trackedConn struct {

@@ -192,7 +192,7 @@ func TestDomainClient_CookieOverride(t *testing.T) {
 	}
 
 	// Request with override cookie
-	resp, err := client.Get("/", httpc.WithCookieValue("test", "override"))
+	resp, err := client.Get("/", httpc.WithCookie(http.Cookie{Name: "test", Value: "override"}))
 	if err != nil {
 		t.Fatalf("Request error = %v", err)
 	}
@@ -822,7 +822,7 @@ func TestDomainClient_AutoPersistRequestOptions(t *testing.T) {
 
 	// First request with cookies and headers via options
 	_, err = client.Get("/first",
-		httpc.WithCookieValue("request-cookie", "request-value"),
+		httpc.WithCookie(http.Cookie{Name: "request-cookie", Value: "request-value"}),
 		httpc.WithHeader("X-Request-Header", "request-header-value"),
 	)
 	if err != nil {
@@ -867,7 +867,7 @@ func TestDomainClient_AutoPersistWithFullURL(t *testing.T) {
 
 	// First request with relative path and options
 	_, err = client.Get("/first",
-		httpc.WithCookieValue("test-cookie", "test-value"),
+		httpc.WithCookie(http.Cookie{Name: "test-cookie", Value: "test-value"}),
 		httpc.WithHeader("X-Test", "test-header"),
 	)
 	if err != nil {
@@ -922,11 +922,9 @@ func TestDomainClient_AutoPersistMultipleCookies(t *testing.T) {
 
 	// First request with multiple cookies
 	_, err = client.Get("/first",
-		httpc.WithCookies([]http.Cookie{
-			{Name: "cookie1", Value: "value1"},
-			{Name: "cookie2", Value: "value2"},
-			{Name: "cookie3", Value: "value3"},
-		}),
+		httpc.WithCookie(http.Cookie{Name: "cookie1", Value: "value1"}),
+		httpc.WithCookie(http.Cookie{Name: "cookie2", Value: "value2"}),
+		httpc.WithCookie(http.Cookie{Name: "cookie3", Value: "value3"}),
 	)
 	if err != nil {
 		t.Fatalf("First request error = %v", err)
@@ -965,7 +963,7 @@ func TestDomainClient_AutoPersistHeaderMap(t *testing.T) {
 
 	// First request with header map
 	_, err = client.Get("/first",
-		httpc.WithHeaderMap(map[string]string{
+		httpc.WithHeaders(map[string]string{
 			"X-Header-1": "value1",
 			"X-Header-2": "value2",
 			"X-Header-3": "value3",
@@ -1029,7 +1027,7 @@ func TestDomainClient_AutoPersistOverride(t *testing.T) {
 
 	// First request
 	_, err = client.Get("/first",
-		httpc.WithCookieValue("test-cookie", "value1"),
+		httpc.WithCookie(http.Cookie{Name: "test-cookie", Value: "value1"}),
 		httpc.WithHeader("X-Test", "header1"),
 	)
 	if err != nil {
@@ -1038,7 +1036,7 @@ func TestDomainClient_AutoPersistOverride(t *testing.T) {
 
 	// Second request with different values (should override)
 	_, err = client.Get("/second",
-		httpc.WithCookieValue("test-cookie", "value2"),
+		httpc.WithCookie(http.Cookie{Name: "test-cookie", Value: "value2"}),
 		httpc.WithHeader("X-Test", "header2"),
 	)
 	if err != nil {

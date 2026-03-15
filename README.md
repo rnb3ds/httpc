@@ -64,7 +64,7 @@ func main() {
 > **Default Request Headers**: By default, use "httpc.DefaultConfig()", which automatically includes a `User-Agent: httpc/1.0` header with all requests. To customize default headers:
 > - **User-Agent**: Set `config.UserAgent` or use `httpc.WithUserAgent("your-custom-agent")`
 > - **Custom Headers**: Set `config.Headers` map when creating a client for client-level default headers
-> - **Per-Request**: Use `httpc.WithHeader()` or `httpc.WithHeaderMap()` to override for specific requests
+> - **Per-Request**: Use `httpc.WithHeader()` or `httpc.WithHeaders()` to override for specific requests
 
 **[📖 See more examples](examples)** | **[🚀 Getting Started Guide](docs/getting-started.md)**
 
@@ -115,22 +115,19 @@ httpc.WithBasicAuth("user", "pass")
 
 // Query Parameters
 httpc.WithQuery("page", 1)
-httpc.WithQueryMap(map[string]interface{}{"page": 1, "limit": 20})
+httpc.WithQueries(map[string]any{"page": 1, "limit": 20})
 
 // Request Body
 httpc.WithJSON(data)              // JSON body
 httpc.WithXML(data)               // XML body
 httpc.WithForm(formData)          // Form data (URL-encoded)
 httpc.WithFormData(data)          // Multipart form data (for file uploads)
-httpc.WithText("content")         // Plain text
 httpc.WithBinary(data, "image/png")  // Binary data with content type
 httpc.WithFile("file", "doc.pdf", content)  // Single file upload
 
 // Cookies
 httpc.WithCookieString("session=abc123; token=xyz789")  // Parse cookie string
-httpc.WithCookieValue("name", "value")                  // Single cookie
 httpc.WithCookie(cookie)                                // http.Cookie object
-httpc.WithCookies(cookies)                              // Multiple cookies
 
 // Redirects
 httpc.WithFollowRedirects(false)  // Disable automatic redirect following
@@ -466,8 +463,8 @@ result, err := httpc.Get("https://api.example.com/data",
 
 // Set individual cookies
 result, err = httpc.Get("https://api.example.com/data",
-    httpc.WithCookieValue("session", "abc123"),
-    httpc.WithCookieValue("token", "xyz789"),
+    httpc.WithCookie(http.Cookie{Name: "session", Value: "abc123"}),
+    httpc.WithCookie(http.Cookie{Name: "token", Value: "xyz789"}),
 )
 
 // Use http.Cookie objects for advanced settings
@@ -608,7 +605,7 @@ result, err = client.DownloadWithOptions("/files/large-file.zip", opts)
 - **Automatic Cookie Persistence** - Cookies from responses are saved and sent in subsequent requests
 - **Automatic Header Persistence** - Set headers once, used in all requests
 - **File Download Support** - Download files with automatic state management (cookies/headers)
-- **Per-Request Overrides** - Use `WithCookies()` and `WithHeaderMap()` to override for specific requests
+- **Per-Request Overrides** - Use `WithCookie()` and `WithHeaders()` to override for specific requests
 - **Thread-Safe** - All operations are goroutine-safe
 - **Manual Control** - Full API for inspecting and modifying state
 - **Automatic Cookie Enabling** - `NewDomain()` automatically enables cookies regardless of config

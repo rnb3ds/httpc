@@ -63,7 +63,7 @@ func main() {
 > **默认请求头**: 使用 `httpc.DefaultConfig()` 默认配置，默认使用 `User-Agent: httpc/1.0` 请求头。可自定义设置默认请求头：
 > - **User-Agent**: 设置 `config.UserAgent` 或使用 `httpc.WithUserAgent("your-custom-agent")`
 > - **自定义请求头**: 在创建客户端时设置 `config.Headers` 映射以添加客户端级别的默认请求头
-> - **每次请求**: 使用 `httpc.WithHeader()` 或 `httpc.WithHeaderMap()` 为特定请求覆盖默认值
+> - **每次请求**: 使用 `httpc.WithHeader()` 或 `httpc.WithHeaders()` 为特定请求覆盖默认值
 
 **[📖 查看更多示例](examples)** | **[🚀 入门指南](docs/getting-started.md)**
 
@@ -114,14 +114,13 @@ httpc.WithBasicAuth("user", "pass")
 
 // 查询参数
 httpc.WithQuery("page", 1)
-httpc.WithQueryMap(map[string]interface{}{"page": 1, "limit": 20})
+httpc.WithQueries(map[string]any{"page": 1, "limit": 20})
 
 // 请求体
 httpc.WithJSON(data)              // JSON 请求体
 httpc.WithXML(data)               // XML 请求体
 httpc.WithForm(formData)          // 表单数据（URL 编码）
 httpc.WithFormData(data)          // 多部分表单数据（用于文件上传）
-httpc.WithText("content")         // 纯文本
 httpc.WithBinary(data, "image/png")  // 二进制数据（带内容类型）
 httpc.WithFile("file", "doc.pdf", content)  // 单个文件上传
 
@@ -606,7 +605,7 @@ result, err = client.DownloadWithOptions("/files/large-file.zip", opts)
 **核心特性：**
 - **自动 Cookie 持久化** - 响应中的 cookies 被保存并在后续请求中发送
 - **自动 Header 持久化** - 设置一次 headers，所有请求中使用
-- **每次请求覆盖** - 使用 `WithCookies()` 和 `WithHeaderMap()` 为特定请求覆盖
+- **每次请求覆盖** - 使用 `WithCookies()` 和 `WithHeaders()` 为特定请求覆盖
 - **线程安全** - 所有操作都是 goroutine 安全的
 - **手动控制** - 完整的 API 用于检查和修改状态
 - **文件下载支持** - 下载文件时自动状态管理（cookies/headers）

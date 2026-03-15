@@ -110,8 +110,9 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 		if !ok || entry == nil {
 			// Invalid cache entry type - delete and continue with fresh lookup
 			r.cache.Delete(host)
-			// Use CompareAndSwap to ensure we only decrement once
-			// This handles the race where multiple goroutines might detect the same bad entry
+			// Decrement counter to maintain consistency - use atomic to handle races
+			// where multiple goroutines might detect the same bad entry
+			r.cacheSize.Add(-1)
 		} else if time.Now().Before(entry.Expires) {
 			// Return a copy to prevent caller from modifying cached data
 			ips := make([]net.IPAddr, len(entry.IPs))

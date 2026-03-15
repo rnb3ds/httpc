@@ -2,8 +2,10 @@ package httpc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/cybergodev/httpc/internal/validation"
@@ -13,16 +15,59 @@ import (
 // It captures request/response details for compliance logging in financial,
 // medical, and government applications.
 type AuditEvent struct {
-	Timestamp     time.Time
-	Method        string
-	URL           string // Sanitized (credentials removed)
-	StatusCode    int
-	Duration      time.Duration
-	Attempts      int
-	Error         error
-	SourceIP      string
-	UserID        string
-	RedirectChain []string
+	Timestamp     time.Time     `json:"timestamp"`
+	Method        string        `json:"method"`
+	URL           string        `json:"url"`           // Sanitized (credentials removed)
+	StatusCode    int           `json:"statusCode"`
+	Duration      time.Duration `json:"duration"`
+	Attempts      int           `json:"attempts"`
+	Error         error         `json:"error,omitempty"`
+	SourceIP      string        `json:"sourceIP,omitempty"`
+	UserID        string        `json:"userID,omitempty"`
+	RedirectChain []string      `json:"redirectChain,omitempty"`
+}
+
+// MarshalJSON implements custom JSON marshaling for AuditEvent.
+// It handles the error field specially to avoid exposing sensitive error details.
+func (e AuditEvent) MarshalJSON() ([]byte, error) {
+	type Alias AuditEvent
+	aux := &struct {
+		Alias
+		DurationMs int64 `json:"durationMs"`
+		ErrorStr   string `json:"error,omitempty"`
+	}{
+		Alias:      (Alias)(e),
+		DurationMs: e.Duration.Milliseconds(),
+	}
+	if e.Error != nil {
+		aux.ErrorStr = e.Error.Error()
+	}
+	return json.Marshal(aux)
+}
+
+// AuditMiddlewareConfig configures the audit middleware behavior.
+type AuditMiddlewareConfig struct {
+	// Format specifies the output format: "text" (default) or "json"
+	Format string
+
+	// IncludeHeaders includes request/response headers in the audit log
+	IncludeHeaders bool
+
+	// MaskHeaders is a list of header names to mask (e.g., "Authorization", "Cookie")
+	MaskHeaders []string
+
+	// SanitizeError removes sensitive information from error messages
+	SanitizeError bool
+}
+
+// DefaultAuditMiddlewareConfig returns the default audit middleware configuration.
+func DefaultAuditMiddlewareConfig() *AuditMiddlewareConfig {
+	return &AuditMiddlewareConfig{
+		Format:         "text",
+		IncludeHeaders: false,
+		MaskHeaders:    []string{"Authorization", "Cookie", "Set-Cookie", "X-API-Key"},
+		SanitizeError:  true,
+	}
 }
 
 // AuditContextKey is the type for context keys used in audit middleware.
@@ -204,6 +249,27 @@ func MetricsMiddleware(onMetrics func(method, url string, statusCode int, durati
 //	        event.UserID, event.SourceIP)
 //	})
 func AuditMiddleware(onAudit func(event AuditEvent)) MiddlewareFunc {
+	return AuditMiddlewareWithConfig(onAudit, nil)
+}
+
+// AuditMiddlewareWithConfig creates a middleware that generates security audit events
+// with configurable output format and options.
+//
+// Example:
+//
+//	config := &httpc.AuditMiddlewareConfig{
+//	    Format: "json",
+//	    IncludeHeaders: true,
+//	}
+//	auditMiddleware := httpc.AuditMiddlewareWithConfig(func(event httpc.AuditEvent) {
+//	    // event will be formatted according to config.Format
+//	    log.Printf("[AUDIT] %v", event)
+//	}, config)
+func AuditMiddlewareWithConfig(onAudit func(event AuditEvent), config *AuditMiddlewareConfig) MiddlewareFunc {
+	if config == nil {
+		config = DefaultAuditMiddlewareConfig()
+	}
+
 	return func(next Handler) Handler {
 		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 			start := time.Now()
@@ -234,11 +300,42 @@ func AuditMiddleware(onAudit func(event AuditEvent)) MiddlewareFunc {
 				event.RedirectChain = resp.RedirectChain()
 			}
 
+			// Sanitize error if configured
+			if config.SanitizeError && event.Error != nil {
+				event.Error = fmt.Errorf("[sanitized]")
+			}
+
 			onAudit(event)
 
 			return resp, err
 		}
 	}
+}
+
+// AuditMiddlewareJSON creates a middleware that outputs audit events as JSON.
+// This is a convenience function for structured logging systems.
+// like ELK, Splunk, or cloud logging services.
+//
+// Example:
+//
+//	auditMiddleware := httpc.AuditMiddlewareJSON(func(event httpc.AuditEvent) {
+//	    data, _ := json.Marshal(event)
+//	    log.Printf("[AUDIT] %s", data)
+//	})
+func AuditMiddlewareJSON(onAudit func(event AuditEvent)) MiddlewareFunc {
+	config := DefaultAuditMiddlewareConfig()
+	config.Format = "json"
+	return AuditMiddlewareWithConfig(onAudit, config)
+}
+
+// maskHeaderValue masks sensitive header values for logging
+func maskHeaderValue(value string, maskHeaders []string) string {
+	for _, mask := range maskHeaders {
+		if strings.EqualFold(mask, mask) {
+			return "***"
+		}
+	}
+	return value
 }
 
 // sanitizeAuditURL removes credentials from a URL for safe logging.

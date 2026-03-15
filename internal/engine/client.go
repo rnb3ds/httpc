@@ -88,6 +88,12 @@ type Config struct {
 	// DNS configuration
 	EnableDoH   bool
 	DoHCacheTTL time.Duration
+
+	// Redirect whitelist configuration
+	RedirectWhitelist *security.DomainWhitelist
+
+	// Certificate pinning
+	CertificatePinner security.CertificatePinner
 }
 
 // RequestCallback is a callback function invoked before a request is sent.
@@ -599,6 +605,8 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 	}
 	// Set redirect policy via context for thread-safety
 	reqCopy.context = c.transport.SetRedirectPolicy(execCtx, followRedirects, maxRedirects)
+	// Ensure redirect settings are returned to pool to prevent memory leak
+	defer c.transport.CleanupRedirectSettings(reqCopy.context)
 
 	// Invoke OnRequest callback before building the HTTP request
 	if reqCopy.onRequest != nil {

@@ -69,7 +69,8 @@ func demonstrateBodyFormats(client httpc.Client) {
 
 	// Plain text
 	resp, err = client.Post("https://echo.hoppscotch.io",
-		httpc.WithText("Hello, this is plain text!"),
+		httpc.WithBody("Hello, this is plain text!"),
+		httpc.WithHeader("Content-Type", "text/plain"),
 	)
 	if err != nil {
 		log.Printf("Text error: %v\n", err)
@@ -136,7 +137,7 @@ func demonstrateHeadersAuth(client httpc.Client) {
 		"X-Client-ID":   "client-123",
 	}
 	resp, err = client.Get("https://echo.hoppscotch.io",
-		httpc.WithHeaderMap(headers),
+		httpc.WithHeaders(headers),
 	)
 	if err != nil {
 		log.Printf("Headers error: %v\n", err)
@@ -208,7 +209,7 @@ func demonstrateQueryParams(client httpc.Client) {
 		"order":    "desc",
 	}
 	resp, err = client.Get("https://echo.hoppscotch.io",
-		httpc.WithQueryMap(params),
+		httpc.WithQueries(params),
 	)
 	if err != nil {
 		log.Printf("Query map error: %v\n", err)
@@ -225,7 +226,7 @@ func demonstrateQueryParams(client httpc.Client) {
 		"sort_by":  "relevance",
 	}
 	resp, err = client.Get("https://echo.hoppscotch.io/search",
-		httpc.WithQueryMap(searchParams),
+		httpc.WithQueries(searchParams),
 		httpc.WithTimeout(10*time.Second),
 	)
 	if err != nil {
@@ -240,7 +241,7 @@ func demonstrateQueryParams(client httpc.Client) {
 		"email": "user@example.com",
 	}
 	resp, err = client.Get("https://echo.hoppscotch.io",
-		httpc.WithQueryMap(specialParams),
+		httpc.WithQueries(specialParams),
 	)
 	if err != nil {
 		log.Printf("Special chars error: %v\n", err)

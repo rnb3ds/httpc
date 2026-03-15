@@ -13,9 +13,10 @@ import (
 // SessionManager manages session state including cookies and headers
 // for DomainClient instances. It provides thread-safe access to session data.
 type SessionManager struct {
-	mu      sync.RWMutex
-	cookies map[string]*http.Cookie
-	headers map[string]string
+	mu             sync.RWMutex
+	cookies        map[string]*http.Cookie
+	headers        map[string]string
+	cookieSecurity *validation.CookieSecurityConfig
 }
 
 // NewSessionManager creates a new SessionManager with empty session state.
@@ -24,6 +25,24 @@ func NewSessionManager() *SessionManager {
 		cookies: make(map[string]*http.Cookie),
 		headers: make(map[string]string),
 	}
+}
+
+// NewSessionManagerWithSecurity creates a new SessionManager with cookie security validation.
+// The cookieSecurity config is used to validate cookies when they are set.
+func NewSessionManagerWithSecurity(cookieSecurity *validation.CookieSecurityConfig) *SessionManager {
+	return &SessionManager{
+		cookies:        make(map[string]*http.Cookie),
+		headers:        make(map[string]string),
+		cookieSecurity: cookieSecurity,
+	}
+}
+
+// SetCookieSecurity sets the cookie security configuration.
+// This affects all subsequent SetCookie calls.
+func (s *SessionManager) SetCookieSecurity(config *validation.CookieSecurityConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cookieSecurity = config
 }
 
 // SetHeader adds or updates a header in the session.
@@ -84,12 +103,20 @@ func (s *SessionManager) GetHeaders() map[string]string {
 
 // SetCookie adds or updates a cookie in the session.
 // Returns an error if the cookie is nil or invalid.
+// If cookie security is configured, validates against security requirements.
 func (s *SessionManager) SetCookie(cookie *http.Cookie) error {
 	if cookie == nil {
 		return fmt.Errorf("cookie cannot be nil")
 	}
 	if err := validation.ValidateCookie(cookie); err != nil {
 		return fmt.Errorf("invalid cookie: %w", err)
+	}
+
+	// Apply cookie security validation if configured
+	if s.cookieSecurity != nil {
+		if err := validation.ValidateCookieSecurity(cookie, s.cookieSecurity); err != nil {
+			return fmt.Errorf("cookie security validation failed: %w", err)
+		}
 	}
 
 	s.mu.Lock()
@@ -101,6 +128,7 @@ func (s *SessionManager) SetCookie(cookie *http.Cookie) error {
 
 // SetCookies adds or updates multiple cookies in the session.
 // Returns an error if any cookie is nil or invalid.
+// If cookie security is configured, validates against security requirements.
 func (s *SessionManager) SetCookies(cookies []*http.Cookie) error {
 	for i, cookie := range cookies {
 		if cookie == nil {
@@ -108,6 +136,13 @@ func (s *SessionManager) SetCookies(cookies []*http.Cookie) error {
 		}
 		if err := validation.ValidateCookie(cookie); err != nil {
 			return fmt.Errorf("invalid cookie at index %d: %w", i, err)
+		}
+
+		// Apply cookie security validation if configured
+		if s.cookieSecurity != nil {
+			if err := validation.ValidateCookieSecurity(cookie, s.cookieSecurity); err != nil {
+				return fmt.Errorf("cookie security validation failed at index %d: %w", i, err)
+			}
 		}
 	}
 
@@ -177,17 +212,15 @@ func (s *SessionManager) PrepareOptions() []RequestOption {
 	options := make([]RequestOption, 0, 2)
 
 	if cookieCount > 0 {
-		cookies := make([]http.Cookie, 0, cookieCount)
 		for _, cookie := range s.cookies {
-			cookies = append(cookies, *cookie)
+			options = append(options, WithCookie(*cookie))
 		}
-		options = append(options, WithCookies(cookies))
 	}
 
 	if headerCount > 0 {
 		headersCopy := make(map[string]string, headerCount)
 		maps.Copy(headersCopy, s.headers)
-		options = append(options, WithHeaderMap(headersCopy))
+		options = append(options, WithHeaders(headersCopy))
 	}
 
 	return options

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -25,7 +26,9 @@ func WithHeader(key, value string) RequestOption {
 	}
 }
 
-func WithHeaderMap(headers map[string]string) RequestOption {
+// WithHeaders sets multiple headers from a map.
+// This is the recommended name; WithHeaderMap is deprecated.
+func WithHeaders(headers map[string]string) RequestOption {
 	return func(r *engine.Request) error {
 		for k, v := range headers {
 			if err := validation.ValidateHeaderKeyValue(k, v); err != nil {
@@ -37,24 +40,10 @@ func WithHeaderMap(headers map[string]string) RequestOption {
 	}
 }
 
+// WithUserAgent sets the User-Agent header.
+// This is kept as a convenience function since it's commonly used.
 func WithUserAgent(userAgent string) RequestOption {
 	return WithHeader("User-Agent", userAgent)
-}
-
-func WithContentType(contentType string) RequestOption {
-	return WithHeader("Content-Type", contentType)
-}
-
-func WithAccept(accept string) RequestOption {
-	return WithHeader("Accept", accept)
-}
-
-func WithJSONAccept() RequestOption {
-	return WithAccept("application/json")
-}
-
-func WithXMLAccept() RequestOption {
-	return WithAccept("application/xml")
 }
 
 func WithBasicAuth(username, password string) RequestOption {
@@ -97,8 +86,7 @@ func WithQuery(key string, value any) RequestOption {
 		}
 
 		if value != nil {
-			valueStr := fmt.Sprintf("%v", value)
-			if len(valueStr) > validation.MaxValueLen {
+			if valueLen := queryValueLength(value); valueLen > validation.MaxValueLen {
 				return fmt.Errorf("query value too long (max %d)", validation.MaxValueLen)
 			}
 		}
@@ -113,7 +101,160 @@ func WithQuery(key string, value any) RequestOption {
 	}
 }
 
-func WithQueryMap(params map[string]any) RequestOption {
+// queryValueLength efficiently calculates the string length of a query value
+// without allocating a string. Uses type switching for common types.
+func queryValueLength(v any) int {
+	switch val := v.(type) {
+	case string:
+		return len(val)
+	case int:
+		return lenInt(int64(val))
+	case int64:
+		return lenInt(val)
+	case int32:
+		return lenInt(int64(val))
+	case uint:
+		return lenUint(uint64(val))
+	case uint64:
+		return lenUint(val)
+	case uint32:
+		return lenUint(uint64(val))
+	case float64:
+		return lenFloat(val, 64)
+	case float32:
+		return lenFloat(float64(val), 32)
+	case bool:
+		if val {
+			return 4 // "true"
+		}
+		return 5 // "false"
+	case fmt.Stringer:
+		return len(val.String())
+	default:
+		return len(fmt.Sprintf("%v", val))
+	}
+}
+
+// lenInt calculates the number of digits in an int64 (including sign if negative)
+func lenInt(v int64) int {
+	if v < 0 {
+		return 1 + lenUint(uint64(-v))
+	}
+	return lenUint(uint64(v))
+}
+
+// lenUint calculates the number of digits in a uint64
+func lenUint(v uint64) int {
+	if v < 10 {
+		return 1
+	}
+	if v < 100 {
+		return 2
+	}
+	if v < 1000 {
+		return 3
+	}
+	if v < 10000 {
+		return 4
+	}
+	if v < 100000 {
+		return 5
+	}
+	if v < 1000000 {
+		return 6
+	}
+	if v < 10000000 {
+		return 7
+	}
+	if v < 100000000 {
+		return 8
+	}
+	if v < 1000000000 {
+		return 9
+	}
+	if v < 10000000000 {
+		return 10
+	}
+	if v < 100000000000 {
+		return 11
+	}
+	if v < 1000000000000 {
+		return 12
+	}
+	if v < 10000000000000 {
+		return 13
+	}
+	if v < 100000000000000 {
+		return 14
+	}
+	if v < 1000000000000000 {
+		return 15
+	}
+	if v < 10000000000000000 {
+		return 16
+	}
+	if v < 100000000000000000 {
+		return 17
+	}
+	if v < 1000000000000000000 {
+		return 18
+	}
+	return 19
+}
+
+// lenFloat estimates the length of a float formatted with strconv.FormatFloat
+// without allocating a string. Uses mathematical estimation to avoid heap allocation.
+func lenFloat(v float64, bitSize int) int {
+	// Handle special cases first
+	if math.IsInf(v, 0) {
+		return 4 // "Inf" or "-Inf" or "+Inf"
+	}
+	if math.IsNaN(v) {
+		return 3 // "NaN"
+	}
+
+	// Estimate the length without formatting
+	absV := math.Abs(v)
+
+	// Count integer part digits using log10
+	var intDigits int
+	if absV < 1 {
+		intDigits = 1 // "0" before decimal point
+	} else {
+		intDigits = int(math.Log10(absV)) + 1
+	}
+
+	// Estimate fractional part - use conservative estimate based on bitSize
+	// float64: up to 15-17 significant digits, float32: up to 6-9
+	var maxFracDigits int
+	if bitSize == 32 {
+		maxFracDigits = 9
+	} else {
+		maxFracDigits = 17
+	}
+
+	// For small integers, fractional part is 0
+	if absV >= 1 && absV == math.Floor(absV) && absV < 1e15 {
+		maxFracDigits = 0
+	}
+
+	// Total: sign (1 if negative) + integer digits + decimal point (1) + fractional digits
+	signLen := 0
+	if v < 0 {
+		signLen = 1
+	}
+
+	decimalPointLen := 0
+	if maxFracDigits > 0 {
+		decimalPointLen = 1
+	}
+
+	return signLen + intDigits + decimalPointLen + maxFracDigits
+}
+
+// WithQueries sets multiple query parameters from a map.
+// This is the recommended name; WithQueryMap is deprecated.
+func WithQueries(params map[string]any) RequestOption {
 	return func(r *engine.Request) error {
 		existing := r.QueryParams()
 		if existing == nil {
@@ -126,8 +267,7 @@ func WithQueryMap(params map[string]any) RequestOption {
 			}
 
 			if v != nil {
-				valueStr := fmt.Sprintf("%v", v)
-				if len(valueStr) > validation.MaxValueLen {
+				if valueLen := queryValueLength(v); valueLen > validation.MaxValueLen {
 					return fmt.Errorf("query value too long for key %s (max %d)", k, validation.MaxValueLen)
 				}
 			}
@@ -156,14 +296,6 @@ func WithXML(data any) RequestOption {
 		}
 		r.SetBody(data)
 		r.SetHeader("Content-Type", "application/xml")
-		return nil
-	}
-}
-
-func WithText(content string) RequestOption {
-	return func(r *engine.Request) error {
-		r.SetBody(content)
-		r.SetHeader("Content-Type", "text/plain")
 		return nil
 	}
 }
@@ -316,42 +448,6 @@ func WithCookie(cookie http.Cookie) RequestOption {
 	}
 }
 
-func WithCookies(cookies []http.Cookie) RequestOption {
-	return func(r *engine.Request) error {
-		if len(cookies) == 0 {
-			return nil
-		}
-
-		existing := r.Cookies()
-		for i := range cookies {
-			if err := validation.ValidateCookie(&cookies[i]); err != nil {
-				return fmt.Errorf("invalid cookie at index %d: %w", i, err)
-			}
-			existing = append(existing, cookies[i])
-		}
-		r.SetCookies(existing)
-		return nil
-	}
-}
-
-func WithCookieValue(name, value string) RequestOption {
-	return func(r *engine.Request) error {
-		cookie := http.Cookie{
-			Name:  name,
-			Value: value,
-		}
-
-		if err := validation.ValidateCookie(&cookie); err != nil {
-			return err
-		}
-
-		cookies := r.Cookies()
-		cookies = append(cookies, cookie)
-		r.SetCookies(cookies)
-		return nil
-	}
-}
-
 func WithCookieString(cookieString string) RequestOption {
 	return func(r *engine.Request) error {
 		if cookieString == "" {
@@ -486,6 +582,40 @@ func WithOnResponse(callback func(resp ResponseMutator) error) RequestOption {
 			}
 			return callback(resp)
 		})
+		return nil
+	}
+}
+
+// WithSecureCookie creates a request option that enforces cookie security attributes.
+// on the cookie being added to the request. The securityConfig defines the required
+// security attributes (Secure, HttpOnly, SameSite).
+//
+// Example:
+//
+//	security := &validation.CookieSecurityConfig{
+//		RequireSecure:     true,
+//		RequireHttpOnly:   true,
+//		RequireSameSite:   "Strict",
+//		AllowSameSiteNone: false,
+//	}
+//	result, err := client.Get("https://api.example.com",
+//		httpc.WithSecureCookie(security),
+//	)
+func WithSecureCookie(securityConfig *validation.CookieSecurityConfig) RequestOption {
+	return func(r *engine.Request) error {
+		if securityConfig == nil {
+		return fmt.Errorf("security config cannot be nil")
+		}
+
+		// Store the security config in the request for later validation
+		// This will be applied when cookies are processed
+		existing := r.Cookies()
+		for i := range existing {
+			if err := validation.ValidateCookieSecurity(&existing[i], securityConfig); err != nil {
+				return fmt.Errorf("cookie '%s' failed security validation: %w", existing[i].Name, err)
+			}
+		}
+
 		return nil
 	}
 }

@@ -100,7 +100,7 @@ type Config struct {
 	// Default: 5 minutes. Ignored if EnableDoH is false.
 	DoHCacheTTL time.Duration
 
-	// === Security (9 fields) ===
+	// === Security (11 fields) ===
 
 	// TLSConfig provides custom TLS configuration. If set, MinTLSVersion and
 	// MaxTLSVersion are ignored. Default: nil (uses secure defaults).
@@ -137,6 +137,18 @@ type Config struct {
 	// StrictContentLength enables strict Content-Length validation.
 	// Default: true. Disable only for compatibility with broken servers.
 	StrictContentLength bool
+
+	// CookieSecurity enables cookie security attribute validation.
+	// When set, cookies are validated against the security requirements.
+	// Use validation.DefaultCookieSecurityConfig() or validation.StrictCookieSecurityConfig().
+	// Default: nil (no cookie security validation).
+	CookieSecurity *validation.CookieSecurityConfig
+
+	// RedirectWhitelist specifies allowed domains for redirects.
+	// When set, redirects are only allowed to domains in this list.
+	// This provides an additional layer of SSRF protection.
+	// Default: nil (no whitelist, all redirects allowed if SSRF check passes).
+	RedirectWhitelist []string
 
 	// === Retry (5 fields) ===
 

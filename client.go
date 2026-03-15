@@ -3,13 +3,16 @@ package httpc
 // Package httpc provides a high-performance HTTP client library with enterprise-grade
 // security, zero external dependencies, and production-ready defaults.
 //
-// Key Features:
+// # Key Features
+//
 //   - Secure by default with TLS 1.2+, SSRF protection, CRLF injection prevention
 //   - High performance with connection pooling, HTTP/2, and goroutine-safe operations
 //   - Built-in resilience with smart retry and exponential backoff
-//   - Clean API with functional options and comprehensive error handling
+//   - Clean API with simplified request options
 //
-// Basic Usage:
+// # Quick Start
+//
+// Basic usage with package-level functions:
 //
 //	result, err := httpc.Get("https://api.example.com/data")
 //	if err != nil {
@@ -17,29 +20,91 @@ package httpc
 //	}
 //	fmt.Println(result.Body())
 //
-// Advanced Usage:
+// # Client Creation
 //
-//	// Create a configured client
-//	client, err := httpc.New(httpc.SecureConfig())
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
+// Create a client with default configuration:
+//
+//	client, err := httpc.New()
 //	defer client.Close()
 //
-//	// Make authenticated requests
-//	result, err := client.Get("https://api.example.com/protected",
-//	    httpc.WithBearerToken(token),
-//	)
+// Create a client with custom configuration:
 //
-//	// Automatic state management with DomainClient
-//	domainClient, err := httpc.NewDomain("https://api.example.com")
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-//	defer domainClient.Close()
+//	cfg := httpc.DefaultConfig()
+//	cfg.Timeout = 60 * time.Second
+//	cfg.MaxRetries = 5
+//	client, err := httpc.New(cfg)
 //
-//	domainClient.SetHeader("Authorization", "Bearer "+token)
-//	result, err = domainClient.Get("/profile")  // Header automatically included
+// Use preset configurations:
+//
+//	client, err := httpc.New(httpc.SecureConfig())      // Security-focused
+//	client, err := httpc.New(httpc.PerformanceConfig()) // High-throughput
+//	client, err := httpc.New(httpc.TestingConfig())     // Testing only!
+//
+// # Request Options
+//
+// Core options (18 functions):
+//
+//	// Headers
+//	httpc.WithHeader("Authorization", "Bearer token")
+//	httpc.WithHeaders(map[string]string{"X-Custom": "value"})
+//	httpc.WithUserAgent("my-app/1.0")
+//
+//	// Body
+//	httpc.WithJSON(data)
+//	httpc.WithXML(data)
+//	httpc.WithForm(map[string]string{"key": "value"})
+//	httpc.WithFormData(multipartData)
+//	httpc.WithFile("file", "document.pdf", fileBytes)
+//	httpc.WithBody(rawData)
+//	httpc.WithBinary(binaryData)
+//
+//	// Query parameters
+//	httpc.WithQuery("page", 1)
+//	httpc.WithQueries(map[string]any{"page": 1, "limit": 10})
+//
+//	// Authentication
+//	httpc.WithBearerToken(token)
+//	httpc.WithBasicAuth(username, password)
+//
+//	// Cookies
+//	httpc.WithCookie(http.Cookie{Name: "session", Value: "abc"})
+//	httpc.WithCookieString("session=abc; token=xyz")
+//
+//	// Request control
+//	httpc.WithContext(ctx)
+//	httpc.WithTimeout(30 * time.Second)
+//	httpc.WithMaxRetries(3)
+//	httpc.WithFollowRedirects(false)
+//	httpc.WithMaxRedirects(5)
+//
+//	// Callbacks
+//	httpc.WithOnRequest(callback)
+//	httpc.WithOnResponse(callback)
+//
+// # DomainClient
+//
+// For session management across requests to the same domain:
+//
+//	dc, err := httpc.NewDomain("https://api.example.com")
+//	defer dc.Close()
+//
+//	dc.SetHeader("Authorization", "Bearer "+token)
+//
+//	// Headers automatically included
+//	result, err := dc.Request(ctx, "GET", "/users")
+//
+// # Context Handling
+//
+// Use context for timeout and cancellation:
+//
+//	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+//	defer cancel()
+//
+//	result, err := client.Request(ctx, "GET", "https://api.example.com/data")
+//
+// # Migration
+//
+// For migration from older versions, see MIGRATION.md.
 //
 // For more information, see https://github.com/cybergodev/httpc
 import (
@@ -120,6 +185,24 @@ type clientImpl struct {
 	hasMiddlewares  bool
 }
 
+// New creates a new HTTP client with the given configuration.
+// If no configuration is provided or nil is passed, DefaultConfig() is used.
+//
+// Examples:
+//
+//	// Use default configuration
+//	client, err := httpc.New()
+//
+//	// Use default configuration (explicit nil)
+//	client, err := httpc.New(nil)
+//
+//	// Use custom configuration
+//	cfg := httpc.DefaultConfig()
+//	cfg.Timeout = 60 * time.Second
+//	client, err := httpc.New(cfg)
+//
+//	// Use preset configuration
+//	client, err := httpc.New(httpc.SecureConfig())
 func New(config ...*Config) (Client, error) {
 	var cfg *Config
 	if len(config) > 0 && config[0] != nil {

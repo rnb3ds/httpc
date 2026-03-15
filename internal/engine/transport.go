@@ -7,37 +7,107 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/cybergodev/httpc/internal/connection"
+	"github.com/cybergodev/httpc/internal/security"
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // redirectKey is the context key for storing per-request redirect settings
 type redirectKey struct{}
 
+// maxInlineRedirects is the number of redirects we can track inline without heap allocation.
+// Most redirects are < 5, so 8 provides a good balance.
+const maxInlineRedirects = 8
+
 // redirectSettings holds per-request redirect configuration.
-// NOTE: Not pooled because the struct is small (~24 bytes + slice) and the
-// complexity of pool management with context lifecycle introduces memory leak risks.
-// The GC overhead for such small, short-lived objects is negligible.
+// Uses a fixed-size array for the first few redirects to avoid heap allocation
+// in the common case. Falls back to slice allocation only if needed.
 type redirectSettings struct {
 	followRedirects bool
 	maxRedirects    int
-	chain           []string
+	chainLen        int
+	inlineChain     [maxInlineRedirects]string
+	overflowChain   []string
 }
 
-// newRedirectSettings creates a new redirectSettings with pre-allocated chain.
-func newRedirectSettings() *redirectSettings {
-	return &redirectSettings{
-		chain: make([]string, 0, 10),
+// addRedirect adds a URL to the redirect chain.
+// Uses inline array first, then overflows to slice.
+func (s *redirectSettings) addRedirect(url string) {
+	if s.chainLen < maxInlineRedirects {
+		s.inlineChain[s.chainLen] = url
+	} else {
+		// Lazily allocate overflow slice only when needed
+		if s.overflowChain == nil {
+			s.overflowChain = make([]string, 0, maxInlineRedirects)
+			// Copy inline entries to overflow for consistent iteration
+			s.overflowChain = append(s.overflowChain, s.inlineChain[:s.chainLen]...)
+		}
+		s.overflowChain = append(s.overflowChain, url)
 	}
+	s.chainLen++
+}
+
+// getChain returns the redirect chain as a slice.
+// Returns a copy to prevent mutation.
+func (s *redirectSettings) getChain() []string {
+	if s.chainLen == 0 {
+		return nil
+	}
+	chain := make([]string, s.chainLen)
+	if s.overflowChain != nil {
+		copy(chain, s.overflowChain)
+	} else {
+		copy(chain, s.inlineChain[:s.chainLen])
+	}
+	return chain
+}
+
+// redirectSettingsPool reduces allocations for redirectSettings objects.
+// Safe to use because settings are only accessed during a single request's lifetime.
+var redirectSettingsPool = sync.Pool{
+	New: func() any {
+		return &redirectSettings{}
+	},
+}
+
+// getRedirectSettings retrieves a redirectSettings from the pool.
+func getRedirectSettings() *redirectSettings {
+	s, ok := redirectSettingsPool.Get().(*redirectSettings)
+	if !ok || s == nil {
+		return &redirectSettings{}
+	}
+	return s
+}
+
+// putRedirectSettings returns a redirectSettings to the pool after resetting it.
+func putRedirectSettings(s *redirectSettings) {
+	if s == nil {
+		return
+	}
+	// Reset all fields
+	s.followRedirects = false
+	s.maxRedirects = 0
+	s.chainLen = 0
+	// Clear inline chain to allow GC of strings
+	for i := range s.inlineChain {
+		s.inlineChain[i] = ""
+	}
+	// Clear overflow chain but keep the slice for reuse
+	if s.overflowChain != nil {
+		s.overflowChain = s.overflowChain[:0]
+	}
+	redirectSettingsPool.Put(s)
 }
 
 // Transport manages HTTP transport with comprehensive security and optimal performance
 type Transport struct {
-	transport       *http.Transport
-	httpClient      *http.Client
-	config          *Config
-	allowPrivateIPs bool // Cached for performance in redirect checks
+	transport         *http.Transport
+	httpClient        *http.Client
+	config            *Config
+	allowPrivateIPs   bool                      // Cached for performance in redirect checks
+	redirectWhitelist *security.DomainWhitelist // Whitelist for redirect domains
 }
 
 // Compile-time interface check
@@ -56,9 +126,10 @@ func NewTransport(config *Config, pool *connection.PoolManager) (*Transport, err
 	transport := pool.GetTransport()
 
 	t := &Transport{
-		transport:       transport,
-		config:          config,
-		allowPrivateIPs: config.AllowPrivateIPs,
+		transport:         transport,
+		config:            config,
+		allowPrivateIPs:   config.AllowPrivateIPs,
+		redirectWhitelist: config.RedirectWhitelist,
 	}
 
 	// Create http.Client with optional cookie jar
@@ -94,6 +165,13 @@ func (t *Transport) checkRedirect(req *http.Request, via []*http.Request) error 
 		return http.ErrUseLastResponse
 	}
 
+	// SECURITY: Check redirect whitelist first
+	if t.redirectWhitelist != nil {
+		if !t.redirectWhitelist.IsAllowed(req.URL.Hostname()) {
+			return fmt.Errorf("redirect blocked by whitelist: target '%s' is not allowed", req.URL.Hostname())
+		}
+	}
+
 	// SECURITY: Validate redirect target for SSRF protection
 	// This prevents redirects to private/reserved IP addresses when SSRF protection is enabled
 	if !t.allowPrivateIPs {
@@ -104,7 +182,7 @@ func (t *Transport) checkRedirect(req *http.Request, via []*http.Request) error 
 
 	// Track redirect chain
 	if len(via) > 0 {
-		settings.chain = append(settings.chain, via[len(via)-1].URL.String())
+		settings.addRedirect(via[len(via)-1].URL.String())
 	}
 
 	// Check redirect limit (0 means unlimited)
@@ -172,7 +250,7 @@ func (t *Transport) validateRedirectTarget(targetURL *url.URL) error {
 // SetRedirectPolicy updates the redirect policy for a specific request
 // Returns a new context with the redirect settings.
 func (t *Transport) SetRedirectPolicy(ctx context.Context, followRedirects bool, maxRedirects int) context.Context {
-	settings := newRedirectSettings()
+	settings := getRedirectSettings()
 	settings.followRedirects = followRedirects
 	settings.maxRedirects = maxRedirects
 	return context.WithValue(ctx, redirectKey{}, settings)
@@ -181,12 +259,24 @@ func (t *Transport) SetRedirectPolicy(ctx context.Context, followRedirects bool,
 // GetRedirectChain returns the redirect chain from the context
 func (t *Transport) GetRedirectChain(ctx context.Context) []string {
 	settings, ok := ctx.Value(redirectKey{}).(*redirectSettings)
-	if !ok || len(settings.chain) == 0 {
+	if !ok || settings.chainLen == 0 {
 		return nil
 	}
-	chain := make([]string, len(settings.chain))
-	copy(chain, settings.chain)
-	return chain
+	return settings.getChain()
+}
+
+// CleanupRedirectSettings releases redirect settings back to the pool.
+// This MUST be called after the request completes to prevent memory leaks.
+// It safely handles nil or invalid contexts.
+func (t *Transport) CleanupRedirectSettings(ctx context.Context) {
+	if ctx == nil {
+		return
+	}
+	settings, ok := ctx.Value(redirectKey{}).(*redirectSettings)
+	if !ok || settings == nil {
+		return
+	}
+	putRedirectSettings(settings)
 }
 
 // RoundTrip executes an HTTP round trip

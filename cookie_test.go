@@ -53,10 +53,10 @@ func TestCookie_RequestBasicOperations(t *testing.T) {
 		client, _ := newTestClient()
 		defer client.Close()
 
-		_, err := client.Get(server.URL, WithCookies([]http.Cookie{
-			{Name: "cookie1", Value: "value1"},
-			{Name: "cookie2", Value: "value2"},
-		}))
+		_, err := client.Get(server.URL,
+			WithCookie(http.Cookie{Name: "cookie1", Value: "value1"}),
+			WithCookie(http.Cookie{Name: "cookie2", Value: "value2"}),
+		)
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
@@ -75,7 +75,7 @@ func TestCookie_RequestBasicOperations(t *testing.T) {
 		client, _ := newTestClient()
 		defer client.Close()
 
-		_, err := client.Get(server.URL, WithCookieValue("simple", "value"))
+		_, err := client.Get(server.URL, WithCookie(http.Cookie{Name: "simple", Value: "value"}))
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
@@ -387,12 +387,10 @@ func TestCookie_Inspection(t *testing.T) {
 	client, _ := newTestClient()
 	defer client.Close()
 
-	cookies := []http.Cookie{
-		{Name: "cookie1", Value: "value1"},
-		{Name: "cookie2", Value: "value2"},
-	}
-
-	_, err := client.Get(server.URL, WithCookies(cookies))
+	_, err := client.Get(server.URL,
+		WithCookie(http.Cookie{Name: "cookie1", Value: "value1"}),
+		WithCookie(http.Cookie{Name: "cookie2", Value: "value2"}),
+	)
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)
 	}

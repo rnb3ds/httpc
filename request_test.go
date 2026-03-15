@@ -55,7 +55,7 @@ func TestRequest_Headers(t *testing.T) {
 			"X-Header-1": "value1",
 			"X-Header-2": "value2",
 		}
-		_, err := client.Get(server.URL, WithHeaderMap(headers))
+		_, err := client.Get(server.URL, WithHeaders(headers))
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
@@ -91,7 +91,7 @@ func TestRequest_Headers(t *testing.T) {
 		client, _ := newTestClient()
 		defer client.Close()
 
-		_, err := client.Get(server.URL, WithJSONAccept())
+		_, err := client.Get(server.URL, WithHeader("Accept", "application/json"))
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
@@ -109,7 +109,7 @@ func TestRequest_Headers(t *testing.T) {
 		client, _ := newTestClient()
 		defer client.Close()
 
-		_, err := client.Get(server.URL, WithXMLAccept())
+		_, err := client.Get(server.URL, WithHeader("Accept", "application/xml"))
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
@@ -201,7 +201,7 @@ func TestRequest_Authentication(t *testing.T) {
 // ----------------------------------------------------------------------------
 
 func TestRequest_QueryParameters(t *testing.T) {
-	t.Run("WithQueryMap", func(t *testing.T) {
+	t.Run("WithQueries", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Query().Get("key1") != "value1" {
 				t.Error("Expected key1=value1")
@@ -220,7 +220,7 @@ func TestRequest_QueryParameters(t *testing.T) {
 			"key1": "value1",
 			"key2": "value2",
 		}
-		_, err := client.Get(server.URL, WithQueryMap(params))
+		_, err := client.Get(server.URL, WithQueries(params))
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
@@ -441,7 +441,7 @@ func TestRequest_CombinedOptions(t *testing.T) {
 	_, err := client.Get(server.URL,
 		WithHeader("X-Custom", "value"),
 		WithQuery("param", "test"),
-		WithCookieValue("session", "abc123"),
+		WithCookie(http.Cookie{Name: "session", Value: "abc123"}),
 	)
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)

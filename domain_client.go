@@ -22,14 +22,18 @@ type DomainClient struct {
 
 // NewDomain creates a new DomainClient scoped to the specified base URL.
 // The client automatically manages cookies and headers across requests.
+// If no configuration is provided or nil is passed, DefaultConfig() is used.
+// Note: Cookies are automatically enabled for DomainClient.
 //
-// Example:
+// Examples:
 //
+//	// Use default configuration
 //	dc, err := httpc.NewDomain("https://api.example.com")
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-//	defer dc.Close()
+//
+//	// Use custom configuration
+//	cfg := httpc.DefaultConfig()
+//	cfg.Timeout = 60 * time.Second
+//	dc, err := httpc.NewDomain("https://api.example.com", cfg)
 //
 //	// Set session headers
 //	dc.SetHeader("Authorization", "Bearer token")
@@ -92,31 +96,6 @@ func (dc *DomainClient) Patch(path string, options ...RequestOption) (*Result, e
 // Delete makes a DELETE request to the specified path.
 func (dc *DomainClient) Delete(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("DELETE", path, options...)
-}
-
-// GetWithContext makes a GET request with context for cancellation control.
-func (dc *DomainClient) GetWithContext(ctx context.Context, path string, options ...RequestOption) (*Result, error) {
-	return dc.Request(ctx, "GET", path, options...)
-}
-
-// PostWithContext makes a POST request with context for cancellation control.
-func (dc *DomainClient) PostWithContext(ctx context.Context, path string, options ...RequestOption) (*Result, error) {
-	return dc.Request(ctx, "POST", path, options...)
-}
-
-// PutWithContext makes a PUT request with context for cancellation control.
-func (dc *DomainClient) PutWithContext(ctx context.Context, path string, options ...RequestOption) (*Result, error) {
-	return dc.Request(ctx, "PUT", path, options...)
-}
-
-// PatchWithContext makes a PATCH request with context for cancellation control.
-func (dc *DomainClient) PatchWithContext(ctx context.Context, path string, options ...RequestOption) (*Result, error) {
-	return dc.Request(ctx, "PATCH", path, options...)
-}
-
-// DeleteWithContext makes a DELETE request with context for cancellation control.
-func (dc *DomainClient) DeleteWithContext(ctx context.Context, path string, options ...RequestOption) (*Result, error) {
-	return dc.Request(ctx, "DELETE", path, options...)
 }
 
 // Head makes a HEAD request to the specified path.
