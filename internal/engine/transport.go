@@ -15,11 +15,21 @@ import (
 // redirectKey is the context key for storing per-request redirect settings
 type redirectKey struct{}
 
-// redirectSettings holds per-request redirect configuration
+// redirectSettings holds per-request redirect configuration.
+// NOTE: Not pooled because the struct is small (~24 bytes + slice) and the
+// complexity of pool management with context lifecycle introduces memory leak risks.
+// The GC overhead for such small, short-lived objects is negligible.
 type redirectSettings struct {
 	followRedirects bool
 	maxRedirects    int
 	chain           []string
+}
+
+// newRedirectSettings creates a new redirectSettings with pre-allocated chain.
+func newRedirectSettings() *redirectSettings {
+	return &redirectSettings{
+		chain: make([]string, 0, 10),
+	}
 }
 
 // Transport manages HTTP transport with comprehensive security and optimal performance
@@ -160,13 +170,11 @@ func (t *Transport) validateRedirectTarget(targetURL *url.URL) error {
 }
 
 // SetRedirectPolicy updates the redirect policy for a specific request
-// Returns a new context with the redirect settings
+// Returns a new context with the redirect settings.
 func (t *Transport) SetRedirectPolicy(ctx context.Context, followRedirects bool, maxRedirects int) context.Context {
-	settings := &redirectSettings{
-		followRedirects: followRedirects,
-		maxRedirects:    maxRedirects,
-		chain:           make([]string, 0, 10),
-	}
+	settings := newRedirectSettings()
+	settings.followRedirects = followRedirects
+	settings.maxRedirects = maxRedirects
 	return context.WithValue(ctx, redirectKey{}, settings)
 }
 

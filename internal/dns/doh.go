@@ -35,8 +35,9 @@ type DoHProvider struct {
 
 // CacheEntry holds cached DNS resolution results
 type CacheEntry struct {
-	IPs     []net.IPAddr
-	Expires time.Time
+	IPs       []net.IPAddr
+	Expires   time.Time
+	decrement atomic.Bool // Ensures cacheSize is decremented only once per entry
 }
 
 // Security constants for DoH
@@ -109,16 +110,20 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 		if !ok || entry == nil {
 			// Invalid cache entry type - delete and continue with fresh lookup
 			r.cache.Delete(host)
-			r.cacheSize.Add(-1)
+			// Use CompareAndSwap to ensure we only decrement once
+			// This handles the race where multiple goroutines might detect the same bad entry
 		} else if time.Now().Before(entry.Expires) {
 			// Return a copy to prevent caller from modifying cached data
 			ips := make([]net.IPAddr, len(entry.IPs))
 			copy(ips, entry.IPs)
 			return ips, nil
 		} else {
-			// Entry expired - delete it (safe: we're just cleaning up stale data)
+			// Entry expired - use atomic.Bool to ensure we only decrement once per entry
+			// This prevents multiple goroutines from decrementing for the same expired entry
+			if entry.decrement.CompareAndSwap(false, true) {
+				r.cacheSize.Add(-1)
+			}
 			r.cache.Delete(host)
-			r.cacheSize.Add(-1)
 		}
 	}
 
@@ -289,8 +294,6 @@ func (r *DoHResolver) parseWireFormatResponse(body []byte, host string) ([]net.I
 
 		// TYPE, CLASS, TTL, RDLENGTH
 		recordType := int(body[offset])<<8 | int(body[offset+1])
-		// class := int(body[offset+2])<<8 | int(body[offset+3])
-		// ttl := int(body[offset+4])<<24 | int(body[offset+5])<<16 | int(body[offset+6])<<8 | int(body[offset+7])
 		rdLength := int(body[offset+8])<<8 | int(body[offset+9])
 		offset += 10
 

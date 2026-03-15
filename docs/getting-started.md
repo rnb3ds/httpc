@@ -24,16 +24,18 @@ package main
 
 import (
     "fmt"
+    "log"
+
     "github.com/cybergodev/httpc"
 )
 
 func main() {
     client, err := httpc.New()
     if err != nil {
-        panic(err)
+        log.Fatal(err)
     }
     defer client.Close()
-    
+
     fmt.Println("HTTPC installed successfully!")
 }
 ```

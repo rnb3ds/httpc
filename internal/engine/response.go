@@ -30,6 +30,56 @@ var bufferPool = sync.Pool{
 	},
 }
 
+// limitReaderPool reduces allocations for limit readers
+var limitReaderPool = sync.Pool{
+	New: func() any {
+		return &pooledLimitReader{}
+	},
+}
+
+// pooledLimitReader is a reusable io.Reader that limits the number of bytes read
+type pooledLimitReader struct {
+	r io.Reader
+	n int64
+}
+
+func (l *pooledLimitReader) Read(p []byte) (n int, err error) {
+	if l.n <= 0 {
+		return 0, io.EOF
+	}
+	if int64(len(p)) > l.n {
+		p = p[0:l.n]
+	}
+	n, err = l.r.Read(p)
+	l.n -= int64(n)
+	return
+}
+
+func (l *pooledLimitReader) Reset(r io.Reader, n int64) {
+	l.r = r
+	l.n = n
+}
+
+// getLimitReader retrieves a pooledLimitReader from the pool
+func getLimitReader(r io.Reader, n int64) *pooledLimitReader {
+	lr, ok := limitReaderPool.Get().(*pooledLimitReader)
+	if !ok || lr == nil {
+		lr = &pooledLimitReader{}
+	}
+	lr.Reset(r, n)
+	return lr
+}
+
+// putLimitReader returns a pooledLimitReader to the pool
+func putLimitReader(lr *pooledLimitReader) {
+	if lr == nil {
+		return
+	}
+	lr.r = nil
+	lr.n = 0
+	limitReaderPool.Put(lr)
+}
+
 // getBuffer retrieves a buffer from the pool with safe type assertion.
 // Returns a new buffer if the pool contains an unexpected type (defensive).
 func getBuffer() *bytes.Buffer {
@@ -104,7 +154,11 @@ func (p *ResponseProcessor) Process(httpResp *http.Response) (*Response, error) 
 
 // bytesToString performs a zero-allocation conversion from []byte to string.
 // SAFE because the input slice must be a fresh copy that will not be modified.
+// IMPORTANT: The input slice must be newly allocated (not from a pool) and must
+// not be modified after this function returns, as the returned string shares
+// the same underlying memory.
 func bytesToString(b []byte) string {
+	// Handle nil slice and empty slice to prevent panic
 	if len(b) == 0 {
 		return ""
 	}
@@ -112,7 +166,7 @@ func bytesToString(b []byte) string {
 }
 
 // readBody reads and optionally decompresses the response body with size limits.
-// Uses a buffer pool to reduce heap allocations for response bodies.
+// Uses buffer and limit reader pools to reduce heap allocations.
 // SECURITY: Implements protection against decompression bomb attacks.
 func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 	if httpResp.Body == nil {
@@ -121,26 +175,38 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 
 	reader := io.Reader(httpResp.Body)
 	isCompressed := false
+	var compressedLr *pooledLimitReader
+	var decompressedLr *pooledLimitReader
 
 	if encoding := httpResp.Header.Get("Content-Encoding"); encoding != "" {
 		isCompressed = true
 		var err error
 		// SECURITY: Limit compressed data size before decompression to prevent zip bombs
-		limitedCompressedReader := io.LimitReader(httpResp.Body, maxCompressedSize+1)
-		reader, err = p.createDecompressor(limitedCompressedReader, encoding)
+		compressedLr = getLimitReader(httpResp.Body, maxCompressedSize+1)
+		reader, err = p.createDecompressor(compressedLr, encoding)
 		if err != nil {
+			putLimitReader(compressedLr)
 			return nil, fmt.Errorf("failed to create decompressor for %s: %w", encoding, err)
 		}
 	}
 
-	// Apply decompressed size limit
+	// Apply decompressed size limit using pooled reader
 	if maxSize := p.config.MaxResponseBodySize; maxSize > 0 {
-		reader = io.LimitReader(reader, maxSize+1)
+		decompressedLr = getLimitReader(reader, maxSize+1)
+		reader = decompressedLr
 	}
 
 	// Use pooled buffer for reading
 	buf := getBuffer()
-	defer putBuffer(buf)
+	defer func() {
+		putBuffer(buf)
+		if compressedLr != nil {
+			putLimitReader(compressedLr)
+		}
+		if decompressedLr != nil {
+			putLimitReader(decompressedLr)
+		}
+	}()
 
 	_, err := io.Copy(buf, reader)
 	if err != nil {

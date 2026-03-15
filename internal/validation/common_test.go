@@ -680,3 +680,258 @@ func TestValidateHeaderKeyValue_EdgeCases(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateCredentialStrict(t *testing.T) {
+	tests := []struct {
+		name        string
+		cred        string
+		maxLen      int
+		checkColon  bool
+		credType    string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:       "valid credential",
+			cred:       "valid-user-123",
+			maxLen:     255,
+			checkColon: true,
+			credType:   "username",
+			wantErr:    false,
+		},
+		{
+			name:        "credential with SQL injection quote",
+			cred:        "admin'--",
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "password",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "credential with semicolon",
+			cred:        "user;rm -rf /",
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "password",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "credential with angle brackets",
+			cred:        "<script>alert(1)</script>",
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "password",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "credential with pipe",
+			cred:        "user|cat /etc/passwd",
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "password",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "credential with backtick",
+			cred:        "user`whoami`",
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "password",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "credential with dollar sign",
+			cred:        "user$(id)",
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "password",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "credential with ampersand",
+			cred:        "user && cat /etc/passwd",
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "password",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "credential with backslash",
+			cred:        "user\\nadmin",
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "password",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "credential with braces",
+			cred:        "user{test}",
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "password",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "credential with square brackets",
+			cred:        "user[0]",
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "password",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "credential with colon when check enabled",
+			cred:        "user:name",
+			maxLen:      255,
+			checkColon:  true,
+			credType:    "username",
+			wantErr:     true,
+			errContains: "colon",
+		},
+		{
+			name:        "too long credential",
+			cred:        strings.Repeat("a", 300),
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "credential",
+			wantErr:     true,
+			errContains: "too long",
+		},
+		{
+			name:        "empty credential",
+			cred:        "",
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "credential",
+			wantErr:     true,
+			errContains: "cannot be empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateCredentialStrict(tt.cred, tt.maxLen, tt.checkColon, tt.credType)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("ValidateCredentialStrict() expected error, got nil")
+					return
+				}
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("ValidateCredentialStrict() error = %v, want to contain %v", err, tt.errContains)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("ValidateCredentialStrict() unexpected error = %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateTokenStrict(t *testing.T) {
+	tests := []struct {
+		name        string
+		token       string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:    "valid token",
+			token:   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+			wantErr: false,
+		},
+		{
+			name:    "valid simple token",
+			token:   "abc123-xyz789_ABCDEF",
+			wantErr: false,
+		},
+		{
+			name:        "token with SQL injection quote",
+			token:       "token'--",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "token with angle brackets",
+			token:       "<token>",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "token with semicolon",
+			token:       "token;drop-table",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "token with pipe",
+			token:       "token|command",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "token with space",
+			token:       "token with space",
+			wantErr:     true,
+			errContains: "spaces",
+		},
+		{
+			name:        "too long token",
+			token:       strings.Repeat("a", 2049),
+			wantErr:     true,
+			errContains: "too long",
+		},
+		{
+			name:        "token with backtick",
+			token:       "token`id`",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "token with dollar",
+			token:       "token$(cmd)",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "token with ampersand",
+			token:       "token&&cmd",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:    "token with dots and dashes allowed",
+			token:   "abc.123-xyz_test",
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateTokenStrict(tt.token)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("ValidateTokenStrict() expected error, got nil")
+					return
+				}
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("ValidateTokenStrict() error = %v, want to contain %v", err, tt.errContains)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("ValidateTokenStrict() unexpected error = %v", err)
+				}
+			}
+		})
+	}
+}

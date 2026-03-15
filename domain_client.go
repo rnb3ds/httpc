@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	stdpath "path"
+	"strings"
 )
 
 // DomainClient provides a client scoped to a specific domain with session management.
@@ -213,7 +214,7 @@ func (dc *DomainClient) buildURL(pathStr string) (string, error) {
 	}
 
 	// Check if pathStr is already a full URL
-	if len(pathStr) > 7 && (pathStr[:7] == "http://" || pathStr[:8] == "https://") {
+	if strings.HasPrefix(pathStr, "http://") || strings.HasPrefix(pathStr, "https://") {
 		parsedURL, err := url.Parse(pathStr)
 		if err == nil && parsedURL.Scheme != "" && parsedURL.Host != "" {
 			// Validate URL scheme for security

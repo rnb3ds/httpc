@@ -3,9 +3,36 @@ package httpc
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/cybergodev/httpc/internal/validation"
+)
+
+// AuditEvent represents a security audit event for high-security scenarios.
+// It captures request/response details for compliance logging in financial,
+// medical, and government applications.
+type AuditEvent struct {
+	Timestamp     time.Time
+	Method        string
+	URL           string // Sanitized (credentials removed)
+	StatusCode    int
+	Duration      time.Duration
+	Attempts      int
+	Error         error
+	SourceIP      string
+	UserID        string
+	RedirectChain []string
+}
+
+// AuditContextKey is the type for context keys used in audit middleware.
+type AuditContextKey string
+
+const (
+	// SourceIPKey is the context key for source IP address in audit events.
+	SourceIPKey AuditContextKey = "source_ip"
+	// UserIDKey is the context key for user identifier in audit events.
+	UserIDKey AuditContextKey = "user_id"
 )
 
 // Note: engine.Request now directly implements the RequestMutator interface,
@@ -159,4 +186,86 @@ func MetricsMiddleware(onMetrics func(method, url string, statusCode int, durati
 			return resp, err
 		}
 	}
+}
+
+// AuditMiddleware creates a middleware that generates security audit events.
+// This is designed for high-security scenarios (financial, medical, government)
+// where comprehensive request logging is required for compliance.
+//
+// The onAudit callback receives an AuditEvent with sanitized URL (credentials removed),
+// request metadata, and response information. SourceIP and UserID are extracted from
+// the request context using SourceIPKey and UserIDKey.
+//
+// Example:
+//
+//	auditMiddleware := httpc.AuditMiddleware(func(event httpc.AuditEvent) {
+//	    log.Printf("[AUDIT] %s %s -> %d (%v) user=%s ip=%s",
+//	        event.Method, event.URL, event.StatusCode, event.Duration,
+//	        event.UserID, event.SourceIP)
+//	})
+func AuditMiddleware(onAudit func(event AuditEvent)) MiddlewareFunc {
+	return func(next Handler) Handler {
+		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
+			start := time.Now()
+			resp, err := next(ctx, req)
+			duration := time.Since(start)
+
+			// Build audit event with sanitized URL
+			event := AuditEvent{
+				Timestamp: start,
+				Method:    req.Method(),
+				URL:       sanitizeAuditURL(req.URL()),
+				Duration:  duration,
+				Error:     err,
+			}
+
+			// Extract context values
+			if sourceIP, ok := ctx.Value(SourceIPKey).(string); ok {
+				event.SourceIP = sourceIP
+			}
+			if userID, ok := ctx.Value(UserIDKey).(string); ok {
+				event.UserID = userID
+			}
+
+			// Extract response data if available
+			if resp != nil {
+				event.StatusCode = resp.StatusCode()
+				event.Attempts = resp.Attempts()
+				event.RedirectChain = resp.RedirectChain()
+			}
+
+			onAudit(event)
+
+			return resp, err
+		}
+	}
+}
+
+// sanitizeAuditURL removes credentials from a URL for safe logging.
+// URLs with credentials are transformed from user:pass@host to ***:***@host.
+func sanitizeAuditURL(urlStr string) string {
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return urlStr
+	}
+
+	if parsedURL.User == nil {
+		return parsedURL.String()
+	}
+
+	_, hasPassword := parsedURL.User.Password()
+	parsedURL.User = nil
+
+	path := parsedURL.Path
+	if parsedURL.RawQuery != "" {
+		path += "?" + parsedURL.RawQuery
+	}
+	if parsedURL.Fragment != "" {
+		path += "#" + parsedURL.Fragment
+	}
+
+	if hasPassword {
+		return fmt.Sprintf("%s://***:***@%s%s", parsedURL.Scheme, parsedURL.Host, path)
+	}
+	return fmt.Sprintf("%s://***@%s%s", parsedURL.Scheme, parsedURL.Host, path)
 }

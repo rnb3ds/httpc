@@ -24,6 +24,11 @@ const (
 	MaxURLLen         = 2048 // Maximum URL length
 )
 
+// dangerousChars contains characters that may be used for injection attacks.
+// These characters are commonly used in command injection, SQL injection,
+// XSS, and other attack vectors.
+const dangerousChars = `"'<>&;` + "`|" + `$\{}[]^~`
+
 // ValidateInputString performs common string validation to prevent injection attacks.
 func ValidateInputString(input string, maxLen int, name string, additionalChecks func(rune) error) error {
 	inputLen := len(input)
@@ -66,6 +71,52 @@ func ValidateToken(token string) error {
 		}
 		return nil
 	})
+}
+
+// ValidateCredentialStrict validates credentials with additional security checks
+// for high-security scenarios (financial, medical, government).
+// In addition to standard validation, it blocks dangerous characters commonly
+// used in injection attacks.
+//
+// Parameters:
+//   - cred: The credential string to validate
+//   - maxLen: Maximum allowed length
+//   - checkColon: If true, colons are not allowed (for usernames)
+//   - credType: Description of the credential type for error messages
+//
+// Returns an error if validation fails, nil otherwise.
+func ValidateCredentialStrict(cred string, maxLen int, checkColon bool, credType string) error {
+	// First perform standard validation
+	if err := ValidateCredential(cred, maxLen, checkColon, credType); err != nil {
+		return err
+	}
+
+	// Additional check for dangerous characters
+	if strings.ContainsAny(cred, dangerousChars) {
+		return fmt.Errorf("%s contains dangerous characters that may be used for injection attacks", credType)
+	}
+
+	return nil
+}
+
+// ValidateTokenStrict validates bearer tokens with additional security checks
+// for high-security scenarios. It blocks dangerous characters commonly used
+// in injection attacks in addition to standard token validation.
+//
+// This is recommended for financial, medical, and government applications
+// where defense-in-depth is required.
+func ValidateTokenStrict(token string) error {
+	// First perform standard validation
+	if err := ValidateToken(token); err != nil {
+		return err
+	}
+
+	// Additional check for dangerous characters
+	if strings.ContainsAny(token, dangerousChars) {
+		return fmt.Errorf("token contains dangerous characters that may be used for injection attacks")
+	}
+
+	return nil
 }
 
 // ValidateQueryKey validates query parameter keys.

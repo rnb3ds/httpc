@@ -546,6 +546,67 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 	}, nil
 }
 
+// resultPool reduces heap allocations for Result objects.
+// Each Result contains RequestInfo, ResponseInfo, and RequestMeta which are
+// frequently allocated in the hot path.
+var resultPool = sync.Pool{
+	New: func() any {
+		return &Result{
+			Request:  &RequestInfo{},
+			Response: &ResponseInfo{},
+			Meta:     &RequestMeta{},
+		}
+	},
+}
+
+// getResult retrieves a Result from the pool and resets its fields.
+func getResult() *Result {
+	r, ok := resultPool.Get().(*Result)
+	if !ok || r == nil {
+		return &Result{
+			Request:  &RequestInfo{},
+			Response: &ResponseInfo{},
+			Meta:     &RequestMeta{},
+		}
+	}
+	// Reset all fields to zero values
+	*r.Request = RequestInfo{}
+	*r.Response = ResponseInfo{}
+	*r.Meta = RequestMeta{}
+	return r
+}
+
+// ReleaseResult returns a Result to the pool for reuse.
+// Call this when you're done with the Result to reduce garbage collection pressure.
+// WARNING: Do not use the Result after calling ReleaseResult.
+func ReleaseResult(r *Result) {
+	if r == nil {
+		return
+	}
+	// Clear all fields to prevent data leakage and ensure clean state for reuse
+	// Request fields
+	r.Request.Headers = nil
+	r.Request.Cookies = nil
+
+	// Response fields - clear all including sensitive data
+	r.Response.StatusCode = 0
+	r.Response.Status = ""
+	r.Response.Proto = ""
+	r.Response.Headers = nil
+	r.Response.Body = ""
+	r.Response.RawBody = nil
+	r.Response.ContentLength = 0
+	r.Response.Cookies = nil
+
+	// Meta fields
+	r.Meta.Duration = 0
+	r.Meta.Attempts = 0
+	r.Meta.RedirectChain = nil
+	r.Meta.RedirectCount = 0
+
+	resultPool.Put(r)
+}
+
 func convertResponseToResult(resp ResponseMutator) *Result {
 	if resp == nil {
 		return nil
@@ -553,28 +614,24 @@ func convertResponseToResult(resp ResponseMutator) *Result {
 
 	requestCookies := extractRequestCookies(resp.RequestHeaders())
 
-	return &Result{
-		Request: &RequestInfo{
-			Headers: resp.RequestHeaders(),
-			Cookies: requestCookies,
-		},
-		Response: &ResponseInfo{
-			StatusCode:    resp.StatusCode(),
-			Status:        resp.Status(),
-			Proto:         resp.Proto(),
-			Headers:       resp.Headers(),
-			Body:          resp.Body(),
-			RawBody:       resp.RawBody(),
-			ContentLength: resp.ContentLength(),
-			Cookies:       resp.Cookies(),
-		},
-		Meta: &RequestMeta{
-			Duration:      resp.Duration(),
-			Attempts:      resp.Attempts(),
-			RedirectChain: resp.RedirectChain(),
-			RedirectCount: resp.RedirectCount(),
-		},
-	}
+	// Use pooled Result object
+	result := getResult()
+	result.Request.Headers = resp.RequestHeaders()
+	result.Request.Cookies = requestCookies
+	result.Response.StatusCode = resp.StatusCode()
+	result.Response.Status = resp.Status()
+	result.Response.Proto = resp.Proto()
+	result.Response.Headers = resp.Headers()
+	result.Response.Body = resp.Body()
+	result.Response.RawBody = resp.RawBody()
+	result.Response.ContentLength = resp.ContentLength()
+	result.Response.Cookies = resp.Cookies()
+	result.Meta.Duration = resp.Duration()
+	result.Meta.Attempts = resp.Attempts()
+	result.Meta.RedirectChain = resp.RedirectChain()
+	result.Meta.RedirectCount = resp.RedirectCount()
+
+	return result
 }
 
 func extractRequestCookies(headers http.Header) []*http.Cookie {

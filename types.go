@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/cookiejar"
+	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cybergodev/httpc/internal/engine"
@@ -357,4 +360,94 @@ func ValidateConfig(cfg *Config) error {
 	}
 
 	return nil
+}
+
+// String returns a safe string representation of the Config.
+// Sensitive values are masked:
+//   - ProxyURL credentials (user:pass@host -> ***:***@host)
+//   - TLSConfig displays as <configured> or <default>
+//   - Headers are not displayed (may contain sensitive data)
+func (c *Config) String() string {
+	if c == nil {
+		return "Config{<nil>}"
+	}
+
+	var b strings.Builder
+	b.WriteString("Config{")
+
+	// Timeouts
+	b.WriteString("Timeout: ")
+	b.WriteString(c.Timeout.String())
+	b.WriteString(", DialTimeout: ")
+	b.WriteString(c.DialTimeout.String())
+	b.WriteString(", TLSHandshakeTimeout: ")
+	b.WriteString(c.TLSHandshakeTimeout.String())
+
+	// Connection
+	b.WriteString(", MaxIdleConns: ")
+	b.WriteString(strconv.Itoa(c.MaxIdleConns))
+	b.WriteString(", MaxConnsPerHost: ")
+	b.WriteString(strconv.Itoa(c.MaxConnsPerHost))
+	b.WriteString(", ProxyURL: ")
+	b.WriteString(maskProxyURL(c.ProxyURL))
+
+	// Security
+	b.WriteString(", TLSConfig: ")
+	if c.TLSConfig != nil {
+		b.WriteString("<configured>")
+	} else {
+		b.WriteString("<default>")
+	}
+	b.WriteString(", InsecureSkipVerify: ")
+	b.WriteString(strconv.FormatBool(c.InsecureSkipVerify))
+	b.WriteString(", AllowPrivateIPs: ")
+	b.WriteString(strconv.FormatBool(c.AllowPrivateIPs))
+
+	// Retry
+	b.WriteString(", MaxRetries: ")
+	b.WriteString(strconv.Itoa(c.MaxRetries))
+	b.WriteString(", BackoffFactor: ")
+	b.WriteString(strconv.FormatFloat(c.BackoffFactor, 'f', 1, 64))
+
+	// Middleware
+	b.WriteString(", UserAgent: ")
+	b.WriteString(c.UserAgent)
+	b.WriteString(", FollowRedirects: ")
+	b.WriteString(strconv.FormatBool(c.FollowRedirects))
+
+	b.WriteByte('}')
+	return b.String()
+}
+
+// maskProxyURL masks credentials in a proxy URL for safe logging.
+// Returns the URL with credentials replaced by "***:***".
+func maskProxyURL(proxyURL string) string {
+	if proxyURL == "" {
+		return ""
+	}
+
+	parsedURL, err := url.Parse(proxyURL)
+	if err != nil {
+		return "<invalid>"
+	}
+
+	if parsedURL.User == nil {
+		return parsedURL.String()
+	}
+
+	_, hasPassword := parsedURL.User.Password()
+	parsedURL.User = nil
+
+	path := parsedURL.Path
+	if parsedURL.RawQuery != "" {
+		path += "?" + parsedURL.RawQuery
+	}
+	if parsedURL.Fragment != "" {
+		path += "#" + parsedURL.Fragment
+	}
+
+	if hasPassword {
+		return fmt.Sprintf("%s://***:***@%s%s", parsedURL.Scheme, parsedURL.Host, path)
+	}
+	return fmt.Sprintf("%s://***@%s%s", parsedURL.Scheme, parsedURL.Host, path)
 }

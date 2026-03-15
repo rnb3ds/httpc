@@ -104,22 +104,3 @@ var (
 	// Increase MaxResponseBodySize in Config or reduce response size.
 	ErrResponseBodyTooLarge = errors.New("response body too large")
 )
-
-// HTTPError represents an HTTP error response.
-// Deprecated: Use errors.As with *ClientError and check ErrorTypeHTTP instead.
-// HTTPError is kept as an alias for backward compatibility.
-//
-// Migration example:
-//
-//	// Old code:
-//	var httpErr *httpc.HTTPError
-//	if errors.As(err, &httpErr) {
-//	    fmt.Println(httpErr.StatusCode)
-//	}
-//
-//	// New code:
-//	var clientErr *httpc.ClientError
-//	if errors.As(err, &clientErr) && clientErr.Type() == httpc.ErrorTypeHTTP {
-//	    fmt.Println(clientErr.StatusCode())
-//	}
-type HTTPError = ClientError

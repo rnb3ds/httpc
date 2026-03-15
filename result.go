@@ -11,6 +11,21 @@ import (
 	"time"
 )
 
+const (
+	maxBodyPreview   = 200 // Maximum body preview length in String()
+	truncationMarker = "...[truncated]"
+)
+
+// sensitiveHeaders contains header names that should be masked in String() output.
+var sensitiveHeaders = map[string]bool{
+	"Authorization":       true,
+	"Cookie":              true,
+	"Set-Cookie":          true,
+	"X-Api-Key":           true,
+	"X-Auth-Token":        true,
+	"Proxy-Authorization": true,
+}
+
 type Result struct {
 	Request  *RequestInfo
 	Response *ResponseInfo
@@ -196,6 +211,21 @@ func (r *Result) String() string {
 	if len(r.Response.Headers) > 0 {
 		b.WriteString(", Headers: ")
 		b.WriteString(strconv.Itoa(len(r.Response.Headers)))
+		b.WriteString(" [")
+		first := true
+		for key := range r.Response.Headers {
+			if !first {
+				b.WriteString(", ")
+			}
+			first = false
+			if sensitiveHeaders[key] {
+				b.WriteString(key)
+				b.WriteString(": ***")
+			} else {
+				b.WriteString(key)
+			}
+		}
+		b.WriteByte(']')
 	}
 
 	if len(r.Response.Cookies) > 0 {
@@ -204,8 +234,13 @@ func (r *Result) String() string {
 	}
 
 	if len(r.Response.Body) > 0 {
-		b.WriteString(", Body: \n")
-		b.WriteString(r.Response.Body)
+		b.WriteString(", Body: ")
+		if len(r.Response.Body) > maxBodyPreview {
+			b.WriteString(r.Response.Body[:maxBodyPreview])
+			b.WriteString(truncationMarker)
+		} else {
+			b.WriteString(r.Response.Body)
+		}
 	}
 
 	b.WriteByte('}')
