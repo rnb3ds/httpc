@@ -17,7 +17,7 @@ import (
 type AuditEvent struct {
 	Timestamp     time.Time     `json:"timestamp"`
 	Method        string        `json:"method"`
-	URL           string        `json:"url"`           // Sanitized (credentials removed)
+	URL           string        `json:"url"` // Sanitized (credentials removed)
 	StatusCode    int           `json:"statusCode"`
 	Duration      time.Duration `json:"duration"`
 	Attempts      int           `json:"attempts"`
@@ -33,7 +33,7 @@ func (e AuditEvent) MarshalJSON() ([]byte, error) {
 	type Alias AuditEvent
 	aux := &struct {
 		Alias
-		DurationMs int64 `json:"durationMs"`
+		DurationMs int64  `json:"durationMs"`
 		ErrorStr   string `json:"error,omitempty"`
 	}{
 		Alias:      (Alias)(e),
@@ -328,14 +328,16 @@ func AuditMiddlewareJSON(onAudit func(event AuditEvent)) MiddlewareFunc {
 	return AuditMiddlewareWithConfig(onAudit, config)
 }
 
-// maskHeaderValue masks sensitive header values for logging
-func maskHeaderValue(value string, maskHeaders []string) string {
+// maskHeaderValue masks sensitive header values for logging.
+// Returns "***" if the header name is in the maskHeaders list, otherwise returns the original value.
+// Note: This function is currently unused but retained for future header masking features.
+func maskHeaderValue(headerName string, maskHeaders []string) string {
 	for _, mask := range maskHeaders {
-		if strings.EqualFold(mask, mask) {
+		if strings.EqualFold(headerName, mask) {
 			return "***"
 		}
 	}
-	return value
+	return headerName
 }
 
 // sanitizeAuditURL removes credentials from a URL for safe logging.

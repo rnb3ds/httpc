@@ -30,6 +30,44 @@ var bufferPool = sync.Pool{
 	},
 }
 
+// responsePool reuses Response objects to reduce allocations in the hot path
+var responsePool = sync.Pool{
+	New: func() any {
+		return &Response{}
+	},
+}
+
+// getResponse retrieves a Response object from the pool
+func getResponse() *Response {
+	resp, ok := responsePool.Get().(*Response)
+	if !ok || resp == nil {
+		return &Response{}
+	}
+	return resp
+}
+
+// putResponse returns a Response object to the pool after clearing its fields
+func putResponse(resp *Response) {
+	if resp == nil {
+		return
+	}
+	// Clear all fields to prevent memory leaks
+	resp.statusCode = 0
+	resp.status = ""
+	resp.headers = nil
+	resp.body = ""
+	resp.rawBody = nil
+	resp.contentLength = 0
+	resp.proto = ""
+	resp.duration = 0
+	resp.attempts = 0
+	resp.cookies = nil
+	resp.redirectChain = nil
+	resp.redirectCount = 0
+	resp.requestHeaders = nil
+	responsePool.Put(resp)
+}
+
 // limitReaderPool reduces allocations for limit readers
 var limitReaderPool = sync.Pool{
 	New: func() any {
@@ -137,12 +175,13 @@ func (p *ResponseProcessor) Process(httpResp *http.Response) (*Response, error) 
 		contentLength = int64(len(body))
 	}
 
-	resp := &Response{}
+	// Use pooled Response object to reduce allocations
+	resp := getResponse()
 	resp.SetStatusCode(httpResp.StatusCode)
 	resp.SetStatus(httpResp.Status)
 	resp.SetHeaders(httpResp.Header)
-	// Use zero-copy conversion for body string since body is already a fresh copy.
-	// This saves one allocation compared to string(body).
+	// SECURITY: readBody returns a freshly allocated copy (not pooled buffer),
+	// so zero-copy string conversion is safe here.
 	resp.SetBody(bytesToString(body))
 	resp.SetRawBody(body)
 	resp.SetContentLength(contentLength)

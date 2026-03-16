@@ -172,11 +172,16 @@ func (s *SessionManager) ClearCookies() {
 }
 
 // GetCookies returns a copy of all session cookies.
+// Optimized to reduce allocations by pre-allocating slice with exact capacity.
 func (s *SessionManager) GetCookies() []*http.Cookie {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	cookies := make([]*http.Cookie, 0, len(s.cookies))
+	n := len(s.cookies)
+	if n == 0 {
+		return nil
+	}
+	cookies := make([]*http.Cookie, 0, n)
 	for _, cookie := range s.cookies {
 		cookieCopy := *cookie
 		cookies = append(cookies, &cookieCopy)

@@ -93,7 +93,8 @@ func WithQuery(key string, value any) RequestOption {
 
 		params := r.QueryParams()
 		if params == nil {
-			params = make(map[string]any)
+			// Pre-allocate with capacity for typical query params
+			params = make(map[string]any, 4)
 		}
 		params[key] = value
 		r.SetQueryParams(params)
@@ -305,7 +306,8 @@ func WithForm(data map[string]string) RequestOption {
 		if data == nil {
 			return fmt.Errorf("form data cannot be nil")
 		}
-		values := url.Values{}
+		// Pre-allocate url.Values with capacity to avoid map growth
+		values := make(url.Values, len(data))
 		for k, v := range data {
 			values.Set(k, v)
 		}
@@ -346,7 +348,7 @@ func WithFile(fieldName, filename string, content []byte) RequestOption {
 		}
 
 		r.SetBody(&FormData{
-			Fields: make(map[string]string),
+			Fields: make(map[string]string, 1), // Pre-allocate for typical case
 			Files: map[string]*FileData{
 				fieldName: {
 					Filename: cleanFilename,
@@ -604,7 +606,7 @@ func WithOnResponse(callback func(resp ResponseMutator) error) RequestOption {
 func WithSecureCookie(securityConfig *validation.CookieSecurityConfig) RequestOption {
 	return func(r *engine.Request) error {
 		if securityConfig == nil {
-		return fmt.Errorf("security config cannot be nil")
+			return fmt.Errorf("security config cannot be nil")
 		}
 
 		// Store the security config in the request for later validation

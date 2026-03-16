@@ -72,6 +72,23 @@ var redirectSettingsPool = sync.Pool{
 	},
 }
 
+// cookieMapPool reduces allocations for cookie merging maps.
+// Used in RoundTrip when merging request cookies with jar cookies.
+var cookieMapPool = sync.Pool{
+	New: func() any {
+		m := make(map[string]*http.Cookie, 8)
+		return &m
+	},
+}
+
+// cookieSlicePool reduces allocations for cookie slices.
+var cookieSlicePool = sync.Pool{
+	New: func() any {
+		s := make([]*http.Cookie, 0, 8)
+		return &s
+	},
+}
+
 // getRedirectSettings retrieves a redirectSettings from the pool.
 func getRedirectSettings() *redirectSettings {
 	s, ok := redirectSettingsPool.Get().(*redirectSettings)
@@ -286,7 +303,19 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t.httpClient.Jar != nil {
 		if requestCookies := req.Cookies(); len(requestCookies) > 0 {
 			existingCookies := t.httpClient.Jar.Cookies(req.URL)
-			cookieMap := make(map[string]*http.Cookie, len(existingCookies)+len(requestCookies))
+
+			// Use pooled cookie map to reduce allocations
+			cookieMapPtr, _ := cookieMapPool.Get().(*map[string]*http.Cookie)
+			if cookieMapPtr == nil {
+				m := make(map[string]*http.Cookie, len(existingCookies)+len(requestCookies))
+				cookieMapPtr = &m
+			}
+			cookieMap := *cookieMapPtr
+
+			// Clear the map for reuse
+			for k := range cookieMap {
+				delete(cookieMap, k)
+			}
 
 			for _, c := range existingCookies {
 				cookieMap[c.Name] = c
@@ -303,13 +332,24 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 				cookieMap[cookieCopy.Name] = &cookieCopy
 			}
 
-			mergedCookies := make([]*http.Cookie, 0, len(cookieMap))
+			// Use pooled slice for merged cookies
+			mergedPtr, _ := cookieSlicePool.Get().(*[]*http.Cookie)
+			if mergedPtr == nil {
+				s := make([]*http.Cookie, 0, len(cookieMap))
+				mergedPtr = &s
+			}
+			mergedCookies := (*mergedPtr)[:0]
+
 			for _, c := range cookieMap {
 				mergedCookies = append(mergedCookies, c)
 			}
 
 			t.httpClient.Jar.SetCookies(req.URL, mergedCookies)
 			req.Header.Del("Cookie")
+
+			// Return slices to pool (the jar has copied the data)
+			cookieMapPool.Put(cookieMapPtr)
+			cookieSlicePool.Put(mergedPtr)
 		}
 	}
 

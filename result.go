@@ -191,8 +191,24 @@ func (r *Result) String() string {
 		return "Result{}"
 	}
 
+	// Pre-calculate approximate size to reduce allocations
+	estimatedSize := 128 // Base size for status, content length
+	if r.Meta != nil {
+		estimatedSize += 64 // Duration and attempts
+	}
+	if len(r.Response.Headers) > 0 {
+		estimatedSize += 32 + len(r.Response.Headers)*16 // Headers
+	}
+	if len(r.Response.Cookies) > 0 {
+		estimatedSize += 32 // Cookies count
+	}
+	if len(r.Response.Body) > 0 {
+		bodyPreview := min(len(r.Response.Body), maxBodyPreview)
+		estimatedSize += 16 + bodyPreview
+	}
+
 	var b strings.Builder
-	b.Grow(256)
+	b.Grow(estimatedSize)
 
 	b.WriteString("Result{Status: ")
 	b.WriteString(strconv.Itoa(r.Response.StatusCode))

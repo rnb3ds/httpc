@@ -49,12 +49,18 @@ func TestParseDomain(t *testing.T) {
 			offset:  0,
 			wantErr: true,
 		},
+		{
+			name:    "compression pointer circular",
+			msgHex:  "c000", // pointer to offset 0 (self-referential)
+			offset:  0,
+			wantErr: true, // Should fail due to recursion depth limit
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			msg, _ := hex.DecodeString(tt.msgHex)
-			domain, _, err := parseDomain(msg, tt.offset)
+			domain, _, err := parseDomain(msg, tt.offset, 0)
 
 			if tt.wantErr {
 				if err == nil {

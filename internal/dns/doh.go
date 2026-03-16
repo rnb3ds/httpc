@@ -19,7 +19,7 @@ type DoHResolver struct {
 	client    *http.Client
 	providers []*DoHProvider
 	cache     sync.Map
-	cacheTTL  time.Duration
+	cacheTTL  atomic.Int64 // Thread-safe cache TTL (stored as nanoseconds)
 	cacheSize atomic.Int64 // O(1) cache size tracking
 }
 
@@ -81,7 +81,7 @@ func NewDoHResolver(providers []*DoHProvider, cacheTTL time.Duration) *DoHResolv
 		cacheTTL = 5 * time.Minute
 	}
 
-	return &DoHResolver{
+	r := &DoHResolver{
 		client: &http.Client{
 			Timeout: 5 * time.Second,
 			Transport: &http.Transport{
@@ -97,8 +97,9 @@ func NewDoHResolver(providers []*DoHProvider, cacheTTL time.Duration) *DoHResolv
 			},
 		},
 		providers: providers,
-		cacheTTL:  cacheTTL,
 	}
+	r.cacheTTL.Store(int64(cacheTTL))
+	return r
 }
 
 // LookupIPAddr resolves a host name to IP addresses using DoH
@@ -108,11 +109,16 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 		// Safe type assertion to prevent potential panic from corrupted cache
 		entry, ok := cached.(*CacheEntry)
 		if !ok || entry == nil {
-			// Invalid cache entry type - delete and continue with fresh lookup
-			r.cache.Delete(host)
-			// Decrement counter to maintain consistency - use atomic to handle races
-			// where multiple goroutines might detect the same bad entry
-			r.cacheSize.Add(-1)
+			// Invalid cache entry type - use LoadAndDelete for atomic delete+check
+			// This prevents race conditions where multiple goroutines try to delete the same entry
+			actual, loaded := r.cache.LoadAndDelete(host)
+			if loaded {
+				// Only decrement if we actually removed something
+				// Check if the removed value was also invalid (defensive)
+				if actualEntry, ok := actual.(*CacheEntry); !ok || actualEntry == nil {
+					r.cacheSize.Add(-1)
+				}
+			}
 		} else if time.Now().Before(entry.Expires) {
 			// Return a copy to prevent caller from modifying cached data
 			ips := make([]net.IPAddr, len(entry.IPs))
@@ -122,9 +128,16 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 			// Entry expired - use atomic.Bool to ensure we only decrement once per entry
 			// This prevents multiple goroutines from decrementing for the same expired entry
 			if entry.decrement.CompareAndSwap(false, true) {
-				r.cacheSize.Add(-1)
+				// Use LoadAndDelete to ensure atomic check-then-delete
+				// Only decrement if we successfully deleted this specific entry
+				if _, loaded := r.cache.LoadAndDelete(host); loaded {
+					r.cacheSize.Add(-1)
+				} else {
+					// Entry was already replaced by another goroutine, reset the flag
+					// so the new entry's counter can be properly managed
+					entry.decrement.Store(false)
+				}
 			}
-			r.cache.Delete(host)
 		}
 	}
 
@@ -136,9 +149,10 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 			// SECURITY: Only cache if we haven't exceeded the cache size limit
 			// This prevents unbounded memory growth
 			if r.cacheSize.Load() < maxDoHCacheSize {
+				cacheTTL := time.Duration(r.cacheTTL.Load())
 				r.cache.Store(host, &CacheEntry{
 					IPs:     ips,
-					Expires: time.Now().Add(r.cacheTTL),
+					Expires: time.Now().Add(cacheTTL),
 				})
 				r.cacheSize.Add(1)
 			}
@@ -271,7 +285,7 @@ func (r *DoHResolver) parseWireFormatResponse(body []byte, host string) ([]net.I
 	// Parse question section
 	qdCount, _ := getUint16(body[4:6])
 	for i := 0; i < int(qdCount); i++ {
-		_, offset, err := parseDomain(body, offset)
+		_, offset, err := parseDomain(body, offset, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -283,7 +297,7 @@ func (r *DoHResolver) parseWireFormatResponse(body []byte, host string) ([]net.I
 	var ips []net.IPAddr
 
 	for i := 0; i < int(anCount); i++ {
-		_, newOffset, err := parseDomain(body, offset)
+		_, newOffset, err := parseDomain(body, offset, 0)
 		if err != nil {
 			break
 		}
@@ -321,8 +335,20 @@ func (r *DoHResolver) parseWireFormatResponse(body []byte, host string) ([]net.I
 	return ips, nil
 }
 
-// parseDomain parses a DNS domain name (RFC 1035)
-func parseDomain(msg []byte, offset int) (string, int, error) {
+// maxDomainRecursion limits the depth of DNS compression pointer recursion
+// to prevent stack overflow from malicious responses with circular pointers.
+// RFC 1035 allows compression, but malformed responses could exploit this.
+const maxDomainRecursion = 10
+
+// parseDomain parses a DNS domain name (RFC 1035) with recursion depth limit.
+// The depth parameter tracks the current recursion depth to prevent stack overflow
+// from malicious DNS responses with circular or deeply nested compression pointers.
+func parseDomain(msg []byte, offset int, depth int) (string, int, error) {
+	// SECURITY: Check recursion depth to prevent stack overflow from circular pointers
+	if depth > maxDomainRecursion {
+		return "", offset, fmt.Errorf("compression pointer depth exceeded (max %d)", maxDomainRecursion)
+	}
+
 	if offset >= len(msg) {
 		return "", offset, fmt.Errorf("offset out of bounds")
 	}
@@ -355,8 +381,8 @@ func parseDomain(msg []byte, offset int) (string, int, error) {
 				compressed = true
 			}
 
-			// Parse the compressed domain
-			compressedName, _, err := parseDomain(msg, pointer)
+			// SECURITY: Pass incremented depth to recursive call
+			compressedName, _, err := parseDomain(msg, pointer, depth+1)
 			if err != nil {
 				return "", originalOffset, err
 			}
@@ -404,8 +430,15 @@ func (r *DoHResolver) ClearCache() {
 	r.cacheSize.Store(0)
 }
 
-// SetCacheTTL sets the cache TTL duration
+// SetCacheTTL sets the cache TTL duration.
+// Thread-safe: can be called concurrently with other operations.
 func (r *DoHResolver) SetCacheTTL(ttl time.Duration) {
-	r.cacheTTL = ttl
+	r.cacheTTL.Store(int64(ttl))
 	r.ClearCache()
+}
+
+// GetCacheTTL returns the current cache TTL duration.
+// Thread-safe: can be called concurrently with other operations.
+func (r *DoHResolver) GetCacheTTL() time.Duration {
+	return time.Duration(r.cacheTTL.Load())
 }

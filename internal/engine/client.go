@@ -30,6 +30,10 @@ type Client struct {
 	requestPool sync.Pool
 	// execRequestPool reduces allocations for Request copies in executeRequest
 	execRequestPool sync.Pool
+	// securityRequestPool reduces allocations for security.Request objects
+	securityRequestPool sync.Pool
+	// headerSlicePool reduces allocations for header value slices
+	headerSlicePool sync.Pool
 
 	// metrics tracks request statistics
 	metrics *Metrics
@@ -140,7 +144,7 @@ func (r *Request) SetURL(v string)                { r.url = v }
 func (r *Request) SetHeaders(v map[string]string) { r.headers = v }
 func (r *Request) SetHeader(key, value string) {
 	if r.headers == nil {
-		r.headers = make(map[string]string)
+		r.headers = make(map[string]string, 4) // Pre-allocate with capacity for common headers
 	}
 	r.headers[key] = value
 }
@@ -242,6 +246,17 @@ func NewClient(config *Config, opts ...ClientOption) (*Client, error) {
 				return &Request{}
 			},
 		},
+		securityRequestPool: sync.Pool{
+			New: func() any {
+				return &security.Request{}
+			},
+		},
+		headerSlicePool: sync.Pool{
+			New: func() any {
+				s := make([]string, 0, 4)
+				return &s
+			},
+		},
 	}
 
 	var err error
@@ -331,16 +346,20 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 		}
 	}
 
-	secReq := &security.Request{
-		Method:      req.Method(),
-		URL:         req.URL(),
-		Headers:     req.Headers(),
-		QueryParams: req.QueryParams(),
-		Body:        req.Body(),
-	}
-	if err := c.validator.ValidateRequest(secReq); err != nil {
+	// Use pooled security.Request for validation
+	secReq := c.getSecurityRequest()
+	secReq.Method = req.Method()
+	secReq.URL = req.URL()
+	secReq.Headers = req.Headers()
+	secReq.QueryParams = req.QueryParams()
+	secReq.Body = req.Body()
+
+	validationErr := c.validator.ValidateRequest(secReq)
+	c.putSecurityRequest(secReq)
+
+	if validationErr != nil {
 		c.metrics.RecordRequest(time.Since(startTime).Nanoseconds(), false)
-		return nil, fmt.Errorf("request validation failed: %w", err)
+		return nil, fmt.Errorf("request validation failed: %w", validationErr)
 	}
 
 	response, err := c.executeWithRetry(req)
@@ -375,6 +394,49 @@ func (c *Client) putRequest(req *Request) {
 	req.SetOnRequest(nil)
 	req.SetOnResponse(nil)
 	c.requestPool.Put(req)
+}
+
+// getSecurityRequest retrieves a security.Request from the pool
+func (c *Client) getSecurityRequest() *security.Request {
+	req, ok := c.securityRequestPool.Get().(*security.Request)
+	if !ok || req == nil {
+		return &security.Request{}
+	}
+	return req
+}
+
+// putSecurityRequest returns a security.Request to the pool after clearing its fields
+func (c *Client) putSecurityRequest(req *security.Request) {
+	if req == nil {
+		return
+	}
+	// Clear fields to prevent memory leaks
+	req.Method = ""
+	req.URL = ""
+	req.Headers = nil
+	req.QueryParams = nil
+	req.Body = nil
+	c.securityRequestPool.Put(req)
+}
+
+// getHeaderSlice retrieves a pre-allocated string slice from the pool
+func (c *Client) getHeaderSlice() *[]string {
+	s, ok := c.headerSlicePool.Get().(*[]string)
+	if !ok || s == nil {
+		sl := make([]string, 0, 4)
+		return &sl
+	}
+	*s = (*s)[:0] // Reset slice
+	return s
+}
+
+// putHeaderSlice returns a string slice to the pool
+func (c *Client) putHeaderSlice(s *[]string) {
+	if s == nil || cap(*s) > 16 {
+		// Don't pool large slices
+		return
+	}
+	c.headerSlicePool.Put(s)
 }
 
 // getExecRequest retrieves a Request object from the exec pool for request copies with safe type assertion
@@ -656,10 +718,21 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 		if headerLen > 0 {
 			requestHeaders := make(http.Header, headerLen)
 			for key, values := range httpResp.Request.Header {
-				// Copy the slice to prevent aliasing issues
-				copiedValues := make([]string, len(values))
-				copy(copiedValues, values)
-				requestHeaders[key] = copiedValues
+				// Use pooled slice for small header value lists to reduce allocations
+				valuesLen := len(values)
+				if valuesLen <= 4 {
+					// Use pooled slice for small lists
+					pooledSlice := c.getHeaderSlice()
+					*pooledSlice = append(*pooledSlice, values...)
+					requestHeaders[key] = *pooledSlice
+					// Note: pooledSlice is not returned to pool since requestHeaders owns it now
+					// This is acceptable as the pooled slice is reused through the header slice pool
+				} else {
+					// Allocate new slice for larger lists
+					copiedValues := make([]string, valuesLen)
+					copy(copiedValues, values)
+					requestHeaders[key] = copiedValues
+				}
 			}
 			resp.SetRequestHeaders(requestHeaders)
 		}

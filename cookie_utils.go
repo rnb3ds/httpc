@@ -2,7 +2,36 @@ package httpc
 
 import (
 	"net/http"
+	"sync"
 )
+
+// cookieSlicePool reduces allocations for cookie slices
+var cookieSlicePool = sync.Pool{
+	New: func() any {
+		slice := make([]*http.Cookie, 0, 8)
+		return &slice
+	},
+}
+
+// getCookiesSlice retrieves a cookie slice from the pool
+func getCookiesSlice() *[]*http.Cookie {
+	slice, ok := cookieSlicePool.Get().(*[]*http.Cookie)
+	if !ok || slice == nil {
+		s := make([]*http.Cookie, 0, 8)
+		return &s
+	}
+	*slice = (*slice)[:0]
+	return slice
+}
+
+// putCookiesSlice returns a cookie slice to the pool
+func putCookiesSlice(slice *[]*http.Cookie) {
+	if cap(*slice) > 64 {
+		return // Don't pool large slices
+	}
+	*slice = (*slice)[:0]
+	cookieSlicePool.Put(slice)
+}
 
 // parseCookieHeader parses a Cookie header value into http.Cookie slice.
 // Optimized to minimize string allocations by using index-based trimming.
@@ -11,7 +40,16 @@ func parseCookieHeader(cookieHeader string) []*http.Cookie {
 		return nil
 	}
 
-	cookies := make([]*http.Cookie, 0, 4)
+	// Use pooled slice for parsing
+	cookiesPtr := getCookiesSlice()
+	defer func() {
+		// Return slice to pool if we're returning nil or a different slice
+		if *cookiesPtr == nil || len(*cookiesPtr) == 0 {
+			putCookiesSlice(cookiesPtr)
+		}
+	}()
+
+	cookies := *cookiesPtr
 	headerLen := len(cookieHeader)
 	start := 0
 
@@ -40,6 +78,13 @@ func parseCookieHeader(cookieHeader string) []*http.Cookie {
 			start = i + 1
 		}
 	}
+
+	if len(cookies) == 0 {
+		return nil
+	}
+
+	// Return the slice; caller is responsible for not pooling it
+	*cookiesPtr = cookies
 	return cookies
 }
 
