@@ -93,7 +93,7 @@ func demonstrateResponseParsing(client httpc.Client) {
 	}
 
 	var apiResp APIResponse
-	if err := resp.JSON(&apiResp); err != nil {
+	if err := resp.Unmarshal(&apiResp); err != nil {
 		log.Printf("JSON parse error: %v\n", err)
 	} else {
 		fmt.Printf("✓ JSON struct: Method=%s, Args=%d\n", apiResp.Method, len(apiResp.Args))
@@ -101,7 +101,7 @@ func demonstrateResponseParsing(client httpc.Client) {
 
 	// JSON parsing into map
 	var mapResult map[string]any
-	if err := resp.JSON(&mapResult); err != nil {
+	if err := resp.Unmarshal(&mapResult); err != nil {
 		log.Printf("JSON map error: %v\n", err)
 	} else {
 		fmt.Printf("✓ JSON map: %d keys\n", len(mapResult))

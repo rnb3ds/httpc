@@ -132,11 +132,10 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 				// Only decrement if we successfully deleted this specific entry
 				if _, loaded := r.cache.LoadAndDelete(host); loaded {
 					r.cacheSize.Add(-1)
-				} else {
-					// Entry was already replaced by another goroutine, reset the flag
-					// so the new entry's counter can be properly managed
-					entry.decrement.Store(false)
 				}
+				// NOTE: We intentionally do NOT reset the decrement flag if the entry
+				// was replaced. The new entry has its own fresh decrement flag.
+				// Resetting would corrupt the new entry's counter management.
 			}
 		}
 	}

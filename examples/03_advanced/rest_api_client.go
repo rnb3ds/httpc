@@ -57,7 +57,7 @@ func (c *APIClient) GetUser(ctx context.Context, userID int) (*User, error) {
 	resp, err := c.client.Get(url,
 		httpc.WithContext(timeoutCtx),
 		httpc.WithBearerToken(c.token),
-		httpc.WithJSONAccept(),
+		httpc.WithHeader("Accept", "application/json"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user: %w", err)
@@ -68,7 +68,7 @@ func (c *APIClient) GetUser(ctx context.Context, userID int) (*User, error) {
 	}
 
 	var user User
-	if err := resp.JSON(&user); err != nil {
+	if err := resp.Unmarshal(&user); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
@@ -88,7 +88,7 @@ func (c *APIClient) ListUsers(ctx context.Context, page, limit int) ([]User, err
 		httpc.WithBearerToken(c.token),
 		httpc.WithQuery("page", page),
 		httpc.WithQuery("limit", limit),
-		httpc.WithJSONAccept(),
+		httpc.WithHeader("Accept", "application/json"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list users: %w", err)
@@ -100,7 +100,7 @@ func (c *APIClient) ListUsers(ctx context.Context, page, limit int) ([]User, err
 
 	// Try to parse as array first (real API)
 	var users []User
-	if err := resp.JSON(&users); err != nil {
+	if err := resp.Unmarshal(&users); err != nil {
 		// Echo API returns an object, not an array
 		// For demo purposes, return empty array (in real API, this would be an actual user list)
 		return []User{}, nil
@@ -133,7 +133,7 @@ func (c *APIClient) CreateUser(ctx context.Context, user *User) (*User, error) {
 	}
 
 	var createdUser User
-	if err := resp.JSON(&createdUser); err != nil {
+	if err := resp.Unmarshal(&createdUser); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
@@ -163,7 +163,7 @@ func (c *APIClient) UpdateUser(ctx context.Context, userID int, user *User) (*Us
 	}
 
 	var updatedUser User
-	if err := resp.JSON(&updatedUser); err != nil {
+	if err := resp.Unmarshal(&updatedUser); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
@@ -206,7 +206,7 @@ func (c *APIClient) SearchUsers(ctx context.Context, query string) ([]User, erro
 		httpc.WithContext(timeoutCtx),
 		httpc.WithBearerToken(c.token),
 		httpc.WithQuery("q", query),
-		httpc.WithJSONAccept(),
+		httpc.WithHeader("Accept", "application/json"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search users: %w", err)
@@ -218,7 +218,7 @@ func (c *APIClient) SearchUsers(ctx context.Context, query string) ([]User, erro
 
 	// Try to parse as array first (real API)
 	var users []User
-	if err := resp.JSON(&users); err != nil {
+	if err := resp.Unmarshal(&users); err != nil {
 		// Echo API returns an object, not an array
 		// For demo purposes, return empty array (in real API, this would be search results)
 		return []User{}, nil

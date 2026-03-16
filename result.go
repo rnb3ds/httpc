@@ -33,6 +33,8 @@ type Result struct {
 }
 
 type RequestInfo struct {
+	URL     string
+	Method  string
 	Headers http.Header
 	Cookies []*http.Cookie
 }
@@ -98,10 +100,12 @@ func (r *Result) ResponseCookies() []*http.Cookie {
 	return r.Response.Cookies
 }
 
-// JSON unmarshals the response body into the provided interface.
+// Unmarshal parses the JSON-encoded response body and stores the result
+// in the value pointed to by v. It follows the same conventions as json.Unmarshal.
+//
 // Returns ErrResponseBodyEmpty if the body is nil or empty.
 // Returns ErrResponseBodyTooLarge if the body exceeds 50MB.
-func (r *Result) JSON(v any) error {
+func (r *Result) Unmarshal(v any) error {
 	if r == nil || r.Response == nil {
 		return ErrResponseBodyEmpty
 	}

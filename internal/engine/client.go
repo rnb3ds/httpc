@@ -32,8 +32,6 @@ type Client struct {
 	execRequestPool sync.Pool
 	// securityRequestPool reduces allocations for security.Request objects
 	securityRequestPool sync.Pool
-	// headerSlicePool reduces allocations for header value slices
-	headerSlicePool sync.Pool
 
 	// metrics tracks request statistics
 	metrics *Metrics
@@ -166,19 +164,21 @@ func (r *Request) SetOnResponse(cb ResponseCallback) { r.onResponse = cb }
 // Response represents an HTTP response.
 // Response objects are safe to read from multiple goroutines after they are returned.
 type Response struct {
-	statusCode     int
-	status         string
-	headers        http.Header
-	body           string
-	rawBody        []byte
-	contentLength  int64
-	proto          string
-	duration       time.Duration
-	attempts       int
-	cookies        []*http.Cookie
-	redirectChain  []string
-	redirectCount  int
-	requestHeaders http.Header // Actual headers sent with the request
+	statusCode      int
+	status          string
+	headers         http.Header
+	body            string
+	rawBody         []byte
+	contentLength   int64
+	proto           string
+	duration        time.Duration
+	attempts        int
+	cookies         []*http.Cookie
+	redirectChain   []string
+	redirectCount   int
+	requestHeaders  http.Header // Actual headers sent with the request
+	requestURL      string      // The actual URL that was requested (with query params)
+	requestMethod   string      // The HTTP method used
 }
 
 // Compile-time interface check
@@ -198,6 +198,8 @@ func (r *Response) Cookies() []*http.Cookie     { return r.cookies }
 func (r *Response) RedirectChain() []string     { return r.redirectChain }
 func (r *Response) RedirectCount() int          { return r.redirectCount }
 func (r *Response) RequestHeaders() http.Header { return r.requestHeaders }
+func (r *Response) RequestURL() string          { return r.requestURL }
+func (r *Response) RequestMethod() string       { return r.requestMethod }
 
 // Mutators (implement ResponseMutator)
 func (r *Response) SetStatusCode(v int)             { r.statusCode = v }
@@ -213,6 +215,8 @@ func (r *Response) SetCookies(v []*http.Cookie)     { r.cookies = v }
 func (r *Response) SetRedirectChain(v []string)     { r.redirectChain = v }
 func (r *Response) SetRedirectCount(v int)          { r.redirectCount = v }
 func (r *Response) SetRequestHeaders(v http.Header) { r.requestHeaders = v }
+func (r *Response) SetRequestURL(v string)          { r.requestURL = v }
+func (r *Response) SetRequestMethod(v string)       { r.requestMethod = v }
 
 // SetHeader sets a header with multiple values (implements ResponseMutator)
 func (r *Response) SetHeader(key string, values ...string) {
@@ -249,12 +253,6 @@ func NewClient(config *Config, opts ...ClientOption) (*Client, error) {
 		securityRequestPool: sync.Pool{
 			New: func() any {
 				return &security.Request{}
-			},
-		},
-		headerSlicePool: sync.Pool{
-			New: func() any {
-				s := make([]string, 0, 4)
-				return &s
 			},
 		},
 	}
@@ -419,26 +417,6 @@ func (c *Client) putSecurityRequest(req *security.Request) {
 	c.securityRequestPool.Put(req)
 }
 
-// getHeaderSlice retrieves a pre-allocated string slice from the pool
-func (c *Client) getHeaderSlice() *[]string {
-	s, ok := c.headerSlicePool.Get().(*[]string)
-	if !ok || s == nil {
-		sl := make([]string, 0, 4)
-		return &sl
-	}
-	*s = (*s)[:0] // Reset slice
-	return s
-}
-
-// putHeaderSlice returns a string slice to the pool
-func (c *Client) putHeaderSlice(s *[]string) {
-	if s == nil || cap(*s) > 16 {
-		// Don't pool large slices
-		return
-	}
-	c.headerSlicePool.Put(s)
-}
-
 // getExecRequest retrieves a Request object from the exec pool for request copies with safe type assertion
 func (c *Client) getExecRequest() *Request {
 	req, ok := c.execRequestPool.Get().(*Request)
@@ -502,11 +480,16 @@ func (c *Client) executeWithDefaultContext(method, url string, options ...Reques
 	return c.Request(ctx, method, url, options...)
 }
 
+// nopCancelFunc is a no-op cancel function that avoids allocation
+// when no timeout is configured
+var nopCancelFunc = func() {}
+
 func (c *Client) createDefaultContext() (context.Context, context.CancelFunc) {
 	if c.config.Timeout > 0 {
 		return context.WithTimeout(context.Background(), c.config.Timeout)
 	}
-	return context.WithCancel(context.Background())
+	// Return background context with no-op cancel to avoid allocation
+	return context.Background(), nopCancelFunc
 }
 
 func (c *Client) sleepWithContext(ctx context.Context, duration time.Duration) error {
@@ -718,24 +701,19 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 		if headerLen > 0 {
 			requestHeaders := make(http.Header, headerLen)
 			for key, values := range httpResp.Request.Header {
-				// Use pooled slice for small header value lists to reduce allocations
+				// Copy header values directly to avoid memory leak from pool misuse
 				valuesLen := len(values)
-				if valuesLen <= 4 {
-					// Use pooled slice for small lists
-					pooledSlice := c.getHeaderSlice()
-					*pooledSlice = append(*pooledSlice, values...)
-					requestHeaders[key] = *pooledSlice
-					// Note: pooledSlice is not returned to pool since requestHeaders owns it now
-					// This is acceptable as the pooled slice is reused through the header slice pool
-				} else {
-					// Allocate new slice for larger lists
-					copiedValues := make([]string, valuesLen)
-					copy(copiedValues, values)
-					requestHeaders[key] = copiedValues
-				}
+				copiedValues := make([]string, valuesLen)
+				copy(copiedValues, values)
+				requestHeaders[key] = copiedValues
 			}
 			resp.SetRequestHeaders(requestHeaders)
 		}
+		// Set the actual request URL and method
+		if httpResp.Request.URL != nil {
+			resp.SetRequestURL(httpResp.Request.URL.String())
+		}
+		resp.SetRequestMethod(httpResp.Request.Method)
 	}
 
 	resp.SetDuration(duration)

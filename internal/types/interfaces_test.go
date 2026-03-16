@@ -54,19 +54,21 @@ func (m *mockRequest) SetMaxRedirects(v *int)          { m.maxRedirects = v }
 
 // mockResponse implements ResponseMutator for testing
 type mockResponse struct {
-	statusCode     int
-	status         string
-	proto          string
-	headers        http.Header
-	body           string
-	rawBody        []byte
-	contentLength  int64
-	duration       time.Duration
-	attempts       int
-	cookies        []*http.Cookie
-	redirectChain  []string
-	redirectCount  int
-	requestHeaders http.Header
+	statusCode      int
+	status          string
+	proto           string
+	headers         http.Header
+	body            string
+	rawBody         []byte
+	contentLength   int64
+	duration        time.Duration
+	attempts        int
+	cookies         []*http.Cookie
+	redirectChain   []string
+	redirectCount   int
+	requestHeaders  http.Header
+	requestURL      string
+	requestMethod   string
 }
 
 func (m *mockResponse) StatusCode() int             { return m.statusCode }
@@ -82,6 +84,8 @@ func (m *mockResponse) Cookies() []*http.Cookie     { return m.cookies }
 func (m *mockResponse) RedirectChain() []string     { return m.redirectChain }
 func (m *mockResponse) RedirectCount() int          { return m.redirectCount }
 func (m *mockResponse) RequestHeaders() http.Header { return m.requestHeaders }
+func (m *mockResponse) RequestURL() string          { return m.requestURL }
+func (m *mockResponse) RequestMethod() string       { return m.requestMethod }
 
 func (m *mockResponse) SetStatusCode(v int)             { m.statusCode = v }
 func (m *mockResponse) SetStatus(v string)              { m.status = v }
@@ -96,6 +100,8 @@ func (m *mockResponse) SetCookies(v []*http.Cookie)     { m.cookies = v }
 func (m *mockResponse) SetRedirectChain(v []string)     { m.redirectChain = v }
 func (m *mockResponse) SetRedirectCount(v int)          { m.redirectCount = v }
 func (m *mockResponse) SetRequestHeaders(v http.Header) { m.requestHeaders = v }
+func (m *mockResponse) SetRequestURL(v string)          { m.requestURL = v }
+func (m *mockResponse) SetRequestMethod(v string)       { m.requestMethod = v }
 func (m *mockResponse) SetHeader(key string, values ...string) {
 	if m.headers == nil {
 		m.headers = make(http.Header)

@@ -264,3 +264,75 @@ func TestNoOpPinner(t *testing.T) {
 		}
 	})
 }
+
+// TestNewPublicKeyPinnerFromBase64 tests the NewPublicKeyPinnerFromBase64 function
+func TestNewPublicKeyPinnerFromBase64(t *testing.T) {
+	certDER, cert, _ := generateTestCertificate(t)
+	spkiBytes, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
+	if err != nil {
+		t.Fatalf("failed to marshal public key: %v", err)
+	}
+	spkiHash := sha256.Sum256(spkiBytes)
+	spkiHashBase64 := base64.StdEncoding.EncodeToString(spkiHash[:])
+
+	t.Run("valid hash", func(t *testing.T) {
+		pinner := NewPublicKeyPinnerFromBase64(spkiHashBase64)
+		if pinner == nil {
+			t.Fatal("expected non-nil pinner")
+		}
+		if pinner.Pin() == "" {
+			t.Error("expected non-empty pin description")
+		}
+	})
+
+	t.Run("multiple hashes", func(t *testing.T) {
+		hash2 := base64.StdEncoding.EncodeToString([]byte("another-hash-32-bytes-long-enough!"))
+		pinner := NewPublicKeyPinnerFromBase64(spkiHashBase64, hash2)
+		if pinner == nil {
+			t.Fatal("expected non-nil pinner")
+		}
+	})
+
+	t.Run("empty hash is ignored", func(t *testing.T) {
+		pinner := NewPublicKeyPinnerFromBase64("")
+		if pinner == nil {
+			t.Fatal("expected non-nil pinner")
+		}
+		// Empty hashes are ignored, so pinner should have no pins
+		if pinner.Pin() != "no-pins" {
+			t.Errorf("expected 'no-pins', got %q", pinner.Pin())
+		}
+	})
+
+	t.Run("whitespace hash is trimmed", func(t *testing.T) {
+		pinner := NewPublicKeyPinnerFromBase64("  " + spkiHashBase64 + "  ")
+		if pinner == nil {
+			t.Fatal("expected non-nil pinner")
+		}
+	})
+
+	t.Run("verify matching certificate", func(t *testing.T) {
+		pinner := NewPublicKeyPinnerFromBase64(spkiHashBase64)
+		err := pinner.VerifyPeerCertificate([][]byte{certDER}, nil)
+		if err != nil {
+			t.Errorf("expected no error for matching hash, got %v", err)
+		}
+	})
+
+	t.Run("verify non-matching certificate", func(t *testing.T) {
+		wrongHash := base64.StdEncoding.EncodeToString([]byte("wrong-hash-32-bytes-long-enough!!"))
+		pinner := NewPublicKeyPinnerFromBase64(wrongHash)
+		err := pinner.VerifyPeerCertificate([][]byte{certDER}, nil)
+		if err == nil {
+			t.Error("expected error for non-matching hash")
+		}
+	})
+
+	t.Run("nil pinner", func(t *testing.T) {
+		var pinner *PublicKeyPinner
+		err := pinner.VerifyPeerCertificate([][]byte{certDER}, nil)
+		if err != nil {
+			t.Errorf("nil pinner should allow all, got error: %v", err)
+		}
+	})
+}

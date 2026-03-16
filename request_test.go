@@ -55,7 +55,7 @@ func TestRequest_Headers(t *testing.T) {
 			"X-Header-1": "value1",
 			"X-Header-2": "value2",
 		}
-		_, err := client.Get(server.URL, WithHeaders(headers))
+		_, err := client.Get(server.URL, WithHeaderMap(headers))
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
@@ -201,7 +201,7 @@ func TestRequest_Authentication(t *testing.T) {
 // ----------------------------------------------------------------------------
 
 func TestRequest_QueryParameters(t *testing.T) {
-	t.Run("WithQueries", func(t *testing.T) {
+	t.Run("WithQueryMap", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Query().Get("key1") != "value1" {
 				t.Error("Expected key1=value1")
@@ -220,7 +220,7 @@ func TestRequest_QueryParameters(t *testing.T) {
 			"key1": "value1",
 			"key2": "value2",
 		}
-		_, err := client.Get(server.URL, WithQueries(params))
+		_, err := client.Get(server.URL, WithQueryMap(params))
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
@@ -239,6 +239,61 @@ func TestRequest_QueryParameters(t *testing.T) {
 		defer client.Close()
 
 		_, err := client.Get(server.URL, WithQuery("search", "test query"))
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+	})
+
+	t.Run("WithQueryMap", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Query().Get("key1") != "value1" {
+				t.Error("Expected key1=value1")
+			}
+			if r.URL.Query().Get("key2") != "value2" {
+				t.Error("Expected key2=value2")
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		params := map[string]any{
+			"key1": "value1",
+			"key2": "value2",
+		}
+		_, err := client.Get(server.URL, WithQueryMap(params))
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+	})
+
+	t.Run("WithQueryMap nil", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Get(server.URL, WithQueryMap(nil))
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+	})
+
+	t.Run("WithQueryMap empty", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Get(server.URL, WithQueryMap(map[string]any{}))
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}

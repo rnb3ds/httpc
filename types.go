@@ -122,8 +122,8 @@ type Config struct {
 	MaxResponseBodySize int64
 
 	// AllowPrivateIPs permits connections to private IP addresses (SSRF protection).
-	// SECURITY: Default is false to prevent Server-Side Request Forgery.
-	// Set to true only for development or when accessing internal services.
+	// Default: true for compatibility. Set to false to enable SSRF protection
+	// and block connections to private/reserved IP addresses.
 	AllowPrivateIPs bool
 
 	// ValidateURL enables URL validation before sending requests.
@@ -256,6 +256,17 @@ type MiddlewareFunc = types.MiddlewareFunc
 
 // DefaultConfig returns a Config with production-ready defaults.
 // The returned config is safe for modification.
+//
+// SSRF Protection Note:
+// By default, AllowPrivateIPs is true for maximum compatibility with VPNs,
+// proxies, and corporate networks. If you need SSRF (Server-Side Request Forgery)
+// protection, set AllowPrivateIPs = false or use SecureConfig() preset:
+//
+//	// For SSRF protection:
+//	cfg := httpc.DefaultConfig()
+//	cfg.AllowPrivateIPs = false
+//	// OR use the secure preset:
+//	cfg := httpc.SecureConfig()
 func DefaultConfig() *Config {
 	return &Config{
 		// Timeouts
@@ -281,7 +292,7 @@ func DefaultConfig() *Config {
 		MaxTLSVersion:       tls.VersionTLS13,
 		InsecureSkipVerify:  false,
 		MaxResponseBodySize: 10 * 1024 * 1024, // 10MB
-		AllowPrivateIPs:     false,            // SECURITY: Block private IPs by default
+		AllowPrivateIPs:     true,             // Allow private/reserved IPs by default for compatibility
 		ValidateURL:         true,
 		ValidateHeaders:     true,
 		StrictContentLength: true,

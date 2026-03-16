@@ -61,7 +61,7 @@ if !result.IsSuccess() {
 
 ```go
 var data MyStruct
-if err := result.JSON(&data); err != nil {
+if err := result.Unmarshal(&data); err != nil {
     return fmt.Errorf("failed to parse JSON: %w", err)
 }
 ```
@@ -149,7 +149,7 @@ func fetchUser(client httpc.Client, userID int) (*User, error) {
     }
     
     var user User
-    if err := result.JSON(&user); err != nil {
+    if err := result.Unmarshal(&user); err != nil {
         return nil, fmt.Errorf("failed to parse response: %w", err)
     }
     
@@ -521,7 +521,7 @@ func fetchUser(ctx context.Context, client httpc.Client, userID int) (*User, err
     
     // Parse response
     var user User
-    if err := result.JSON(&user); err != nil {
+    if err := result.Unmarshal(&user); err != nil {
         return nil, fmt.Errorf("failed to parse user data: %w", err)
     }
     

@@ -1,126 +1,215 @@
+//go:build examples
+
 package main
 
 import (
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/cybergodev/httpc"
 )
 
 func main() {
-	fmt.Println("=== Proxy Configuration Examples ===")
-	fmt.Println()
+	fmt.Println("=== Proxy Configuration Examples ===\n ")
 
-	// Example 1: Manual proxy (highest priority)
-	fmt.Println("Example 1: Manual proxy URL")
-	fmt.Println("When ProxyURL is set, it will be used regardless of EnableSystemProxy")
-	client1, err := httpc.New(&httpc.Config{
-		ProxyURL:      "http://127.0.0.1:7890",
-		Timeout:       10 * time.Second,
-		BackoffFactor: 2.0,
-		MaxRetries:    3,
-		RetryDelay:    1 * time.Second,
-	})
-	if err != nil {
-		fmt.Printf("Failed to create client: %v\n", err)
-	} else {
-		fmt.Println("✓ Client created with manual proxy: http://127.0.0.1:7890")
-		client1.Close()
-	}
-	fmt.Println()
+	// Example 1: Direct connection (no proxy) - default behavior
+	demonstrateDirectConnection()
 
-	// Example 2: Enable system proxy detection
-	fmt.Println("Example 2: Enable system proxy detection")
-	fmt.Println("When ProxyURL is empty and EnableSystemProxy is true,")
-	fmt.Println("the client will automatically detect system proxy settings")
-	fmt.Println("(Windows registry, environment variables, etc.)")
-	client2, err := httpc.New(&httpc.Config{
-		EnableSystemProxy: true,
-		Timeout:           10 * time.Second,
-		BackoffFactor:     2.0,
-		MaxRetries:        3,
-		RetryDelay:        1 * time.Second,
-	})
-	if err != nil {
-		fmt.Printf("Failed to create client: %v\n", err)
-	} else {
-		fmt.Println("✓ Client created with system proxy detection enabled")
-		fmt.Println("  (Will use system proxy if configured, otherwise direct connection)")
-		client2.Close()
-	}
-	fmt.Println()
+	// Example 2: System proxy detection
+	demonstrateSystemProxy()
 
-	// Example 3: Direct connection (no proxy)
-	fmt.Println("Example 3: Direct connection (default behavior)")
-	fmt.Println("When both ProxyURL is empty and EnableSystemProxy is false,")
-	fmt.Println("the client will connect directly without any proxy")
-	client3, err := httpc.New(&httpc.Config{
-		Timeout:       10 * time.Second,
-		BackoffFactor: 2.0,
-		MaxRetries:    3,
-		RetryDelay:    1 * time.Second,
-	})
-	if err != nil {
-		fmt.Printf("Failed to create client: %v\n", err)
-	} else {
-		fmt.Println("✓ Client created with direct connection (no proxy)")
-		client3.Close()
-	}
-	fmt.Println()
+	// Example 3: Manual proxy configuration
+	demonstrateManualProxy()
 
-	// Example 4: Manual proxy takes priority over system proxy
-	fmt.Println("Example 4: Proxy priority demonstration")
-	fmt.Println("Even when EnableSystemProxy is true,")
-	fmt.Println("manual ProxyURL takes priority")
-	client4, err := httpc.New(&httpc.Config{
-		ProxyURL:          "http://127.0.0.1:7890",
-		EnableSystemProxy: true, // This is ignored because ProxyURL is set
-		Timeout:           10 * time.Second,
-		BackoffFactor:     2.0,
-		MaxRetries:        3,
-		RetryDelay:        1 * time.Second,
-	})
-	if err != nil {
-		fmt.Printf("Failed to create client: %v\n", err)
-	} else {
-		fmt.Println("✓ Client created with manual proxy (system proxy detection ignored)")
-		fmt.Println("  Using proxy: http://127.0.0.1:7890")
-		client4.Close()
-	}
-	fmt.Println()
+	// Example 4: Proxy priority demonstration
+	demonstrateProxyPriority()
 
 	// Summary
+	printSummary()
+
+	fmt.Println("\n=== All Examples Completed ===")
+}
+
+// demonstrateDirectConnection shows the default behavior without proxy
+func demonstrateDirectConnection() {
+	fmt.Println("--- Example 1: Direct Connection (Default) ---")
+
+	// Create client without any proxy configuration
+	// This is the default behavior - direct connection
+	config := httpc.DefaultConfig()
+	// ProxyURL is empty and EnableSystemProxy is false by default
+
+	client, err := httpc.New(config)
+	if err != nil {
+		log.Printf("Failed to create client: %v\n", err)
+		return
+	}
+	defer client.Close()
+
+	// Make an actual request to verify connectivity
+	resp, err := client.Get("https://httpbin.org/ip",
+		httpc.WithTimeout(10*time.Second),
+	)
+	if err != nil {
+		log.Printf("Request failed: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Status: %d\n", resp.StatusCode())
+	fmt.Printf("Response: %s\n", resp.Body()[:min(100, len(resp.Body()))])
+	fmt.Println("Connection: Direct (no proxy)\n ")
+}
+
+// demonstrateSystemProxy shows automatic system proxy detection
+func demonstrateSystemProxy() {
+	fmt.Println("--- Example 2: System Proxy Detection ---")
+
+	// Enable automatic system proxy detection
+	// On Windows: reads from registry
+	// On Linux/Mac: reads environment variables (HTTP_PROXY, HTTPS_PROXY, NO_PROXY)
+	config := httpc.DefaultConfig()
+	config.EnableSystemProxy = true
+
+	client, err := httpc.New(config)
+	if err != nil {
+		log.Printf("Failed to create client: %v\n", err)
+		return
+	}
+	defer client.Close()
+
+	// Make a request - will use system proxy if configured
+	resp, err := client.Get("https://httpbin.org/ip",
+		httpc.WithTimeout(10*time.Second),
+	)
+	if err != nil {
+		log.Printf("Request failed: %v\n", err)
+		fmt.Println("Note: If system proxy is configured but unavailable, this may fail")
+		return
+	}
+
+	fmt.Printf("Status: %d\n", resp.StatusCode())
+	fmt.Printf("Response: %s\n", resp.Body()[:min(100, len(resp.Body()))])
+	fmt.Println("Connection: System proxy (if configured) or direct\n ")
+
+	// Show environment variables that affect system proxy
+	fmt.Println("Environment variables for system proxy:")
+	fmt.Println("  HTTP_PROXY  - Proxy for HTTP requests")
+	fmt.Println("  HTTPS_PROXY - Proxy for HTTPS requests")
+	fmt.Println("  NO_PROXY    - Hosts to bypass proxy")
+	fmt.Println("  (case-insensitive on most systems)\n ")
+}
+
+// demonstrateManualProxy shows manual proxy configuration
+func demonstrateManualProxy() {
+	fmt.Println("--- Example 3: Manual Proxy Configuration ---")
+
+	// Configure a specific proxy URL
+	// This bypasses any system proxy settings
+	proxyURL := "http://127.0.0.1:7890" // Common proxy port for tools like Clash, V2Ray
+
+	config := httpc.DefaultConfig()
+	config.ProxyURL = proxyURL
+	config.Timeout = 10 * time.Second
+
+	client, err := httpc.New(config)
+	if err != nil {
+		log.Printf("Failed to create client: %v\n", err)
+		return
+	}
+	defer client.Close()
+
+	fmt.Printf("Proxy URL: %s\n", proxyURL)
+	fmt.Println("Attempting request through proxy...")
+
+	// Make a request through the proxy
+	// Note: This will fail if the proxy is not running
+	resp, err := client.Get("https://httpbin.org/ip",
+		httpc.WithTimeout(10*time.Second),
+	)
+	if err != nil {
+		fmt.Printf("Request failed: %v\n", err)
+		fmt.Println("\nNote: This is expected if no proxy is running at 127.0.0.1:7890")
+		fmt.Println("Start your proxy software (Clash, V2Ray, etc.) to test this example.\n ")
+		return
+	}
+
+	fmt.Printf("Status: %d\n", resp.StatusCode())
+	fmt.Printf("Response: %s\n", resp.Body()[:min(100, len(resp.Body()))])
+	fmt.Printf("Connection: Via proxy %s\n\n", proxyURL)
+}
+
+// demonstrateProxyPriority shows how proxy settings are prioritized
+func demonstrateProxyPriority() {
+	fmt.Println("--- Example 4: Proxy Priority ---")
+
+	// When both ProxyURL and EnableSystemProxy are set, ProxyURL takes priority
+	config := httpc.DefaultConfig()
+	config.ProxyURL = "http://127.0.0.1:8080" // This takes priority
+	config.EnableSystemProxy = true           // This is ignored
+	config.Timeout = 5 * time.Second
+
+	client, err := httpc.New(config)
+	if err != nil {
+		log.Printf("Failed to create client: %v\n", err)
+		return
+	}
+	defer client.Close()
+
+	fmt.Println("Configuration:")
+	fmt.Println("  ProxyURL: http://127.0.0.1:8080")
+	fmt.Println("  EnableSystemProxy: true (ignored)")
+	fmt.Println()
+	fmt.Println("Result: Manual proxy is used (ProxyURL has higher priority)")
+
+	// Attempt request (will fail if proxy not running)
+	resp, err := client.Get("https://httpbin.org/ip")
+	if err != nil {
+		fmt.Printf("\nRequest failed: %v\n", err)
+		fmt.Println("(Expected - no proxy running at 127.0.0.1:8080)\n ")
+		return
+	}
+	_ = resp
+	fmt.Println("Request succeeded through manual proxy\n ")
+}
+
+// printSummary shows configuration summary and common use cases
+func printSummary() {
 	fmt.Println("=== Configuration Priority ===")
-	fmt.Println("1. ProxyURL (manual proxy) - Highest priority")
-	fmt.Println("2. EnableSystemProxy (auto-detect system proxy)")
-	fmt.Println("3. Direct connection (no proxy) - Default")
+	fmt.Println()
+	fmt.Println("Priority | Setting              | Behavior")
+	fmt.Println("---------|----------------------|------------------------------------------")
+	fmt.Println("1 (High) | ProxyURL set         | Always use specified proxy")
+	fmt.Println("2        | EnableSystemProxy    | Auto-detect from OS/env vars")
+	fmt.Println("3 (Low)  | Neither set          | Direct connection (default)")
 	fmt.Println()
 
 	fmt.Println("=== Common Use Cases ===")
 	fmt.Println()
-	fmt.Println("Case A: Behind a corporate proxy")
-	fmt.Println("  config := httpc.Config{")
-	fmt.Println("      ProxyURL: \"http://proxy.company.com:8080\",")
-	fmt.Println("  }")
+	fmt.Println("Use Case                    | Configuration")
+	fmt.Println("----------------------------|----------------------------------------")
+	fmt.Println("Corporate network           | ProxyURL: \"http://proxy.company.com:8080\"")
+	fmt.Println("VPN software (Clash/V2Ray)  | ProxyURL: \"http://127.0.0.1:7890\"")
+	fmt.Println("System proxy (Windows/Mac)  | EnableSystemProxy: true")
+	fmt.Println("Development (no proxy)      | Default (no configuration needed)")
 	fmt.Println()
-	fmt.Println("Case B: Using system proxy (Windows/Mac/Linux)")
-	fmt.Println("  config := httpc.Config{")
-	fmt.Println("      EnableSystemProxy: true,")
-	fmt.Println("  }")
+
+	fmt.Println("=== Environment Variables ===")
 	fmt.Println()
-	fmt.Println("Case C: Direct connection (default)")
-	fmt.Println("  config := httpc.Config{")
-	fmt.Println("      // Both ProxyURL and EnableSystemProxy are empty/false")
-	fmt.Println("  }")
+	fmt.Println("  # Linux/Mac")
+	fmt.Println("  export HTTPS_PROXY=http://127.0.0.1:7890")
+	fmt.Println("  export NO_PROXY=localhost,127.0.0.1,.internal")
 	fmt.Println()
-	fmt.Println("Case D: VPN/Proxy software (e.g., Clash, V2Ray)")
-	fmt.Println("  Option 1: Use environment variables")
-	fmt.Println("    // set HTTPS_PROXY=http://127.0.0.1:7890")
-	fmt.Println("    config := httpc.Config{")
-	fmt.Println("        EnableSystemProxy: true, // Will read env vars")
-	fmt.Println("    }")
-	fmt.Println("  Option 2: Specify proxy directly")
-	fmt.Println("    config := httpc.Config{")
-	fmt.Println("        ProxyURL: \"http://127.0.0.1:7890\",")
-	fmt.Println("    }")
+	fmt.Println("  # Windows (PowerShell)")
+	fmt.Println("  $env:HTTPS_PROXY = \"http://127.0.0.1:7890\"")
+	fmt.Println()
+	fmt.Println("  # Then use EnableSystemProxy: true to read these values")
+}
+
+// min returns the smaller of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

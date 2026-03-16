@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/cybergodev/httpc/internal/validation"
@@ -326,18 +325,6 @@ func AuditMiddlewareJSON(onAudit func(event AuditEvent)) MiddlewareFunc {
 	config := DefaultAuditMiddlewareConfig()
 	config.Format = "json"
 	return AuditMiddlewareWithConfig(onAudit, config)
-}
-
-// maskHeaderValue masks sensitive header values for logging.
-// Returns "***" if the header name is in the maskHeaders list, otherwise returns the original value.
-// Note: This function is currently unused but retained for future header masking features.
-func maskHeaderValue(headerName string, maskHeaders []string) string {
-	for _, mask := range maskHeaders {
-		if strings.EqualFold(headerName, mask) {
-			return "***"
-		}
-	}
-	return headerName
 }
 
 // sanitizeAuditURL removes credentials from a URL for safe logging.

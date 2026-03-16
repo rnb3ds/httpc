@@ -44,7 +44,7 @@ func parseCookieHeader(cookieHeader string) []*http.Cookie {
 	cookiesPtr := getCookiesSlice()
 	defer func() {
 		// Return slice to pool if we're returning nil or a different slice
-		if *cookiesPtr == nil || len(*cookiesPtr) == 0 {
+		if len(*cookiesPtr) == 0 {
 			putCookiesSlice(cookiesPtr)
 		}
 	}()

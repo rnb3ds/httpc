@@ -137,7 +137,7 @@ func demonstrateHeadersAuth(client httpc.Client) {
 		"X-Client-ID":   "client-123",
 	}
 	resp, err = client.Get("https://echo.hoppscotch.io",
-		httpc.WithHeaders(headers),
+		httpc.WithHeaderMap(headers),
 	)
 	if err != nil {
 		log.Printf("Headers error: %v\n", err)
@@ -209,7 +209,7 @@ func demonstrateQueryParams(client httpc.Client) {
 		"order":    "desc",
 	}
 	resp, err = client.Get("https://echo.hoppscotch.io",
-		httpc.WithQueries(params),
+		httpc.WithQueryMap(params),
 	)
 	if err != nil {
 		log.Printf("Query map error: %v\n", err)
@@ -226,7 +226,7 @@ func demonstrateQueryParams(client httpc.Client) {
 		"sort_by":  "relevance",
 	}
 	resp, err = client.Get("https://echo.hoppscotch.io/search",
-		httpc.WithQueries(searchParams),
+		httpc.WithQueryMap(searchParams),
 		httpc.WithTimeout(10*time.Second),
 	)
 	if err != nil {
@@ -241,7 +241,7 @@ func demonstrateQueryParams(client httpc.Client) {
 		"email": "user@example.com",
 	}
 	resp, err = client.Get("https://echo.hoppscotch.io",
-		httpc.WithQueries(specialParams),
+		httpc.WithQueryMap(specialParams),
 	)
 	if err != nil {
 		log.Printf("Special chars error: %v\n", err)

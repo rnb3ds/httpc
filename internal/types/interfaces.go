@@ -69,6 +69,8 @@ type ResponseReader interface {
 	RedirectChain() []string
 	RedirectCount() int
 	RequestHeaders() http.Header
+	RequestURL() string
+	RequestMethod() string
 }
 
 // ResponseWriter provides write-only access to response data for middleware.
@@ -88,6 +90,8 @@ type ResponseWriter interface {
 	SetRedirectChain([]string)
 	SetRedirectCount(int)
 	SetRequestHeaders(http.Header)
+	SetRequestURL(string)
+	SetRequestMethod(string)
 	SetHeader(key string, values ...string)
 }
 

@@ -26,9 +26,8 @@ func WithHeader(key, value string) RequestOption {
 	}
 }
 
-// WithHeaders sets multiple headers from a map.
-// This is the recommended name; WithHeaderMap is deprecated.
-func WithHeaders(headers map[string]string) RequestOption {
+// WithHeaderMap sets multiple headers from a map.
+func WithHeaderMap(headers map[string]string) RequestOption {
 	return func(r *engine.Request) error {
 		for k, v := range headers {
 			if err := validation.ValidateHeaderKeyValue(k, v); err != nil {
@@ -98,6 +97,31 @@ func WithQuery(key string, value any) RequestOption {
 		}
 		params[key] = value
 		r.SetQueryParams(params)
+		return nil
+	}
+}
+
+// WithQueryMap sets multiple query parameters from a map.
+func WithQueryMap(params map[string]any) RequestOption {
+	return func(r *engine.Request) error {
+		existing := r.QueryParams()
+		if existing == nil {
+			existing = make(map[string]any, len(params))
+		}
+
+		for k, v := range params {
+			if err := validation.ValidateQueryKey(k); err != nil {
+				return fmt.Errorf("invalid key %s: %w", k, err)
+			}
+
+			if v != nil {
+				if valueLen := queryValueLength(v); valueLen > validation.MaxValueLen {
+					return fmt.Errorf("query value too long for key %s (max %d)", k, validation.MaxValueLen)
+				}
+			}
+			existing[k] = v
+		}
+		r.SetQueryParams(existing)
 		return nil
 	}
 }
@@ -251,32 +275,6 @@ func lenFloat(v float64, bitSize int) int {
 	}
 
 	return signLen + intDigits + decimalPointLen + maxFracDigits
-}
-
-// WithQueries sets multiple query parameters from a map.
-// This is the recommended name; WithQueryMap is deprecated.
-func WithQueries(params map[string]any) RequestOption {
-	return func(r *engine.Request) error {
-		existing := r.QueryParams()
-		if existing == nil {
-			existing = make(map[string]any, len(params))
-		}
-
-		for k, v := range params {
-			if err := validation.ValidateQueryKey(k); err != nil {
-				return fmt.Errorf("invalid key %s: %w", k, err)
-			}
-
-			if v != nil {
-				if valueLen := queryValueLength(v); valueLen > validation.MaxValueLen {
-					return fmt.Errorf("query value too long for key %s (max %d)", k, validation.MaxValueLen)
-				}
-			}
-			existing[k] = v
-		}
-		r.SetQueryParams(existing)
-		return nil
-	}
 }
 
 func WithJSON(data any) RequestOption {

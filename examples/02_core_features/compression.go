@@ -20,7 +20,7 @@ func main() {
 		"User-Agent":      "httpc-example/1.0",
 	}
 
-	resp, err := httpc.Get("https://httpbin.org/gzip", httpc.WithHeaders(headers))
+	resp, err := httpc.Get("https://httpbin.org/gzip", httpc.WithHeaderMap(headers))
 	if err != nil {
 		log.Fatalf("Request failed: %v", err)
 	}
@@ -33,7 +33,7 @@ func main() {
 	// Example 2: Deflate decompression
 	// Note: Some servers may not properly support deflate encoding
 	fmt.Println("2. Testing with another gzip endpoint:")
-	resp2, err := httpc.Get("https://www.github.com", httpc.WithHeaders(headers))
+	resp2, err := httpc.Get("https://www.github.com", httpc.WithHeaderMap(headers))
 	if err != nil {
 		log.Fatalf("Request failed: %v", err)
 	}

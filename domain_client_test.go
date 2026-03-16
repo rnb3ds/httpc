@@ -963,7 +963,7 @@ func TestDomainClient_AutoPersistHeaderMap(t *testing.T) {
 
 	// First request with header map
 	_, err = client.Get("/first",
-		httpc.WithHeaders(map[string]string{
+		httpc.WithHeaderMap(map[string]string{
 			"X-Header-1": "value1",
 			"X-Header-2": "value2",
 			"X-Header-3": "value3",
@@ -1098,7 +1098,7 @@ func TestDomainClient_RealWorldScenario(t *testing.T) {
 
 	// Step 2: Extract token and set as persistent header
 	var loginData map[string]string
-	if err := loginResp.JSON(&loginData); err != nil {
+	if err := loginResp.Unmarshal(&loginData); err != nil {
 		t.Fatalf("JSON parse error = %v", err)
 	}
 	err = client.SetHeader("Authorization", "Bearer "+loginData["token"])

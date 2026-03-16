@@ -26,6 +26,9 @@ func main() {
 
 	// Example 5: Track redirect chain
 	example5RedirectChain()
+
+	// Example 6: Manual redirect handling
+	example6ManualHandling()
 }
 
 func example1AutoFollow() {

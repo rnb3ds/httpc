@@ -54,15 +54,16 @@ examples/
 
 ### Client Configuration
 **[03_advanced/client_configuration.go](03_advanced/client_configuration.go)**
-- Default, Secure, Performance presets
+- Default, Secure, Performance, Testing presets
 - Custom configuration
 - Configuration comparison for different scenarios
 
 ### HTTP Methods
 **[03_advanced/http_methods.go](03_advanced/http_methods.go)**
-- GET, POST, PUT, PATCH, DELETE
-- HEAD, OPTIONS
-- Use cases for each method
+- HEAD (headers only)
+- OPTIONS (allowed methods)
+- PATCH (partial updates)
+- Method comparison table
 
 ### Timeout & Retry
 **[03_advanced/timeout_retry.go](03_advanced/timeout_retry.go)**
@@ -114,6 +115,30 @@ examples/
 - Error handling
 - Context management
 
+### Middleware
+**[03_advanced/middleware.go](03_advanced/middleware.go)**
+- Logging middleware
+- Request ID middleware
+- Metrics collection
+- Recovery middleware
+- Audit middleware
+- Middleware chaining
+
+### Proxy Configuration
+**[03_advanced/proxy_configuration.go](03_advanced/proxy_configuration.go)**
+- Direct connection (default)
+- System proxy detection
+- Manual proxy configuration
+- Proxy priority rules
+
+### Advanced Patterns
+**[03_advanced/advanced_patterns.go](03_advanced/advanced_patterns.go)**
+- Request/Response callbacks
+- Result pool optimization (ReleaseResult)
+- Testing configuration
+- Default client management
+- Memory optimization techniques
+
 ## 🏃 Running Examples
 
 ### Run a specific example:
@@ -121,22 +146,36 @@ examples/
 go run -tags examples examples/01_quickstart/basic_usage.go
 go run -tags examples examples/02_core_features/request_options.go
 go run -tags examples examples/03_advanced/concurrent_requests.go
+go run -tags examples examples/03_advanced/advanced_patterns.go
 ```
 
-### Run all examples in a directory:
+### Run multiple examples (one at a time):
 ```bash
 # Quick start
-go run -tags examples examples/01_quickstart/*.go
+go run -tags examples examples/01_quickstart/basic_usage.go
 
 # Core features
 go run -tags examples examples/02_core_features/request_options.go
 go run -tags examples examples/02_core_features/response_handling.go
 go run -tags examples examples/02_core_features/error_handling.go
+go run -tags examples examples/02_core_features/compression.go
 
 # Advanced
 go run -tags examples examples/03_advanced/client_configuration.go
+go run -tags examples examples/03_advanced/http_methods.go
+go run -tags examples examples/03_advanced/timeout_retry.go
+go run -tags examples examples/03_advanced/redirects.go
 go run -tags examples examples/03_advanced/concurrent_requests.go
+go run -tags examples examples/03_advanced/file_operations.go
+go run -tags examples examples/03_advanced/cookies_advanced.go
+go run -tags examples examples/03_advanced/domain_client.go
+go run -tags examples examples/03_advanced/rest_api_client.go
+go run -tags examples examples/03_advanced/middleware.go
+go run -tags examples examples/03_advanced/proxy_configuration.go
+go run -tags examples examples/03_advanced/advanced_patterns.go
 ```
+
+> **Note**: Each example file has its own `main()` function and must be run individually.
 
 ## 📚 Learning Path
 
@@ -148,14 +187,19 @@ go run -tags examples examples/03_advanced/concurrent_requests.go
 
 ### Intermediate
 5. ✅ **03_advanced/client_configuration.go** - Configure clients
-6. ✅ **03_advanced/timeout_retry.go** - Resilient requests
-7. ✅ **03_advanced/file_operations.go** - File handling
-8. ✅ **03_advanced/cookies_advanced.go** - Cookie management
+6. ✅ **03_advanced/http_methods.go** - HEAD, OPTIONS, PATCH
+7. ✅ **03_advanced/timeout_retry.go** - Resilient requests
+8. ✅ **03_advanced/file_operations.go** - File handling
+9. ✅ **03_advanced/cookies_advanced.go** - Cookie management
+10. ✅ **03_advanced/redirects.go** - Redirect handling
 
 ### Advanced
-9. ✅ **03_advanced/concurrent_requests.go** - Parallel processing
-10. ✅ **03_advanced/domain_client.go** - State management
-11. ✅ **03_advanced/rest_api_client.go** - Production patterns
+11. ✅ **03_advanced/concurrent_requests.go** - Parallel processing
+12. ✅ **03_advanced/domain_client.go** - State management
+13. ✅ **03_advanced/rest_api_client.go** - Production patterns
+14. ✅ **03_advanced/middleware.go** - Request middleware
+15. ✅ **03_advanced/proxy_configuration.go** - Proxy setup
+16. ✅ **03_advanced/advanced_patterns.go** - Callbacks & optimization
 
 ## 🔗 Additional Resources
 
@@ -215,4 +259,3 @@ We extend our sincere thanks to the **Hoppscotch** and **Postman httpbin** teams
 ---
 
 **Happy coding! 🚀**
-

@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -372,4 +373,226 @@ func TestTransport_Headers(t *testing.T) {
 	if receivedHeaders.Get("Accept") != "application/json" {
 		t.Errorf("Expected Accept 'application/json', got '%s'", receivedHeaders.Get("Accept"))
 	}
+}
+
+// ============================================================================
+// Redirect Settings Tests
+// ============================================================================
+
+func TestRedirectSettings_AddAndGetChain(t *testing.T) {
+	t.Run("Empty chain", func(t *testing.T) {
+		s := &redirectSettings{}
+		chain := s.getChain()
+		if chain != nil {
+			t.Errorf("Expected nil chain for empty settings, got %v", chain)
+		}
+	})
+
+	t.Run("Inline chain only", func(t *testing.T) {
+		s := &redirectSettings{}
+		s.addRedirect("http://example.com/1")
+		s.addRedirect("http://example.com/2")
+		s.addRedirect("http://example.com/3")
+
+		if s.chainLen != 3 {
+			t.Errorf("Expected chain length 3, got %d", s.chainLen)
+		}
+
+		chain := s.getChain()
+		if len(chain) != 3 {
+			t.Fatalf("Expected chain length 3, got %d", len(chain))
+		}
+
+		expected := []string{"http://example.com/1", "http://example.com/2", "http://example.com/3"}
+		for i, url := range expected {
+			if chain[i] != url {
+				t.Errorf("Chain[%d] = %s, expected %s", i, chain[i], url)
+			}
+		}
+	})
+
+	t.Run("Overflow to slice", func(t *testing.T) {
+		s := &redirectSettings{}
+
+		// Add more than maxInlineRedirects (8)
+		for i := 0; i < 10; i++ {
+			s.addRedirect("http://example.com/" + string(rune('0'+i)))
+		}
+
+		if s.chainLen != 10 {
+			t.Errorf("Expected chain length 10, got %d", s.chainLen)
+		}
+
+		if s.overflowChain == nil {
+			t.Error("Expected overflowChain to be allocated")
+		}
+
+		chain := s.getChain()
+		if len(chain) != 10 {
+			t.Errorf("Expected chain length 10, got %d", len(chain))
+		}
+	})
+}
+
+func TestRedirectSettings_Pool(t *testing.T) {
+	// Get settings from pool
+	s := getRedirectSettings()
+	if s == nil {
+		t.Fatal("Expected non-nil settings")
+	}
+
+	// Add some data
+	s.addRedirect("http://example.com")
+	s.followRedirects = true
+	s.maxRedirects = 5
+
+	// Return to pool
+	putRedirectSettings(s)
+
+	// Get again - should be reset
+	s2 := getRedirectSettings()
+	if s2.chainLen != 0 {
+		t.Errorf("Expected chainLen 0, got %d", s2.chainLen)
+	}
+	if s2.followRedirects {
+		t.Error("Expected followRedirects to be false")
+	}
+	if s2.maxRedirects != 0 {
+		t.Errorf("Expected maxRedirects 0, got %d", s2.maxRedirects)
+	}
+
+	putRedirectSettings(s2)
+	putRedirectSettings(nil) // Should not panic
+}
+
+// ============================================================================
+// Redirect Validation Tests
+// ============================================================================
+
+func TestTransport_ValidateRedirectTarget(t *testing.T) {
+	// Create transport with SSRF protection enabled
+	config := &Config{
+		Timeout:         30 * time.Second,
+		AllowPrivateIPs: false, // SSRF protection enabled
+	}
+
+	connConfig := testConnectionConfig()
+	poolManager, err := connection.NewPoolManager(connConfig)
+	if err != nil {
+		t.Fatalf("Failed to create pool manager: %v", err)
+	}
+	defer func() { _ = poolManager.Close() }()
+
+	transport, err := NewTransport(config, poolManager)
+	if err != nil {
+		t.Fatalf("Failed to create transport: %v", err)
+	}
+	defer func() { _ = transport.Close() }()
+
+	t.Run("Nil URL", func(t *testing.T) {
+		err := transport.validateRedirectTarget(nil)
+		if err == nil {
+			t.Error("Expected error for nil URL")
+		}
+	})
+
+	t.Run("Empty host", func(t *testing.T) {
+		u, _ := url.Parse("http:///path")
+		err := transport.validateRedirectTarget(u)
+		if err == nil {
+			t.Error("Expected error for empty host")
+		}
+	})
+
+	t.Run("Localhost blocked", func(t *testing.T) {
+		u, _ := url.Parse("http://localhost/path")
+		err := transport.validateRedirectTarget(u)
+		if err == nil {
+			t.Error("Expected error for localhost")
+		}
+	})
+
+	t.Run("Invalid scheme", func(t *testing.T) {
+		u, _ := url.Parse("ftp://example.com/path")
+		err := transport.validateRedirectTarget(u)
+		if err == nil {
+			t.Error("Expected error for invalid scheme")
+		}
+	})
+
+	t.Run("Valid public URL", func(t *testing.T) {
+		// Note: This test may fail if DNS resolution is not available
+		// In a real test environment, you would mock the DNS lookup
+		u, _ := url.Parse("http://example.com/path")
+		// We can't fully test this without mocking DNS, so just verify it doesn't panic
+		_ = transport.validateRedirectTarget(u)
+	})
+}
+
+func TestTransport_SetRedirectPolicy(t *testing.T) {
+	config := &Config{
+		Timeout:         30 * time.Second,
+		AllowPrivateIPs: true,
+	}
+
+	connConfig := testConnectionConfig()
+	poolManager, err := connection.NewPoolManager(connConfig)
+	if err != nil {
+		t.Fatalf("Failed to create pool manager: %v", err)
+	}
+	defer func() { _ = poolManager.Close() }()
+
+	transport, err := NewTransport(config, poolManager)
+	if err != nil {
+		t.Fatalf("Failed to create transport: %v", err)
+	}
+	defer func() { _ = transport.Close() }()
+
+	ctx := context.Background()
+
+	// Set redirect policy
+	ctx = transport.SetRedirectPolicy(ctx, true, 5)
+
+	// Get redirect chain (should be empty initially)
+	chain := transport.GetRedirectChain(ctx)
+	if chain != nil {
+		t.Errorf("Expected nil chain, got %v", chain)
+	}
+
+	// Cleanup
+	transport.CleanupRedirectSettings(ctx)
+}
+
+func TestTransport_CleanupRedirectSettings(t *testing.T) {
+	config := &Config{
+		Timeout:         30 * time.Second,
+		AllowPrivateIPs: true,
+	}
+
+	connConfig := testConnectionConfig()
+	poolManager, err := connection.NewPoolManager(connConfig)
+	if err != nil {
+		t.Fatalf("Failed to create pool manager: %v", err)
+	}
+	defer func() { _ = poolManager.Close() }()
+
+	transport, err := NewTransport(config, poolManager)
+	if err != nil {
+		t.Fatalf("Failed to create transport: %v", err)
+	}
+	defer func() { _ = transport.Close() }()
+
+	t.Run("Nil context", func(t *testing.T) {
+		transport.CleanupRedirectSettings(nil) // Should not panic
+	})
+
+	t.Run("Context without settings", func(t *testing.T) {
+		ctx := context.Background()
+		transport.CleanupRedirectSettings(ctx) // Should not panic
+	})
+
+	t.Run("Context with settings", func(t *testing.T) {
+		ctx := transport.SetRedirectPolicy(context.Background(), true, 5)
+		transport.CleanupRedirectSettings(ctx) // Should not panic
+	})
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/cybergodev/httpc"
 	"github.com/cybergodev/httpc/internal/connection"
 	"github.com/cybergodev/httpc/internal/dns"
+	"github.com/cybergodev/httpc/internal/engine"
 	"github.com/cybergodev/httpc/internal/security"
 )
 
@@ -65,7 +66,7 @@ func TestConcurrentClientRequests(t *testing.T) {
 	wg.Wait()
 
 	t.Logf("Concurrent test completed: %d success, %d errors, %d server requests",
-		success, errors, requestCount)
+		atomic.LoadInt64(&success), atomic.LoadInt64(&errors), atomic.LoadInt64(&requestCount))
 }
 
 // TestConcurrentDomainClientSession tests concurrent session operations.
@@ -362,7 +363,8 @@ func TestConcurrentDefaultClient(t *testing.T) {
 	// Cleanup
 	httpc.CloseDefaultClient()
 
-	t.Logf("Default client test: %d errors, %d server requests", errors, requestCount)
+	t.Logf("Default client test: %d errors, %d server requests",
+		atomic.LoadInt64(&errors), atomic.LoadInt64(&requestCount))
 }
 
 // TestConcurrentContextCancellation tests proper handling of concurrent context cancellations.
@@ -415,7 +417,8 @@ func TestConcurrentContextCancellation(t *testing.T) {
 	wg.Wait()
 
 	t.Logf("Context cancellation test: %d cancelled, %d succeeded, %d other errors, %d server requests",
-		cancelledCount, successCount, errorCount, requestCount)
+		atomic.LoadInt64(&cancelledCount), atomic.LoadInt64(&successCount),
+		atomic.LoadInt64(&errorCount), atomic.LoadInt64(&requestCount))
 }
 
 // TestRaceConditionMetricsUpdate tests for race conditions in metrics updates.
@@ -454,7 +457,7 @@ func TestRaceConditionMetricsUpdate(t *testing.T) {
 
 	wg.Wait()
 
-	t.Logf("Race condition test completed: %d server requests", requestCount)
+	t.Logf("Race condition test completed: %d server requests", atomic.LoadInt64(&requestCount))
 }
 
 // TestConcurrentClientClose tests closing client while requests are in flight.
@@ -509,7 +512,7 @@ func TestConcurrentClientClose(t *testing.T) {
 
 	// Some request errors are expected when closing during request
 	t.Logf("Client close test: %d close errors, %d request errors, %d server requests",
-		closeErrors, requestErrors, requestCount)
+		atomic.LoadInt64(&closeErrors), atomic.LoadInt64(&requestErrors), atomic.LoadInt64(&requestCount))
 }
 
 // TestConcurrentResultPool tests concurrent Result pooling operations.
@@ -560,7 +563,7 @@ func TestConcurrentResultPool(t *testing.T) {
 
 	wg.Wait()
 
-	t.Logf("Result pool test: %d server requests", requestCount)
+	t.Logf("Result pool test: %d server requests", atomic.LoadInt64(&requestCount))
 }
 
 // TestConcurrentCookieJar tests concurrent cookie jar operations.
@@ -603,7 +606,7 @@ func TestConcurrentCookieJar(t *testing.T) {
 
 	wg.Wait()
 
-	t.Logf("Cookie jar test: %d server requests", requestCount)
+	t.Logf("Cookie jar test: %d server requests", atomic.LoadInt64(&requestCount))
 }
 
 // TestConcurrentRedirectHandling tests concurrent redirect handling.
@@ -645,7 +648,8 @@ func TestConcurrentRedirectHandling(t *testing.T) {
 
 	wg.Wait()
 
-	t.Logf("Redirect handling test: %d server requests, %d redirects", requestCount, redirectCount)
+	t.Logf("Redirect handling test: %d server requests, %d redirects",
+		atomic.LoadInt64(&requestCount), atomic.LoadInt64(&redirectCount))
 }
 
 // Helper function for deterministic pseudo-random
@@ -658,4 +662,169 @@ func hashString(s string) int {
 		h = -h
 	}
 	return h
+}
+
+// TestConcurrentMetricsRecording tests concurrent metrics recording.
+func TestConcurrentMetricsRecording(t *testing.T) {
+	metrics := &engine.Metrics{}
+	const numGoroutines = 100
+	const numRecords = 100
+
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func(success bool) {
+			defer wg.Done()
+			for j := 0; j < numRecords; j++ {
+				metrics.RecordRequest(int64(j*1000), success)
+			}
+		}(i%2 == 0)
+	}
+
+	wg.Wait()
+
+	snapshot := metrics.Snapshot()
+	expectedTotal := int64(numGoroutines * numRecords)
+	if snapshot.TotalRequests != expectedTotal {
+		t.Errorf("Expected %d total requests, got %d", expectedTotal, snapshot.TotalRequests)
+	}
+}
+
+// TestConcurrentMetricsReadAndWrite tests concurrent read and write operations on metrics.
+func TestConcurrentMetricsReadAndWrite(t *testing.T) {
+	metrics := &engine.Metrics{}
+	const duration = 100 * time.Millisecond
+
+	var stop int32
+	var wg sync.WaitGroup
+
+	// Writers
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for atomic.LoadInt32(&stop) == 0 {
+			metrics.RecordRequest(1000, true)
+		}
+	}()
+
+	// Readers
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for atomic.LoadInt32(&stop) == 0 {
+				snapshot := metrics.Snapshot()
+				_ = snapshot.TotalRequests
+				_ = metrics.GetHealthStatus()
+				_ = metrics.IsHealthy()
+			}
+		}()
+	}
+
+	time.Sleep(duration)
+	atomic.StoreInt32(&stop, 1)
+	wg.Wait()
+}
+
+// TestConcurrentMiddlewareExecution tests concurrent middleware execution.
+func TestConcurrentMiddlewareExecution(t *testing.T) {
+	var callCount int64
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	cfg := httpc.DefaultConfig()
+	cfg.AllowPrivateIPs = true
+	cfg.Middlewares = []httpc.MiddlewareFunc{
+		httpc.LoggingMiddleware(func(format string, args ...any) {
+			atomic.AddInt64(&callCount, 1)
+		}),
+		httpc.RecoveryMiddleware(),
+		httpc.HeaderMiddleware(map[string]string{
+			"X-Custom-Header": "test-value",
+		}),
+	}
+
+	client, err := httpc.New(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	defer client.Close()
+
+	const numRequests = 50
+	var wg sync.WaitGroup
+	wg.Add(numRequests)
+
+	for i := 0; i < numRequests; i++ {
+		go func() {
+			defer wg.Done()
+			_, err := client.Get(server.URL)
+			if err != nil {
+				t.Errorf("Request failed: %v", err)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if callCount != numRequests {
+		t.Errorf("Expected %d middleware calls, got %d", numRequests, callCount)
+	}
+}
+
+// TestConcurrentMixedOperations tests concurrent mixed HTTP operations.
+func TestConcurrentMixedOperations(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer server.Close()
+
+	cfg := httpc.DefaultConfig()
+	cfg.AllowPrivateIPs = true
+	client, err := httpc.New(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	defer client.Close()
+
+	const duration = 200 * time.Millisecond
+	var stop int32
+	var wg sync.WaitGroup
+
+	// GET requests
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for atomic.LoadInt32(&stop) == 0 {
+			client.Get(server.URL)
+		}
+	}()
+
+	// POST requests
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for atomic.LoadInt32(&stop) == 0 {
+			client.Post(server.URL, httpc.WithJSON(map[string]string{"key": "value"}))
+		}
+	}()
+
+	// Context requests
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for atomic.LoadInt32(&stop) == 0 {
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+			client.Request(ctx, "GET", server.URL)
+			cancel()
+		}
+	}()
+
+	time.Sleep(duration)
+	atomic.StoreInt32(&stop, 1)
+	wg.Wait()
 }

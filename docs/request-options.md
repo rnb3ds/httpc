@@ -141,7 +141,7 @@ params := map[string]interface{}{
 }
 
 resp, err := client.Get(url,
-    httpc.WithQueries(params),
+    httpc.WithQueryMap(params),
 )
 ```
 
@@ -390,12 +390,12 @@ resp, err := client.Get(url,
 | Option                           | Description          | Example                                 |
 |----------------------------------|----------------------|-----------------------------------------|
 | `WithHeader(key, value)`         | Set single header    | `WithHeader("X-API-Key", "key")`        |
-| `WithHeaders(headers)`           | Set multiple headers | `WithHeaders(map[string]string{...})`   |
+| `WithHeaderMap(headers)`         | Set multiple headers | `WithHeaderMap(map[string]string{...})` |
 | `WithUserAgent(ua)`              | Set User-Agent       | `WithUserAgent("MyApp/1.0")`            |
 | `WithBearerToken(token)`         | Bearer auth          | `WithBearerToken("jwt-token")`          |
 | `WithBasicAuth(u, p)`            | Basic auth           | `WithBasicAuth("user", "pass")`         |
 | `WithQuery(key, value)`          | Add query param      | `WithQuery("page", 1)`                  |
-| `WithQueries(params)`            | Add multiple params  | `WithQueries(map[string]any{...})`      |
+| `WithQueryMap(params)`           | Add multiple params  | `WithQueryMap(map[string]any{...})`     |
 | `WithJSON(data)`                 | JSON body            | `WithJSON(struct{...})`                 |
 | `WithXML(data)`                  | XML body             | `WithXML(struct{...})`                  |
 | `WithForm(data)`                 | Form data            | `WithForm(map[string]string{...})`      |

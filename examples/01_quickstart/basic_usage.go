@@ -89,7 +89,7 @@ func postJSON() {
 
 	// Parse JSON response
 	var result APIResponse
-	if err := resp.JSON(&result); err != nil {
+	if err := resp.Unmarshal(&result); err != nil {
 		fmt.Printf("Failed to parse JSON: %v\n", err)
 		return
 	}
@@ -123,7 +123,7 @@ func useClientInstance() {
 	}
 
 	var result APIResponse
-	if err := resp.JSON(&result); err != nil {
+	if err := resp.Unmarshal(&result); err != nil {
 		fmt.Printf("Failed to parse JSON: %v\n", err)
 		return
 	}

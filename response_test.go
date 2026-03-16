@@ -167,7 +167,7 @@ func TestResult_StatusChecks(t *testing.T) {
 // JSON Parsing
 // ----------------------------------------------------------------------------
 
-func TestResult_JSON(t *testing.T) {
+func TestResult_Unmarshal(t *testing.T) {
 	t.Parallel()
 
 	t.Run("Valid JSON", func(t *testing.T) {
@@ -190,7 +190,7 @@ func TestResult_JSON(t *testing.T) {
 		}
 
 		var data map[string]interface{}
-		if err := result.JSON(&data); err != nil {
+		if err := result.Unmarshal(&data); err != nil {
 			t.Fatalf("JSON parsing failed: %v", err)
 		}
 
@@ -215,7 +215,7 @@ func TestResult_JSON(t *testing.T) {
 		}
 
 		var data map[string]interface{}
-		err = result.JSON(&data)
+		err = result.Unmarshal(&data)
 		if err == nil {
 			t.Error("Expected JSON parsing error")
 		}
@@ -284,7 +284,7 @@ func TestResult_NilSafety(t *testing.T) {
 	}
 
 	var data map[string]interface{}
-	if err := result.JSON(&data); err == nil {
-		t.Error("Nil result JSON should return error")
+	if err := result.Unmarshal(&data); err == nil {
+		t.Error("Nil result Unmarshal should return error")
 	}
 }

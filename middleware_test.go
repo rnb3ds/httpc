@@ -608,19 +608,21 @@ func (m *mockRequest) SetMaxRedirects(v *int)          { m.maxRedirects = v }
 
 // mockResponse implements ResponseMutator for testing
 type mockResponse struct {
-	statusCode     int
-	status         string
-	proto          string
-	headers        http.Header
-	body           string
-	rawBody        []byte
-	contentLength  int64
-	duration       time.Duration
-	attempts       int
-	cookies        []*http.Cookie
-	redirectChain  []string
-	redirectCount  int
-	requestHeaders http.Header
+	statusCode      int
+	status          string
+	proto           string
+	headers         http.Header
+	body            string
+	rawBody         []byte
+	contentLength   int64
+	duration        time.Duration
+	attempts        int
+	cookies         []*http.Cookie
+	redirectChain   []string
+	redirectCount   int
+	requestHeaders  http.Header
+	requestURL      string
+	requestMethod   string
 }
 
 func (m *mockResponse) StatusCode() int             { return m.statusCode }
@@ -636,6 +638,8 @@ func (m *mockResponse) Cookies() []*http.Cookie     { return m.cookies }
 func (m *mockResponse) RedirectChain() []string     { return m.redirectChain }
 func (m *mockResponse) RedirectCount() int          { return m.redirectCount }
 func (m *mockResponse) RequestHeaders() http.Header { return m.requestHeaders }
+func (m *mockResponse) RequestURL() string          { return m.requestURL }
+func (m *mockResponse) RequestMethod() string       { return m.requestMethod }
 func (m *mockResponse) SetStatusCode(v int)         { m.statusCode = v }
 func (m *mockResponse) SetStatus(v string)          { m.status = v }
 func (m *mockResponse) SetProto(v string)           { m.proto = v }
@@ -655,3 +659,296 @@ func (m *mockResponse) SetCookies(v []*http.Cookie)     { m.cookies = v }
 func (m *mockResponse) SetRedirectChain(v []string)     { m.redirectChain = v }
 func (m *mockResponse) SetRedirectCount(v int)          { m.redirectCount = v }
 func (m *mockResponse) SetRequestHeaders(v http.Header) { m.requestHeaders = v }
+func (m *mockResponse) SetRequestURL(v string)          { m.requestURL = v }
+func (m *mockResponse) SetRequestMethod(v string)       { m.requestMethod = v }
+
+// ============================================================================
+// Audit Middleware Tests
+// ============================================================================
+
+func TestAuditMiddleware(t *testing.T) {
+	var capturedEvent AuditEvent
+	var mu sync.Mutex
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("response"))
+	}))
+	defer ts.Close()
+
+	cfg := testConfig()
+	cfg.Middlewares = []MiddlewareFunc{
+		AuditMiddleware(func(event AuditEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			capturedEvent = event
+		}),
+	}
+
+	client, err := New(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer client.Close()
+
+	_, err = client.Get(ts.URL)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if capturedEvent.Method != "GET" {
+		t.Errorf("expected method GET, got: %s", capturedEvent.Method)
+	}
+	if capturedEvent.StatusCode != http.StatusOK {
+		t.Errorf("expected status %d, got: %d", http.StatusOK, capturedEvent.StatusCode)
+	}
+	if capturedEvent.Duration <= 0 {
+		t.Error("expected positive duration")
+	}
+}
+
+func TestAuditMiddlewareWithContextValues(t *testing.T) {
+	var capturedEvent AuditEvent
+	var mu sync.Mutex
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	cfg := testConfig()
+	cfg.Middlewares = []MiddlewareFunc{
+		AuditMiddleware(func(event AuditEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			capturedEvent = event
+		}),
+	}
+
+	client, err := New(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer client.Close()
+
+	// Create context with audit values
+	ctx := context.WithValue(context.Background(), SourceIPKey, "192.168.1.100")
+	ctx = context.WithValue(ctx, UserIDKey, "user-123")
+
+	_, err = client.Request(ctx, "GET", ts.URL)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if capturedEvent.SourceIP != "192.168.1.100" {
+		t.Errorf("expected source IP '192.168.1.100', got: %s", capturedEvent.SourceIP)
+	}
+	if capturedEvent.UserID != "user-123" {
+		t.Errorf("expected user ID 'user-123', got: %s", capturedEvent.UserID)
+	}
+}
+
+func TestAuditMiddlewareWithConfig(t *testing.T) {
+	var capturedEvent AuditEvent
+	var mu sync.Mutex
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	cfg := testConfig()
+	cfg.Middlewares = []MiddlewareFunc{
+		AuditMiddlewareWithConfig(func(event AuditEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			capturedEvent = event
+		}, &AuditMiddlewareConfig{
+			Format:         "json",
+			IncludeHeaders: true,
+			SanitizeError:  true,
+		}),
+	}
+
+	client, err := New(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer client.Close()
+
+	_, err = client.Get(ts.URL)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if capturedEvent.StatusCode != http.StatusInternalServerError {
+		t.Errorf("expected status %d, got: %d", http.StatusInternalServerError, capturedEvent.StatusCode)
+	}
+}
+
+func TestAuditMiddlewareJSON(t *testing.T) {
+	var capturedEvent AuditEvent
+	var mu sync.Mutex
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	cfg := testConfig()
+	cfg.Middlewares = []MiddlewareFunc{
+		AuditMiddlewareJSON(func(event AuditEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			capturedEvent = event
+		}),
+	}
+
+	client, err := New(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer client.Close()
+
+	_, err = client.Get(ts.URL)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if capturedEvent.Method != "GET" {
+		t.Errorf("expected method GET, got: %s", capturedEvent.Method)
+	}
+}
+
+func TestAuditMiddlewareWithError(t *testing.T) {
+	var capturedEvent AuditEvent
+	var mu sync.Mutex
+
+	cfg := testConfig()
+	cfg.Middlewares = []MiddlewareFunc{
+		AuditMiddleware(func(event AuditEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			capturedEvent = event
+		}),
+	}
+
+	client, err := New(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer client.Close()
+
+	// Request to invalid URL should error
+	_, _ = client.Get("http://invalid.invalid.unreachable/test")
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if capturedEvent.Error == nil {
+		t.Error("expected error to be captured")
+	}
+}
+
+func TestDefaultAuditMiddlewareConfig(t *testing.T) {
+	config := DefaultAuditMiddlewareConfig()
+
+	if config == nil {
+		t.Fatal("expected non-nil config")
+	}
+	if config.Format != "text" {
+		t.Errorf("expected format 'text', got: %s", config.Format)
+	}
+	if config.IncludeHeaders {
+		t.Error("expected IncludeHeaders to be false")
+	}
+	if len(config.MaskHeaders) == 0 {
+		t.Error("expected MaskHeaders to have values")
+	}
+}
+
+func TestAuditEventMarshalJSON(t *testing.T) {
+	event := AuditEvent{
+		Timestamp:  time.Now(),
+		Method:     "GET",
+		URL:        "https://example.com/test",
+		StatusCode: 200,
+		Duration:   100 * time.Millisecond,
+		Attempts:   1,
+		Error:      fmt.Errorf("test error"),
+		SourceIP:   "192.168.1.1",
+		UserID:     "user-123",
+	}
+
+	data, err := event.MarshalJSON()
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	// Verify the JSON contains expected fields
+	jsonStr := string(data)
+	if !strings.Contains(jsonStr, "GET") {
+		t.Error("expected JSON to contain method")
+	}
+	if !strings.Contains(jsonStr, "durationMs") {
+		t.Error("expected JSON to contain durationMs")
+	}
+	if !strings.Contains(jsonStr, "test error") {
+		t.Error("expected JSON to contain error")
+	}
+}
+
+func TestSanitizeAuditURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "URL without credentials",
+			input:    "https://example.com/path",
+			expected: "https://example.com/path",
+		},
+		{
+			name:     "URL with username only",
+			input:    "https://user@example.com/path",
+			expected: "https://***@example.com/path",
+		},
+		{
+			name:     "URL with username and password",
+			input:    "https://user:pass@example.com/path",
+			expected: "https://***:***@example.com/path",
+		},
+		{
+			name:     "URL with query and fragment",
+			input:    "https://user:secret@example.com/path?query=value#fragment",
+			expected: "https://***:***@example.com/path?query=value#fragment",
+		},
+		{
+			name:     "Invalid URL",
+			input:    "://invalid",
+			expected: "://invalid",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := sanitizeAuditURL(tt.input)
+			if result != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, result)
+			}
+		})
+	}
+}

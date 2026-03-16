@@ -16,6 +16,9 @@ const (
 	defaultBufferSize = 4 * 1024 // 4KB - good balance for most responses
 	// maxBufferSize caps the buffer size to prevent memory bloat
 	maxBufferSize = 512 * 1024 // 512KB
+	// bufferStealThreshold is the size below which we "steal" the buffer
+	// instead of copying, reducing allocations for small responses
+	bufferStealThreshold = 16 * 1024 // 16KB
 
 	// SECURITY: maxCompressedSize limits the size of compressed response data
 	// to prevent decompression bomb (zip bomb) attacks. A highly compressed
@@ -35,37 +38,6 @@ var responsePool = sync.Pool{
 	New: func() any {
 		return &Response{}
 	},
-}
-
-// getResponse retrieves a Response object from the pool
-func getResponse() *Response {
-	resp, ok := responsePool.Get().(*Response)
-	if !ok || resp == nil {
-		return &Response{}
-	}
-	return resp
-}
-
-// putResponse returns a Response object to the pool after clearing its fields
-func putResponse(resp *Response) {
-	if resp == nil {
-		return
-	}
-	// Clear all fields to prevent memory leaks
-	resp.statusCode = 0
-	resp.status = ""
-	resp.headers = nil
-	resp.body = ""
-	resp.rawBody = nil
-	resp.contentLength = 0
-	resp.proto = ""
-	resp.duration = 0
-	resp.attempts = 0
-	resp.cookies = nil
-	resp.redirectChain = nil
-	resp.redirectCount = 0
-	resp.requestHeaders = nil
-	responsePool.Put(resp)
 }
 
 // limitReaderPool reduces allocations for limit readers
@@ -137,6 +109,15 @@ func putBuffer(buf *bytes.Buffer) {
 		bufferPool.Put(buf)
 	}
 	// Let large buffers be garbage collected to prevent memory bloat
+}
+
+// getResponse retrieves a Response object from the pool
+func getResponse() *Response {
+	resp, ok := responsePool.Get().(*Response)
+	if !ok || resp == nil {
+		return &Response{}
+	}
+	return resp
 }
 
 type ResponseProcessor struct {
@@ -237,8 +218,13 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 
 	// Use pooled buffer for reading
 	buf := getBuffer()
+	bufferStolen := false // Track if we stole the buffer to skip putBuffer
+
 	defer func() {
-		putBuffer(buf)
+		// Only return buffer to pool if we didn't steal it
+		if !bufferStolen {
+			putBuffer(buf)
+		}
 		if compressedLr != nil {
 			putLimitReader(compressedLr)
 		}
@@ -264,7 +250,18 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 		return nil, fmt.Errorf("response body exceeds limit of %d bytes", maxSize)
 	}
 
-	// Must copy the bytes since buffer is returned to pool
+	// Optimization: For small responses, "steal" the buffer directly
+	// to avoid an extra allocation and copy. Create a fresh buffer for the pool.
+	if len(body) <= bufferStealThreshold {
+		// Mark buffer as stolen so defer skips putBuffer
+		bufferStolen = true
+		// Put a fresh buffer into the pool to replace the one we're stealing
+		bufferPool.Put(bytes.NewBuffer(make([]byte, 0, defaultBufferSize)))
+		// Return the stolen buffer directly (caller takes ownership)
+		return body, nil
+	}
+
+	// For larger responses, copy to avoid holding large buffers
 	result := make([]byte, len(body))
 	copy(result, body)
 	return result, nil

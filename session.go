@@ -225,7 +225,7 @@ func (s *SessionManager) PrepareOptions() []RequestOption {
 	if headerCount > 0 {
 		headersCopy := make(map[string]string, headerCount)
 		maps.Copy(headersCopy, s.headers)
-		options = append(options, WithHeaders(headersCopy))
+		options = append(options, WithHeaderMap(headersCopy))
 	}
 
 	return options

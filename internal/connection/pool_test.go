@@ -3,6 +3,8 @@ package connection
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -635,4 +637,178 @@ func TestPoolManager_HTTP2Disabled(t *testing.T) {
 	if pm.transport.ForceAttemptHTTP2 {
 		t.Error("ForceAttemptHTTP2 should be false when HTTP/2 is disabled")
 	}
+}
+
+// ============================================================================
+// Address Validation Tests (SSRF Protection)
+// ============================================================================
+
+func TestPoolManager_ValidateAddressBeforeDial(t *testing.T) {
+	pm, err := NewPoolManager(nil)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	tests := []struct {
+		name        string
+		address     string
+		expectError bool
+	}{
+		{
+			name:        "Loopback IP",
+			address:     "127.0.0.1:8080",
+			expectError: true, // Loopback should be blocked
+		},
+		{
+			name:        "Private IP 10.x.x.x",
+			address:     "10.0.0.1:443",
+			expectError: true, // Private IP should be blocked
+		},
+		{
+			name:        "Private IP 192.168.x.x",
+			address:     "192.168.1.1:443",
+			expectError: true, // Private IP should be blocked
+		},
+		{
+			name:        "Private IP 172.16.x.x",
+			address:     "172.16.0.1:443",
+			expectError: true, // Private IP should be blocked
+		},
+		{
+			name:        "Link-local IP",
+			address:     "169.254.1.1:443",
+			expectError: true, // Link-local should be blocked
+		},
+		{
+			name:        "Public IP (simulated)",
+			address:     "8.8.8.8:443",
+			expectError: false, // Public IP should be allowed
+		},
+		{
+			name:        "IP without port",
+			address:     "127.0.0.1",
+			expectError: true, // Loopback without port should be blocked
+		},
+		{
+			name:        "IPv6 loopback",
+			address:     "[::1]:8080",
+			expectError: true, // IPv6 loopback should be blocked
+		},
+		{
+			name:        "Invalid address format",
+			address:     "not-an-ip-address",
+			expectError: true, // DNS resolution failure should block
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := pm.validateAddressBeforeDial(tt.address)
+			if tt.expectError && err == nil {
+				t.Errorf("Expected error for address %s, got nil", tt.address)
+			}
+			if !tt.expectError && err != nil {
+				t.Errorf("Did not expect error for address %s, got: %v", tt.address, err)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// Certificate Pinning Tests
+// ============================================================================
+
+func TestPoolManager_CreateVerifyPeerCertificate(t *testing.T) {
+	t.Run("WithCertPinner", func(t *testing.T) {
+		// Create a mock cert pinner
+		pinner := &mockCertPinner{}
+
+		config := &Config{
+			CertPinner: pinner,
+		}
+
+		pm, err := NewPoolManager(config)
+		if err != nil {
+			t.Fatalf("Expected no error, got: %v", err)
+		}
+		defer func() { _ = pm.Close() }()
+
+		tlsConfig := pm.transport.TLSClientConfig
+		if tlsConfig == nil {
+			t.Fatal("TLS config should not be nil")
+		}
+
+		// VerifyPeerCertificate should be set when CertPinner is configured
+		if tlsConfig.VerifyPeerCertificate == nil {
+			t.Error("VerifyPeerCertificate should be set when CertPinner is configured")
+		}
+	})
+
+	t.Run("WithoutCertPinner", func(t *testing.T) {
+		pm, err := NewPoolManager(nil)
+		if err != nil {
+			t.Fatalf("Expected no error, got: %v", err)
+		}
+		defer func() { _ = pm.Close() }()
+
+		tlsConfig := pm.transport.TLSClientConfig
+		if tlsConfig == nil {
+			t.Fatal("TLS config should not be nil")
+		}
+
+		// VerifyPeerCertificate should not be set without CertPinner
+		if tlsConfig.VerifyPeerCertificate != nil {
+			t.Error("VerifyPeerCertificate should not be set without CertPinner")
+		}
+	})
+
+	t.Run("CustomTLSWithCertPinner", func(t *testing.T) {
+		pinner := &mockCertPinner{}
+		customTLS := &tls.Config{
+			MinVersion: tls.VersionTLS13,
+		}
+
+		config := &Config{
+			TLSConfig:  customTLS,
+			CertPinner: pinner,
+		}
+
+		pm, err := NewPoolManager(config)
+		if err != nil {
+			t.Fatalf("Expected no error, got: %v", err)
+		}
+		defer func() { _ = pm.Close() }()
+
+		tlsConfig := pm.transport.TLSClientConfig
+		if tlsConfig == nil {
+			t.Fatal("TLS config should not be nil")
+		}
+
+		// Should preserve custom TLS config
+		if tlsConfig.MinVersion != tls.VersionTLS13 {
+			t.Errorf("Expected MinVersion TLS 1.3, got %d", tlsConfig.MinVersion)
+		}
+
+		// Should add cert pinning
+		if tlsConfig.VerifyPeerCertificate == nil {
+			t.Error("VerifyPeerCertificate should be set")
+		}
+	})
+}
+
+// mockCertPinner is a mock implementation of certificate pinner for testing
+type mockCertPinner struct {
+	shouldFail bool
+}
+
+func (m *mockCertPinner) Pin() string {
+	return "mock-pinner"
+}
+
+func (m *mockCertPinner) VerifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+	if m.shouldFail {
+		return fmt.Errorf("mock certificate pinning failure")
+	}
+	return nil
 }

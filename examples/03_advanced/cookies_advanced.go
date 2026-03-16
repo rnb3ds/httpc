@@ -45,10 +45,10 @@ func demonstrateRequestCookies() {
 	}
 	defer client.Close()
 
-	// Method 1: Simple name-value cookie
+	// Method 1: Simple name-value cookie using WithCookie
 	resp, err := client.Get("https://httpbin.org/cookies",
-		httpc.WithCookieValue("session_id", "abc123"),
-		httpc.WithCookieValue("user_pref", "dark_mode"),
+		httpc.WithCookie(http.Cookie{Name: "session_id", Value: "abc123"}),
+		httpc.WithCookie(http.Cookie{Name: "user_pref", Value: "dark_mode"}),
 	)
 	if err != nil {
 		log.Printf("Error: %v\n", err)
@@ -74,20 +74,16 @@ func demonstrateRequestCookies() {
 	}
 	fmt.Printf("✓ Cookie with attributes: Status %d\n", resp.StatusCode())
 
-	// Method 3: Multiple cookies at once
-	cookies := []http.Cookie{
-		{Name: "cookie1", Value: "value1"},
-		{Name: "cookie2", Value: "value2"},
-		{Name: "cookie3", Value: "value3"},
-	}
+	// Method 3: Multiple cookies using cookie string
+	cookieString := "cookie1=value1; cookie2=value2; cookie3=value3"
 	resp, err = client.Get("https://httpbin.org/cookies",
-		httpc.WithCookies(cookies),
+		httpc.WithCookieString(cookieString),
 	)
 	if err != nil {
 		log.Printf("Error: %v\n", err)
 		return
 	}
-	fmt.Printf("✓ Multiple cookies: Status %d\n\n", resp.StatusCode())
+	fmt.Printf("✓ Multiple cookies (string): Status %d\n\n", resp.StatusCode())
 }
 
 // demonstrateResponseCookies shows how to read cookies from responses
@@ -185,7 +181,7 @@ func demonstrateCookieString() {
 	// Combine with other cookie methods
 	resp, err = client.Get("https://httpbin.org/cookies",
 		httpc.WithCookieString("session=abc123; token=xyz789"),
-		httpc.WithCookieValue("manual", "cookie"),
+		httpc.WithCookie(http.Cookie{Name: "manual", Value: "cookie"}),
 	)
 	if err != nil {
 		log.Printf("Error: %v\n", err)
@@ -224,30 +220,10 @@ func demonstrateAdvancedScenarios() {
 	}
 	fmt.Printf("✓ Session management: Status %d\n", resp.StatusCode())
 
-	// Scenario 2: Multiple purpose cookies
-	cookies := []http.Cookie{
-		{
-			Name:     "auth",
-			Value:    "bearer_token",
-			Path:     "/api",
-			Secure:   true,
-			HttpOnly: true,
-		},
-		{
-			Name:   "preferences",
-			Value:  "theme_dark_lang_en",
-			Path:   "/",
-			MaxAge: 86400 * 30, // 30 days
-		},
-		{
-			Name:   "analytics",
-			Value:  "tracking_id_123",
-			Path:   "/",
-			MaxAge: 86400 * 365, // 1 year
-		},
-	}
+	// Scenario 2: Multiple purpose cookies (using cookie string)
+	cookieString := "auth=bearer_token; preferences=theme_dark_lang_en; analytics=tracking_id_123"
 	resp, err = client.Get("https://httpbin.org/cookies",
-		httpc.WithCookies(cookies),
+		httpc.WithCookieString(cookieString),
 	)
 	if err != nil {
 		log.Printf("Error: %v\n", err)
@@ -257,7 +233,7 @@ func demonstrateAdvancedScenarios() {
 
 	// Scenario 3: Cookies with authentication
 	resp, err = client.Get("https://httpbin.org/cookies",
-		httpc.WithCookieValue("session", "active"),
+		httpc.WithCookie(http.Cookie{Name: "session", Value: "active"}),
 		httpc.WithBearerToken("jwt_token_here"),
 		httpc.WithHeader("X-Request-ID", "12345"),
 	)

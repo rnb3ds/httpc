@@ -40,6 +40,14 @@ func warnTestingConfigInProduction() {
 
 // SecureConfig returns a configuration optimized for security-critical applications.
 // This config uses stricter timeouts, disables redirects, and has SSRF protection enabled.
+//
+// Key security features:
+//   - AllowPrivateIPs = false: Blocks connections to private/reserved IP addresses (SSRF protection)
+//   - FollowRedirects = false: Prevents redirect-based SSRF attacks
+//   - Stricter timeouts: Reduces window for slowloris attacks
+//   - Smaller response limits: Prevents memory exhaustion
+//
+// Use this preset when making requests to user-provided URLs or in security-sensitive contexts.
 func SecureConfig() *Config {
 	cfg := DefaultConfig()
 

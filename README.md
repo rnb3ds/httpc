@@ -1,35 +1,41 @@
-﻿# HTTPC - Production-Ready HTTP Client for Go
+# HTTPC - Production-Ready HTTP Client for Go
 
-[![Go Version](https://img.shields.io/badge/Go-1.24+-blue.svg)](https://golang.org)
-[![pkg.go.dev](https://pkg.go.dev/badge/github.com/cybergodev/httpc.svg)](https://pkg.go.dev/github.com/cybergodev/httpc)
+[![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)](https://golang.org)
+[![Go Reference](https://pkg.go.dev/badge/github.com/cybergodev/httpc.svg)](https://pkg.go.dev/github.com/cybergodev/httpc)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Security](https://img.shields.io/badge/Security-Hardened-red.svg)](SECURITY.md)
-[![Performance](https://img.shields.io/badge/performance-high%20performance-green.svg)](https://github.com/cybergodev/json)
-[![Thread Safe](https://img.shields.io/badge/thread%20safe-yes-brightgreen.svg)](https://github.com/cybergodev/json)
+[![Zero Deps](https://img.shields.io/badge/deps-zero-brightgreen.svg)](go.mod)
 
-A high-performance HTTP client library for Go with enterprise-grade security, zero external dependencies, and production-ready defaults. Built for applications that demand reliability, security, and performance.
+A high-performance HTTP client library for Go with enterprise-grade security, zero external dependencies, and production-ready defaults.
 
-**[📖 中文文档](README_zh-CN.md)** | **[📚 Full Documentation](docs)**
+**[中文文档](README_zh-CN.md)**
 
 ---
 
-## ✨ Core Features
+## Features
 
-- 🛡️ **Secure by Default** - TLS 1.2+, SSRF protection, CRLF injection prevention
-- ⚡ **High Performance** - Connection pooling, HTTP/2, goroutine-safe operations
-- 📊 **Built-in Resilience** - Smart retry with exponential backoff and jitter
-- 🎯 **Developer Friendly** - Clean API, functional options, comprehensive error handling
-- 🔧 **Zero Dependencies** - Pure Go stdlib, no external packages
-- 🚀 **Production Ready** - Battle-tested defaults, extensive test coverage
+| Feature | Description |
+|---------|-------------|
+| **Secure by Default** | TLS 1.2+, SSRF protection, CRLF injection prevention |
+| **High Performance** | Connection pooling, HTTP/2, goroutine-safe, sync.Pool optimization |
+| **Built-in Resilience** | Smart retry with exponential backoff and jitter |
+| **Developer Friendly** | Clean API, intuitive options pattern, comprehensive documentation |
+| **Zero Dependencies** | Pure Go standard library, no external packages |
+| **Production Ready** | Battle-tested defaults, extensive test coverage |
 
+---
 
-## 📦 Installation
+## Installation
 
 ```bash
 go get -u github.com/cybergodev/httpc
 ```
 
-## 🚀 Quick Start
+---
+
+## Quick Start (5 Minutes)
+
+### Simple GET Request
 
 ```go
 package main
@@ -37,282 +43,202 @@ package main
 import (
     "fmt"
     "log"
+
     "github.com/cybergodev/httpc"
 )
 
 func main() {
-    // Simple GET request
-    result, err := httpc.Get("https://api.example.com/users")
+    // Package-level function - convenient for simple requests
+    result, err := httpc.Get("https://httpbin.org/get")
     if err != nil {
         log.Fatal(err)
     }
-    fmt.Printf("Status: %d\n", result.StatusCode())
-
-    // POST with JSON and authentication
-    user := map[string]string{"name": "John", "email": "john@example.com"}
-    result, err = httpc.Post("https://api.example.com/users",
-        httpc.WithJSON(user),
-        httpc.WithBearerToken("your-token"),
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-    fmt.Printf("Created: %s\n", result.Body())
+    fmt.Printf("Status: %d, Duration: %v\n", result.StatusCode(), result.Meta.Duration)
 }
 ```
 
-> **Default Request Headers**: By default, use "httpc.DefaultConfig()", which automatically includes a `User-Agent: httpc/1.0` header with all requests. To customize default headers:
-> - **User-Agent**: Set `config.UserAgent` or use `httpc.WithUserAgent("your-custom-agent")`
-> - **Custom Headers**: Set `config.Headers` map when creating a client for client-level default headers
-> - **Per-Request**: Use `httpc.WithHeader()` or `httpc.WithHeaders()` to override for specific requests
-
-**[📖 See more examples](examples)** | **[🚀 Getting Started Guide](docs/getting-started.md)**
-
-## 📖 Core Features
-
-### HTTP Methods
-
-All standard HTTP methods with clean, intuitive API:
+### POST JSON with Authentication
 
 ```go
-// GET - Retrieve data
-result, err := httpc.Get("https://api.example.com/users",
-    httpc.WithQuery("page", 1),
-    httpc.WithBearerToken("token"),
-)
-
-// POST - Create resource
-result, err := httpc.Post("https://api.example.com/users",
+user := map[string]string{"name": "John", "email": "john@example.com"}
+result, err := httpc.Post("https://httpbin.org/post",
     httpc.WithJSON(user),
     httpc.WithBearerToken("your-token"),
-)
-
-// PUT - Full update
-result, err := httpc.Put("https://api.example.com/users/123",
-    httpc.WithJSON(updatedUser),
-)
-
-// PATCH - Partial update
-result, err := httpc.Patch("https://api.example.com/users/123",
-    httpc.WithJSON(map[string]string{"email": "new@example.com"}),
-)
-
-// DELETE - Remove resource
-result, err := httpc.Delete("https://api.example.com/users/123")
-
-// HEAD, OPTIONS, and custom methods also supported
-```
-
-### Request Options
-
-Customize requests using functional options (all options start with `With`):
-
-```go
-// Headers & Authentication
-httpc.WithHeader("x-api-key", "key")
-httpc.WithBearerToken("token")
-httpc.WithBasicAuth("user", "pass")
-
-// Query Parameters
-httpc.WithQuery("page", 1)
-httpc.WithQueries(map[string]any{"page": 1, "limit": 20})
-
-// Request Body
-httpc.WithJSON(data)              // JSON body
-httpc.WithXML(data)               // XML body
-httpc.WithForm(formData)          // Form data (URL-encoded)
-httpc.WithFormData(data)          // Multipart form data (for file uploads)
-httpc.WithBinary(data, "image/png")  // Binary data with content type
-httpc.WithFile("file", "doc.pdf", content)  // Single file upload
-
-// Cookies
-httpc.WithCookieString("session=abc123; token=xyz789")  // Parse cookie string
-httpc.WithCookie(cookie)                                // http.Cookie object
-
-// Redirects
-httpc.WithFollowRedirects(false)  // Disable automatic redirect following
-httpc.WithMaxRedirects(5)         // Limit maximum redirects (0-50)
-
-// Timeout & Retry
-httpc.WithTimeout(30*time.Second)
-httpc.WithMaxRetries(3)         // 0-10 retries allowed
-httpc.WithContext(ctx)
-
-// Combine multiple options
-result, err := httpc.Post(url,
-    httpc.WithJSON(data),
-    httpc.WithBearerToken("token"),
     httpc.WithTimeout(30*time.Second),
-    httpc.WithMaxRetries(2),
 )
-```
-
-**[📖 Complete Options Reference](docs/request-options.md)**
-
-### Response Data Access
-
-HTTPC returns a `Result` object that provides structured access to request and response information:
-
-```go
-result, err := httpc.Get("https://api.example.com/users/123")
 if err != nil {
     log.Fatal(err)
 }
-
-// Quick access methods
-statusCode := result.StatusCode()    // HTTP status code
-body := result.Body()                // Response body as string
-rawBody := result.RawBody()          // Response body as []byte
-
-// Detailed response information
-response := result.Response
-fmt.Printf("Status: %d %s\n", response.StatusCode, response.Status)
-fmt.Printf("Content-Length: %d\n", response.ContentLength)
-fmt.Printf("Headers: %v\n", response.Headers)
-fmt.Printf("Cookies: %v\n", response.Cookies)
-
-// Request information
-request := result.Request
-fmt.Printf("Request Headers: %v\n", request.Headers)
-fmt.Printf("Request Cookies: %v\n", request.Cookies)
-
-// Metadata
-meta := result.Meta
-fmt.Printf("Duration: %v\n", meta.Duration)
-fmt.Printf("Attempts: %d\n", meta.Attempts)
-fmt.Printf("Redirects: %d\n", meta.RedirectCount)
+fmt.Printf("Response: %s\n", result.Body())
 ```
 
-### Response Handling
+---
+
+## HTTP Methods
+
+```go
+// GET with query parameters
+result, _ := httpc.Get("https://api.example.com/users",
+    httpc.WithQuery("page", 1),
+    httpc.WithQueryMap(map[string]any{"limit": 20}),
+)
+
+// POST JSON body
+result, _ := httpc.Post("https://api.example.com/users",
+    httpc.WithJSON(map[string]string{"name": "John"}),
+)
+
+// PUT / PATCH / DELETE
+result, _ := httpc.Put(url, httpc.WithJSON(data))
+result, _ := httpc.Patch(url, httpc.WithJSON(partialData))
+result, _ := httpc.Delete(url)
+```
+
+---
+
+## Request Options
+
+| Category | Options |
+|----------|---------|
+| **Headers** | `WithHeader(key, value)`, `WithHeaderMap(map)`, `WithUserAgent(ua)` |
+| **Auth** | `WithBearerToken(token)`, `WithBasicAuth(user, pass)` |
+| **Query** | `WithQuery(key, value)`, `WithQueryMap(map)` |
+| **Body** | `WithJSON(data)`, `WithXML(data)`, `WithForm(map)`, `WithBinary([]byte)` |
+| **Files** | `WithFile(field, filename, content)`, `WithFormData(form)` |
+| **Cookies** | `WithCookie(cookie)`, `WithCookieString("a=1; b=2")` |
+| **Control** | `WithTimeout(dur)`, `WithMaxRetries(n)`, `WithContext(ctx)` |
+| **Redirects** | `WithFollowRedirects(bool)`, `WithMaxRedirects(n)` |
+| **Callbacks** | `WithOnRequest(fn)`, `WithOnResponse(fn)` |
+
+---
+
+## Response Handling
+
+```go
+result, _ := httpc.Get("https://api.example.com/users/123")
+
+// Quick access
+fmt.Println(result.StatusCode())     // 200
+fmt.Println(result.RawBody())        // Response body ([]byte)
+fmt.Println(result.Body())           // Response body (string)
+
+// Status checks
+if result.IsSuccess() { }            // 2xx
+if result.IsClientError() { }        // 4xx
+if result.IsServerError() { }        // 5xx
+
+// Parse JSON response
+var data map[string]interface{}
+result.Unmarshal(&data)
+
+// Metadata
+fmt.Println(result.Meta.Duration)      // Request duration
+fmt.Println(result.Meta.Attempts)      // Retry count
+fmt.Println(result.Meta.RedirectCount) // Redirect count
+```
+
+---
+
+## Context & Cancellation
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+result, err := httpc.Get("https://api.example.com",
+    httpc.WithContext(ctx),
+)
+if errors.Is(err, context.DeadlineExceeded) {
+    fmt.Println("Request timed out")
+}
+```
+
+---
+
+## File Download
+
+```go
+// Simple download
+result, _ := httpc.DownloadFile(
+    "https://example.com/file.zip",
+    "downloads/file.zip",
+)
+fmt.Printf("Downloaded: %s at %s/s\n",
+    httpc.FormatBytes(result.BytesWritten),
+    httpc.FormatSpeed(result.AverageSpeed))
+
+// Download with progress
+opts := httpc.DefaultDownloadOptions("downloads/large.zip")
+opts.ProgressCallback = func(downloaded, total int64, speed float64) {
+    pct := float64(downloaded) / float64(total) * 100
+    fmt.Printf("\r%.1f%% - %s/s", pct, httpc.FormatSpeed(speed))
+}
+result, _ := httpc.DownloadWithOptions(url, opts)
+```
+
+---
+
+## Domain Client (Session Management)
+
+For multiple requests to the same domain with automatic cookie and header management:
+
+```go
+client, _ := httpc.NewDomain("https://api.example.com")
+defer client.Close()
+
+// Login - server sets cookies
+client.Post("/login", httpc.WithJSON(credentials))
+
+// Set persistent header (used for all requests)
+client.SetHeader("Authorization", "Bearer "+token)
+
+// Subsequent requests include cookies + headers automatically
+profile, _ := client.Get("/profile")
+data, _ := client.Get("/data")
+```
+
+---
+
+## Error Handling
 
 ```go
 result, err := httpc.Get(url)
 if err != nil {
-    log.Fatal(err)
+    var clientErr *httpc.ClientError
+    if errors.As(err, &clientErr) {
+        fmt.Printf("Error: %s (code: %s)\n", clientErr.Message, clientErr.Code())
+        fmt.Printf("Retryable: %v\n", clientErr.IsRetryable())
+    }
+    return err
 }
 
-// Status checking
-if result.IsSuccess() {        // 2xx
-    fmt.Println("Success!")
+// Check response status
+if !result.IsSuccess() {
+    return fmt.Errorf("unexpected status code: %d", result.StatusCode())
 }
-
-// Parse JSON response
-var data map[string]interface{}
-if err := result.JSON(&data); err != nil {
-    log.Fatal(err)
-}
-
-// Access response data
-fmt.Printf("Status: %d\n", result.StatusCode())
-fmt.Printf("Body: %s\n", result.Body())
-fmt.Printf("Duration: %v\n", result.Meta.Duration)
-fmt.Printf("Attempts: %d\n", result.Meta.Attempts)
-
-// Work with response cookies
-cookie := result.GetCookie("session_id")
-if result.HasCookie("session_id") {
-    fmt.Println("Session cookie found")
-}
-responseCookies := result.ResponseCookies()  // Get all response cookies
-
-// Access request cookies
-requestCookies := result.RequestCookies()  // Get all request cookies
-requestCookie := result.GetRequestCookie("auth_token")
-
-// String representation of result
-fmt.Println(result.String())
-
-// Access detailed response information
-fmt.Printf("Content-Length: %d\n", result.Response.ContentLength)
-fmt.Printf("Response Headers: %v\n", result.Response.Headers)
-fmt.Printf("Request Headers: %v\n", result.Request.Headers)
-
-// Save response to file
-err = result.SaveToFile("response.html")
 ```
 
-### Automatic Response Decompression
+---
 
-HTTPC automatically detects and decompresses compressed HTTP responses:
+## Configuration
 
-```go
-// Request compressed response
-result, err := httpc.Get("https://api.example.com/data",
-    httpc.WithHeader("Accept-Encoding", "gzip, deflate"),
-)
-
-// Response is automatically decompressed
-fmt.Printf("Decompressed body: %s\n", result.Body())
-fmt.Printf("Original encoding: %s\n", result.Response.Headers.Get("Content-Encoding"))
-```
-
-**Supported Encodings:**
-- ✅ **gzip** - Fully supported (compress/gzip)
-- ✅ **deflate** - Fully supported (compress/flate)
-- ❌ **br** (Brotli) - Not supported
-- ❌ **compress** (LZW) - Not supported
-
-**Note:** Decompression is automatic when the server sends a `Content-Encoding` header. The library handles this transparently, so you always receive decompressed content.
-
-### File Download
-
-File downloads include built-in security protections:
-- **UNC path blocking** - Prevents access to Windows network paths
-- **System path protection** - Blocks writes to critical system directories
-- **Path traversal detection** - Prevents directory escape attacks
-- **Resume support** - Automatically resumes interrupted downloads
+### Preset Configurations
 
 ```go
-// Simple download
-result, err := httpc.DownloadFile(
-    "https://example.com/file.zip",
-    "downloads/file.zip",
-)
-fmt.Printf("Downloaded: %s at %s\n",
-    httpc.FormatBytes(result.BytesWritten),
-    httpc.FormatSpeed(result.AverageSpeed))
+// Production-ready defaults (recommended)
+client, _ := httpc.New(httpc.DefaultConfig())
 
-// Download with progress tracking
-opts := httpc.DefaultDownloadOptions("downloads/large-file.zip")
-opts.ProgressCallback = func(downloaded, total int64, speed float64) {
-    percentage := float64(downloaded) / float64(total) * 100
-    fmt.Printf("\rProgress: %.1f%% - %s", percentage, httpc.FormatSpeed(speed))
-}
-result, err := httpc.DownloadWithOptions(url, opts)
+// Maximum security (SSRF protection enabled)
+client, _ := httpc.New(httpc.SecureConfig())
 
-// Resume interrupted downloads
-opts.ResumeDownload = true
-result, err := httpc.DownloadWithOptions(url, opts)
+// High throughput
+client, _ := httpc.New(httpc.PerformanceConfig())
 
-// Download with authentication
-result, err := httpc.DownloadFile(url, "file.zip",
-    httpc.WithBearerToken("token"),
-    httpc.WithTimeout(5*time.Minute),
-)
-```
+// Lightweight (no retries)
+client, _ := httpc.New(httpc.MinimalConfig())
 
-**[📖 File Download Guide](docs/file-download.md)**
-
-## 🔧 Configuration
-
-### Quick Start with Presets
-
-```go
-// Default - Balanced for production (recommended)
-client, err := httpc.New(httpc.DefaultConfig())
-
-// Secure - Maximum security (strict validation, minimal retries)
-client, err := httpc.New(httpc.SecureConfig())
-
-// Performance - Optimized for high throughput
-client, err := httpc.New(httpc.PerformanceConfig())
-
-// Minimal - Lightweight for simple requests
-client, err := httpc.New(httpc.MinimalConfig())
-
-// Testing - Permissive for development (NEVER use in production)
-// WARNING: Disables TLS verification, reduces security
-client, err := httpc.New(httpc.TestingConfig())
+// Testing only - disables security features!
+client, _ := httpc.New(httpc.TestingConfig())
 ```
 
 ### Custom Configuration
@@ -328,400 +254,147 @@ config := &httpc.Config{
     UserAgent:           "MyApp/1.0",
     EnableHTTP2:         true,
 }
-client, err := httpc.New(config)
+client, _ := httpc.New(config)
 ```
 
-**[📖 Configuration Guide](docs/configuration.md)**
+### Configuration Options
 
-## Error Handling
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `Timeout` | `time.Duration` | `30s` | Overall request timeout |
+| `DialTimeout` | `time.Duration` | `10s` | TCP connection timeout |
+| `MaxIdleConns` | `int` | `50` | Max idle connections |
+| `MaxConnsPerHost` | `int` | `10` | Max connections per host |
+| `MaxRetries` | `int` | `3` | Max retry attempts |
+| `RetryDelay` | `time.Duration` | `1s` | Initial retry delay |
+| `BackoffFactor` | `float64` | `2.0` | Backoff multiplier |
+| `EnableJitter` | `bool` | `true` | Add jitter to retries |
+| `ProxyURL` | `string` | `""` | Proxy URL (http/socks5) |
+| `EnableSystemProxy` | `bool` | `false` | Auto-detect system proxy |
+| `EnableHTTP2` | `bool` | `true` | Enable HTTP/2 |
+| `EnableCookies` | `bool` | `false` | Enable cookie jar |
+| `MinTLSVersion` | `uint16` | `TLS 1.2` | Minimum TLS version |
+| `MaxResponseBodySize` | `int64` | `10MB` | Max response body size |
+| `UserAgent` | `string` | `"httpc/1.0"` | Default User-Agent |
+| `FollowRedirects` | `bool` | `true` | Follow redirects |
+| `MaxRedirects` | `int` | `10` | Max redirect count |
+| `AllowPrivateIPs` | `bool` | `true` | Allow private IPs (SSRF) |
+
+---
+
+## Middleware
+
+### Built-in Middleware
 
 ```go
-result, err := httpc.Get(url)
-if err != nil {
-    // Check for specific error types
-    var httpErr *httpc.HTTPError
-    if errors.As(err, &httpErr) {
-        fmt.Printf("HTTP %d: %s\n", httpErr.StatusCode, httpErr.Status)
+// Request logging
+httpc.LoggingMiddleware(log.Printf)
+
+// Panic recovery
+httpc.RecoveryMiddleware()
+
+// Request ID
+httpc.RequestIDMiddleware("X-Request-ID", nil)
+
+// Timeout enforcement
+httpc.TimeoutMiddleware(30*time.Second)
+
+// Metrics collection
+httpc.MetricsMiddleware(func(method, url string, statusCode int, duration time.Duration, err error) {})
+
+// Security audit
+httpc.AuditMiddleware(func(a httpc.AuditEvent) {})
+```
+
+### Chain Multiple Middleware
+
+```go
+chainedMiddleware := httpc.Chain(
+    httpc.RecoveryMiddleware(),
+    httpc.LoggingMiddleware(log.Printf),
+    httpc.RequestIDMiddleware("X-Request-ID", nil),
+)
+config.Middlewares = []httpc.MiddlewareFunc{chainedMiddleware}
+```
+
+### Custom Middleware
+
+```go
+func CustomMiddleware() httpc.MiddlewareFunc {
+    return func(next httpc.Handler) httpc.Handler {
+        return func(ctx context.Context, req httpc.RequestMutator) (httpc.ResponseMutator, error) {
+            // Before request
+            req.SetHeader("X-Custom", "value")
+
+            // Call next handler
+            resp, err := next(ctx, req)
+
+            // After response
+            return resp, err
+        }
     }
-
-    // Check for timeout
-    if strings.Contains(err.Error(), "timeout") {
-        return fmt.Errorf("request timed out")
-    }
-
-    return err
-}
-
-// Check response status
-// Note: HTTPC returns Result for all status codes (including 4xx and 5xx)
-// HTTPError is NOT automatically returned for non-2xx status codes
-if !result.IsSuccess() {
-    return fmt.Errorf("unexpected status: %d", result.StatusCode())
-}
-
-// Access detailed error information
-if result.IsClientError() {
-    fmt.Printf("Client error (4xx): %d\n", result.StatusCode())
-} else if result.IsServerError() {
-    fmt.Printf("Server error (5xx): %d\n", result.StatusCode())
 }
 ```
 
-**[📖 Error Handling Guide](docs/error-handling.md)**
+---
 
-## Advanced Features
-
-### Client Lifecycle Management
+## Proxy Configuration
 
 ```go
-// Create reusable client
-client, err := httpc.New()
-if err != nil {
-    log.Fatal(err)
-}
-defer client.Close()  // Always close to release resources
-
-// Or use package-level functions (auto-managed)
-defer httpc.CloseDefaultClient()
-result, err := httpc.Get(url)
-```
-
-### Automatic Retries
-
-```go
-// Configure at client level
-config := httpc.DefaultConfig()
-config.MaxRetries = 3
-config.BackoffFactor = 2.0
-client, err := httpc.New(config)
-
-// Or per-request
-result, err := httpc.Get(url, httpc.WithMaxRetries(5))
-```
-
-### Context Support
-
-```go
-// Timeout
-ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-defer cancel()
-result, err := client.Get(url, httpc.WithContext(ctx))
-
-// Cancellation
-ctx, cancel := context.WithCancel(context.Background())
-go func() {
-    time.Sleep(5 * time.Second)
-    cancel()
-}()
-result, err := client.Get(url, httpc.WithContext(ctx))
-```
-
-### HTTP Redirects
-
-```go
-// Automatic redirect following (default)
-result, err := httpc.Get("https://example.com/redirect")
-fmt.Printf("Followed %d redirects\n", result.Meta.RedirectCount)
-
-// Disable redirects for specific request
-result, err := httpc.Get(url, httpc.WithFollowRedirects(false))
-if result.IsRedirect() {
-    fmt.Printf("Redirect to: %s\n", result.Response.Headers.Get("Location"))
-}
-
-// Limit redirects
-result, err := httpc.Get(url, httpc.WithMaxRedirects(5))
-
-// Track redirect chain
-for i, url := range result.Meta.RedirectChain {
-    fmt.Printf("%d. %s\n", i+1, url)
-}
-```
-
-**[📖 Redirect Guide](docs/redirects.md)**
-
-### Cookie Management
-
-```go
-// Automatic cookie handling
-// Note: EnableCookies is false by default in DefaultConfig()
-config := httpc.DefaultConfig()
-config.EnableCookies = true  // Must explicitly enable for automatic cookie handling
-client, err := httpc.New(config)
-
-// Login sets cookies
-client.Post("https://example.com/login", httpc.WithForm(credentials))
-
-// Subsequent requests include cookies automatically
-client.Get("https://example.com/profile")
-
-// Manual cookie setting
-// Parse cookie string (from browser dev tools or server response)
-result, err := httpc.Get("https://api.example.com/data",
-    httpc.WithCookieString("PSID=4418ECBB1281B550; PSTM=1733760779; BS=kUwNTVFcEUBUItoc"),
-)
-
-// Set individual cookies
-result, err = httpc.Get("https://api.example.com/data",
-    httpc.WithCookie(http.Cookie{Name: "session", Value: "abc123"}),
-    httpc.WithCookie(http.Cookie{Name: "token", Value: "xyz789"}),
-)
-
-// Use http.Cookie objects for advanced settings
-cookie := &http.Cookie{
-    Name:     "secure_session",
-    Value:    "encrypted_value",
-    Secure:   true,
-    HttpOnly: true,
-    SameSite: http.SameSiteStrictMode,
-}
-result, err = httpc.Get("https://api.example.com/data", httpc.WithCookie(cookie))
-```
-
-**Note:** For automatic cookie state management across multiple requests, consider using `DomainClient` which automatically handles cookie persistence.
-
-**[📖 Cookie API Reference](docs/cookie-api-reference.md)**
-
-### Domain Client - Automatic State Management
-
-For applications that make multiple requests to the same domain, `DomainClient` provides automatic Cookie and Header management:
-
-```go
-// Create domain-specific client
-client, err := httpc.NewDomain("https://api.example.com")
-if err != nil {
-    log.Fatal(err)
-}
-defer client.Close()
-
-// Request Homepage
-resp0, err := client.Get("/")
-
-// First request - server sets cookies
-resp1, err := client.Post("/login",
-    httpc.WithJSON(credentials),
-)
-
-// Cookies from resp1 are automatically saved and sent in subsequent requests
-resp2, err := client.Get("/profile")  // Cookies automatically included
-
-// Set persistent headers (sent with all requests)
-client.SetHeader("Authorization", "Bearer "+token)
-client.SetHeader("x-api-key", "your-api-key")
-
-// Set multiple headers at once
-err = client.SetHeaders(map[string]string{
-    "Authorization": "Bearer " + token,
-    "x-api-key": "your-api-key",
-})
-
-// All subsequent requests include these headers
-resp3, err := client.Get("/data")  // Headers + Cookies automatically included
-
-// Override per-request (doesn't affect persistent state)
-resp4, err := client.Get("/special",
-    httpc.WithHeader("Accept", "application/xml"),  // Override for this request only
-)
-
-// Manual cookie management
-client.SetCookie(&http.Cookie{Name: "session", Value: "abc123"})
-client.SetCookies([]*http.Cookie{
-    {Name: "pref", Value: "dark"},
-    {Name: "lang", Value: "en"},
-})
-
-// Query state
-cookies := client.GetCookies()
-headers := client.GetHeaders()
-sessionCookie := client.GetCookie("session")
-
-// Clear state
-client.DeleteCookie("session")
-client.DeleteHeader("X-API-Key")
-client.ClearCookies()
-client.ClearHeaders()
-```
-
-**Real-World Example - Login Flow:**
-
-```go
-client, _ := httpc.NewDomain("https://api.example.com")
-defer client.Close()
-
-// Step 1: Login (server sets session cookie)
-loginResp, _ := client.Post("/auth/login",
-    httpc.WithJSON(map[string]string{
-        "username": "user@example.com",
-        "password": "secret",
-    }),
-)
-
-// Step 2: Extract token and set as persistent header
-var loginData map[string]string
-loginResp.JSON(&loginData)
-client.SetHeader("Authorization", "Bearer "+loginData["token"])
-
-// Step 3: Make API calls (cookies + auth header automatically sent)
-profileResp, _ := client.Get("/api/user/profile")
-dataResp, _ := client.Get("/api/user/data")
-settingsResp, _ := client.Put("/api/user/settings",
-    httpc.WithJSON(newSettings),
-)
-
-// All requests automatically include:
-// - Session cookies from login response
-// - Authorization header
-// - Any other persistent headers/cookies
-```
-
-**File Downloads with DomainClient:**
-
-```go
-client, _ := httpc.NewDomain("https://api.example.com")
-defer client.Close()
-
-// Set authentication header (used for all requests including downloads)
-client.SetHeader("Authorization", "Bearer "+token)
-
-// Simple download with automatic state management
-result, err := client.DownloadFile("/files/report.pdf", "downloads/report.pdf")
-if err != nil {
-    log.Fatal(err)
-}
-fmt.Printf("Downloaded: %s at %s/s\n",
-    httpc.FormatBytes(result.BytesWritten),
-    httpc.FormatSpeed(result.AverageSpeed))
-
-// Download with progress tracking
-opts := httpc.DefaultDownloadOptions("downloads/large-file.zip")
-opts.ProgressCallback = func(downloaded, total int64, speed float64) {
-    percentage := float64(downloaded) / float64(total) * 100
-    fmt.Printf("\rProgress: %.1f%% - %s", percentage, httpc.FormatSpeed(speed))
-}
-result, err = client.DownloadWithOptions("/files/large-file.zip", opts)
-```
-
-**Key Features:**
-- **Automatic Cookie Persistence** - Cookies from responses are saved and sent in subsequent requests
-- **Automatic Header Persistence** - Set headers once, used in all requests
-- **File Download Support** - Download files with automatic state management (cookies/headers)
-- **Per-Request Overrides** - Use `WithCookie()` and `WithHeaders()` to override for specific requests
-- **Thread-Safe** - All operations are goroutine-safe
-- **Manual Control** - Full API for inspecting and modifying state
-- **Automatic Cookie Enabling** - `NewDomain()` automatically enables cookies regardless of config
-
-**[📖 See full example](examples/03_advanced/domain_client.go)**
-
-### Proxy Configuration
-
-HTTPC supports flexible proxy configuration with three modes:
-
-#### Proxy Priority
-
-```
-Priority 1: ProxyURL (manual proxy)        - Highest priority
-Priority 2: EnableSystemProxy (auto-detect system proxy)
-Priority 3: Direct connection (no proxy)   - Default
-```
-
-#### 1. Manual Proxy (Highest Priority)
-
-Specify a proxy URL directly. This takes priority over all other proxy settings.
-
-```go
-// Direct proxy specification
+// Manual proxy
 config := &httpc.Config{
-    ProxyURL: "http://127.0.0.1:1234",
-    Timeout:  30 * time.Second,
+    ProxyURL: "http://127.0.0.1:8080",
+    // Or SOCKS5: "socks5://127.0.0.1:1080"
 }
-client, err := httpc.New(config)
 
-// SOCKS5 proxy
+// System proxy auto-detection (Windows/macOS/Linux)
 config := &httpc.Config{
-    ProxyURL: "socks5://127.0.0.1:1080",
+    EnableSystemProxy: true,  // Reads from environment and system settings
 }
-client, err := httpc.New(config)
-
-// Corporate proxy with authentication
-config := &httpc.Config{
-    ProxyURL: "http://user:pass@proxy.company.com:8080",
-}
-client, err := httpc.New(config)
 ```
 
-#### 2. System Proxy Detection
+---
 
-Enable automatic detection of system proxy settings. This includes:
+## Security Features
 
-- **Windows**: Reads from Registry
-- **macOS**: Reads from System Preferences
-_- **Linux**: Reads from system settings
-- **All Platforms**: Falls back to environment variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`)
+| Feature | Description |
+|---------|-------------|
+| **TLS 1.2+** | Modern encryption standards by default |
+| **SSRF Protection** | DNS validation blocks private IPs |
+| **CRLF Injection Prevention** | Header and URL validation |
+| **Path Traversal Protection** | Safe file operations |
+| **Domain Whitelist** | Restrict redirects to allowed domains |
+| **Response Size Limit** | Configurable limit to prevent memory exhaustion |
+
+### Redirect Domain Whitelist
 
 ```go
-// Enable system proxy detection
 config := &httpc.Config{
-    EnableSystemProxy: true,
-}
-client, err := httpc.New(config)
-// Will automatically use system proxy if configured
-```
-
-**Environment Variables:**
-
-```bash
-# Set proxy via environment variables
-export HTTP_PROXY=http://127.0.0.1:1234
-export HTTPS_PROXY=http://127.0.0.1:1234
-export NO_PROXY=localhost,127.0.0.1,.local.com
-
-# Then enable system proxy detection in code
-config := &httpc.Config{
-    EnableSystemProxy: true,
+    RedirectWhitelist: []string{"api.example.com", "secure.example.com"},
 }
 ```
 
-#### 3. Direct Connection (Default)
+### SSRF Protection
 
-When `ProxyURL` is empty and `EnableSystemProxy` is `false`, connections are made directly without any proxy.
+By default, `AllowPrivateIPs` is `true` for compatibility. Enable SSRF protection when making requests to user-provided URLs:
 
 ```go
-// Default behavior - direct connection
-client, err := httpc.New()
+// Enable SSRF protection
+cfg := httpc.DefaultConfig()
+cfg.AllowPrivateIPs = false
+client, _ := httpc.New(cfg)
 
-// Explicit direct connection
-config := &httpc.Config{
-    // ProxyURL is empty (default)
-    // EnableSystemProxy is false (default)
-}
-client, err := httpc.New(config)
+// Or use the secure preset
+client, _ := httpc.New(httpc.SecureConfig())
 ```
 
-**[📖 See full example](examples/03_advanced/proxy_configuration.go)**
+---
 
-## Security & Performance
+## Concurrency Safety
 
-### Security Features
-- **TLS 1.2+ by default** - Modern encryption standards
-- **SSRF Protection** - Pre-DNS and post-DNS validation blocks private IPs
-- **CRLF Injection Prevention** - Header and URL validation
-- **Input Validation** - Comprehensive validation of all user inputs
-- **Path Traversal Protection** - Safe file operations
-- **Configurable Limits** - Response size, timeout, connection limits
-
-### Performance Optimizations
-- **Connection Pooling** - Efficient connection reuse with per-host limits
-- **HTTP/2 Support** - Multiplexing for better performance
-- **Goroutine-Safe** - All operations thread-safe with atomic operations
-- **Smart Retry** - Exponential backoff with jitter reduces server load
-- **Memory Efficient** - Configurable limits prevent memory exhaustion
-
-### Concurrency Safety
-
-HTTPC is designed for concurrent use from the ground up:
+HTTPC is designed to be goroutine-safe:
 
 ```go
-// ✅ Safe: Share a single client across goroutines
 client, _ := httpc.New()
 defer client.Close()
 
@@ -737,47 +410,48 @@ for i := 0; i < 100; i++ {
 wg.Wait()
 ```
 
+### Performance Optimization
+
+```go
+// Release Result back to pool after use (reduces GC pressure)
+result, _ := httpc.Get(url)
+defer httpc.ReleaseResult(result)
+```
+
 **Thread Safety Guarantees:**
-- ✅ All `Client` methods are safe for concurrent use
-- ✅ Package-level functions (`Get`, `Post`, etc.) use a shared default client safely
-- ✅ Response objects can be read from multiple goroutines after return
-- ✅ Internal metrics and connection pools use atomic operations
-- ✅ Config is deep-copied on client creation to prevent modification issues
-
-**Best Practices:**
-- Create one client and reuse it across your application
-- Don't modify `Config` after passing it to `New()`
-- Response objects are safe to read but shouldn't be modified concurrently
-
-**Testing:** Run `make test-race` to verify race-free operation in your code.
-
-**[📖 Security Guide](SECURITY.md)**
-
-## Documentation
-
-### Guides
-- **[Getting Started](docs/getting-started.md)** - Installation and first steps
-- **[Configuration](docs/configuration.md)** - Client configuration and presets
-- **[Request Options](docs/request-options.md)** - Complete options reference
-- **[Error Handling](docs/error-handling.md)** - Error handling patterns
-- **[File Download](docs/file-download.md)** - File downloads with progress
-- **[HTTP Redirects](docs/redirects.md)** - Redirect handling and tracking
-- **[Request Inspection](docs/request-inspection.md)** - Inspect request details
-- **[Security](SECURITY.md)** - Security features and best practices
-
-### Examples
-- **[Quick Start](examples/01_quickstart)** - Basic usage
-- **[Core Features](examples/02_core_features)** - Headers, auth, body formats
-- **[Advanced](examples/03_advanced)** - File uploads, downloads, retries
-
-## 🤝 Contributing
-
-Contributions, issue reports, and suggestions are welcome!
-
-## 📄 License
-
-MIT License - See [LICENSE](LICENSE) file for details.
+- All `Client` methods are safe for concurrent use
+- Package-level functions safely use a shared default client
+- Response objects can be safely read from multiple goroutines
+- Internal metrics use atomic operations
 
 ---
 
-**Crafted with care for the Go community** ❤️ | If this project helps you, please give it a ⭐️ Star!
+## Documentation
+
+| Resource | Description |
+|----------|-------------|
+| [Getting Started](docs/getting-started.md) | Installation and first steps |
+| [Configuration](docs/configuration.md) | Client configuration and presets |
+| [Request Options](docs/request-options.md) | Complete options reference |
+| [Error Handling](docs/error-handling.md) | Error handling patterns |
+| [File Download](docs/file-download.md) | File download with progress |
+| [HTTP Redirects](docs/redirects.md) | Redirect handling and tracking |
+| [Security](SECURITY.md) | Security features and best practices |
+
+### Example Code
+
+| Directory | Description |
+|-----------|-------------|
+| [01_quickstart](examples/01_quickstart) | Basic usage |
+| [02_core_features](examples/02_core_features) | Headers, auth, body formats |
+| [03_advanced](examples/03_advanced) | File upload, download, retry, middleware |
+
+---
+
+## License
+
+MIT License - see [LICENSE](LICENSE) file for details.
+
+---
+
+If this project helps you, please give it a Star! ⭐

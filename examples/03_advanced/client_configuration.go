@@ -166,49 +166,49 @@ func demonstrateConfigComparison() {
 	// Scenario 1: Quick API calls
 	fmt.Println("Scenario 1: Quick API Calls (< 5s)")
 	quickConfig := httpc.DefaultConfig()
-	quickConfig.Timeouts.Request = 2 * time.Second
-	quickConfig.Retry.MaxRetries = 0
+	quickConfig.Timeout = 2 * time.Second
+	quickConfig.MaxRetries = 0
 	fmt.Println("  Timeout: 2s, Retries: 0")
 	fmt.Println("  Use case: Health checks, fast endpoints\n ")
 
 	// Scenario 2: Standard API calls
 	fmt.Println("Scenario 2: Standard API Calls (5-15s)")
 	standardConfig := httpc.DefaultConfig()
-	standardConfig.Timeouts.Request = 10 * time.Second
-	standardConfig.Retry.MaxRetries = 2
+	standardConfig.Timeout = 10 * time.Second
+	standardConfig.MaxRetries = 2
 	fmt.Println("  Timeout: 10s, Retries: 2")
 	fmt.Println("  Use case: Most REST API calls\n ")
 
 	// Scenario 3: Long operations
 	fmt.Println("Scenario 3: Long Operations (15-60s)")
 	longConfig := httpc.DefaultConfig()
-	longConfig.Timeouts.Request = 30 * time.Second
-	longConfig.Retry.MaxRetries = 3
+	longConfig.Timeout = 30 * time.Second
+	longConfig.MaxRetries = 3
 	fmt.Println("  Timeout: 30s, Retries: 3")
 	fmt.Println("  Use case: File uploads, complex queries\n ")
 
 	// Scenario 4: Background jobs
 	fmt.Println("Scenario 4: Background Jobs (> 60s)")
 	backgroundConfig := httpc.DefaultConfig()
-	backgroundConfig.Timeouts.Request = 120 * time.Second
-	backgroundConfig.Retry.MaxRetries = 5
+	backgroundConfig.Timeout = 120 * time.Second
+	backgroundConfig.MaxRetries = 5
 	fmt.Println("  Timeout: 120s, Retries: 5")
 	fmt.Println("  Use case: Batch processing, webhooks\n ")
 
 	// Scenario 5: High security
 	fmt.Println("Scenario 5: High Security")
 	secureConfig := httpc.SecureConfig()
-	secureConfig.Security.MinTLSVersion = tls.VersionTLS13
-	secureConfig.Security.AllowPrivateIPs = false
-	secureConfig.Security.StrictContentLength = true
+	secureConfig.MinTLSVersion = tls.VersionTLS13
+	secureConfig.AllowPrivateIPs = false
+	secureConfig.StrictContentLength = true
 	fmt.Println("  TLS 1.3+, SSRF protection, strict validation")
 	fmt.Println("  Use case: Financial, healthcare, sensitive data\n ")
 
 	// Scenario 6: High throughput
 	fmt.Println("Scenario 6: High Throughput")
 	perfConfig := httpc.PerformanceConfig()
-	perfConfig.Connections.MaxIdleConns = 500
-	perfConfig.Connections.MaxConnsPerHost = 100
+	perfConfig.MaxIdleConns = 500
+	perfConfig.MaxConnsPerHost = 100
 	fmt.Println("  High connection limits, optimized pooling")
 	fmt.Println("  Use case: Web scraping, bulk operations\n ")
 
@@ -216,7 +216,7 @@ func demonstrateConfigComparison() {
 	fmt.Println("Scenario 7: Special Network Environments")
 	fmt.Println("For networks using reserved IP ranges (e.g., 198.18.0.0/15):")
 	specialConfig := httpc.SecureConfig()
-	specialConfig.Security.AllowPrivateIPs = true // Enable for private/reserved networks
+	specialConfig.AllowPrivateIPs = true // Enable for private/reserved networks
 	fmt.Println("  Start with SecureConfig()")
 	fmt.Println("  Set AllowPrivateIPs: true")
 	fmt.Println("  Use case: Corporate intranets, testing environments, VPN networks\n ")

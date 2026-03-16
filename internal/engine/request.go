@@ -14,9 +14,160 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/cybergodev/httpc/internal/types"
 )
+
+// stringsReaderPool reduces allocations for strings.Reader used in request bodies
+var stringsReaderPool = sync.Pool{
+	New: func() any { return &strings.Reader{} },
+}
+
+// bytesReaderPool reduces allocations for bytes.Reader used in request bodies
+var bytesReaderPool = sync.Pool{
+	New: func() any { return &bytes.Reader{} },
+}
+
+// pooledStringsReader wraps a strings.Reader and returns it to the pool on EOF
+type pooledStringsReader struct {
+	reader *strings.Reader
+}
+
+func (r *pooledStringsReader) Read(p []byte) (n int, err error) {
+	// SAFETY: Check for nil reader to prevent panic after EOF
+	// io.Reader contract allows multiple reads after EOF
+	if r.reader == nil {
+		return 0, io.EOF
+	}
+	n, err = r.reader.Read(p)
+	if err == io.EOF {
+		// Reset and return to pool when fully read
+		r.reader.Reset("")
+		stringsReaderPool.Put(r.reader)
+		r.reader = nil
+	}
+	return n, err
+}
+
+// pooledBytesReader wraps a bytes.Reader and returns it to the pool on EOF
+type pooledBytesReader struct {
+	reader *bytes.Reader
+}
+
+func (r *pooledBytesReader) Read(p []byte) (n int, err error) {
+	// SAFETY: Check for nil reader to prevent panic after EOF
+	// io.Reader contract allows multiple reads after EOF
+	if r.reader == nil {
+		return 0, io.EOF
+	}
+	n, err = r.reader.Read(p)
+	if err == io.EOF {
+		// Reset and return to pool when fully read
+		r.reader.Reset(nil)
+		bytesReaderPool.Put(r.reader)
+		r.reader = nil
+	}
+	return n, err
+}
+
+// getPooledStringsReader gets a strings.Reader from the pool and wraps it
+func getPooledStringsReader(s string) io.Reader {
+	reader, ok := stringsReaderPool.Get().(*strings.Reader)
+	if !ok || reader == nil {
+		reader = &strings.Reader{}
+	}
+	reader.Reset(s)
+	return &pooledStringsReader{reader: reader}
+}
+
+// getPooledBytesReader gets a bytes.Reader from the pool and wraps it
+func getPooledBytesReader(b []byte) io.Reader {
+	reader, ok := bytesReaderPool.Get().(*bytes.Reader)
+	if !ok || reader == nil {
+		reader = &bytes.Reader{}
+	}
+	reader.Reset(b)
+	return &pooledBytesReader{reader: reader}
+}
+
+// urlCache provides a thread-safe LRU-like cache for parsed URLs
+// to avoid expensive url.Parse() calls for repeated URLs
+type urlCache struct {
+	mu      sync.RWMutex
+	entries map[string]*url.URL
+	keys    []string // Track insertion order for LRU eviction
+	maxSize int
+}
+
+// globalURLCache is the shared URL cache for all requests
+var globalURLCache = &urlCache{
+	entries: make(map[string]*url.URL, 256),
+	keys:    make([]string, 0, 256),
+	maxSize: 1024,
+}
+
+// Get retrieves a parsed URL from cache or parses and caches it
+func (c *urlCache) Get(rawURL string) (*url.URL, error) {
+	// Fast path: read lock for cache hit
+	c.mu.RLock()
+	if parsed, ok := c.entries[rawURL]; ok {
+		c.mu.RUnlock()
+		return parsed, nil
+	}
+	c.mu.RUnlock()
+
+	// Slow path: parse and cache
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Double-check after acquiring write lock
+	if parsed, ok := c.entries[rawURL]; ok {
+		return parsed, nil
+	}
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, err
+	}
+
+	// Evict oldest entry if cache is full
+	if len(c.entries) >= c.maxSize {
+		// Remove oldest key (simple FIFO eviction)
+		oldestKey := c.keys[0]
+		delete(c.entries, oldestKey)
+		c.keys = c.keys[1:]
+	}
+
+	// Clone the URL to ensure cached entries are immutable
+	// This prevents modifications from affecting cached values
+	cloned := cloneURL(parsed)
+	c.entries[rawURL] = cloned
+	c.keys = append(c.keys, rawURL)
+
+	return cloned, nil
+}
+
+// cloneURL creates a deep copy of a URL to ensure cached entries remain immutable
+func cloneURL(u *url.URL) *url.URL {
+	if u == nil {
+		return nil
+	}
+	cloned := &url.URL{
+		Scheme:      u.Scheme,
+		Opaque:      u.Opaque,
+		User:        u.User,
+		Host:        u.Host,
+		Path:        u.Path,
+		RawPath:     u.RawPath,
+		OmitHost:    u.OmitHost,
+		ForceQuery:  u.ForceQuery,
+		RawQuery:    u.RawQuery,
+		Fragment:    u.Fragment,
+		RawFragment: u.RawFragment,
+	}
+	return cloned
+}
 
 // FormData and FileData are now defined in internal/types package.
 // Use types.FormData and types.FileData for type checking.
@@ -40,12 +191,16 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 		req.SetContext(context.Background())
 	}
 
-	parsedURL, err := url.Parse(req.URL())
+	// Use cached URL parsing to avoid expensive url.Parse() calls
+	parsedURL, err := globalURLCache.Get(req.URL())
 	if err != nil {
 		return nil, fmt.Errorf("invalid URL: %w", err)
 	}
 
 	if len(req.QueryParams()) > 0 {
+		// Clone the cached URL before modifying it with query params
+		// This ensures the cached version remains immutable
+		parsedURL = cloneURL(parsedURL)
 		query := parsedURL.Query()
 		for key, value := range req.QueryParams() {
 			query.Add(key, formatQueryParam(value))
@@ -59,10 +214,10 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 	if req.Body() != nil {
 		switch v := req.Body().(type) {
 		case string:
-			body = strings.NewReader(v)
+			body = getPooledStringsReader(v)
 			contentType = "text/plain"
 		case []byte:
-			body = bytes.NewReader(v)
+			body = getPooledBytesReader(v)
 			contentType = "application/octet-stream"
 		case io.Reader:
 			body = v
@@ -77,7 +232,7 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 				if err != nil {
 					return nil, fmt.Errorf("marshal XML failed: %w", err)
 				}
-				body = bytes.NewReader(xmlData)
+				body = getPooledBytesReader(xmlData)
 				contentType = "application/xml"
 			} else if isFormData(v) {
 				var buf bytes.Buffer
@@ -152,7 +307,7 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 				if err != nil {
 					return nil, fmt.Errorf("marshal JSON failed: %w", err)
 				}
-				body = bytes.NewReader(jsonData)
+				body = getPooledBytesReader(jsonData)
 				contentType = "application/json"
 			}
 		}

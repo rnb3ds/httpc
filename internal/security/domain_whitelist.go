@@ -170,9 +170,7 @@ func (w *DomainWhitelist) Domains() (exact []string, wildcards []string) {
 
 	// Copy wildcards
 	wildcards = make([]string, len(w.wildcards))
-	for i, v := range w.wildcards {
-		wildcards[i] = v
-	}
+	copy(wildcards, w.wildcards)
 
 	return exact, wildcards
 }

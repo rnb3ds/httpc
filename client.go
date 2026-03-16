@@ -5,7 +5,7 @@ package httpc
 //
 // # Key Features
 //
-//   - Secure by default with TLS 1.2+, SSRF protection, CRLF injection prevention
+//   - Secure by default with TLS 1.2+, CRLF injection prevention, header validation
 //   - High performance with connection pooling, HTTP/2, and goroutine-safe operations
 //   - Built-in resilience with smart retry and exponential backoff
 //   - Clean API with simplified request options
@@ -40,13 +40,27 @@ package httpc
 //	client, err := httpc.New(httpc.PerformanceConfig()) // High-throughput
 //	client, err := httpc.New(httpc.TestingConfig())     // Testing only!
 //
+// # SSRF Protection
+//
+// By default, AllowPrivateIPs is true for maximum compatibility with VPNs, proxies,
+// and corporate networks. If your application makes requests to user-provided URLs,
+// enable SSRF protection to block connections to private/reserved IP addresses:
+//
+//	// Enable SSRF protection
+//	cfg := httpc.DefaultConfig()
+//	cfg.AllowPrivateIPs = false
+//	client, err := httpc.New(cfg)
+//
+//	// Or use the secure preset (has SSRF protection enabled)
+//	client, err := httpc.New(httpc.SecureConfig())
+//
 // # Request Options
 //
 // Core options (18 functions):
 //
 //	// Headers
 //	httpc.WithHeader("Authorization", "Bearer token")
-//	httpc.WithHeaders(map[string]string{"X-Custom": "value"})
+//	httpc.WithHeaderMap(map[string]string{"X-Custom": "value"})
 //	httpc.WithUserAgent("my-app/1.0")
 //
 //	// Body
@@ -60,7 +74,7 @@ package httpc
 //
 //	// Query parameters
 //	httpc.WithQuery("page", 1)
-//	httpc.WithQueries(map[string]any{"page": 1, "limit": 10})
+//	httpc.WithQueryMap(map[string]any{"page": 1, "limit": 10})
 //
 //	// Authentication
 //	httpc.WithBearerToken(token)
@@ -668,6 +682,8 @@ func ReleaseResult(r *Result) {
 	}
 	// Clear all fields to prevent data leakage and ensure clean state for reuse
 	// Request fields
+	r.Request.URL = ""
+	r.Request.Method = ""
 	r.Request.Headers = nil
 	r.Request.Cookies = nil
 
@@ -699,6 +715,8 @@ func convertResponseToResult(resp ResponseMutator) *Result {
 
 	// Use pooled Result object
 	result := getResult()
+	result.Request.URL = resp.RequestURL()
+	result.Request.Method = resp.RequestMethod()
 	result.Request.Headers = resp.RequestHeaders()
 	result.Request.Cookies = requestCookies
 	result.Response.StatusCode = resp.StatusCode()

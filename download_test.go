@@ -382,3 +382,119 @@ func TestResult_SaveToFile(t *testing.T) {
 		t.Errorf("Content mismatch: expected %s, got %s", string(content), string(savedContent))
 	}
 }
+
+// ----------------------------------------------------------------------------
+// Package-Level Download Functions
+// ----------------------------------------------------------------------------
+
+func TestDownload_PackageLevel(t *testing.T) {
+	t.Run("DownloadFile", func(t *testing.T) {
+		content := []byte("package level download test")
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(content)
+		}))
+		defer server.Close()
+
+		// Setup default client
+		config := TestingConfig()
+		client, _ := New(config)
+		_ = SetDefaultClient(client)
+		defer CloseDefaultClient()
+
+		tempDir := t.TempDir()
+		filePath := filepath.Join(tempDir, "pkg-level-test.txt")
+
+		result, err := DownloadFile(server.URL, filePath)
+		if err != nil {
+			t.Fatalf("DownloadFile failed: %v", err)
+		}
+
+		if result.BytesWritten != int64(len(content)) {
+			t.Errorf("Expected %d bytes, got %d", len(content), result.BytesWritten)
+		}
+	})
+
+	t.Run("DownloadWithOptions", func(t *testing.T) {
+		content := []byte("download with options test")
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(content)
+		}))
+		defer server.Close()
+
+		// Setup default client
+		config := TestingConfig()
+		client, _ := New(config)
+		_ = SetDefaultClient(client)
+		defer CloseDefaultClient()
+
+		tempDir := t.TempDir()
+		filePath := filepath.Join(tempDir, "opts-test.txt")
+
+		progressCalled := false
+		opts := &DownloadOptions{
+			FilePath: filePath,
+			ProgressCallback: func(downloaded, total int64, speed float64) {
+				progressCalled = true
+			},
+		}
+
+		result, err := DownloadWithOptions(server.URL, opts)
+		if err != nil {
+			t.Fatalf("DownloadWithOptions failed: %v", err)
+		}
+
+		if result.BytesWritten != int64(len(content)) {
+			t.Errorf("Expected %d bytes, got %d", len(content), result.BytesWritten)
+		}
+		if !progressCalled {
+			t.Error("Progress callback was not called")
+		}
+	})
+}
+
+// ----------------------------------------------------------------------------
+// Edge Cases
+// ----------------------------------------------------------------------------
+
+func TestDownload_EdgeCases(t *testing.T) {
+	t.Run("EmptyFilePath", func(t *testing.T) {
+		config := DefaultConfig()
+		config.AllowPrivateIPs = true
+		client, _ := New(config)
+		defer client.Close()
+
+		_, err := client.DownloadFile("http://example.com/file.txt", "")
+		if err == nil {
+			t.Error("Expected error for empty file path")
+		}
+	})
+
+	t.Run("NilOptions", func(t *testing.T) {
+		config := DefaultConfig()
+		config.AllowPrivateIPs = true
+		client, _ := New(config)
+		defer client.Close()
+
+		_, err := client.DownloadWithOptions("http://example.com/file.txt", nil)
+		if err == nil {
+			t.Error("Expected error for nil options")
+		}
+	})
+
+	t.Run("DefaultDownloadOptions", func(t *testing.T) {
+		filePath := "/tmp/test.txt"
+		opts := DefaultDownloadOptions(filePath)
+
+		if opts.FilePath != filePath {
+			t.Errorf("Expected FilePath=%s, got %s", filePath, opts.FilePath)
+		}
+		if opts.Overwrite {
+			t.Error("Expected Overwrite=false by default")
+		}
+		if opts.ResumeDownload {
+			t.Error("Expected ResumeDownload=false by default")
+		}
+	})
+}
