@@ -2,263 +2,37 @@
 
 All notable changes to the cybergodev/httpc library will be documented in this file.
 
-[//]: # (The format is based on [Keep a Changelog]&#40;https://keepachangelog.com/en/1.0.0/&#41;,)
-[//]: # (and this project adheres to [Semantic Versioning]&#40;https://semver.org/spec/v2.0.0.html&#41;.)
-
 ---
 
-## v1.4.5 - Examples Optimization (2026-03-17)
-
-### Changed
-
-- **proxy_configuration.go**: Enhanced with actual request demonstrations
-  - Added direct connection example with real request
-  - Added system proxy detection with real request
-  - Added manual proxy example with error handling
-  - Added proxy priority demonstration
-  - Added comprehensive summary tables and use cases
-
-- **README.md**: Updated examples documentation
-  - Added proxy_configuration.go entry
-  - Added http_methods.go to learning path
-  - Fixed "Run all examples" section (each file must be run individually)
-  - Updated learning path numbering
-
-### Verified
-
-- All 17 example files compile successfully with `go build -tags examples`
-
----
-
-## v1.4.4 - Request URL and Method Access (2026-03-17)
+## v1.3.8 - Security Hardening & Performance Optimization (2026-03-17)
 
 ### Added
-
-- **RequestInfo fields**:
-  - `URL` - The actual request URL with query parameters
-  - `Method` - The HTTP method used (GET, POST, etc.)
-
-### Changed
-
-- **ResponseMutator interface**:
-  - Added `RequestURL() string` method
-  - Added `RequestMethod() string` method
-  - Added `SetRequestURL(string)` method
-  - Added `SetRequestMethod(string)` method
-
-### Example
-
-```go
-result, _ := httpc.Get("https://api.example.com/data",
-    httpc.WithQuery("page", 1),
-    httpc.WithQuery("limit", 20),
-)
-
-// Access the actual request URL (with query params)
-fmt.Println(result.Request.URL)    // https://api.example.com/data?limit=20&page=1
-fmt.Println(result.Request.Method) // GET
-```
-
----
-
-## v1.4.3 - Documentation Optimization (2026-03-17)
-
-### Added
-
-- **Complete README.md** (English):
-  - Created comprehensive English documentation from scratch
-  - Added all features: Quick Start, HTTP Methods, Request Options, Response Handling
-  - Added sections: Context, File Download, Domain Client, Error Handling
-  - Added Configuration Presets and Options table
-  - Added Middleware examples with custom middleware pattern
-  - Added Proxy Configuration, Security Features, Concurrency Safety
-  - Added Documentation links and Example Code references
+- **Cookie Security Validation**: New `CookieSecurityConfig` for enforcing Secure, HttpOnly, SameSite attributes
+- **Certificate Pinning**: SPKI and public key pinning support for TLS connections
+- **Redirect Domain Whitelist**: `DomainWhitelist` for controlling allowed redirect targets
+- **Audit Middleware JSON**: Structured JSON output for security audit logging
+- **`WithCookieMap()`**: Batch set multiple cookies from a map
+- **`WithSecureCookie()`**: Request option for cookie security validation
+- **Memory Management APIs**: `ClearURLCache()`, `ClearAllPools()`, `GetCacheStats()` for long-running applications
+- **DoHResolver.Close()**: Proper resource cleanup for DNS-over-HTTPS resolver
 
 ### Changed
-
-- **README_zh-CN.md** (Chinese):
-  - Improved formatting and consistency
-  - Added feature tables for better readability
-  - Fixed middleware chaining example (Chain returns MiddlewareFunc, not slice)
-  - Enhanced all sections to match English version structure
+- **Performance**: ~34% memory reduction in response handling, ~45% faster deflate decompression
+- **Concurrency**: DoHResolver cacheTTL now uses `atomic.Int64` for thread-safe access
+- **Documentation**: Complete README rewrite with improved structure and examples
 
 ### Fixed
+- **CRITICAL**: URL cache TOCTOU race condition preventing potential panic under high concurrency
+- **CRITICAL**: DoH cache size counter race condition
+- **CRITICAL**: `pooledFlateReader.Close()` resource leak
+- **CRITICAL**: Symlink attack prevention in file download
+- **MEDIUM**: Cookie pool sensitive data residual between requests
+- **MEDIUM**: SessionManager TOCTOU race with `SetCookieSecurity()`
+- **MEDIUM**: DNS compression pointer recursion depth limit (DoS protection)
+- Expanded system path protection for Linux (`/lib32/`, `/lib64/`, `/usr/lib/`, `/bin/`, `/sbin/`)
 
-- **Middleware Chaining Example**:
-  - Corrected usage: `httpc.Chain()` returns `MiddlewareFunc`, must be wrapped in slice
-  - Before: `config.Middlewares = httpc.Chain(...)` (incorrect)
-  - After: `config.Middlewares = []httpc.MiddlewareFunc{httpc.Chain(...)}` (correct)
-
----
-
-## v1.4.2 - Examples Optimization (2026-03-16)
-
-### Added
-
-- **New Example: Advanced Patterns** (`examples/03_advanced/advanced_patterns.go`):
-  - Request/Response callbacks (`WithOnRequest`, `WithOnResponse`)
-  - Result pool optimization (`ReleaseResult`)
-  - Testing configuration (`TestingConfig()`)
-  - Default client management (`SetDefaultClient`, `CloseDefaultClient`)
-  - Memory optimization techniques
-
-### Changed
-
-- **HTTP Methods Example** (`examples/03_advanced/http_methods.go`):
-  - Refocused on less common methods (HEAD, OPTIONS, PATCH)
-  - Added method comparison table
-  - Removed duplicate content from `basic_usage.go`
-  - Added reference to quickstart for basic methods
-
-- **Middleware Example** (`examples/03_advanced/middleware.go`):
-  - Renamed from `middleware_example.go` for consistency
-
-- **Examples README** (`examples/README.md`):
-  - Updated learning path with new examples
-  - Added advanced patterns section
-  - Improved organization
-
-### Removed
-
-- Redundant HTTP method examples (GET, POST, PUT, DELETE now in quickstart only)
-
----
-
-## v1.4.1 - Concurrency Safety Fix (2026-03-16)
-
-### Fixed
-
-- **Race Condition in Concurrent Tests** (`internal/concurrency/concurrent_test.go`):
-  - Fixed data race where atomic variables were read without `atomic.LoadInt64()`
-  - All atomic counter reads in test logging now use proper atomic loads
-  - Affected tests: `TestConcurrentClientRequests`, `TestConcurrentDefaultClient`,
-    `TestConcurrentContextCancellation`, `TestRaceConditionMetricsUpdate`,
-    `TestConcurrentClientClose`, `TestConcurrentResultPool`, `TestConcurrentCookieJar`,
-    `TestConcurrentRedirectHandling`
-
-### Concurrency Safety Audit
-
-- Verified thread-safety of all global variables and shared resources
-- Confirmed proper use of synchronization primitives throughout the codebase:
-  - `sync.RWMutex` for read-heavy shared state (SessionManager, DomainWhitelist, etc.)
-  - `sync.Map` for concurrent maps (DoHResolver cache, PoolManager hostConns)
-  - `sync.Pool` for object reuse (Request, Response, Result, buffers)
-  - `sync.Once` for one-time initialization (Client.Close)
-  - `atomic` operations for counters and flags (Metrics, closed states)
-
----
-
-## v1.4.0 - Default Configuration Change (2026-03-16)
-
-### Changed
-
-- **AllowPrivateIPs Default Changed** (`types.go`, `internal/connection/pool.go`):
-  - `AllowPrivateIPs` default value changed from `false` to `true`
-  - Improves compatibility with VPNs, proxies, and corporate networks that may resolve public domains to private IPs
-  - Users who need SSRF protection should explicitly set `AllowPrivateIPs = false`
-  - `SecureConfig()` preset still has `AllowPrivateIPs = false` for security-focused use cases
-
-### Migration
-
-If you relied on SSRF protection being enabled by default, update your code:
-
-```go
-// Before (implicit SSRF protection)
-client, err := httpc.New()
-
-// After (explicit SSRF protection)
-cfg := httpc.DefaultConfig()
-cfg.AllowPrivateIPs = false  // Enable SSRF protection
-client, err := httpc.New(cfg)
-
-// Or use SecureConfig() preset
-client, err := httpc.New(httpc.SecureConfig())
-```
-
----
-
-## v1.3.9 - Performance Optimization (2026-03-16)
-
-### Performance
-
-- **Reader Pooling** (`internal/engine/request.go`):
-  - Added `sync.Pool` for `strings.Reader` and `bytes.Reader` to reduce per-request allocations
-  - Implemented pooled reader wrappers that return readers to pool on EOF
-  - Reduces allocations for string/byte body payloads
-
-- **Response Body Copy Elimination** (`internal/engine/response.go`):
-  - Added buffer "stealing" for small responses (≤16KB)
-  - Eliminates memory copy for small response bodies by returning pooled buffer directly
-  - Creates fresh buffer for pool to maintain pool health
-  - Expected: 10-20% memory reduction for small responses
-
-- **URL Parsing Cache** (`internal/engine/request.go`):
-  - Added thread-safe LRU-like cache for parsed URLs (max 1024 entries)
-  - Avoids expensive `url.Parse()` calls for repeated URLs
-  - URL cloning ensures cached entries remain immutable
-  - Expected: 5-15% CPU reduction for repeated URL requests
-
-- **Context Creation Optimization** (`internal/engine/client.go`):
-  - Replaced `context.WithCancel` with no-op cancel function when no timeout configured
-  - Eliminates unnecessary goroutine and channel allocation
-  - Uses shared `nopCancelFunc` variable to avoid per-request allocation
-
-### Changed
-
-- **Header Copy Fix** (`internal/engine/client.go`):
-  - Removed broken `headerSlicePool` usage that caused memory leak
-  - Headers now copied directly without pool (simpler and correct)
-  - Removed unused `headerSlicePool` and `getHeaderSlice()` function
-
-### Security
-
-- All optimizations maintain security guarantees:
-  - Pooled buffers properly managed to prevent data leakage
-  - Cached URLs are cloned to ensure immutability
-  - Buffer stealing only applies to responses within size threshold
-
-### Verification
-
-- All tests pass with race detection (`go test -race ./...`)
-- Code passes `go vet` and formatting checks
-- No breaking changes to public API
-
-### Changed
-- **Test Consolidation**: Merged `concurrent_test.go` (root) into `internal/concurrency/concurrent_test.go`
-  - Eliminated redundant test cases
-  - Improved organization with all concurrency tests in one location
-  - Reduced root directory test file count
-
-### Added
-- **Security Function Tests**:
-  - `validateAddressBeforeDial` tests in `internal/connection/pool_test.go`
-  - `createVerifyPeerCertificate` tests for TLS certificate pinning
-  - `NewPublicKeyPinnerFromBase64` tests in `internal/security/certpin_test.go`
-- **Public API Tests**:
-  - `ReleaseResult` pool management tests
-  - `WithContext` and `WithBinary` option tests
-  - `WithOnRequest` and `WithOnResponse` callback tests
-- **Middleware Tests**:
-  - `AuditMiddleware` and `AuditMiddlewareWithConfig` tests
-  - `AuditMiddlewareJSON` tests
-  - `sanitizeAuditURL` URL sanitization tests
-- **Redirect Handling Tests**:
-  - `validateRedirectTarget` tests for SSRF protection
-  - `SetRedirectPolicy` and `GetRedirectChain` tests
-  - `CleanupRedirectSettings` lifecycle tests
-
-### Coverage Improvement
-- **Before**: 67.5% (root package)
-- **After**: 73.9% (root package), 71.9% (overall)
-- **Internal packages**:
-  - `internal/connection`: 57.5% → 65.7%
-  - `internal/engine`: 68.5% → 71.5%
-  - `internal/security`: 86.0% → 89.6%
-
-### Test File Summary
-- **Total test files**: 43
-- **Total test lines**: ~19,800
-- **Root test files reduced**: 16 → 15 (removed `concurrent_test.go`)
+### Breaking Changes
+- `DoHResolver` now implements `io.Closer`; callers should call `Close()` for proper cleanup
 
 ---
 

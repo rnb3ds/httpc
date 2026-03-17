@@ -5,6 +5,31 @@ import (
 	"testing"
 )
 
+// BenchmarkIsLocalhost benchmarks the IsLocalhost function
+func BenchmarkIsLocalhost(b *testing.B) {
+	benchmarks := []struct {
+		name     string
+		hostname string
+	}{
+		{"localhost", "localhost"},
+		{"LOCALHOST", "LOCALHOST"},
+		{"LocalHost", "LocalHost"},
+		{"127.0.0.1", "127.0.0.1"},
+		{"127.1.1.1", "127.1.1.1"},
+		{"localhost.local", "localhost.local"},
+		{"example.com", "example.com"},
+		{"notlocalhost.com", "notlocalhost.com"},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				_ = IsLocalhost(bm.hostname)
+			}
+		})
+	}
+}
+
 func TestIsPrivateOrReservedIP(t *testing.T) {
 	tests := []struct {
 		name     string

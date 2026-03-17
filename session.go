@@ -112,15 +112,15 @@ func (s *SessionManager) SetCookie(cookie *http.Cookie) error {
 		return fmt.Errorf("invalid cookie: %w", err)
 	}
 
-	// Apply cookie security validation if configured
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Apply cookie security validation if configured (inside lock for thread safety)
 	if s.cookieSecurity != nil {
 		if err := validation.ValidateCookieSecurity(cookie, s.cookieSecurity); err != nil {
 			return fmt.Errorf("cookie security validation failed: %w", err)
 		}
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	s.cookies[cookie.Name] = cookie
 	return nil
@@ -130,6 +130,7 @@ func (s *SessionManager) SetCookie(cookie *http.Cookie) error {
 // Returns an error if any cookie is nil or invalid.
 // If cookie security is configured, validates against security requirements.
 func (s *SessionManager) SetCookies(cookies []*http.Cookie) error {
+	// Pre-validate all cookies outside the lock
 	for i, cookie := range cookies {
 		if cookie == nil {
 			return fmt.Errorf("cookie at index %d is nil", i)
@@ -137,19 +138,18 @@ func (s *SessionManager) SetCookies(cookies []*http.Cookie) error {
 		if err := validation.ValidateCookie(cookie); err != nil {
 			return fmt.Errorf("invalid cookie at index %d: %w", i, err)
 		}
-
-		// Apply cookie security validation if configured
-		if s.cookieSecurity != nil {
-			if err := validation.ValidateCookieSecurity(cookie, s.cookieSecurity); err != nil {
-				return fmt.Errorf("cookie security validation failed at index %d: %w", i, err)
-			}
-		}
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Apply cookie security validation and store (inside lock for thread safety)
 	for _, cookie := range cookies {
+		if s.cookieSecurity != nil {
+			if err := validation.ValidateCookieSecurity(cookie, s.cookieSecurity); err != nil {
+				return fmt.Errorf("cookie security validation failed for %s: %w", cookie.Name, err)
+			}
+		}
 		s.cookies[cookie.Name] = cookie
 	}
 	return nil

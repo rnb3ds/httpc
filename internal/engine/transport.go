@@ -348,16 +348,19 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			req.Header.Del("Cookie")
 
 			// SECURITY: Clear sensitive cookie data before returning to pool
-			// to prevent data leakage between requests
-			for k := range cookieMap {
-				delete(cookieMap, k)
-			}
-			// Clear the slice but keep capacity for reuse
-			*mergedPtr = (*mergedPtr)[:0]
+			// Use defer to ensure cleanup even if subsequent operations panic
+			defer func() {
+				// Clear the map to prevent data leakage between requests
+				for k := range cookieMap {
+					delete(cookieMap, k)
+				}
+				// Clear the slice but keep capacity for reuse
+				*mergedPtr = (*mergedPtr)[:0]
 
-			// Return slices to pool (now cleared of sensitive data)
-			cookieMapPool.Put(cookieMapPtr)
-			cookieSlicePool.Put(mergedPtr)
+				// Return slices to pool (now cleared of sensitive data)
+				cookieMapPool.Put(cookieMapPtr)
+				cookieSlicePool.Put(mergedPtr)
+			}()
 		}
 	}
 
@@ -370,4 +373,32 @@ func (t *Transport) Close() error {
 		t.transport.CloseIdleConnections()
 	}
 	return nil
+}
+
+// ClearPools clears all sync.Pool instances used by the transport package.
+// This is primarily useful for testing and debugging to ensure a clean state.
+// Note: sync.Pool is automatically managed by the GC, so this is typically not needed
+// in production code. The pools will be repopulated on next use.
+func ClearPools() {
+	// Clear redirect settings pool by creating fresh pool entries
+	// The old entries will be garbage collected
+	redirectSettingsPool = sync.Pool{
+		New: func() any {
+			return &redirectSettings{}
+		},
+	}
+	// Clear cookie map pool
+	cookieMapPool = sync.Pool{
+		New: func() any {
+			m := make(map[string]*http.Cookie, 8)
+			return &m
+		},
+	}
+	// Clear cookie slice pool
+	cookieSlicePool = sync.Pool{
+		New: func() any {
+			s := make([]*http.Cookie, 0, 8)
+			return &s
+		},
+	}
 }

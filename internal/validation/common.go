@@ -175,19 +175,50 @@ func ValidateHeaderKeyValue(key, value string) error {
 }
 
 // IsValidHeaderChar checks if a character is valid in HTTP header names.
+// Optimized with a lookup table for O(1) character validation.
 func IsValidHeaderChar(r rune) bool {
-	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-		(r >= '0' && r <= '9') || r == '-'
+	// Fast path: use lookup table for common ASCII range
+	if r >= 0 && r <= 127 {
+		return validHeaderCharTable[r]
+	}
+	return false
+}
+
+// validHeaderCharTable is a lookup table for valid HTTP header characters.
+// Valid characters are: a-z, A-Z, 0-9, and '-' (hyphen)
+var validHeaderCharTable = [128]bool{
+	// Digits 0-9 (0x30-0x39)
+	0x30: true, true, true, true, true, true, true, true, true, true,
+	// Uppercase A-Z (0x41-0x5A)
+	0x41: true, true, true, true, true, true, true, true, true, true, // A-J
+	0x4B: true, true, true, true, true, true, true, true, true, true, // K-T
+	0x55: true, true, true, true, true, true, // U-Z
+	// Hyphen (0x2D)
+	0x2D: true,
+	// Lowercase a-z (0x61-0x7A)
+	0x61: true, true, true, true, true, true, true, true, true, true, // a-j
+	0x6B: true, true, true, true, true, true, true, true, true, true, // k-t
+	0x75: true, true, true, true, true, true, // u-z
 }
 
 // IsValidHeaderString checks if a string contains only valid characters for HTTP headers.
 // It returns true if the string contains no control characters (except tab), DEL, or CR/LF.
+// Optimized to use byte-level checks instead of rune iteration.
 func IsValidHeaderString(s string) bool {
+	// Fast path: check for common valid characters first
+	// Most header values are printable ASCII
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if (c < 0x20 && c != 0x09) || c == 0x7F || c == '\r' || c == '\n' {
+		// Allow printable ASCII (0x20-0x7E) and tab (0x09)
+		// Block control characters (0x00-0x1F except 0x09), DEL (0x7F), CR (0x0D), LF (0x0A)
+		if c < 0x20 {
+			if c != 0x09 { // tab is allowed
+				return false
+			}
+		} else if c == 0x7F {
 			return false
 		}
+		// CR and LF are in the 0x00-0x1F range, already handled above
 	}
 	return true
 }

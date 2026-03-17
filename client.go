@@ -758,3 +758,46 @@ func createCookieJar(enableCookies bool) (http.CookieJar, error) {
 	}
 	return jar, nil
 }
+
+// ClearAllPools clears all internal sync.Pool instances used by the httpc library.
+// This is primarily useful for testing and debugging to ensure a clean state.
+// Note: sync.Pool is automatically managed by the GC, so this is typically not needed
+// in production code. The pools will be repopulated on next use.
+//
+// This function clears:
+//   - Result pool (client level)
+//   - URL cache (request processor)
+//   - Request pools (strings/bytes readers, string builders)
+//   - Response pools (gzip/flate readers, buffers)
+//   - Transport pools (redirect settings, cookie maps)
+func ClearAllPools() {
+	// Clear result pool
+	resultPool = sync.Pool{
+		New: func() any {
+			return &Result{
+				Request:  &RequestInfo{},
+				Response: &ResponseInfo{},
+				Meta:     &RequestMeta{},
+			}
+		},
+	}
+
+	// Clear engine pools
+	engine.ClearURLCache()
+	engine.ClearRequestPools()
+	engine.ClearResponsePools()
+	engine.ClearPools()
+}
+
+// GetCacheStats returns statistics about internal caches and pools.
+// Useful for monitoring memory usage in production environments.
+func GetCacheStats() CacheStats {
+	return CacheStats{
+		URLCacheSize: engine.GetURLCacheSize(),
+	}
+}
+
+// CacheStats holds statistics about internal caches.
+type CacheStats struct {
+	URLCacheSize int // Number of entries in the URL cache
+}

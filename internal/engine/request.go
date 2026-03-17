@@ -28,6 +28,14 @@ var bytesReaderPool = sync.Pool{
 	New: func() any { return &bytes.Reader{} },
 }
 
+// stringBuilderPool reduces allocations for strings.Builder used in escapeQuotes
+var stringBuilderPool = sync.Pool{
+	New: func() any {
+		sb := &strings.Builder{}
+		return sb
+	},
+}
+
 // pooledStringsReader wraps a strings.Reader and returns it to the pool on EOF
 type pooledStringsReader struct {
 	reader *strings.Reader
@@ -130,8 +138,9 @@ func (c *urlCache) Get(rawURL string) (*url.URL, error) {
 		return nil, err
 	}
 
-	// Evict oldest entry if cache is full
-	if len(c.entries) >= c.maxSize {
+	// SECURITY: Evict oldest entry if cache is full
+	// Check len(c.keys) > 0 to prevent index out of bounds in race conditions
+	if len(c.entries) >= c.maxSize && len(c.keys) > 0 {
 		// Remove oldest key (simple FIFO eviction)
 		oldestKey := c.keys[0]
 		delete(c.entries, oldestKey)
@@ -166,6 +175,54 @@ func cloneURL(u *url.URL) *url.URL {
 		RawFragment: u.RawFragment,
 	}
 	return cloned
+}
+
+// ClearURLCache clears the global URL cache to release memory.
+// This is useful for long-running applications that want to free memory
+// when the URL patterns change or during low-activity periods.
+// Thread-safe: can be called concurrently with cache operations.
+func ClearURLCache() {
+	globalURLCache.clear()
+}
+
+// GetURLCacheSize returns the current number of entries in the URL cache.
+// Useful for monitoring cache usage in production environments.
+func GetURLCacheSize() int {
+	return globalURLCache.size()
+}
+
+// clear removes all entries from the cache
+func (c *urlCache) clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries = make(map[string]*url.URL, 256)
+	c.keys = make([]string, 0, 256)
+}
+
+// size returns the current number of cached entries
+func (c *urlCache) size() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.entries)
+}
+
+// ClearRequestPools clears all sync.Pool instances used by the request package.
+// This is primarily useful for testing and debugging to ensure a clean state.
+// Note: sync.Pool is automatically managed by the GC, so this is typically not needed
+// in production code. The pools will be repopulated on next use.
+func ClearRequestPools() {
+	stringsReaderPool = sync.Pool{
+		New: func() any { return &strings.Reader{} },
+	}
+	bytesReaderPool = sync.Pool{
+		New: func() any { return &bytes.Reader{} },
+	}
+	stringBuilderPool = sync.Pool{
+		New: func() any {
+			sb := &strings.Builder{}
+			return sb
+		},
+	}
 }
 
 // FormData and FileData are now defined in internal/types package.
@@ -350,9 +407,9 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 }
 
 // escapeQuotes escapes backslashes and double quotes in filenames per RFC 7578.
-// Optimized to use single-pass with strings.Builder for better performance.
+// Optimized to use pooled strings.Builder for better performance.
 func escapeQuotes(s string) string {
-	// Fast path: no escapes needed
+	// Fast path: no escapes needed - use direct byte scanning
 	var hasEscape bool
 	for i := 0; i < len(s); i++ {
 		if s[i] == '\\' || s[i] == '"' {
@@ -364,22 +421,28 @@ func escapeQuotes(s string) string {
 		return s
 	}
 
-	// Slow path: build escaped string
-	var b strings.Builder
-	b.Grow(len(s) + len(s)/10) // Pre-allocate ~10% extra for escapes
+	// Slow path: build escaped string using pooled builder
+	sb, ok := stringBuilderPool.Get().(*strings.Builder)
+	if !ok || sb == nil {
+		sb = &strings.Builder{}
+	}
+	sb.Reset()
+	sb.Grow(len(s) + len(s)/10) // Pre-allocate ~10% extra for escapes
 
 	for i := 0; i < len(s); i++ {
 		switch s[i] {
 		case '\\':
-			b.WriteString("\\\\")
+			sb.WriteString("\\\\")
 		case '"':
-			b.WriteString("\\\"")
+			sb.WriteString("\\\"")
 		default:
-			b.WriteByte(s[i])
+			sb.WriteByte(s[i])
 		}
 	}
 
-	return b.String()
+	result := sb.String()
+	stringBuilderPool.Put(sb)
+	return result
 }
 
 // formatQueryParam converts a value to string for query parameters.

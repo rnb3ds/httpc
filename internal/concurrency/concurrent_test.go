@@ -17,6 +17,7 @@ import (
 	"github.com/cybergodev/httpc/internal/dns"
 	"github.com/cybergodev/httpc/internal/engine"
 	"github.com/cybergodev/httpc/internal/security"
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // TestConcurrentClientRequests tests concurrent requests using the same client.
@@ -191,6 +192,66 @@ func TestConcurrentSessionManager(t *testing.T) {
 	cookies := sm.GetCookies()
 
 	t.Logf("Final state: %d headers, %d cookies", len(headers), len(cookies))
+}
+
+// TestConcurrentSessionManagerWithCookieSecurity tests concurrent SetCookie/SetCookieSecurity operations.
+// This test verifies the fix for the TOCTOU race condition where cookieSecurity was accessed outside the lock.
+func TestConcurrentSessionManagerWithCookieSecurity(t *testing.T) {
+	// Create session manager without security first
+	sm := httpc.NewSessionManager()
+
+	const numGoroutines = 50
+	const opsPerGoroutine = 20
+
+	var wg sync.WaitGroup
+	var successCount int64
+	var securityChangeCount int64
+
+	wg.Add(numGoroutines + 1) // +1 for the security config changer
+
+	// One goroutine that continuously changes cookie security config
+	go func() {
+		defer wg.Done()
+		for i := 0; i < opsPerGoroutine; i++ {
+			// Alternate between nil and non-nil security config
+			if i%2 == 0 {
+				sm.SetCookieSecurity(nil)
+			} else {
+				sm.SetCookieSecurity(&validation.CookieSecurityConfig{
+					RequireSecure:   false, // Use false to allow non-secure cookies in test
+					RequireHttpOnly: false,
+				})
+			}
+			atomic.AddInt64(&securityChangeCount, 1)
+			time.Sleep(time.Microsecond * 10) // Small delay to allow interleaving
+		}
+	}()
+
+	// Multiple goroutines that set cookies concurrently
+	for i := 0; i < numGoroutines; i++ {
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < opsPerGoroutine; j++ {
+				cookie := &http.Cookie{
+					Name:  fmt.Sprintf("cookie-%d-%d", id, j),
+					Value: fmt.Sprintf("value-%d-%d", id, j),
+				}
+				if err := sm.SetCookie(cookie); err == nil {
+					atomic.AddInt64(&successCount, 1)
+				}
+				// Also test SetCookies
+				cookies := []*http.Cookie{
+					{Name: fmt.Sprintf("batch-%d-%d", id, j), Value: "batch-value"},
+				}
+				_ = sm.SetCookies(cookies)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	t.Logf("Cookie security test: %d successful SetCookie, %d security changes",
+		atomic.LoadInt64(&successCount), atomic.LoadInt64(&securityChangeCount))
 }
 
 // TestConcurrentDoHResolverCache tests concurrent DNS cache access.

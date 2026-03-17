@@ -492,3 +492,25 @@ func (pm *PoolManager) IsHealthy() bool {
 	}
 	return true
 }
+
+// ClearHostStats clears all per-host connection statistics.
+// This releases memory held by the hostConns map.
+// Useful for long-running applications to periodically reset statistics.
+// Thread-safe: can be called concurrently with other operations.
+func (pm *PoolManager) ClearHostStats() {
+	pm.hostConns.Range(func(key, value interface{}) bool {
+		pm.hostConns.Delete(key)
+		return true
+	})
+}
+
+// GetHostStatsCount returns the number of hosts currently being tracked.
+// Useful for monitoring memory usage in production environments.
+func (pm *PoolManager) GetHostStatsCount() int {
+	count := 0
+	pm.hostConns.Range(func(key, value interface{}) bool {
+		count++
+		return true
+	})
+	return count
+}

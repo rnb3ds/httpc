@@ -3,7 +3,6 @@ package validation
 import (
 	"fmt"
 	"net"
-	"strings"
 )
 
 // IsPrivateOrReservedIP checks if an IP address is private, reserved, or
@@ -80,22 +79,96 @@ func ValidateIP(ip net.IP) error {
 // - ::
 // - 127.x.x.x range
 // - localhost.* subdomains (case-insensitive)
+//
+// Optimized to avoid repeated string allocations from strings.ToLower.
 func IsLocalhost(hostname string) bool {
-	// Check exact matches (case-insensitive for localhost)
-	switch strings.ToLower(hostname) {
-	case "localhost", "127.0.0.1", "::1", "0.0.0.0", "::":
+	// Fast path: check length before any string operations
+	hlen := len(hostname)
+	if hlen == 0 {
+		return false
+	}
+
+	// Check for 127.x.x.x range first (most common localhost pattern)
+	// Use direct byte comparison to avoid string allocation
+	// SECURITY: Must check hlen >= 4 to safely access hostname[3]
+	// "127." prefix indicates 127.x.x.x range (loopback network)
+	if hlen >= 4 && hostname[0] == '1' && hostname[1] == '2' && hostname[2] == '7' && hostname[3] == '.' {
 		return true
 	}
 
-	// Check 127.x.x.x range
-	if len(hostname) > 4 && hostname[:4] == "127." {
+	// Check exact matches - handle both cases for "localhost"
+	switch hostname {
+	case "localhost", "LOCALHOST", "127.0.0.1", "::1", "0.0.0.0", "::":
 		return true
+	}
+
+	// Check for "Localhost" and other case variations without allocation
+	// Only do case-insensitive check if first char is 'l' or 'L'
+	if hlen == 9 && (hostname[0] == 'l' || hostname[0] == 'L') {
+		// Check "localhost" case-insensitively
+		if equalFold(hostname, "localhost") {
+			return true
+		}
 	}
 
 	// Check for localhost.* subdomains (case-insensitive)
-	if strings.HasPrefix(strings.ToLower(hostname), "localhost.") {
-		return true
+	// "localhost." is 10 characters
+	if hlen > 10 && (hostname[0] == 'l' || hostname[0] == 'L') {
+		if hasPrefixFold(hostname, "localhost.") {
+			return true
+		}
 	}
 
 	return false
+}
+
+// equalFold checks if s equals t case-insensitively (ASCII only)
+// Avoids allocation from strings.ToLower
+func equalFold(s, t string) bool {
+	if len(s) != len(t) {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c1 := s[i]
+		c2 := t[i]
+		if c1 == c2 {
+			continue
+		}
+		// Convert to lowercase for comparison
+		if c1 >= 'A' && c1 <= 'Z' {
+			c1 += 'a' - 'A'
+		}
+		if c2 >= 'A' && c2 <= 'Z' {
+			c2 += 'a' - 'A'
+		}
+		if c1 != c2 {
+			return false
+		}
+	}
+	return true
+}
+
+// hasPrefixFold checks if s has prefix p case-insensitively (ASCII only)
+func hasPrefixFold(s, prefix string) bool {
+	if len(s) < len(prefix) {
+		return false
+	}
+	for i := 0; i < len(prefix); i++ {
+		c1 := s[i]
+		c2 := prefix[i]
+		if c1 == c2 {
+			continue
+		}
+		// Convert to lowercase for comparison
+		if c1 >= 'A' && c1 <= 'Z' {
+			c1 += 'a' - 'A'
+		}
+		if c2 >= 'A' && c2 <= 'Z' {
+			c2 += 'a' - 'A'
+		}
+		if c1 != c2 {
+			return false
+		}
+	}
+	return true
 }

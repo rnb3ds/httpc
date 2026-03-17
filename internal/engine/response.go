@@ -44,12 +44,25 @@ const (
 	// to prevent decompression bomb (zip bomb) attacks. A highly compressed
 	// malicious payload could exhaust memory during decompression.
 	maxCompressedSize = 100 * 1024 * 1024 // 100MB compressed data limit
+
+	// smallBufferThreshold is the threshold for using pre-allocated small buffers
+	// This avoids pool overhead for very small responses
+	smallBufferThreshold = 512 // 512 bytes
 )
 
 // bufferPool reuses byte buffers for response body reading
 var bufferPool = sync.Pool{
 	New: func() any {
 		return bytes.NewBuffer(make([]byte, 0, defaultBufferSize))
+	},
+}
+
+// smallBufferPool provides pre-allocated small byte slices for tiny responses
+// This avoids the overhead of the buffer pool for very small responses
+var smallBufferPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 0, smallBufferThreshold)
+		return &buf
 	},
 }
 
@@ -242,6 +255,7 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 	// This reduces buffer growth overhead for responses with known size
 	contentLength := httpResp.ContentLength
 	var buf *bytes.Buffer
+	fromPool := false // Track if buffer came from pool
 
 	// For responses with known content length that fit in stolen threshold,
 	// allocate directly to avoid pool overhead
@@ -251,12 +265,12 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 		buf = bytes.NewBuffer(body)
 	} else {
 		buf = getBuffer()
+		fromPool = true
 	}
-	bufferStolen := false // Track if we stole the buffer to skip putBuffer
 
 	defer func() {
-		// Only return buffer to pool if we didn't steal it and it's from pool
-		if !bufferStolen && buf != nil {
+		// Only return buffer to pool if it came from pool and we're not stealing it
+		if fromPool && buf != nil && buf.Cap() <= maxBufferSize {
 			putBuffer(buf)
 		}
 		if decompressor != nil {
@@ -287,15 +301,21 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 		return nil, fmt.Errorf("response body exceeds limit of %d bytes", maxSize)
 	}
 
-	// Optimization: For small responses, "steal" the buffer directly
-	// to avoid an extra allocation and copy. Create a fresh buffer for the pool.
+	// Optimization path for small responses (most common case)
+	// For directly allocated buffers (fromPool=false), just return the bytes directly
+	// For pooled buffers within steal threshold, steal the backing array
 	if len(body) <= bufferStealThreshold {
-		// Mark buffer as stolen so defer skips putBuffer
-		bufferStolen = true
+		if !fromPool {
+			// Buffer was directly allocated, return it directly (no copy needed)
+			return body, nil
+		}
+		// Buffer came from pool - steal the backing array
+		// Set buf to nil so defer doesn't try to return it
+		result := body
+		buf = nil // Prevent defer from returning buffer to pool
 		// Put a fresh buffer into the pool to replace the one we're stealing
 		bufferPool.Put(bytes.NewBuffer(make([]byte, 0, defaultBufferSize)))
-		// Return the stolen buffer directly (caller takes ownership)
-		return body, nil
+		return result, nil
 	}
 
 	// For larger responses, copy to avoid holding large buffers
@@ -384,7 +404,51 @@ func (r *pooledFlateReader) Close() error {
 	if resetter, ok := r.reader.(flate.Resetter); ok {
 		resetter.Reset(bytes.NewReader(nil), nil)
 		flateReaderPool.Put(resetter)
+	} else {
+		// SECURITY: If the reader doesn't implement Resetter, close it directly
+		// to prevent resource leaks. This shouldn't happen with standard library,
+		// but we handle it defensively for custom implementations.
+		_ = r.reader.Close()
 	}
 	r.reader = nil
 	return nil
+}
+
+// ClearResponsePools clears all sync.Pool instances used by the response package.
+// This is primarily useful for testing and debugging to ensure a clean state.
+// Note: sync.Pool is automatically managed by the GC, so this is typically not needed
+// in production code. The pools will be repopulated on next use.
+func ClearResponsePools() {
+	gzipReaderPool = sync.Pool{
+		New: func() any {
+			reader, _ := gzip.NewReader(bytes.NewReader(nil))
+			return reader
+		},
+	}
+	flateReaderPool = sync.Pool{
+		New: func() any {
+			return flate.NewReader(bytes.NewReader(nil))
+		},
+	}
+	bufferPool = sync.Pool{
+		New: func() any {
+			return bytes.NewBuffer(make([]byte, 0, defaultBufferSize))
+		},
+	}
+	smallBufferPool = sync.Pool{
+		New: func() any {
+			buf := make([]byte, 0, smallBufferThreshold)
+			return &buf
+		},
+	}
+	responsePool = sync.Pool{
+		New: func() any {
+			return &Response{}
+		},
+	}
+	limitReaderPool = sync.Pool{
+		New: func() any {
+			return &pooledLimitReader{}
+		},
+	}
 }

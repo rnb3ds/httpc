@@ -139,8 +139,14 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 			if entry.decrement.CompareAndSwap(false, true) {
 				// Use LoadAndDelete to ensure atomic check-then-delete
 				// Only decrement if we successfully deleted this specific entry
-				if _, loaded := r.cache.LoadAndDelete(host); loaded {
-					r.cacheSize.Add(-1)
+				// SECURITY: Compare the actual value to ensure we're deleting the same entry
+				// This prevents decrementing when another goroutine already replaced it
+				actual, loaded := r.cache.LoadAndDelete(host)
+				if loaded {
+					// Only decrement if the deleted entry is the same one we marked
+					if actualEntry, ok := actual.(*CacheEntry); ok && actualEntry == entry {
+						r.cacheSize.Add(-1)
+					}
 				}
 				// NOTE: We intentionally do NOT reset the decrement flag if the entry
 				// was replaced. The new entry has its own fresh decrement flag.
