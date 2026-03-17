@@ -466,6 +466,14 @@ func (pm *PoolManager) Close() error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
+	// Close DoH resolver first to release its HTTP client resources
+	if pm.dohResolver != nil {
+		if err := pm.dohResolver.Close(); err != nil {
+			// Log but don't fail - continue closing other resources
+			// In production, this could be logged to a proper logger
+		}
+	}
+
 	if pm.transport != nil {
 		pm.transport.CloseIdleConnections()
 	}
@@ -477,7 +485,9 @@ func (pm *PoolManager) IsHealthy() bool {
 	if metrics.ConnectionHitRate < 0.9 && metrics.TotalConnections > 10 {
 		return false
 	}
-	if metrics.ActiveConnections >= int64(pm.config.MaxTotalConns)*9/10 {
+	// SECURITY: Handle MaxTotalConns=0 (unlimited) case to avoid false unhealthy status
+	// When MaxTotalConns is 0 (unlimited), skip the connection capacity check
+	if pm.config.MaxTotalConns > 0 && metrics.ActiveConnections >= int64(pm.config.MaxTotalConns)*9/10 {
 		return false
 	}
 	return true

@@ -2,7 +2,6 @@ package engine
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -188,7 +187,7 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 	}
 
 	if req.Context() == nil {
-		req.SetContext(context.Background())
+		req.SetContext(backgroundCtx)
 	}
 
 	// Use cached URL parsing to avoid expensive url.Parse() calls

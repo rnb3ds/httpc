@@ -51,7 +51,14 @@ func (m *Metrics) updateLatencyMetrics(latency int64) {
 	const maxRetries = 100
 	for i := 0; i < maxRetries; i++ {
 		current := atomic.LoadInt64(&m.averageLatency)
-		newAvg := (current*9 + latency) / 10
+		// BUGFIX: Handle initial case where current is 0
+		// First measurement should be the actual latency, not latency/10
+		var newAvg int64
+		if current == 0 {
+			newAvg = latency
+		} else {
+			newAvg = (current*9 + latency) / 10
+		}
 		if atomic.CompareAndSwapInt64(&m.averageLatency, current, newAvg) {
 			return
 		}

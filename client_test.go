@@ -3,6 +3,7 @@ package httpc
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -617,4 +618,55 @@ func TestRequest_WithCallbacks(t *testing.T) {
 	if atomic.LoadInt64(&onResponseCalled) != 1 {
 		t.Errorf("Expected onResponse callback to be called once, got %d", onResponseCalled)
 	}
+}
+
+func TestRequest_CallbackErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	t.Run("NilOnRequestCallback", func(t *testing.T) {
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Get(server.URL, WithOnRequest(nil))
+		if err == nil {
+			t.Error("Expected error for nil onRequest callback")
+		}
+	})
+
+	t.Run("NilOnResponseCallback", func(t *testing.T) {
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Get(server.URL, WithOnResponse(nil))
+		if err == nil {
+			t.Error("Expected error for nil onResponse callback")
+		}
+	})
+
+	t.Run("OnRequestError", func(t *testing.T) {
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Get(server.URL, WithOnRequest(func(req RequestMutator) error {
+			return fmt.Errorf("onRequest error")
+		}))
+		if err == nil {
+			t.Error("Expected error from onRequest callback")
+		}
+	})
+
+	t.Run("OnResponseError", func(t *testing.T) {
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Get(server.URL, WithOnResponse(func(resp ResponseMutator) error {
+			return fmt.Errorf("onResponse error")
+		}))
+		if err == nil {
+			t.Error("Expected error from onResponse callback")
+		}
+	})
 }

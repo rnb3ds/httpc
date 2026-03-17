@@ -358,6 +358,26 @@ func TestConfig_Modification(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
+// Internal Helper Functions
+// ----------------------------------------------------------------------------
+
+func TestConfig_InternalHelpers(t *testing.T) {
+	t.Run("isTestEnvironment", func(t *testing.T) {
+		// When running under go test, this should return true
+		if !isTestEnvironment() {
+			t.Error("isTestEnvironment() should return true when running under go test")
+		}
+	})
+
+	t.Run("warnTestingConfigInProduction", func(t *testing.T) {
+		// This function should not panic and should handle the test environment
+		// In test environment, it should not print warnings
+		warnTestingConfigInProduction()
+		// No assertion needed - just verify it doesn't panic
+	})
+}
+
+// ----------------------------------------------------------------------------
 // Advanced Config Fields
 // ----------------------------------------------------------------------------
 

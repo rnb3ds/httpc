@@ -347,7 +347,15 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			t.httpClient.Jar.SetCookies(req.URL, mergedCookies)
 			req.Header.Del("Cookie")
 
-			// Return slices to pool (the jar has copied the data)
+			// SECURITY: Clear sensitive cookie data before returning to pool
+			// to prevent data leakage between requests
+			for k := range cookieMap {
+				delete(cookieMap, k)
+			}
+			// Clear the slice but keep capacity for reuse
+			*mergedPtr = (*mergedPtr)[:0]
+
+			// Return slices to pool (now cleared of sensitive data)
 			cookieMapPool.Put(cookieMapPtr)
 			cookieSlicePool.Put(mergedPtr)
 		}

@@ -879,6 +879,92 @@ func TestDefaultAuditMiddlewareConfig(t *testing.T) {
 	}
 }
 
+func TestRequestIDMiddleware_NilGenerator(t *testing.T) {
+	var receivedID string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedID = r.Header.Get("X-Request-ID")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	cfg := testConfig()
+	// Pass nil generator - should use default
+	cfg.Middlewares = []MiddlewareFunc{
+		RequestIDMiddleware("X-Request-ID", nil),
+	}
+
+	client, err := New(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer client.Close()
+
+	_, err = client.Get(ts.URL)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+
+	if receivedID == "" {
+		t.Error("expected request ID to be set")
+	}
+}
+
+func TestRequestIDMiddleware_ExistingHeader(t *testing.T) {
+	var receivedID string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedID = r.Header.Get("X-Request-ID")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	cfg := testConfig()
+	cfg.Middlewares = []MiddlewareFunc{
+		RequestIDMiddleware("X-Request-ID", func() string { return "generated-id" }),
+	}
+
+	client, err := New(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer client.Close()
+
+	// Set header explicitly - middleware should not overwrite
+	_, err = client.Get(ts.URL, WithHeader("X-Request-ID", "explicit-id"))
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+
+	if receivedID != "explicit-id" {
+		t.Errorf("expected 'explicit-id', got: %s", receivedID)
+	}
+}
+
+func TestHeaderMiddleware_InvalidHeader(t *testing.T) {
+	cfg := testConfig()
+	cfg.Middlewares = []MiddlewareFunc{
+		HeaderMiddleware(map[string]string{
+			"X-Invalid": "value\r\nX-Injected: malicious", // CRLF injection attempt
+		}),
+	}
+
+	client, err := New(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer client.Close()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	// Should fail due to invalid header
+	_, err = client.Get(ts.URL)
+	if err == nil {
+		t.Error("expected error for invalid header")
+	}
+}
+
 func TestAuditEventMarshalJSON(t *testing.T) {
 	event := AuditEvent{
 		Timestamp:  time.Now(),

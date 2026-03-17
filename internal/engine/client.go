@@ -164,21 +164,21 @@ func (r *Request) SetOnResponse(cb ResponseCallback) { r.onResponse = cb }
 // Response represents an HTTP response.
 // Response objects are safe to read from multiple goroutines after they are returned.
 type Response struct {
-	statusCode      int
-	status          string
-	headers         http.Header
-	body            string
-	rawBody         []byte
-	contentLength   int64
-	proto           string
-	duration        time.Duration
-	attempts        int
-	cookies         []*http.Cookie
-	redirectChain   []string
-	redirectCount   int
-	requestHeaders  http.Header // Actual headers sent with the request
-	requestURL      string      // The actual URL that was requested (with query params)
-	requestMethod   string      // The HTTP method used
+	statusCode     int
+	status         string
+	headers        http.Header
+	body           string
+	rawBody        []byte
+	contentLength  int64
+	proto          string
+	duration       time.Duration
+	attempts       int
+	cookies        []*http.Cookie
+	redirectChain  []string
+	redirectCount  int
+	requestHeaders http.Header // Actual headers sent with the request
+	requestURL     string      // The actual URL that was requested (with query params)
+	requestMethod  string      // The HTTP method used
 }
 
 // Compile-time interface check
@@ -594,12 +594,15 @@ const (
 	defaultMaxDrain int64 = 10 * 1024 * 1024 // 10MB
 )
 
+// backgroundCtx is a cached background context to avoid repeated allocations
+var backgroundCtx = context.Background()
+
 // executeRequest executes a single HTTP request with comprehensive error handling.
 func (c *Client) executeRequest(req *Request) (*Response, error) {
 	// Context setup with timeout handling
 	execCtx := req.Context()
 	if execCtx == nil {
-		execCtx = context.Background()
+		execCtx = backgroundCtx
 	}
 
 	timeout := req.Timeout()
@@ -607,12 +610,20 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 		timeout = c.config.Timeout
 	}
 
+	// Optimized: only create new context if absolutely necessary
 	if timeout > 0 {
-		if existingDeadline, hasDeadline := execCtx.Deadline(); !hasDeadline || time.Until(existingDeadline) > timeout {
+		if existingDeadline, hasDeadline := execCtx.Deadline(); !hasDeadline {
+			// No existing deadline - create one
+			var cancel context.CancelFunc
+			execCtx, cancel = context.WithTimeout(execCtx, timeout)
+			defer cancel()
+		} else if timeUntil := time.Until(existingDeadline); timeUntil > timeout {
+			// Existing deadline is further than our timeout - create tighter one
 			var cancel context.CancelFunc
 			execCtx, cancel = context.WithTimeout(execCtx, timeout)
 			defer cancel()
 		}
+		// else: existing deadline is within our timeout - reuse it
 	}
 
 	select {
@@ -696,16 +707,27 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 
 	if httpResp.Request != nil {
 		// Copy headers - this is necessary since the underlying map may be reused
-		// Pre-allocate with exact size to avoid growth
+		// Optimized: pre-calculate total values count and allocate once
 		headerLen := len(httpResp.Request.Header)
 		if headerLen > 0 {
+			// First pass: count total values to allocate once
+			totalValues := 0
+			for _, values := range httpResp.Request.Header {
+				totalValues += len(values)
+			}
+
+			// Allocate backing array for all values at once
+			valuesBacking := make([]string, 0, totalValues)
 			requestHeaders := make(http.Header, headerLen)
+
+			// Second pass: copy headers using slices from backing array
 			for key, values := range httpResp.Request.Header {
-				// Copy header values directly to avoid memory leak from pool misuse
 				valuesLen := len(values)
-				copiedValues := make([]string, valuesLen)
-				copy(copiedValues, values)
-				requestHeaders[key] = copiedValues
+				// Extend backing slice and copy values
+				start := len(valuesBacking)
+				valuesBacking = valuesBacking[:start+valuesLen]
+				copy(valuesBacking[start:], values)
+				requestHeaders[key] = valuesBacking[start : start+valuesLen]
 			}
 			resp.SetRequestHeaders(requestHeaders)
 		}

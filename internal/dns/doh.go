@@ -14,6 +14,9 @@ import (
 	"time"
 )
 
+// Compile-time interface check for io.Closer
+var _ io.Closer = (*DoHResolver)(nil)
+
 // DoHResolver provides DNS-over-HTTPS resolution
 type DoHResolver struct {
 	client    *http.Client
@@ -21,6 +24,7 @@ type DoHResolver struct {
 	cache     sync.Map
 	cacheTTL  atomic.Int64 // Thread-safe cache TTL (stored as nanoseconds)
 	cacheSize atomic.Int64 // O(1) cache size tracking
+	closed    atomic.Bool  // Prevents double-close and operations after close
 }
 
 // Compile-time interface check
@@ -104,6 +108,11 @@ func NewDoHResolver(providers []*DoHProvider, cacheTTL time.Duration) *DoHResolv
 
 // LookupIPAddr resolves a host name to IP addresses using DoH
 func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
+	// Check if resolver is closed
+	if r.closed.Load() {
+		return nil, fmt.Errorf("DoH resolver is closed")
+	}
+
 	// Check cache first - TOCTOU safe: return cached data if valid, don't delete in read path
 	if cached, ok := r.cache.Load(host); ok {
 		// Safe type assertion to prevent potential panic from corrupted cache
@@ -421,12 +430,19 @@ func (r *DoHResolver) fallbackLookup(ctx context.Context, host string, lastErr e
 }
 
 // ClearCache clears the DNS cache
+// SECURITY: Uses atomic counter reset to avoid race conditions with concurrent
+// cache operations. The counter may be temporarily inaccurate during clear but
+// will self-correct on subsequent operations.
 func (r *DoHResolver) ClearCache() {
+	// First, reset the counter to prevent new entries from being rejected
+	// during the clear operation due to size limit checks
+	r.cacheSize.Store(0)
+	// Then delete all entries - any new entries added during this time
+	// will correctly increment the counter from 0
 	r.cache.Range(func(key, value interface{}) bool {
 		r.cache.Delete(key)
 		return true
 	})
-	r.cacheSize.Store(0)
 }
 
 // SetCacheTTL sets the cache TTL duration.
@@ -440,4 +456,27 @@ func (r *DoHResolver) SetCacheTTL(ttl time.Duration) {
 // Thread-safe: can be called concurrently with other operations.
 func (r *DoHResolver) GetCacheTTL() time.Duration {
 	return time.Duration(r.cacheTTL.Load())
+}
+
+// Close releases resources held by the DoHResolver.
+// It closes idle connections in the internal HTTP client's transport.
+// Safe to call multiple times - subsequent calls are no-ops.
+// Implements io.Closer for consistent resource management.
+func (r *DoHResolver) Close() error {
+	// Use CompareAndSwap to ensure we only close once
+	if !r.closed.CompareAndSwap(false, true) {
+		return nil // Already closed
+	}
+
+	// Close idle connections in the transport
+	if r.client != nil {
+		if transport, ok := r.client.Transport.(*http.Transport); ok && transport != nil {
+			transport.CloseIdleConnections()
+		}
+	}
+
+	// Clear the cache to release memory
+	r.ClearCache()
+
+	return nil
 }

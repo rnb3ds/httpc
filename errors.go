@@ -103,16 +103,4 @@ var (
 	// ErrResponseBodyTooLarge is returned when response body exceeds size limit.
 	// Increase MaxResponseBodySize in Config or reduce response size.
 	ErrResponseBodyTooLarge = errors.New("response body too large")
-
-	// ErrCertificatePinning is returned when certificate pinning validation fails.
-	// The server certificate does not match any pinned certificate or public key.
-	ErrCertificatePinning = errors.New("certificate pinning validation failed")
-
-	// ErrCookieSecurity is returned when cookie security validation fails.
-	// Cookie does not meet the required security attributes (Secure, HttpOnly, SameSite).
-	ErrCookieSecurity = errors.New("cookie security validation failed")
-
-	// ErrRedirectWhitelist is returned when redirect target is not in the whitelist.
-	// The redirect URL hostname does not match any allowed domain.
-	ErrRedirectWhitelist = errors.New("redirect target not in whitelist")
 )

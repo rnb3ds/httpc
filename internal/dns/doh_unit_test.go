@@ -288,3 +288,89 @@ func TestDoHResolver_CacheReturnsCopy(t *testing.T) {
 		t.Error("Cache returned modified data instead of copy")
 	}
 }
+
+func TestDoHResolver_Close(t *testing.T) {
+	t.Run("CloseOnce", func(t *testing.T) {
+		resolver := NewDoHResolver(nil, 5*time.Minute)
+
+		err := resolver.Close()
+		if err != nil {
+			t.Errorf("Close() returned error: %v", err)
+		}
+	})
+
+	t.Run("CloseTwice", func(t *testing.T) {
+		resolver := NewDoHResolver(nil, 5*time.Minute)
+
+		// First close
+		err := resolver.Close()
+		if err != nil {
+			t.Errorf("First close() returned error: %v", err)
+		}
+
+		// Second close should be idempotent
+		err = resolver.Close()
+		if err != nil {
+			t.Errorf("Second close() returned error: %v", err)
+		}
+	})
+
+	t.Run("LookupAfterClose", func(t *testing.T) {
+		resolver := NewDoHResolver(nil, 5*time.Minute)
+
+		// Close the resolver
+		_ = resolver.Close()
+
+		ctx := context.Background()
+		_, err := resolver.LookupIPAddr(ctx, "www.google.com")
+		if err == nil {
+			t.Error("Expected error when using closed resolver")
+		}
+	})
+}
+
+func TestDoHResolver_GetCacheTTL(t *testing.T) {
+	resolver := NewDoHResolver(nil, 5*time.Minute)
+
+	// Get default TTL
+	ttl := resolver.GetCacheTTL()
+	if ttl != 5*time.Minute {
+		t.Errorf("GetCacheTTL() = %v, want %v", ttl, 5*time.Minute)
+	}
+
+	// Set new TTL
+	resolver.SetCacheTTL(10 * time.Minute)
+
+	// Verify TTL was changed
+	ttl = resolver.GetCacheTTL()
+	if ttl != 10*time.Minute {
+		t.Errorf("GetCacheTTL() after SetCacheTTL = %v, want %v", ttl, 10*time.Minute)
+	}
+}
+
+func TestDoHResolver_ConcurrentClearCache(t *testing.T) {
+	resolver := NewDoHResolver(nil, 5*time.Minute)
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+
+	// Concurrent cache operations
+	for i := 0; i < 10; i++ {
+		wg.Add(2)
+
+		// Goroutine 1: lookup
+		go func() {
+			defer wg.Done()
+			_, _ = resolver.LookupIPAddr(ctx, "www.google.com")
+		}()
+
+		// Goroutine 2: clear cache
+		go func() {
+			defer wg.Done()
+			resolver.ClearCache()
+		}()
+	}
+
+	wg.Wait()
+	// If we get here without deadlock or panic, the test passes
+}

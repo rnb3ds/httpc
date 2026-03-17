@@ -34,10 +34,6 @@ type CookieSecurityConfig struct {
 	AllowSameSiteNone bool
 }
 
-// sameSiteNone represents the SameSite=None mode constant.
-// In Go 1.11+, this is http.SameSiteNoneMode.
-const sameSiteNone = http.SameSite(4)
-
 // DefaultCookieSecurityConfig returns a recommended security configuration.
 // This provides a good balance between security and compatibility.
 func DefaultCookieSecurityConfig() *CookieSecurityConfig {
@@ -69,7 +65,7 @@ func sameSiteToString(sameSite http.SameSite) string {
 		return "Lax"
 	case http.SameSiteStrictMode:
 		return "Strict"
-	case sameSiteNone:
+	case http.SameSiteNoneMode:
 		return "None"
 	default:
 		return ""
@@ -84,7 +80,7 @@ func stringToSameSite(s string) http.SameSite {
 	case "lax":
 		return http.SameSiteLaxMode
 	case "none":
-		return sameSiteNone
+		return http.SameSiteNoneMode
 	case "default":
 		return http.SameSiteDefaultMode
 	default:
@@ -94,7 +90,7 @@ func stringToSameSite(s string) http.SameSite {
 
 // isSameSiteNone checks if the SameSite value represents None mode.
 func isSameSiteNone(sameSite http.SameSite) bool {
-	return sameSite == sameSiteNone || sameSite == http.SameSite(4)
+	return sameSite == http.SameSiteNoneMode
 }
 
 // ValidateCookieSecurity validates a cookie against the security configuration.
