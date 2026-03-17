@@ -26,8 +26,6 @@ func TestIntegration_RESTfulAPI(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 
-		fmt.Println(r.URL.Path)
-
 		switch r.Method {
 		case "GET":
 			if strings.HasPrefix(r.URL.Path, "/users/") {
@@ -102,7 +100,7 @@ func TestIntegration_RESTfulAPI(t *testing.T) {
 		}
 
 		var created map[string]interface{}
-		if err := resp.JSON(&created); err != nil {
+		if err := resp.Unmarshal(&created); err != nil {
 			t.Fatalf("Failed to parse response: %v", err)
 		}
 
@@ -257,7 +255,7 @@ func TestIntegration_Pagination(t *testing.T) {
 		}
 
 		var result map[string]interface{}
-		if err := resp.JSON(&result); err != nil {
+		if err := resp.Unmarshal(&result); err != nil {
 			t.Fatalf("Failed to parse response: %v", err)
 		}
 

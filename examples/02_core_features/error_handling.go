@@ -1,4 +1,4 @@
-﻿//go:build examples
+//go:build examples
 
 package main
 
@@ -198,7 +198,7 @@ func demonstrateParsingErrors() {
 	}
 
 	var user User
-	if err := resp.JSON(&user); err != nil {
+	if err := resp.Unmarshal(&user); err != nil {
 		fmt.Println("Failed to parse JSON response")
 		fmt.Printf("  Error: %v\n", err)
 		fmt.Println("  Tip: Check if response is valid JSON")
@@ -240,7 +240,7 @@ func fetchUserData(userID int) (map[string]any, error) {
 	resp, err := client.Get(url,
 		httpc.WithContext(ctx),
 		httpc.WithBearerToken("your-token"),
-		httpc.WithJSONAccept(),
+		httpc.WithHeader("Accept", "application/json"),
 		httpc.WithMaxRetries(2),
 	)
 	if err != nil {
@@ -277,7 +277,7 @@ func fetchUserData(userID int) (map[string]any, error) {
 
 	// Parse response
 	var result map[string]any
-	if err := resp.JSON(&result); err != nil {
+	if err := resp.Unmarshal(&result); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 

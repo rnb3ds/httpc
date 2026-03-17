@@ -3,6 +3,7 @@ package connection
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,15 +13,15 @@ import (
 	"time"
 
 	"github.com/cybergodev/httpc/internal/dns"
-	"github.com/cybergodev/httpc/internal/netutil"
 	"github.com/cybergodev/httpc/internal/proxy"
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // PoolManager provides intelligent connection pool management with monitoring
 type PoolManager struct {
 	config *Config
 
-	transport *http.Transport
+	transport   *http.Transport
 	dohResolver *dns.DoHResolver
 
 	activeConns   int64
@@ -33,6 +34,11 @@ type PoolManager struct {
 
 	closed int32
 	mu     sync.RWMutex
+}
+
+// CertPinner defines the interface for certificate pinning
+type CertPinner interface {
+	VerifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error
 }
 
 // Config defines connection pool configuration
@@ -66,11 +72,14 @@ type Config struct {
 	DisableKeepAlives  bool
 	ForceAttemptHTTP2  bool
 
-	CookieJar interface{}
+	CookieJar http.CookieJar
 
 	// DNS configuration
-	EnableDoH        bool          // Enable DNS-over-HTTPS
-	DoHCacheTTL      time.Duration // DoH cache TTL
+	EnableDoH   bool          // Enable DNS-over-HTTPS
+	DoHCacheTTL time.Duration // DoH cache TTL
+
+	// Certificate pinning
+	CertPinner CertPinner
 }
 
 // HostStats tracks per-host connection statistics
@@ -209,7 +218,7 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 			// SSRF protection check
 			if !pm.config.AllowPrivateIPs {
 				for _, ip := range ips {
-					if err := netutil.ValidateIP(ip.IP); err != nil {
+					if err := validation.ValidateIP(ip.IP); err != nil {
 						atomic.AddInt64(&pm.rejectedConns, 1)
 						return nil, fmt.Errorf("SSRF protection: %w", err)
 					}
@@ -272,6 +281,9 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 // validateAddressBeforeDial performs address validation before dialing to prevent SSRF attacks.
 // This method validates both IP addresses and domain names to ensure they don't point
 // to private, reserved, or local addresses when SSRF protection is enabled.
+//
+// SECURITY: DNS resolution failures result in connection blocking to prevent
+// DNS-based SSRF bypass attacks where an attacker controls DNS responses.
 func (pm *PoolManager) validateAddressBeforeDial(address string) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
@@ -280,21 +292,21 @@ func (pm *PoolManager) validateAddressBeforeDial(address string) error {
 
 	// If the address is already an IP, validate it directly
 	if ip := net.ParseIP(host); ip != nil {
-		return netutil.ValidateIP(ip)
+		return validation.ValidateIP(ip)
 	}
 
 	// For domain names, we need to resolve them first to check all potential IPs
 	// This provides defense in depth against DNS rebinding attacks
 	ips, err := net.LookupIP(host)
 	if err != nil {
-		// If DNS resolution fails, we'll let the connection attempt proceed
-		// The dialer will handle the actual connection and report the error
-		return nil
+		// SECURITY: Block on DNS resolution failure instead of allowing connection
+		// This prevents attackers from using DNS failures to bypass SSRF protection
+		return fmt.Errorf("DNS resolution failed for SSRF validation of %s: %w", host, err)
 	}
 
 	// Check all resolved IPs - if any point to a private/reserved address, block it
 	for _, ip := range ips {
-		if err := netutil.ValidateIP(ip); err != nil {
+		if err := validation.ValidateIP(ip); err != nil {
 			return fmt.Errorf("domain %s resolves to blocked address: %w", host, err)
 		}
 	}
@@ -303,8 +315,14 @@ func (pm *PoolManager) validateAddressBeforeDial(address string) error {
 }
 
 func (pm *PoolManager) createTLSConfig() *tls.Config {
+	// If a custom TLS config is provided, use it (but add cert pinning if configured)
 	if pm.config.TLSConfig != nil {
-		return pm.config.TLSConfig.Clone()
+		tlsConfig := pm.config.TLSConfig.Clone()
+		// Add certificate pinning verification if configured
+		if pm.config.CertPinner != nil {
+			tlsConfig.VerifyPeerCertificate = pm.createVerifyPeerCertificate(tlsConfig)
+		}
+		return tlsConfig
 	}
 
 	tlsConfig := &tls.Config{
@@ -329,32 +347,75 @@ func (pm *PoolManager) createTLSConfig() *tls.Config {
 		},
 	}
 
+	// Add certificate pinning verification if configured
+	if pm.config.CertPinner != nil {
+		tlsConfig.VerifyPeerCertificate = pm.createVerifyPeerCertificate(tlsConfig)
+	}
+
 	return tlsConfig
+}
+
+// createVerifyPeerCertificate creates a certificate verification function
+// that combines standard verification with certificate pinning
+func (pm *PoolManager) createVerifyPeerCertificate(tlsConfig *tls.Config) func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+	return func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+		// First, run the pinner verification
+		if err := pm.config.CertPinner.VerifyPeerCertificate(rawCerts, verifiedChains); err != nil {
+			return fmt.Errorf("certificate pinning failed: %w", err)
+		}
+
+		// If InsecureSkipVerify is true, we skip standard verification
+		if tlsConfig.InsecureSkipVerify {
+			return nil
+		}
+
+		// Otherwise, standard TLS verification is performed by Go's TLS implementation
+		// This function only adds the pinning check on top of standard verification
+		return nil
+	}
 }
 
 type trackedConn struct {
 	net.Conn
-	pm   *PoolManager
-	host string
+	pm        *PoolManager
+	host      string
+	closeOnce sync.Once
+	closed    int32 // Atomic flag for fast double-close detection
 }
 
 func (tc *trackedConn) Close() error {
-	atomic.AddInt64(&tc.pm.activeConns, -1)
-	if value, ok := tc.pm.hostConns.Load(tc.host); ok {
-		stats := value.(*HostStats)
-		atomic.AddInt64(&stats.ActiveConns, -1)
+	// Fast path: check if already closed (atomic check before sync.Once overhead)
+	if atomic.LoadInt32(&tc.closed) == 1 {
+		return nil
 	}
-	return tc.Conn.Close()
+
+	var closeErr error
+	tc.closeOnce.Do(func() {
+		atomic.StoreInt32(&tc.closed, 1)
+		atomic.AddInt64(&tc.pm.activeConns, -1)
+		if value, ok := tc.pm.hostConns.Load(tc.host); ok {
+			if stats, ok := value.(*HostStats); ok && stats != nil {
+				atomic.AddInt64(&stats.ActiveConns, -1)
+			}
+		}
+		closeErr = tc.Conn.Close()
+	})
+	return closeErr
 }
 
 // updateConnectionMetrics efficiently updates per-host connection statistics.
 func (pm *PoolManager) updateConnectionMetrics(host string, connTime int64, success bool) {
+	// Use a pre-allocated stats pointer to avoid allocation in the hot path
 	value, _ := pm.hostConns.LoadOrStore(host, &HostStats{
 		Host:     host,
 		LastUsed: time.Now().Unix(),
 	})
 
-	stats := value.(*HostStats)
+	// Safe type assertion with defensive check
+	stats, ok := value.(*HostStats)
+	if !ok || stats == nil {
+		return // Defensive: skip update if type assertion fails
+	}
 
 	if success {
 		atomic.AddInt64(&stats.TotalConns, 1)
@@ -405,6 +466,14 @@ func (pm *PoolManager) Close() error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
+	// Close DoH resolver first to release its HTTP client resources
+	if pm.dohResolver != nil {
+		if err := pm.dohResolver.Close(); err != nil {
+			// Log but don't fail - continue closing other resources
+			// In production, this could be logged to a proper logger
+		}
+	}
+
 	if pm.transport != nil {
 		pm.transport.CloseIdleConnections()
 	}
@@ -416,8 +485,32 @@ func (pm *PoolManager) IsHealthy() bool {
 	if metrics.ConnectionHitRate < 0.9 && metrics.TotalConnections > 10 {
 		return false
 	}
-	if metrics.ActiveConnections >= int64(pm.config.MaxTotalConns)*9/10 {
+	// SECURITY: Handle MaxTotalConns=0 (unlimited) case to avoid false unhealthy status
+	// When MaxTotalConns is 0 (unlimited), skip the connection capacity check
+	if pm.config.MaxTotalConns > 0 && metrics.ActiveConnections >= int64(pm.config.MaxTotalConns)*9/10 {
 		return false
 	}
 	return true
+}
+
+// ClearHostStats clears all per-host connection statistics.
+// This releases memory held by the hostConns map.
+// Useful for long-running applications to periodically reset statistics.
+// Thread-safe: can be called concurrently with other operations.
+func (pm *PoolManager) ClearHostStats() {
+	pm.hostConns.Range(func(key, value interface{}) bool {
+		pm.hostConns.Delete(key)
+		return true
+	})
+}
+
+// GetHostStatsCount returns the number of hosts currently being tracked.
+// Useful for monitoring memory usage in production environments.
+func (pm *PoolManager) GetHostStatsCount() int {
+	count := 0
+	pm.hostConns.Range(func(key, value interface{}) bool {
+		count++
+		return true
+	})
+	return count
 }

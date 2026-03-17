@@ -91,7 +91,7 @@ func TestRequest_Headers(t *testing.T) {
 		client, _ := newTestClient()
 		defer client.Close()
 
-		_, err := client.Get(server.URL, WithJSONAccept())
+		_, err := client.Get(server.URL, WithHeader("Accept", "application/json"))
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
@@ -109,7 +109,7 @@ func TestRequest_Headers(t *testing.T) {
 		client, _ := newTestClient()
 		defer client.Close()
 
-		_, err := client.Get(server.URL, WithXMLAccept())
+		_, err := client.Get(server.URL, WithHeader("Accept", "application/xml"))
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
@@ -176,6 +176,21 @@ func TestRequest_Authentication(t *testing.T) {
 		}
 	})
 
+	t.Run("WithBasicAuth_EmptyUsername", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Get(server.URL, WithBasicAuth("", "pass"))
+		if err == nil {
+			t.Error("Expected error for empty username")
+		}
+	})
+
 	t.Run("WithBearerToken", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			auth := r.Header.Get("Authorization")
@@ -192,6 +207,21 @@ func TestRequest_Authentication(t *testing.T) {
 		_, err := client.Get(server.URL, WithBearerToken("test-token-123"))
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
+		}
+	})
+
+	t.Run("WithBearerToken_Empty", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Get(server.URL, WithBearerToken(""))
+		if err == nil {
+			t.Error("Expected error for empty token")
 		}
 	})
 }
@@ -239,6 +269,36 @@ func TestRequest_QueryParameters(t *testing.T) {
 		defer client.Close()
 
 		_, err := client.Get(server.URL, WithQuery("search", "test query"))
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+	})
+
+	t.Run("WithQueryMap nil", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Get(server.URL, WithQueryMap(nil))
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+	})
+
+	t.Run("WithQueryMap empty", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Get(server.URL, WithQueryMap(map[string]any{}))
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
@@ -441,7 +501,7 @@ func TestRequest_CombinedOptions(t *testing.T) {
 	_, err := client.Get(server.URL,
 		WithHeader("X-Custom", "value"),
 		WithQuery("param", "test"),
-		WithCookieValue("session", "abc123"),
+		WithCookie(http.Cookie{Name: "session", Value: "abc123"}),
 	)
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)

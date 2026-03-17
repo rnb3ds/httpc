@@ -34,7 +34,7 @@ func TestErrorClassification_NetworkErrors(t *testing.T) {
 		{
 			name:         "DNS resolution failure",
 			err:          &net.DNSError{Err: "no such host", Name: "nonexistent.example.com"},
-			expectedType: ErrorTypeNetwork,
+			expectedType: ErrorTypeDNS,
 			isRetryable:  true,
 		},
 		{
@@ -437,7 +437,7 @@ func TestErrorHandling_IntegrationWithClient(t *testing.T) {
 				if err == nil {
 					t.Error("Expected error, got nil")
 					if resp != nil {
-						t.Logf("Unexpected response: %d", resp.StatusCode)
+						t.Logf("Unexpected response: %d", resp.StatusCode())
 					}
 					return
 				}
@@ -465,7 +465,7 @@ func TestErrorHandling_IntegrationWithClient(t *testing.T) {
 					return
 				}
 
-				t.Logf("Response: %d %s", resp.StatusCode, resp.Status)
+				t.Logf("Response: %d %s", resp.StatusCode(), resp.Status())
 			}
 		})
 	}
@@ -522,7 +522,6 @@ func TestErrorHandling_TimeoutScenarios(t *testing.T) {
 				if err == nil {
 					t.Error("Expected timeout error, got nil")
 					if resp != nil {
-						resp.Body = ""
 						t.Logf("Unexpected response: %+v", resp)
 					}
 					return
@@ -550,8 +549,8 @@ func TestErrorHandling_TimeoutScenarios(t *testing.T) {
 					return
 				}
 
-				if resp.StatusCode != http.StatusOK {
-					t.Errorf("Expected status 200, got %d", resp.StatusCode)
+				if resp.StatusCode() != http.StatusOK {
+					t.Errorf("Expected status 200, got %d", resp.StatusCode())
 				}
 			}
 		})
@@ -592,7 +591,7 @@ func TestErrorHandling_PanicRecovery(t *testing.T) {
 		return
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	if resp.StatusCode() != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode())
 	}
 }

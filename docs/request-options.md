@@ -63,23 +63,19 @@ headers := map[string]string{
 }
 
 resp, err := client.Get(url,
-    httpc.WithHeaderMap(headers),
+    httpc.WithHeaders(headers),
 )
 ```
 
 ### Common Headers
 
 ```go
-// Content-Type
-httpc.WithContentType("application/json")
-
-// Accept
-httpc.WithAccept("application/json")
-httpc.WithJSONAccept()  // Shorthand for application/json
-httpc.WithXMLAccept()   // Shorthand for application/xml
-
 // User-Agent
 httpc.WithUserAgent("MyApp/1.0")
+
+// Content-Type (set via body options)
+httpc.WithJSON(data)  // Sets Content-Type: application/json
+httpc.WithXML(data)   // Sets Content-Type: application/xml
 ```
 
 ## Authentication
@@ -111,6 +107,11 @@ resp, err := client.Get(url,
 // Query parameter API key
 resp, err := client.Get(url,
     httpc.WithQuery("api_key", "your-api-key"),
+)
+
+// Note: Use WithCookie for cookie-based authentication
+resp, err := client.Get(url,
+    httpc.WithCookie(http.Cookie{Name: "session", Value: "your-session"}),
 )
 ```
 
@@ -218,16 +219,6 @@ resp, err := client.Post(url,
 
 **Sets:** `Content-Type: application/x-www-form-urlencoded`
 
-### Plain Text
-
-```go
-resp, err := client.Post(url,
-    httpc.WithText("Plain text content"),
-)
-```
-
-**Sets:** `Content-Type: text/plain`
-
 ### Binary Data
 
 ```go
@@ -243,7 +234,7 @@ resp, err := client.Post(url,
 ```go
 resp, err := client.Post(url,
     httpc.WithBody([]byte("raw data")),
-    httpc.WithContentType("application/octet-stream"),
+    httpc.WithHeader("Content-Type", "application/octet-stream"),
 )
 ```
 
@@ -353,10 +344,10 @@ resp, err := client.Get(url,
 
 ## Cookies
 
-### Send Cookies
+### Send Cookie
 
 ```go
-cookie := &http.Cookie{
+cookie := http.Cookie{
     Name:  "session_id",
     Value: "abc123",
 }
@@ -369,21 +360,26 @@ resp, err := client.Get(url,
 ### Multiple Cookies
 
 ```go
-cookies := []*http.Cookie{
-    {Name: "session_id", Value: "abc123"},
-    {Name: "user_pref", Value: "dark_mode"},
-}
-
+// Use multiple WithCookie calls for multiple cookies
 resp, err := client.Get(url,
-    httpc.WithCookies(cookies),
+    httpc.WithCookie(http.Cookie{Name: "session_id", Value: "abc123"}),
+    httpc.WithCookie(http.Cookie{Name: "user_pref", Value: "dark_mode"}),
 )
 ```
 
-### Simple Cookie (Name/Value)
+### Cookie Map
+
+Convenient way to set multiple simple cookies from a map:
 
 ```go
+cookies := map[string]string{
+    "session_id": "abc123",
+    "user_pref":  "dark_mode",
+    "lang":       "en",
+}
+
 resp, err := client.Get(url,
-    httpc.WithCookieValue("session_id", "abc123"),
+    httpc.WithCookieMap(cookies),
 )
 ```
 
@@ -405,10 +401,6 @@ resp, err := client.Get(url,
 |----------------------------------|----------------------|-----------------------------------------|
 | `WithHeader(key, value)`         | Set single header    | `WithHeader("X-API-Key", "key")`        |
 | `WithHeaderMap(headers)`         | Set multiple headers | `WithHeaderMap(map[string]string{...})` |
-| `WithContentType(ct)`            | Set Content-Type     | `WithContentType("application/json")`   |
-| `WithAccept(accept)`             | Set Accept header    | `WithAccept("application/json")`        |
-| `WithJSONAccept()`               | Accept JSON          | `WithJSONAccept()`                      |
-| `WithXMLAccept()`                | Accept XML           | `WithXMLAccept()`                       |
 | `WithUserAgent(ua)`              | Set User-Agent       | `WithUserAgent("MyApp/1.0")`            |
 | `WithBearerToken(token)`         | Bearer auth          | `WithBearerToken("jwt-token")`          |
 | `WithBasicAuth(u, p)`            | Basic auth           | `WithBasicAuth("user", "pass")`         |
@@ -417,7 +409,6 @@ resp, err := client.Get(url,
 | `WithJSON(data)`                 | JSON body            | `WithJSON(struct{...})`                 |
 | `WithXML(data)`                  | XML body             | `WithXML(struct{...})`                  |
 | `WithForm(data)`                 | Form data            | `WithForm(map[string]string{...})`      |
-| `WithText(content)`              | Plain text           | `WithText("content")`                   |
 | `WithBinary(data, ct)`           | Binary data          | `WithBinary([]byte{...}, "image/png")`  |
 | `WithBody(data)`                 | Raw body             | `WithBody([]byte{...})`                 |
 | `WithFile(field, name, content)` | Single file          | `WithFile("file", "doc.pdf", data)`     |
@@ -425,10 +416,11 @@ resp, err := client.Get(url,
 | `WithTimeout(duration)`          | Request timeout      | `WithTimeout(30*time.Second)`           |
 | `WithContext(ctx)`               | Request context      | `WithContext(ctx)`                      |
 | `WithMaxRetries(n)`              | Max retry attempts   | `WithMaxRetries(3)`                     |
-| `WithCookie(cookie)`             | Add cookie           | `WithCookie(&http.Cookie{...})`         |
-| `WithCookies(cookies)`           | Add multiple cookies | `WithCookies([]*http.Cookie{...})`      |
-| `WithCookieValue(name, value)`   | Add simple cookie    | `WithCookieValue("session", "abc123")`  |
+| `WithCookie(cookie)`             | Add cookie           | `WithCookie(http.Cookie{Name: "n", Value: "v"})` |
+| `WithCookieMap(cookies)`         | Add multiple cookies | `WithCookieMap(map[string]string{...})` |
 | `WithCookieString(cookieStr)`    | Parse cookie string  | `WithCookieString("a=1; b=2")`          |
+| `WithFollowRedirects(follow)`    | Redirect policy      | `WithFollowRedirects(false)`            |
+| `WithMaxRedirects(n)`            | Max redirects        | `WithMaxRedirects(5)`                   |
 
 ## Best Practices
 

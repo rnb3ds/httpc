@@ -3,30 +3,156 @@
 package proxy
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os/exec"
+	"strconv"
+	"strings"
 )
 
-// detectPlatform reads proxy settings from macOS system preferences
+// detectPlatform reads proxy settings from macOS system configuration
+// using the networksetup command-line tool
 func (d *Detector) detectPlatform() func(*http.Request) (*url.URL, error) {
-	// macOS stores proxy settings in System Preferences
-	// This can be accessed via `scutil` or system_configuration framework
-	// For simplicity, we rely on environment variables for now
+	// Try to get HTTP proxy first, then HTTPS
+	proxyURL := d.getMacOSProxy("getwebproxy")
+	if proxyURL == nil {
+		proxyURL = d.getMacOSProxy("getsecurewebproxy")
+	}
 
-	// TODO: Implement proper macOS system proxy detection using
-	// SystemConfiguration.framework
+	if proxyURL == nil {
+		return nil
+	}
 
-	return nil
+	return func(_ *http.Request) (*url.URL, error) {
+		return proxyURL, nil
+	}
 }
 
-// getMacOSProxySettings retrieves proxy settings from macOS system preferences
-func getMacOSProxySettings() (httpProxy, httpsProxy string, enabled bool, err error) {
-	// Placeholder for macOS-specific implementation
-	return "", "", false, fmt.Errorf("macOS system proxy detection not implemented")
+// getMacOSProxy retrieves proxy settings using networksetup command
+// toolType can be "getwebproxy" (HTTP) or "getsecurewebproxy" (HTTPS)
+func (d *Detector) getMacOSProxy(toolType string) *url.URL {
+	// First, get the primary network service
+	service := d.getPrimaryNetworkService()
+	if service == "" {
+		return nil
+	}
+
+	// Run networksetup command to get proxy settings
+	cmd := exec.Command("networksetup", "-"+toolType, service)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return nil
+	}
+
+	// Parse output
+	// Format:
+	// Enabled: Yes/No
+	// Server: hostname
+	// Port: port
+	// Authenticated Proxy Enabled: 0/1
+	// ...
+	output := stdout.String()
+	return d.parseNetworkSetupOutput(output)
 }
 
-// parseMacOSProxyURL parses a proxy URL string for macOS
-func parseMacOSProxyURL(proxyStr string) (*url.URL, error) {
-	return url.Parse(proxyStr)
+// getPrimaryNetworkService returns the primary network service name
+func (d *Detector) getPrimaryNetworkService() string {
+	// Get list of network services
+	cmd := exec.Command("networksetup", "-listallnetworkservices")
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+
+	if err := cmd.Run(); err != nil {
+		// Fallback: try common service names
+		return ""
+	}
+
+	lines := strings.Split(stdout.String(), "\n")
+	if len(lines) < 2 {
+		return ""
+	}
+
+	// First line is a header, skip it
+	// Look for common network services in order of preference
+	preferredServices := []string{
+		"Wi-Fi",
+		"Ethernet",
+		"USB 10/100/1000 LAN",
+		"Thunderbolt Ethernet",
+		"Bluetooth PAN",
+	}
+
+	availableServices := lines[1:]
+
+	// Find first preferred service that exists
+	for _, preferred := range preferredServices {
+		for _, available := range availableServices {
+			available = strings.TrimSpace(available)
+			if available == "" || strings.Contains(available, "*") {
+				continue // Skip disabled services (marked with *)
+			}
+			if strings.EqualFold(available, preferred) {
+				return available
+			}
+		}
+	}
+
+	// If no preferred service found, use first available one
+	for _, available := range availableServices {
+		available = strings.TrimSpace(available)
+		if available != "" && !strings.Contains(available, "*") {
+			return available
+		}
+	}
+
+	return ""
+}
+
+// parseNetworkSetupOutput parses networksetup command output
+func (d *Detector) parseNetworkSetupOutput(output string) *url.URL {
+	lines := strings.Split(output, "\n")
+
+	var enabled bool
+	var server string
+	var port int
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+
+		switch strings.ToLower(key) {
+		case "enabled":
+			enabled = strings.EqualFold(value, "yes") || value == "1"
+		case "server":
+			server = value
+		case "port":
+			if p, err := strconv.Atoi(value); err == nil {
+				port = p
+			}
+		}
+	}
+
+	if !enabled || server == "" || port == 0 {
+		return nil
+	}
+
+	// Construct proxy URL
+	proxyStr := fmt.Sprintf("http://%s:%d", server, port)
+	proxyURL, err := url.Parse(proxyStr)
+	if err != nil {
+		return nil
+	}
+
+	return proxyURL
 }

@@ -4,14 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-)
 
-// testConfig returns a config suitable for testing with localhost
-func testRedirectConfig() *Config {
-	config := DefaultConfig()
-	config.AllowPrivateIPs = true
-	return config
-}
+	"github.com/cybergodev/httpc/internal/engine"
+)
 
 func TestRedirect_AutoFollow(t *testing.T) {
 	t.Parallel()
@@ -34,7 +29,7 @@ func TestRedirect_AutoFollow(t *testing.T) {
 	}))
 	defer redirectServer.Close()
 
-	config := testRedirectConfig()
+	config := testConfig()
 	config.FollowRedirects = true
 	config.MaxRedirects = 10
 	client, err := New(config)
@@ -79,7 +74,7 @@ func TestRedirect_NoFollow(t *testing.T) {
 	}))
 	defer redirectServer.Close()
 
-	config := testRedirectConfig()
+	config := testConfig()
 	config.FollowRedirects = false
 	client, err := New(config)
 	if err != nil {
@@ -119,7 +114,7 @@ func TestRedirect_MaxRedirectsLimit(t *testing.T) {
 	}))
 	defer redirectServer.Close()
 
-	config := testRedirectConfig()
+	config := testConfig()
 	config.FollowRedirects = true
 	config.MaxRedirects = 3
 	client, err := New(config)
@@ -149,7 +144,7 @@ func TestRedirect_PerRequestOverride(t *testing.T) {
 	defer redirectServer.Close()
 
 	// Client configured to follow redirects
-	config := testRedirectConfig()
+	config := testConfig()
 	config.FollowRedirects = true
 	client, err := New(config)
 	if err != nil {
@@ -183,7 +178,7 @@ func TestRedirect_MaxRedirectsPerRequest(t *testing.T) {
 	}))
 	defer redirectServer.Close()
 
-	config := testRedirectConfig()
+	config := testConfig()
 	config.FollowRedirects = true
 	config.MaxRedirects = 10
 	client, err := New(config)
@@ -232,7 +227,7 @@ func TestRedirect_DifferentStatusCodes(t *testing.T) {
 			}))
 			defer redirectServer.Close()
 
-			config := testRedirectConfig()
+			config := testConfig()
 			config.FollowRedirects = true
 			client, err := New(config)
 			if err != nil {
@@ -275,7 +270,7 @@ func TestRedirect_ChainTracking(t *testing.T) {
 	}))
 	defer server1.Close()
 
-	config := testRedirectConfig()
+	config := testConfig()
 	config.FollowRedirects = true
 	client, err := New(config)
 	if err != nil {
@@ -350,7 +345,7 @@ func TestRedirect_OptionValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := &Request{}
+			req := &engine.Request{}
 			opt := WithMaxRedirects(tt.maxRedirect)
 			err := opt(req)
 			if (err != nil) != tt.wantErr {

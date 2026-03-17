@@ -2,8 +2,86 @@
 
 All notable changes to the cybergodev/httpc library will be documented in this file.
 
-[//]: # (The format is based on [Keep a Changelog]&#40;https://keepachangelog.com/en/1.0.0/&#41;,)
-[//]: # (and this project adheres to [Semantic Versioning]&#40;https://semver.org/spec/v2.0.0.html&#41;.)
+---
+
+## v1.3.8 - Security Hardening & Performance Optimization (2026-03-17)
+
+### Added
+- **Cookie Security Validation**: New `CookieSecurityConfig` for enforcing Secure, HttpOnly, SameSite attributes
+- **Certificate Pinning**: SPKI and public key pinning support for TLS connections
+- **Redirect Domain Whitelist**: `DomainWhitelist` for controlling allowed redirect targets
+- **Audit Middleware JSON**: Structured JSON output for security audit logging
+- **`WithCookieMap()`**: Batch set multiple cookies from a map
+- **`WithSecureCookie()`**: Request option for cookie security validation
+- **Memory Management APIs**: `ClearURLCache()`, `ClearAllPools()`, `GetCacheStats()` for long-running applications
+- **DoHResolver.Close()**: Proper resource cleanup for DNS-over-HTTPS resolver
+
+### Changed
+- **Performance**: ~34% memory reduction in response handling, ~45% faster deflate decompression
+- **Concurrency**: DoHResolver cacheTTL now uses `atomic.Int64` for thread-safe access
+- **Documentation**: Complete README rewrite with improved structure and examples
+
+### Fixed
+- **CRITICAL**: URL cache TOCTOU race condition preventing potential panic under high concurrency
+- **CRITICAL**: DoH cache size counter race condition
+- **CRITICAL**: `pooledFlateReader.Close()` resource leak
+- **CRITICAL**: Symlink attack prevention in file download
+- **MEDIUM**: Cookie pool sensitive data residual between requests
+- **MEDIUM**: SessionManager TOCTOU race with `SetCookieSecurity()`
+- **MEDIUM**: DNS compression pointer recursion depth limit (DoS protection)
+- Expanded system path protection for Linux (`/lib32/`, `/lib64/`, `/usr/lib/`, `/bin/`, `/sbin/`)
+
+### Breaking Changes
+- `DoHResolver` now implements `io.Closer`; callers should call `Close()` for proper cleanup
+
+---
+
+## v1.3.7 - DNS-over-HTTPS, Proxy Detection & Code Quality (2026-01-22)
+
+### Added
+- **DNS-over-HTTPS (DoH) Resolver**: Encrypted DNS resolution with multiple providers (Cloudflare, Google, AliDNS)
+  - Built-in caching with configurable TTL (default: 5 minutes)
+  - Automatic fallback to system DNS when DoH fails
+  - Helps bypass DNS pollution and prevents DNS hijacking
+  - Configurable via `EnableDoH` and `DoHCacheTTL` options
+- **Configurable System Proxy Detection**: New `EnableSystemProxy` option for explicit control over automatic system proxy detection
+  - Supports Windows Registry, macOS system settings, and environment variables
+  - Proxy priority: Manual ProxyURL > System Proxy > Direct Connection
+  - Default: `false` (requires explicit opt-in)
+- **Cross-Platform System Proxy Detection**: Automatic detection across Windows, macOS, and Linux platforms
+  - Windows: Reads from Registry (`Internet Settings`)
+  - All platforms: Falls back to `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` env vars
+- **New IP Validation Utilities in `internal/validation`**: Shared IP validation functions
+  - `IsPrivateOrReservedIP()` for private/reserved IP detection
+  - `ValidateIP()` for SSRF protection
+  - `IsLocalhost()` for localhost detection
+  - Single source of truth for network security checks
+
+### Changed
+- **IP Validation Logic**: Consolidated duplicate IP validation code (~60 lines) into `internal/validation/netutil.go`
+- **Cookie Validation**: Centralized in `internal/validation/common.go`, removed duplication from `public_options.go` and `domain_client.go`
+- **Cross-Platform Path Validation**: Enhanced `isSystemPath()` with platform-specific system paths for Windows, macOS, and Linux
+  - Environment variable expansion on Windows (`%SystemRoot%`, `%windir%`)
+  - Proper case-insensitive comparison on Windows, case-sensitive on Unix
+- **FormData Performance**: Replaced JSON serialization/deserialization with type reflection-based detection
+- **Constants**: Added `maxURLLen` constant, replaced hard-coded timeout values with named constants
+- **Metrics**: Removed unused `idleConns` field and `IdleConnections` metric
+
+### Fixed
+- **Windows Proxy Detection**: Replaced deprecated `syscall.StringToUTF16Ptr()` with `windows.UTF16PtrFromString()` from `golang.org/x/sys/windows`
+- **Dead Code**: Removed unused `isValidHeaderByte()` function from `types.go`
+
+### API Compatibility
+- **Breaking Change**: System proxy detection no longer automatic by default
+  - Set `EnableSystemProxy: true` to restore old behavior
+  - Code relying on implicit system proxy detection needs migration
+- **No Breaking Changes to Public API**: All modifications are internal refactoring except `EnableSystemProxy` default behavior
+
+### Impact
+- **Maintainability**: Reduced code duplication by ~150 lines through package consolidation
+- **Cross-Platform**: System path detection works correctly on Windows, macOS, and Linux
+- **Testability**: `getOS()` function provides OS detection for internal use
+- **Security**: Consistent IP and cookie validation across all code paths
 
 ---
 

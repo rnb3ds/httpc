@@ -3,8 +3,11 @@ package connection
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
@@ -400,4 +403,412 @@ func TestPoolManager_ContextCancellation(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error due to context cancellation")
 	}
+}
+
+// ============================================================================
+// SSRF Protection Tests
+// ============================================================================
+
+func TestPoolManager_SSRFProtection(t *testing.T) {
+	t.Run("BlockPrivateIPs", func(t *testing.T) {
+		config := &Config{
+			AllowPrivateIPs: false, // SSRF protection enabled
+		}
+		pm, err := NewPoolManager(config)
+		if err != nil {
+			t.Fatalf("Expected no error, got: %v", err)
+		}
+		defer func() { _ = pm.Close() }()
+
+		// Verify that SSRF protection is enabled
+		if pm.config.AllowPrivateIPs {
+			t.Error("AllowPrivateIPs should be false")
+		}
+	})
+
+	t.Run("AllowPrivateIPs", func(t *testing.T) {
+		config := &Config{
+			AllowPrivateIPs: true,
+		}
+		pm, err := NewPoolManager(config)
+		if err != nil {
+			t.Fatalf("Expected no error, got: %v", err)
+		}
+		defer func() { _ = pm.Close() }()
+
+		if !pm.config.AllowPrivateIPs {
+			t.Error("AllowPrivateIPs should be true")
+		}
+	})
+}
+
+func TestPoolManager_SystemProxy(t *testing.T) {
+	config := &Config{
+		EnableSystemProxy: true,
+	}
+
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	// Transport should be created (proxy detection may or may not find a proxy)
+	if pm.transport == nil {
+		t.Error("Transport should not be nil")
+	}
+}
+
+// ============================================================================
+// Metrics Tests
+// ============================================================================
+
+func TestPoolManager_MetricsTracking(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.AllowPrivateIPs = true
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	client := &http.Client{
+		Transport: pm.GetTransport(),
+		Timeout:   5 * time.Second,
+	}
+
+	// Make a request
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	// Check metrics after request
+	metrics := pm.GetMetrics()
+	// Metrics might not update immediately due to async tracking
+	// Just verify the method doesn't panic
+	_ = metrics.TotalConnections
+	_ = metrics.ActiveConnections
+}
+
+// ============================================================================
+// Concurrent Access Tests
+// ============================================================================
+
+func TestPoolManager_ConcurrentRequests(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.AllowPrivateIPs = true
+	config.MaxIdleConns = 50
+	config.MaxConnsPerHost = 20
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	client := &http.Client{
+		Transport: pm.GetTransport(),
+		Timeout:   5 * time.Second,
+	}
+
+	const numRequests = 20
+	var wg sync.WaitGroup
+	errChan := make(chan error, numRequests)
+
+	for i := 0; i < numRequests; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := client.Get(server.URL)
+			if err != nil {
+				errChan <- err
+				return
+			}
+			_ = resp.Body.Close()
+		}()
+	}
+
+	wg.Wait()
+	close(errChan)
+
+	for err := range errChan {
+		t.Errorf("Concurrent request failed: %v", err)
+	}
+}
+
+func TestPoolManager_ConcurrentClose(t *testing.T) {
+	pm, err := NewPoolManager(nil)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	const numClosers = 5
+	var wg sync.WaitGroup
+	wg.Add(numClosers)
+
+	for i := 0; i < numClosers; i++ {
+		go func() {
+			defer wg.Done()
+			_ = pm.Close() // Should be safe to call multiple times
+		}()
+	}
+
+	wg.Wait()
+}
+
+// ============================================================================
+// Edge Cases Tests
+// ============================================================================
+
+func TestPoolManager_NilConfig(t *testing.T) {
+	pm, err := NewPoolManager(nil)
+	if err != nil {
+		t.Fatalf("Expected no error with nil config, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	// Should use default config
+	if pm.config == nil {
+		t.Error("Config should not be nil after initialization")
+	}
+}
+
+func TestPoolManager_ZeroTimeouts(t *testing.T) {
+	config := &Config{
+		DialTimeout:           0,
+		TLSHandshakeTimeout:   0,
+		ResponseHeaderTimeout: 0,
+		IdleConnTimeout:       0,
+	}
+
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	// Should handle zero timeouts gracefully
+	if pm.transport == nil {
+		t.Error("Transport should not be nil")
+	}
+}
+
+func TestPoolManager_HighConnectionLimits(t *testing.T) {
+	config := &Config{
+		MaxIdleConns:        1000,
+		MaxIdleConnsPerHost: 100,
+		MaxConnsPerHost:     200,
+	}
+
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	if pm.transport.MaxIdleConns != 1000 {
+		t.Errorf("Expected MaxIdleConns 1000, got %d", pm.transport.MaxIdleConns)
+	}
+}
+
+func TestPoolManager_HTTP2Disabled(t *testing.T) {
+	config := &Config{
+		EnableHTTP2: false,
+	}
+
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	// When HTTP/2 is disabled, ForceAttemptHTTP2 should be false
+	if pm.transport.ForceAttemptHTTP2 {
+		t.Error("ForceAttemptHTTP2 should be false when HTTP/2 is disabled")
+	}
+}
+
+// ============================================================================
+// Address Validation Tests (SSRF Protection)
+// ============================================================================
+
+func TestPoolManager_ValidateAddressBeforeDial(t *testing.T) {
+	pm, err := NewPoolManager(nil)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	tests := []struct {
+		name        string
+		address     string
+		expectError bool
+	}{
+		{
+			name:        "Loopback IP",
+			address:     "127.0.0.1:8080",
+			expectError: true, // Loopback should be blocked
+		},
+		{
+			name:        "Private IP 10.x.x.x",
+			address:     "10.0.0.1:443",
+			expectError: true, // Private IP should be blocked
+		},
+		{
+			name:        "Private IP 192.168.x.x",
+			address:     "192.168.1.1:443",
+			expectError: true, // Private IP should be blocked
+		},
+		{
+			name:        "Private IP 172.16.x.x",
+			address:     "172.16.0.1:443",
+			expectError: true, // Private IP should be blocked
+		},
+		{
+			name:        "Link-local IP",
+			address:     "169.254.1.1:443",
+			expectError: true, // Link-local should be blocked
+		},
+		{
+			name:        "Public IP (simulated)",
+			address:     "8.8.8.8:443",
+			expectError: false, // Public IP should be allowed
+		},
+		{
+			name:        "IP without port",
+			address:     "127.0.0.1",
+			expectError: true, // Loopback without port should be blocked
+		},
+		{
+			name:        "IPv6 loopback",
+			address:     "[::1]:8080",
+			expectError: true, // IPv6 loopback should be blocked
+		},
+		{
+			name:        "Invalid address format",
+			address:     "not-an-ip-address",
+			expectError: true, // DNS resolution failure should block
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := pm.validateAddressBeforeDial(tt.address)
+			if tt.expectError && err == nil {
+				t.Errorf("Expected error for address %s, got nil", tt.address)
+			}
+			if !tt.expectError && err != nil {
+				t.Errorf("Did not expect error for address %s, got: %v", tt.address, err)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// Certificate Pinning Tests
+// ============================================================================
+
+func TestPoolManager_CreateVerifyPeerCertificate(t *testing.T) {
+	t.Run("WithCertPinner", func(t *testing.T) {
+		// Create a mock cert pinner
+		pinner := &mockCertPinner{}
+
+		config := &Config{
+			CertPinner: pinner,
+		}
+
+		pm, err := NewPoolManager(config)
+		if err != nil {
+			t.Fatalf("Expected no error, got: %v", err)
+		}
+		defer func() { _ = pm.Close() }()
+
+		tlsConfig := pm.transport.TLSClientConfig
+		if tlsConfig == nil {
+			t.Fatal("TLS config should not be nil")
+		}
+
+		// VerifyPeerCertificate should be set when CertPinner is configured
+		if tlsConfig.VerifyPeerCertificate == nil {
+			t.Error("VerifyPeerCertificate should be set when CertPinner is configured")
+		}
+	})
+
+	t.Run("WithoutCertPinner", func(t *testing.T) {
+		pm, err := NewPoolManager(nil)
+		if err != nil {
+			t.Fatalf("Expected no error, got: %v", err)
+		}
+		defer func() { _ = pm.Close() }()
+
+		tlsConfig := pm.transport.TLSClientConfig
+		if tlsConfig == nil {
+			t.Fatal("TLS config should not be nil")
+		}
+
+		// VerifyPeerCertificate should not be set without CertPinner
+		if tlsConfig.VerifyPeerCertificate != nil {
+			t.Error("VerifyPeerCertificate should not be set without CertPinner")
+		}
+	})
+
+	t.Run("CustomTLSWithCertPinner", func(t *testing.T) {
+		pinner := &mockCertPinner{}
+		customTLS := &tls.Config{
+			MinVersion: tls.VersionTLS13,
+		}
+
+		config := &Config{
+			TLSConfig:  customTLS,
+			CertPinner: pinner,
+		}
+
+		pm, err := NewPoolManager(config)
+		if err != nil {
+			t.Fatalf("Expected no error, got: %v", err)
+		}
+		defer func() { _ = pm.Close() }()
+
+		tlsConfig := pm.transport.TLSClientConfig
+		if tlsConfig == nil {
+			t.Fatal("TLS config should not be nil")
+		}
+
+		// Should preserve custom TLS config
+		if tlsConfig.MinVersion != tls.VersionTLS13 {
+			t.Errorf("Expected MinVersion TLS 1.3, got %d", tlsConfig.MinVersion)
+		}
+
+		// Should add cert pinning
+		if tlsConfig.VerifyPeerCertificate == nil {
+			t.Error("VerifyPeerCertificate should be set")
+		}
+	})
+}
+
+// mockCertPinner is a mock implementation of certificate pinner for testing
+type mockCertPinner struct {
+	shouldFail bool
+}
+
+func (m *mockCertPinner) Pin() string {
+	return "mock-pinner"
+}
+
+func (m *mockCertPinner) VerifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+	if m.shouldFail {
+		return fmt.Errorf("mock certificate pinning failure")
+	}
+	return nil
 }

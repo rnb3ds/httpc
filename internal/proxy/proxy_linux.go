@@ -2,6 +2,11 @@
 
 package proxy
 
+import (
+	"net/http"
+	"net/url"
+)
+
 // detectPlatform reads proxy settings from Linux system settings
 func (d *Detector) detectPlatform() func(*http.Request) (*url.URL, error) {
 	// Linux typically uses environment variables for proxy settings

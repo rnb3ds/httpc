@@ -11,6 +11,21 @@ import (
 	"time"
 )
 
+const (
+	maxBodyPreview   = 200 // Maximum body preview length in String()
+	truncationMarker = "...[truncated]"
+)
+
+// sensitiveHeaders contains header names that should be masked in String() output.
+var sensitiveHeaders = map[string]bool{
+	"Authorization":       true,
+	"Cookie":              true,
+	"Set-Cookie":          true,
+	"X-Api-Key":           true,
+	"X-Auth-Token":        true,
+	"Proxy-Authorization": true,
+}
+
 type Result struct {
 	Request  *RequestInfo
 	Response *ResponseInfo
@@ -18,6 +33,8 @@ type Result struct {
 }
 
 type RequestInfo struct {
+	URL     string
+	Method  string
 	Headers http.Header
 	Cookies []*http.Cookie
 }
@@ -25,6 +42,7 @@ type RequestInfo struct {
 type ResponseInfo struct {
 	StatusCode    int
 	Status        string
+	Proto         string
 	Headers       http.Header
 	Body          string
 	RawBody       []byte
@@ -60,6 +78,14 @@ func (r *Result) StatusCode() int {
 	return r.Response.StatusCode
 }
 
+// Proto returns the HTTP protocol version (e.g., "HTTP/1.1", "HTTP/2.0").
+func (r *Result) Proto() string {
+	if r == nil || r.Response == nil {
+		return ""
+	}
+	return r.Response.Proto
+}
+
 func (r *Result) RequestCookies() []*http.Cookie {
 	if r == nil || r.Request == nil {
 		return nil
@@ -74,10 +100,12 @@ func (r *Result) ResponseCookies() []*http.Cookie {
 	return r.Response.Cookies
 }
 
-// JSON unmarshals the response body into the provided interface.
+// Unmarshal parses the JSON-encoded response body and stores the result
+// in the value pointed to by v. It follows the same conventions as json.Unmarshal.
+//
 // Returns ErrResponseBodyEmpty if the body is nil or empty.
 // Returns ErrResponseBodyTooLarge if the body exceeds 50MB.
-func (r *Result) JSON(v any) error {
+func (r *Result) Unmarshal(v any) error {
 	if r == nil || r.Response == nil {
 		return ErrResponseBodyEmpty
 	}
@@ -167,8 +195,24 @@ func (r *Result) String() string {
 		return "Result{}"
 	}
 
+	// Pre-calculate approximate size to reduce allocations
+	estimatedSize := 128 // Base size for status, content length
+	if r.Meta != nil {
+		estimatedSize += 64 // Duration and attempts
+	}
+	if len(r.Response.Headers) > 0 {
+		estimatedSize += 32 + len(r.Response.Headers)*16 // Headers
+	}
+	if len(r.Response.Cookies) > 0 {
+		estimatedSize += 32 // Cookies count
+	}
+	if len(r.Response.Body) > 0 {
+		bodyPreview := min(len(r.Response.Body), maxBodyPreview)
+		estimatedSize += 16 + bodyPreview
+	}
+
 	var b strings.Builder
-	b.Grow(256)
+	b.Grow(estimatedSize)
 
 	b.WriteString("Result{Status: ")
 	b.WriteString(strconv.Itoa(r.Response.StatusCode))
@@ -187,6 +231,21 @@ func (r *Result) String() string {
 	if len(r.Response.Headers) > 0 {
 		b.WriteString(", Headers: ")
 		b.WriteString(strconv.Itoa(len(r.Response.Headers)))
+		b.WriteString(" [")
+		first := true
+		for key := range r.Response.Headers {
+			if !first {
+				b.WriteString(", ")
+			}
+			first = false
+			if sensitiveHeaders[key] {
+				b.WriteString(key)
+				b.WriteString(": ***")
+			} else {
+				b.WriteString(key)
+			}
+		}
+		b.WriteByte(']')
 	}
 
 	if len(r.Response.Cookies) > 0 {
@@ -195,8 +254,13 @@ func (r *Result) String() string {
 	}
 
 	if len(r.Response.Body) > 0 {
-		b.WriteString(", Body: \n")
-		b.WriteString(r.Response.Body)
+		b.WriteString(", Body: ")
+		if len(r.Response.Body) > maxBodyPreview {
+			b.WriteString(r.Response.Body[:maxBodyPreview])
+			b.WriteString(truncationMarker)
+		} else {
+			b.WriteString(r.Response.Body)
+		}
 	}
 
 	b.WriteByte('}')

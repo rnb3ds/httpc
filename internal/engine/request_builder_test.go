@@ -14,6 +14,58 @@ import (
 // REQUEST BUILDER TESTS
 // ============================================================================
 
+// testRequestBuilder creates a Request with the given parameters using setters.
+// This helper function is used because Request fields are now private.
+func testRequestBuilder() *testRequest {
+	return &testRequest{}
+}
+
+type testRequest struct {
+	method          string
+	url             string
+	headers         map[string]string
+	queryParams     map[string]any
+	body            any
+	timeout         time.Duration
+	maxRetries      int
+	ctx             context.Context
+	cookies         []http.Cookie
+	followRedirects *bool
+	maxRedirects    *int
+}
+
+func (tr *testRequest) Method(v string) *testRequest              { tr.method = v; return tr }
+func (tr *testRequest) URL(v string) *testRequest                 { tr.url = v; return tr }
+func (tr *testRequest) Headers(v map[string]string) *testRequest  { tr.headers = v; return tr }
+func (tr *testRequest) QueryParams(v map[string]any) *testRequest { tr.queryParams = v; return tr }
+func (tr *testRequest) Body(v any) *testRequest                   { tr.body = v; return tr }
+func (tr *testRequest) Timeout(v time.Duration) *testRequest      { tr.timeout = v; return tr }
+func (tr *testRequest) MaxRetries(v int) *testRequest             { tr.maxRetries = v; return tr }
+func (tr *testRequest) Context(v context.Context) *testRequest    { tr.ctx = v; return tr }
+func (tr *testRequest) Cookies(v []http.Cookie) *testRequest      { tr.cookies = v; return tr }
+func (tr *testRequest) FollowRedirects(v *bool) *testRequest      { tr.followRedirects = v; return tr }
+func (tr *testRequest) MaxRedirects(v *int) *testRequest          { tr.maxRedirects = v; return tr }
+
+func (tr *testRequest) Build() *Request {
+	req := &Request{}
+	req.SetMethod(tr.method)
+	req.SetURL(tr.url)
+	if tr.headers != nil {
+		req.SetHeaders(tr.headers)
+	}
+	if tr.queryParams != nil {
+		req.SetQueryParams(tr.queryParams)
+	}
+	req.SetBody(tr.body)
+	req.SetTimeout(tr.timeout)
+	req.SetMaxRetries(tr.maxRetries)
+	req.SetContext(tr.ctx)
+	req.SetCookies(tr.cookies)
+	req.SetFollowRedirects(tr.followRedirects)
+	req.SetMaxRedirects(tr.maxRedirects)
+	return req
+}
+
 func TestRequestProcessor_BuildHTTPRequest(t *testing.T) {
 	config := &Config{
 		Timeout: 30 * time.Second,
@@ -32,14 +84,14 @@ func TestRequestProcessor_BuildHTTPRequest(t *testing.T) {
 	}{
 		{
 			name: "Simple GET request",
-			request: &Request{
-				Method:  "GET",
-				URL:     "https://api.example.com/users",
-				Context: context.Background(),
-				Headers: map[string]string{
+			request: testRequestBuilder().
+				Method("GET").
+				URL("https://api.example.com/users").
+				Context(context.Background()).
+				Headers(map[string]string{
 					"Accept": "application/json",
-				},
-			},
+				}).
+				Build(),
 			expectError: false,
 			validate: func(t *testing.T, req *http.Request) {
 				if req.Method != "GET" {
@@ -58,18 +110,18 @@ func TestRequestProcessor_BuildHTTPRequest(t *testing.T) {
 		},
 		{
 			name: "POST with JSON body",
-			request: &Request{
-				Method:  "POST",
-				URL:     "https://api.example.com/users",
-				Context: context.Background(),
-				Headers: map[string]string{
+			request: testRequestBuilder().
+				Method("POST").
+				URL("https://api.example.com/users").
+				Context(context.Background()).
+				Headers(map[string]string{
 					"Content-Type": "application/json",
-				},
-				Body: map[string]interface{}{
+				}).
+				Body(map[string]interface{}{
 					"name":  "John Doe",
 					"email": "john@example.com",
-				},
-			},
+				}).
+				Build(),
 			expectError: false,
 			validate: func(t *testing.T, req *http.Request) {
 				if req.Method != "POST" {
@@ -85,16 +137,16 @@ func TestRequestProcessor_BuildHTTPRequest(t *testing.T) {
 		},
 		{
 			name: "Request with query parameters",
-			request: &Request{
-				Method:  "GET",
-				URL:     "https://api.example.com/users",
-				Context: context.Background(),
-				QueryParams: map[string]any{
+			request: testRequestBuilder().
+				Method("GET").
+				URL("https://api.example.com/users").
+				Context(context.Background()).
+				QueryParams(map[string]any{
 					"page":   1,
 					"limit":  10,
 					"filter": "active",
-				},
-			},
+				}).
+				Build(),
 			expectError: false,
 			validate: func(t *testing.T, req *http.Request) {
 				query := req.URL.Query()
@@ -111,15 +163,15 @@ func TestRequestProcessor_BuildHTTPRequest(t *testing.T) {
 		},
 		{
 			name: "Request with cookies",
-			request: &Request{
-				Method:  "GET",
-				URL:     "https://api.example.com/users",
-				Context: context.Background(),
-				Cookies: []http.Cookie{
+			request: testRequestBuilder().
+				Method("GET").
+				URL("https://api.example.com/users").
+				Context(context.Background()).
+				Cookies([]http.Cookie{
 					{Name: "session_id", Value: "abc123"},
 					{Name: "user_pref", Value: "dark_mode"},
-				},
-			},
+				}).
+				Build(),
 			expectError: false,
 			validate: func(t *testing.T, req *http.Request) {
 				cookies := req.Cookies()
@@ -148,12 +200,12 @@ func TestRequestProcessor_BuildHTTPRequest(t *testing.T) {
 		},
 		{
 			name: "Request with timeout",
-			request: &Request{
-				Method:  "GET",
-				URL:     "https://api.example.com/users",
-				Context: context.Background(),
-				Timeout: 15 * time.Second,
-			},
+			request: testRequestBuilder().
+				Method("GET").
+				URL("https://api.example.com/users").
+				Context(context.Background()).
+				Timeout(15 * time.Second).
+				Build(),
 			expectError: false,
 			validate: func(t *testing.T, req *http.Request) {
 				if req.Context() == nil {
@@ -163,29 +215,28 @@ func TestRequestProcessor_BuildHTTPRequest(t *testing.T) {
 		},
 		{
 			name: "Invalid URL",
-			request: &Request{
-				Method:  "GET",
-				URL:     "://invalid-url",
-				Context: context.Background(),
-			},
+			request: testRequestBuilder().
+				Method("GET").
+				URL("://invalid-url").
+				Context(context.Background()).
+				Build(),
 			expectError: true,
 		},
 		{
 			name: "Empty method",
-			request: &Request{
-				Method:  "",
-				URL:     "https://api.example.com/users",
-				Context: context.Background(),
-			},
+			request: testRequestBuilder().
+				Method("").
+				URL("https://api.example.com/users").
+				Context(context.Background()).
+				Build(),
 			expectError: false, // Empty method defaults to GET
 		},
 		{
 			name: "Nil context",
-			request: &Request{
-				Method:  "GET",
-				URL:     "https://api.example.com/users",
-				Context: nil,
-			},
+			request: testRequestBuilder().
+				Method("GET").
+				URL("https://api.example.com/users").
+				Build(),
 			expectError: false, // Nil context defaults to Background
 		},
 	}
@@ -291,17 +342,18 @@ func TestRequestProcessor_BodySerializationComprehensive(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			request := &Request{
-				Method:  "POST",
-				URL:     "https://api.example.com/test",
-				Context: context.Background(),
-				Body:    tt.body,
-				Headers: make(map[string]string),
+			headers := make(map[string]string)
+			if tt.contentType != "" {
+				headers["Content-Type"] = tt.contentType
 			}
 
-			if tt.contentType != "" {
-				request.Headers["Content-Type"] = tt.contentType
-			}
+			request := testRequestBuilder().
+				Method("POST").
+				URL("https://api.example.com/test").
+				Context(context.Background()).
+				Body(tt.body).
+				Headers(headers).
+				Build()
 
 			httpReq, err := processor.Build(request)
 
@@ -336,15 +388,15 @@ func TestRequestProcessor_HeaderHandlingComprehensive(t *testing.T) {
 
 	processor := NewRequestProcessor(config)
 
-	request := &Request{
-		Method:  "GET",
-		URL:     "https://api.example.com/test",
-		Context: context.Background(),
-		Headers: map[string]string{
+	request := testRequestBuilder().
+		Method("GET").
+		URL("https://api.example.com/test").
+		Context(context.Background()).
+		Headers(map[string]string{
 			"X-Custom-Header":  "custom-value",
 			"X-Default-Header": "overridden-value", // Should override default value
-		},
-	}
+		}).
+		Build()
 
 	httpReq, err := processor.Build(request)
 	if err != nil {
@@ -427,12 +479,12 @@ func TestRequestProcessor_QueryParameterHandlingComprehensive(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			request := &Request{
-				Method:      "GET",
-				URL:         tt.url,
-				Context:     context.Background(),
-				QueryParams: tt.params,
-			}
+			request := testRequestBuilder().
+				Method("GET").
+				URL(tt.url).
+				Context(context.Background()).
+				QueryParams(tt.params).
+				Build()
 
 			httpReq, err := processor.Build(request)
 			if err != nil {
@@ -461,11 +513,11 @@ func TestRequestProcessor_EdgeCases(t *testing.T) {
 
 	t.Run("Very long URL", func(t *testing.T) {
 		longPath := strings.Repeat("a", 2000)
-		request := &Request{
-			Method:  "GET",
-			URL:     "https://api.example.com/" + longPath,
-			Context: context.Background(),
-		}
+		request := testRequestBuilder().
+			Method("GET").
+			URL("https://api.example.com/" + longPath).
+			Context(context.Background()).
+			Build()
 
 		_, err := processor.Build(request)
 		// Should be able to handle long URLs (within reasonable limits)
@@ -480,12 +532,12 @@ func TestRequestProcessor_EdgeCases(t *testing.T) {
 			params[fmt.Sprintf("param%d", i)] = fmt.Sprintf("value%d", i)
 		}
 
-		request := &Request{
-			Method:      "GET",
-			URL:         "https://api.example.com/test",
-			Context:     context.Background(),
-			QueryParams: params,
-		}
+		request := testRequestBuilder().
+			Method("GET").
+			URL("https://api.example.com/test").
+			Context(context.Background()).
+			QueryParams(params).
+			Build()
 
 		httpReq, err := processor.Build(request)
 		if err != nil {
@@ -504,12 +556,12 @@ func TestRequestProcessor_EdgeCases(t *testing.T) {
 			headers[fmt.Sprintf("X-Header-%d", i)] = fmt.Sprintf("value-%d", i)
 		}
 
-		request := &Request{
-			Method:  "GET",
-			URL:     "https://api.example.com/test",
-			Context: context.Background(),
-			Headers: headers,
-		}
+		request := testRequestBuilder().
+			Method("GET").
+			URL("https://api.example.com/test").
+			Context(context.Background()).
+			Headers(headers).
+			Build()
 
 		httpReq, err := processor.Build(request)
 		if err != nil {

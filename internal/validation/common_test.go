@@ -2,6 +2,7 @@ package validation
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -433,6 +434,502 @@ func TestValidateCookieValue(t *testing.T) {
 			} else {
 				if err != nil {
 					t.Errorf("ValidateCookieValue() unexpected error = %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateCookie(t *testing.T) {
+	tests := []struct {
+		name        string
+		cookie      *http.Cookie
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "valid cookie",
+			cookie: &http.Cookie{
+				Name:  "session",
+				Value: "abc123",
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid cookie with domain and path",
+			cookie: &http.Cookie{
+				Name:   "session",
+				Value:  "abc123",
+				Domain: "example.com",
+				Path:   "/api",
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid cookie name",
+			cookie: &http.Cookie{
+				Name:  "session;id",
+				Value: "abc123",
+			},
+			wantErr:     true,
+			errContains: "invalid characters",
+		},
+		{
+			name: "invalid cookie value",
+			cookie: &http.Cookie{
+				Name:  "session",
+				Value: "abc\x01",
+			},
+			wantErr:     true,
+			errContains: "invalid characters",
+		},
+		{
+			name: "domain too long",
+			cookie: &http.Cookie{
+				Name:   "session",
+				Value:  "abc123",
+				Domain: strings.Repeat("a", 256),
+			},
+			wantErr:     true,
+			errContains: "domain too long",
+		},
+		{
+			name: "path too long",
+			cookie: &http.Cookie{
+				Name:  "session",
+				Value: "abc123",
+				Path:  strings.Repeat("a", 1025),
+			},
+			wantErr:     true,
+			errContains: "path too long",
+		},
+		{
+			name: "domain with control character",
+			cookie: &http.Cookie{
+				Name:   "session",
+				Value:  "abc123",
+				Domain: "example\x01.com",
+			},
+			wantErr:     true,
+			errContains: "invalid characters",
+		},
+		{
+			name: "path with control character",
+			cookie: &http.Cookie{
+				Name:  "session",
+				Value: "abc123",
+				Path:  "/api\x01/path",
+			},
+			wantErr:     true,
+			errContains: "invalid characters",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateCookie(tt.cookie)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("ValidateCookie() expected error, got nil")
+					return
+				}
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("ValidateCookie() error = %v, want to contain %v", err, tt.errContains)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("ValidateCookie() unexpected error = %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestIsValidHeaderChar(t *testing.T) {
+	tests := []struct {
+		char  rune
+		valid bool
+	}{
+		{'a', true},
+		{'z', true},
+		{'A', true},
+		{'Z', true},
+		{'0', true},
+		{'9', true},
+		{'-', true},
+		{' ', false},
+		{':', false},
+		{'_', false},
+		{'.', false},
+		{'\n', false},
+		{'\r', false},
+		{'\t', false},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.char), func(t *testing.T) {
+			result := IsValidHeaderChar(tt.char)
+			if result != tt.valid {
+				t.Errorf("IsValidHeaderChar(%q) = %v, want %v", tt.char, result, tt.valid)
+			}
+		})
+	}
+}
+
+func TestIsValidHeaderString(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		isValid bool
+	}{
+		{"valid string", "Content-Type: application/json", true},
+		{"string with tab", "value\twith\ttab", true},
+		{"string with CR", "value\rwithCR", false},
+		{"string with LF", "value\nwithLF", false},
+		{"string with CRLF", "value\r\nwithCRLF", false},
+		{"string with null", "value\x00withnull", false},
+		{"string with DEL", "value\x7FwithDEL", false},
+		{"empty string", "", true},
+		{"string with control char", "value\x01control", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := IsValidHeaderString(tt.input)
+			if result != tt.isValid {
+				t.Errorf("IsValidHeaderString(%q) = %v, want %v", tt.input, result, tt.isValid)
+			}
+		})
+	}
+}
+
+func TestValidateFieldName(t *testing.T) {
+	tests := []struct {
+		name        string
+		fieldName   string
+		fieldType   string
+		wantErr     bool
+		errContains string
+	}{
+		{"valid field", "file1", "form field", false, ""},
+		{"field with quotes", "file\"name", "form field", true, "dangerous characters"},
+		{"field with angle brackets", "file<name>", "form field", true, "dangerous characters"},
+		{"field with ampersand", "file&name", "form field", true, "dangerous characters"},
+		{"field with single quote", "file'name", "form field", true, "dangerous characters"},
+		{"empty field", "", "form field", true, "cannot be empty"},
+		{"too long field", strings.Repeat("a", 257), "form field", true, "too long"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateFieldName(tt.fieldName, tt.fieldType)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("ValidateFieldName() expected error, got nil")
+					return
+				}
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("ValidateFieldName() error = %v, want to contain %v", err, tt.errContains)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("ValidateFieldName() unexpected error = %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateHeaderKeyValue_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name        string
+		key         string
+		value       string
+		wantErr     bool
+		errContains string
+	}{
+		{"empty key", "", "value", true, "cannot be empty"},
+		{"pseudo header :path", ":path", "/api", true, "invalid character"},
+		{"pseudo header :method", ":method", "GET", true, "invalid character"},
+		{"key with space", "Content Type", "application/json", true, "invalid character"},
+		{"key with underscore", "Content_Type", "application/json", true, "invalid character"},
+		{"key with dot", "Content.Type", "application/json", true, "invalid character"},
+		{"empty value", "Content-Type", "", false, ""},
+		{"value at max length", "X-Custom", strings.Repeat("a", MaxHeaderValueLen), false, ""},
+		{"value over max length", "X-Custom", strings.Repeat("a", MaxHeaderValueLen+1), true, "too long"},
+		{"key at max length", strings.Repeat("a", MaxHeaderKeyLen), "value", false, ""},
+		{"key over max length", strings.Repeat("a", MaxHeaderKeyLen+1), "value", true, "too long"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateHeaderKeyValue(tt.key, tt.value)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("ValidateHeaderKeyValue() expected error, got nil")
+					return
+				}
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("ValidateHeaderKeyValue() error = %v, want to contain %v", err, tt.errContains)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("ValidateHeaderKeyValue() unexpected error = %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateCredentialStrict(t *testing.T) {
+	tests := []struct {
+		name        string
+		cred        string
+		maxLen      int
+		checkColon  bool
+		credType    string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:       "valid credential",
+			cred:       "valid-user-123",
+			maxLen:     255,
+			checkColon: true,
+			credType:   "username",
+			wantErr:    false,
+		},
+		{
+			name:        "credential with SQL injection quote",
+			cred:        "admin'--",
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "password",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "credential with semicolon",
+			cred:        "user;rm -rf /",
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "password",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "credential with angle brackets",
+			cred:        "<script>alert(1)</script>",
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "password",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "credential with pipe",
+			cred:        "user|cat /etc/passwd",
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "password",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "credential with backtick",
+			cred:        "user`whoami`",
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "password",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "credential with dollar sign",
+			cred:        "user$(id)",
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "password",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "credential with ampersand",
+			cred:        "user && cat /etc/passwd",
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "password",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "credential with backslash",
+			cred:        "user\\nadmin",
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "password",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "credential with braces",
+			cred:        "user{test}",
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "password",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "credential with square brackets",
+			cred:        "user[0]",
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "password",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "credential with colon when check enabled",
+			cred:        "user:name",
+			maxLen:      255,
+			checkColon:  true,
+			credType:    "username",
+			wantErr:     true,
+			errContains: "colon",
+		},
+		{
+			name:        "too long credential",
+			cred:        strings.Repeat("a", 300),
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "credential",
+			wantErr:     true,
+			errContains: "too long",
+		},
+		{
+			name:        "empty credential",
+			cred:        "",
+			maxLen:      255,
+			checkColon:  false,
+			credType:    "credential",
+			wantErr:     true,
+			errContains: "cannot be empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateCredentialStrict(tt.cred, tt.maxLen, tt.checkColon, tt.credType)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("ValidateCredentialStrict() expected error, got nil")
+					return
+				}
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("ValidateCredentialStrict() error = %v, want to contain %v", err, tt.errContains)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("ValidateCredentialStrict() unexpected error = %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateTokenStrict(t *testing.T) {
+	tests := []struct {
+		name        string
+		token       string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:    "valid token",
+			token:   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+			wantErr: false,
+		},
+		{
+			name:    "valid simple token",
+			token:   "abc123-xyz789_ABCDEF",
+			wantErr: false,
+		},
+		{
+			name:        "token with SQL injection quote",
+			token:       "token'--",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "token with angle brackets",
+			token:       "<token>",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "token with semicolon",
+			token:       "token;drop-table",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "token with pipe",
+			token:       "token|command",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "token with space",
+			token:       "token with space",
+			wantErr:     true,
+			errContains: "spaces",
+		},
+		{
+			name:        "too long token",
+			token:       strings.Repeat("a", 2049),
+			wantErr:     true,
+			errContains: "too long",
+		},
+		{
+			name:        "token with backtick",
+			token:       "token`id`",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "token with dollar",
+			token:       "token$(cmd)",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:        "token with ampersand",
+			token:       "token&&cmd",
+			wantErr:     true,
+			errContains: "dangerous characters",
+		},
+		{
+			name:    "token with dots and dashes allowed",
+			token:   "abc.123-xyz_test",
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateTokenStrict(tt.token)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("ValidateTokenStrict() expected error, got nil")
+					return
+				}
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("ValidateTokenStrict() error = %v, want to contain %v", err, tt.errContains)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("ValidateTokenStrict() unexpected error = %v", err)
 				}
 			}
 		})

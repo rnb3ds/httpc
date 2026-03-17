@@ -28,19 +28,16 @@ func TestEngine_RequestProcessing(t *testing.T) {
 			url:    "https://api.example.com/users",
 			options: []RequestOption{
 				func(r *Request) error {
-					if r.Headers == nil {
-						r.Headers = make(map[string]string)
-					}
-					r.Headers["Authorization"] = "Bearer token"
-					r.Headers["Accept"] = "application/json"
+					r.SetHeader("Authorization", "Bearer token")
+					r.SetHeader("Accept", "application/json")
 					return nil
 				},
 			},
 			validate: func(t *testing.T, req *Request) {
-				if req.Headers["Authorization"] != "Bearer token" {
+				if req.Headers()["Authorization"] != "Bearer token" {
 					t.Error("Authorization header not set correctly")
 				}
-				if req.Headers["Accept"] != "application/json" {
+				if req.Headers()["Accept"] != "application/json" {
 					t.Error("Accept header not set correctly")
 				}
 			},
@@ -51,19 +48,18 @@ func TestEngine_RequestProcessing(t *testing.T) {
 			url:    "https://api.example.com/users",
 			options: []RequestOption{
 				func(r *Request) error {
-					if r.QueryParams == nil {
-						r.QueryParams = make(map[string]any)
-					}
-					r.QueryParams["page"] = 1
-					r.QueryParams["limit"] = 10
+					params := make(map[string]any)
+					params["page"] = 1
+					params["limit"] = 10
+					r.SetQueryParams(params)
 					return nil
 				},
 			},
 			validate: func(t *testing.T, req *Request) {
-				if req.QueryParams["page"] != 1 {
+				if req.QueryParams()["page"] != 1 {
 					t.Error("Page query param not set correctly")
 				}
-				if req.QueryParams["limit"] != 10 {
+				if req.QueryParams()["limit"] != 10 {
 					t.Error("Limit query param not set correctly")
 				}
 			},
@@ -74,15 +70,15 @@ func TestEngine_RequestProcessing(t *testing.T) {
 			url:    "https://api.example.com/users/123",
 			options: []RequestOption{
 				func(r *Request) error {
-					r.Body = map[string]any{
+					r.SetBody(map[string]any{
 						"name":  "John Doe",
 						"email": "john@example.com",
-					}
+					})
 					return nil
 				},
 			},
 			validate: func(t *testing.T, req *Request) {
-				if req.Body == nil {
+				if req.Body() == nil {
 					t.Error("Body not set")
 				}
 			},
@@ -93,12 +89,12 @@ func TestEngine_RequestProcessing(t *testing.T) {
 			url:    "https://api.example.com/users/123",
 			options: []RequestOption{
 				func(r *Request) error {
-					r.Timeout = 30 * time.Second
+					r.SetTimeout(30 * time.Second)
 					return nil
 				},
 			},
 			validate: func(t *testing.T, req *Request) {
-				if req.Timeout != 30*time.Second {
+				if req.Timeout() != 30*time.Second {
 					t.Error("Timeout not set correctly")
 				}
 			},
@@ -120,14 +116,13 @@ func TestEngine_RequestProcessing(t *testing.T) {
 			}
 			defer client.Close()
 
-			// Create request
-			req := &Request{
-				Method:      tt.method,
-				URL:         tt.url,
-				Headers:     make(map[string]string),
-				QueryParams: make(map[string]any),
-				Context:     context.Background(),
-			}
+			// Create request using setters
+			req := &Request{}
+			req.SetMethod(tt.method)
+			req.SetURL(tt.url)
+			req.SetHeaders(make(map[string]string))
+			req.SetQueryParams(make(map[string]any))
+			req.SetContext(context.Background())
 
 			// Apply options
 			for _, opt := range tt.options {
@@ -154,13 +149,13 @@ func TestEngine_ResponseProcessing(t *testing.T) {
 				_, _ = w.Write([]byte(`{"message":"success","code":200}`))
 			},
 			validate: func(t *testing.T, resp *Response) {
-				if resp.StatusCode != 200 {
-					t.Errorf("Expected status 200, got %d", resp.StatusCode)
+				if resp.StatusCode() != 200 {
+					t.Errorf("Expected status 200, got %d", resp.StatusCode())
 				}
-				if !strings.Contains(resp.Body, "success") {
+				if !strings.Contains(resp.Body(), "success") {
 					t.Error("Response body doesn't contain expected content")
 				}
-				if len(resp.RawBody) == 0 {
+				if len(resp.RawBody()) == 0 {
 					t.Error("RawBody should not be empty")
 				}
 			},
@@ -173,10 +168,10 @@ func TestEngine_ResponseProcessing(t *testing.T) {
 				_, _ = w.Write([]byte(`{"error":"invalid request"}`))
 			},
 			validate: func(t *testing.T, resp *Response) {
-				if resp.StatusCode != 400 {
-					t.Errorf("Expected status 400, got %d", resp.StatusCode)
+				if resp.StatusCode() != 400 {
+					t.Errorf("Expected status 400, got %d", resp.StatusCode())
 				}
-				if !strings.Contains(resp.Body, "error") {
+				if !strings.Contains(resp.Body(), "error") {
 					t.Error("Response body doesn't contain error message")
 				}
 			},
@@ -191,10 +186,10 @@ func TestEngine_ResponseProcessing(t *testing.T) {
 				_, _ = w.Write([]byte(data))
 			},
 			validate: func(t *testing.T, resp *Response) {
-				if resp.StatusCode != 200 {
-					t.Errorf("Expected status 200, got %d", resp.StatusCode)
+				if resp.StatusCode() != 200 {
+					t.Errorf("Expected status 200, got %d", resp.StatusCode())
 				}
-				if len(resp.RawBody) < 1024*1024 {
+				if len(resp.RawBody()) < 1024*1024 {
 					t.Error("Large response not handled correctly")
 				}
 			},
@@ -216,13 +211,14 @@ func TestEngine_ResponseProcessing(t *testing.T) {
 				_, _ = w.Write([]byte("OK"))
 			},
 			validate: func(t *testing.T, resp *Response) {
-				if len(resp.Cookies) != 2 {
-					t.Errorf("Expected 2 cookies, got %d", len(resp.Cookies))
+				cookies := resp.Cookies()
+				if len(cookies) != 2 {
+					t.Errorf("Expected 2 cookies, got %d", len(cookies))
 				}
 
 				foundSession := false
 				foundPref := false
-				for _, cookie := range resp.Cookies {
+				for _, cookie := range cookies {
 					if cookie.Name == "session_id" && cookie.Value == "abc123" {
 						foundSession = true
 					}
@@ -427,8 +423,8 @@ func TestEngine_ConcurrentRequests(t *testing.T) {
 	// Check responses
 	responseCount := 0
 	for resp := range responses {
-		if resp.StatusCode != 200 {
-			t.Errorf("Unexpected status code: %d", resp.StatusCode)
+		if resp.StatusCode() != 200 {
+			t.Errorf("Unexpected status code: %d", resp.StatusCode())
 		}
 		responseCount++
 	}
@@ -521,12 +517,12 @@ func TestEngine_RetryMechanism(t *testing.T) {
 		t.Fatalf("Request failed after retries: %v", err)
 	}
 
-	if resp.StatusCode != 200 {
-		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	if resp.StatusCode() != 200 {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode())
 	}
 
-	if resp.Attempts < 3 {
-		t.Errorf("Expected at least 3 attempts, got %d", resp.Attempts)
+	if resp.Attempts() < 3 {
+		t.Errorf("Expected at least 3 attempts, got %d", resp.Attempts())
 	}
 
 	t.Logf("Retry mechanism worked: %d attempts in %v", attemptCount, duration)
@@ -558,8 +554,8 @@ func TestEngine_ClientLifecycle(t *testing.T) {
 	if err != nil {
 		t.Errorf("Request failed: %v", err)
 	}
-	if resp.StatusCode != 200 {
-		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	if resp.StatusCode() != 200 {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode())
 	}
 
 	// Test client close

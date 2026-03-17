@@ -3,6 +3,7 @@ package httpc
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -328,15 +329,20 @@ func TestPackageLevel_Functions(t *testing.T) {
 
 func TestTypes(t *testing.T) {
 	t.Run("HTTPError", func(t *testing.T) {
-		err := &HTTPError{
-			StatusCode: 404,
-			Status:     "Not Found",
+		// HTTPError is now an alias for ClientError
+		// Test that we can check HTTP errors using ClientError
+		err := &ClientError{
+			Type:       ErrorTypeHTTP,
+			Message:    "Not Found",
 			Method:     "GET",
 			URL:        "https://example.com",
+			StatusCode: 404,
 		}
-		expected := "HTTP 404: GET https://example.com"
-		if err.Error() != expected {
-			t.Errorf("HTTPError.Error() = %q, want %q", err.Error(), expected)
+		if err.StatusCode != 404 {
+			t.Errorf("ClientError.StatusCode = %d, want 404", err.StatusCode)
+		}
+		if err.Type != ErrorTypeHTTP {
+			t.Errorf("ClientError.Type = %v, want %v", err.Type, ErrorTypeHTTP)
 		}
 	})
 
@@ -478,6 +484,189 @@ func TestUtilityFunctions(t *testing.T) {
 		}
 		if opts.ResumeDownload != false {
 			t.Error("Expected ResumeDownload to be false")
+		}
+	})
+}
+
+// ----------------------------------------------------------------------------
+// Result Pool Tests
+// ----------------------------------------------------------------------------
+
+func TestReleaseResult(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("test response"))
+	}))
+	defer server.Close()
+
+	client, _ := newTestClient()
+	defer client.Close()
+
+	// Get a result
+	result, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+
+	// Verify result has data
+	if result.StatusCode() != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", result.StatusCode())
+	}
+	if result.Body() == "" {
+		t.Error("Expected non-empty body")
+	}
+
+	// Release the result back to the pool
+	ReleaseResult(result)
+
+	// Release nil should not panic
+	ReleaseResult(nil)
+}
+
+func TestReleaseResult_Multiple(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := newTestClient()
+	defer client.Close()
+
+	// Make multiple requests and release them
+	for i := 0; i < 10; i++ {
+		result, err := client.Get(server.URL)
+		if err != nil {
+			t.Fatalf("Request %d failed: %v", i, err)
+		}
+		ReleaseResult(result)
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Request Option Tests - Additional Coverage
+// ----------------------------------------------------------------------------
+
+func TestRequest_WithOptions(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := newTestClient()
+	defer client.Close()
+
+	t.Run("WithContext", func(t *testing.T) {
+		ctx := context.WithValue(context.Background(), "test-key", "test-value")
+		result, err := client.Request(ctx, "GET", server.URL)
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+		if result.StatusCode() != http.StatusOK {
+			t.Errorf("Expected status 200, got %d", result.StatusCode())
+		}
+	})
+
+	t.Run("WithBinary", func(t *testing.T) {
+		binaryData := []byte{0x00, 0x01, 0x02, 0x03, 0xFF}
+		result, err := client.Post(server.URL, WithBinary(binaryData))
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+		if result.StatusCode() != http.StatusOK {
+			t.Errorf("Expected status 200, got %d", result.StatusCode())
+		}
+	})
+}
+
+func TestRequest_WithCallbacks(t *testing.T) {
+	var onRequestCalled int64
+	var onResponseCalled int64
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("response"))
+	}))
+	defer server.Close()
+
+	client, _ := newTestClient()
+	defer client.Close()
+
+	result, err := client.Get(server.URL,
+		WithOnRequest(func(req RequestMutator) error {
+			atomic.AddInt64(&onRequestCalled, 1)
+			req.SetHeader("X-Callback-Header", "callback-value")
+			return nil
+		}),
+		WithOnResponse(func(resp ResponseMutator) error {
+			atomic.AddInt64(&onResponseCalled, 1)
+			return nil
+		}),
+	)
+
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+
+	if result.StatusCode() != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", result.StatusCode())
+	}
+
+	if atomic.LoadInt64(&onRequestCalled) != 1 {
+		t.Errorf("Expected onRequest callback to be called once, got %d", onRequestCalled)
+	}
+
+	if atomic.LoadInt64(&onResponseCalled) != 1 {
+		t.Errorf("Expected onResponse callback to be called once, got %d", onResponseCalled)
+	}
+}
+
+func TestRequest_CallbackErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	t.Run("NilOnRequestCallback", func(t *testing.T) {
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Get(server.URL, WithOnRequest(nil))
+		if err == nil {
+			t.Error("Expected error for nil onRequest callback")
+		}
+	})
+
+	t.Run("NilOnResponseCallback", func(t *testing.T) {
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Get(server.URL, WithOnResponse(nil))
+		if err == nil {
+			t.Error("Expected error for nil onResponse callback")
+		}
+	})
+
+	t.Run("OnRequestError", func(t *testing.T) {
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Get(server.URL, WithOnRequest(func(req RequestMutator) error {
+			return fmt.Errorf("onRequest error")
+		}))
+		if err == nil {
+			t.Error("Expected error from onRequest callback")
+		}
+	})
+
+	t.Run("OnResponseError", func(t *testing.T) {
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Get(server.URL, WithOnResponse(func(resp ResponseMutator) error {
+			return fmt.Errorf("onResponse error")
+		}))
+		if err == nil {
+			t.Error("Expected error from onResponse callback")
 		}
 	})
 }

@@ -33,11 +33,11 @@ func TestResponseProcessor_GzipDecompression(t *testing.T) {
 			originalData: "Hello, World! This is a test of gzip compression.",
 			validate: func(t *testing.T, resp *Response) {
 				expected := "Hello, World! This is a test of gzip compression."
-				if resp.Body != expected {
-					t.Errorf("Expected body '%s', got '%s'", expected, resp.Body)
+				if resp.Body() != expected {
+					t.Errorf("Expected body '%s', got '%s'", expected, resp.Body())
 				}
-				if string(resp.RawBody) != expected {
-					t.Errorf("Expected RawBody '%s', got '%s'", expected, string(resp.RawBody))
+				if string(resp.RawBody()) != expected {
+					t.Errorf("Expected RawBody '%s', got '%s'", expected, string(resp.RawBody()))
 				}
 			},
 		},
@@ -46,8 +46,8 @@ func TestResponseProcessor_GzipDecompression(t *testing.T) {
 			originalData: `{"message":"success","data":{"id":123,"name":"test user","active":true}}`,
 			validate: func(t *testing.T, resp *Response) {
 				expected := `{"message":"success","data":{"id":123,"name":"test user","active":true}}`
-				if resp.Body != expected {
-					t.Errorf("Expected body '%s', got '%s'", expected, resp.Body)
+				if resp.Body() != expected {
+					t.Errorf("Expected body '%s', got '%s'", expected, resp.Body())
 				}
 			},
 		},
@@ -56,8 +56,8 @@ func TestResponseProcessor_GzipDecompression(t *testing.T) {
 			originalData: strings.Repeat("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", 100),
 			validate: func(t *testing.T, resp *Response) {
 				expected := strings.Repeat("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", 100)
-				if resp.Body != expected {
-					t.Errorf("Body length mismatch: expected %d, got %d", len(expected), len(resp.Body))
+				if resp.Body() != expected {
+					t.Errorf("Body length mismatch: expected %d, got %d", len(expected), len(resp.Body()))
 				}
 			},
 		},
@@ -65,8 +65,8 @@ func TestResponseProcessor_GzipDecompression(t *testing.T) {
 			name:         "Empty gzip compressed data",
 			originalData: "",
 			validate: func(t *testing.T, resp *Response) {
-				if resp.Body != "" {
-					t.Errorf("Expected empty body, got '%s'", resp.Body)
+				if resp.Body() != "" {
+					t.Errorf("Expected empty body, got '%s'", resp.Body())
 				}
 			},
 		},
@@ -125,8 +125,8 @@ func TestResponseProcessor_DeflateDecompression(t *testing.T) {
 			originalData: "Hello, World! This is a test of deflate compression.",
 			validate: func(t *testing.T, resp *Response) {
 				expected := "Hello, World! This is a test of deflate compression."
-				if resp.Body != expected {
-					t.Errorf("Expected body '%s', got '%s'", expected, resp.Body)
+				if resp.Body() != expected {
+					t.Errorf("Expected body '%s', got '%s'", expected, resp.Body())
 				}
 			},
 		},
@@ -135,8 +135,8 @@ func TestResponseProcessor_DeflateDecompression(t *testing.T) {
 			originalData: `{"status":"ok","count":42,"items":["a","b","c"]}`,
 			validate: func(t *testing.T, resp *Response) {
 				expected := `{"status":"ok","count":42,"items":["a","b","c"]}`
-				if resp.Body != expected {
-					t.Errorf("Expected body '%s', got '%s'", expected, resp.Body)
+				if resp.Body() != expected {
+					t.Errorf("Expected body '%s', got '%s'", expected, resp.Body())
 				}
 			},
 		},
@@ -145,8 +145,8 @@ func TestResponseProcessor_DeflateDecompression(t *testing.T) {
 			originalData: strings.Repeat("The quick brown fox jumps over the lazy dog. ", 50),
 			validate: func(t *testing.T, resp *Response) {
 				expected := strings.Repeat("The quick brown fox jumps over the lazy dog. ", 50)
-				if resp.Body != expected {
-					t.Errorf("Body length mismatch: expected %d, got %d", len(expected), len(resp.Body))
+				if resp.Body() != expected {
+					t.Errorf("Body length mismatch: expected %d, got %d", len(expected), len(resp.Body()))
 				}
 			},
 		},
@@ -274,8 +274,8 @@ func TestResponseProcessor_NoDecompression(t *testing.T) {
 				t.Fatalf("Failed to process response: %v", err)
 			}
 
-			if resp.Body != tt.originalData {
-				t.Errorf("Expected body '%s', got '%s'", tt.originalData, resp.Body)
+			if resp.Body() != tt.originalData {
+				t.Errorf("Expected body '%s', got '%s'", tt.originalData, resp.Body())
 			}
 		})
 	}
@@ -411,8 +411,8 @@ func TestResponseProcessor_MultipleEncodings(t *testing.T) {
 		t.Fatalf("Failed to process response: %v", err)
 	}
 
-	if resp.Body != originalData {
-		t.Errorf("Expected body '%s', got '%s'", originalData, resp.Body)
+	if resp.Body() != originalData {
+		t.Errorf("Expected body '%s', got '%s'", originalData, resp.Body())
 	}
 }
 

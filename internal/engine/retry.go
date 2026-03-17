@@ -10,12 +10,17 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/cybergodev/httpc/internal/types"
 )
 
 type RetryEngine struct {
 	config  *Config
 	counter int64 // Atomic counter for jitter variation
 }
+
+// Compile-time interface check
+var _ types.RetryPolicy = (*RetryEngine)(nil)
 
 func NewRetryEngine(config *Config) *RetryEngine {
 	return &RetryEngine{
@@ -24,7 +29,8 @@ func NewRetryEngine(config *Config) *RetryEngine {
 	}
 }
 
-func (r *RetryEngine) ShouldRetry(resp *Response, err error, attempt int) bool {
+// ShouldRetry implements types.RetryPolicy interface.
+func (r *RetryEngine) ShouldRetry(resp types.ResponseReader, err error, attempt int) bool {
 	if attempt >= r.config.MaxRetries {
 		return false
 	}
@@ -34,7 +40,7 @@ func (r *RetryEngine) ShouldRetry(resp *Response, err error, attempt int) bool {
 	}
 
 	if resp != nil {
-		return r.isRetryableStatus(resp.StatusCode)
+		return r.isRetryableStatus(resp.StatusCode())
 	}
 
 	return false
@@ -45,8 +51,8 @@ func (r *RetryEngine) GetDelay(attempt int) time.Duration {
 }
 
 func (r *RetryEngine) GetDelayWithResponse(attempt int, resp *Response) time.Duration {
-	if resp != nil && resp.Headers != nil {
-		if retryAfterValues, exists := resp.Headers["Retry-After"]; exists && len(retryAfterValues) > 0 {
+	if resp != nil && resp.Headers() != nil {
+		if retryAfterValues, exists := resp.Headers()["Retry-After"]; exists && len(retryAfterValues) > 0 {
 			retryAfter := retryAfterValues[0]
 			if seconds, err := strconv.Atoi(retryAfter); err == nil && seconds > 0 {
 				return time.Duration(seconds) * time.Second
@@ -76,7 +82,7 @@ func (r *RetryEngine) GetDelayWithResponse(attempt int, resp *Response) time.Dur
 
 	if r.config.Jitter {
 		jitterRange := exponentialDelay / 10
-		jitter := r.getSecureJitter(jitterRange * 2)
+		jitter := r.getJitter(jitterRange * 2)
 		exponentialDelay = exponentialDelay - jitterRange + jitter
 	}
 
@@ -130,20 +136,24 @@ func (r *RetryEngine) isRetryableError(err error) bool {
 		strings.Contains(errMsg, "no such host")
 }
 
-// getSecureJitter generates jitter for retry delays using atomic operations.
-func (r *RetryEngine) getSecureJitter(maxJitter time.Duration) time.Duration {
+// getJitter generates pseudo-random jitter for retry delays using a combination
+// of atomic counter and timestamp. This is NOT cryptographically secure but is
+// sufficient for retry delay randomization to avoid thundering herd problems.
+func (r *RetryEngine) getJitter(maxJitter time.Duration) time.Duration {
 	if maxJitter <= 0 {
 		return 0
 	}
 
 	count := atomic.AddInt64(&r.counter, 1)
 	nanos := time.Now().UnixNano()
-	mixed := (count ^ nanos) * 1103515245
 
-	jitter := mixed % int64(maxJitter)
-	if jitter < 0 {
-		jitter = -jitter
-	}
+	// Use XOR mixing and multiplication with overflow-safe arithmetic
+	// The constant 1103515245 is from LCG (Linear Congruential Generator)
+	mixed := uint64(count) ^ uint64(nanos)
+	mixed = mixed * 1103515245
+
+	// Use unsigned modulo to avoid negative results
+	jitter := mixed % uint64(maxJitter)
 
 	return time.Duration(jitter)
 }

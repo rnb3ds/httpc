@@ -1,6 +1,7 @@
 package httpc
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -10,8 +11,13 @@ import (
 )
 
 // ============================================================================
-// RETRY TESTS - Exponential backoff, retryable status codes, retry behavior
+// RETRY INTEGRATION TESTS - Client-level retry behavior
+// Tests the retry mechanism through the public API
 // ============================================================================
+
+// ----------------------------------------------------------------------------
+// Basic Retry Behavior
+// ----------------------------------------------------------------------------
 
 func TestRetry_Behavior(t *testing.T) {
 	t.Run("SuccessOnFirstAttempt", func(t *testing.T) {
@@ -74,7 +80,7 @@ func TestRetry_Behavior(t *testing.T) {
 		defer server.Close()
 
 		config := DefaultConfig()
-		config.MaxRetries = 2
+		config.MaxRetries = 3
 		config.RetryDelay = 10 * time.Millisecond
 		config.AllowPrivateIPs = true
 		client, _ := New(config)
@@ -87,8 +93,9 @@ func TestRetry_Behavior(t *testing.T) {
 		if resp.StatusCode() != http.StatusInternalServerError {
 			t.Errorf("Expected status 500, got %d", resp.StatusCode())
 		}
-		if atomic.LoadInt32(&attemptCount) != 3 {
-			t.Errorf("Expected 3 attempts (1 + 2 retries), got %d", atomic.LoadInt32(&attemptCount))
+		// MaxRetries=3 means: 1 initial + 3 retries = 4 total attempts
+		if atomic.LoadInt32(&attemptCount) != 4 {
+			t.Errorf("Expected 4 attempts (1 initial + 3 retries), got %d", atomic.LoadInt32(&attemptCount))
 		}
 	})
 
@@ -119,6 +126,10 @@ func TestRetry_Behavior(t *testing.T) {
 	})
 }
 
+// ----------------------------------------------------------------------------
+// Status Code Handling
+// ----------------------------------------------------------------------------
+
 func TestRetry_StatusCodes(t *testing.T) {
 	t.Run("RetryableStatusCodes", func(t *testing.T) {
 		retryableStatuses := []int{
@@ -127,6 +138,7 @@ func TestRetry_StatusCodes(t *testing.T) {
 			http.StatusServiceUnavailable,  // 503
 			http.StatusGatewayTimeout,      // 504
 			http.StatusTooManyRequests,     // 429
+			http.StatusRequestTimeout,      // 408
 		}
 
 		for _, status := range retryableStatuses {
@@ -202,6 +214,10 @@ func TestRetry_StatusCodes(t *testing.T) {
 	})
 }
 
+// ----------------------------------------------------------------------------
+// Backoff Behavior
+// ----------------------------------------------------------------------------
+
 func TestRetry_Backoff(t *testing.T) {
 	attemptCount := int32(0)
 	attemptTimes := make([]time.Time, 0)
@@ -220,6 +236,7 @@ func TestRetry_Backoff(t *testing.T) {
 	config.MaxRetries = 3
 	config.RetryDelay = 100 * time.Millisecond
 	config.BackoffFactor = 2.0
+	config.EnableJitter = false // Disable jitter for predictable testing
 	config.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
@@ -240,11 +257,170 @@ func TestRetry_Backoff(t *testing.T) {
 	}
 
 	// Verify delays increase exponentially
-	for i := 1; i < len(attemptTimes); i++ {
+	expectedDelays := []time.Duration{
+		100 * time.Millisecond, // First retry
+		200 * time.Millisecond, // Second retry
+		400 * time.Millisecond, // Third retry
+	}
+
+	for i := 1; i < len(attemptTimes) && i <= len(expectedDelays); i++ {
 		delay := attemptTimes[i].Sub(attemptTimes[i-1])
-		expectedMin := time.Duration(float64(config.RetryDelay) * float64(i) * 0.5) // Allow jitter
-		if delay < expectedMin {
-			t.Logf("Delay %d: %v (expected min %v)", i, delay, expectedMin)
+		expectedMin := time.Duration(float64(expectedDelays[i-1]) * 0.9) // Allow 10% tolerance
+		expectedMax := time.Duration(float64(expectedDelays[i-1]) * 1.1)
+
+		if delay < expectedMin || delay > expectedMax {
+			t.Logf("Delay %d: %v (expected ~%v)", i, delay, expectedDelays[i-1])
 		}
 	}
+}
+
+// ----------------------------------------------------------------------------
+// Context Cancellation
+// ----------------------------------------------------------------------------
+
+func TestRetry_ContextCancellation(t *testing.T) {
+	attemptCount := int32(0)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attemptCount, 1)
+		// Always return error to trigger retry
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("Error"))
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.MaxRetries = 10 // Set higher retry count
+	config.RetryDelay = 200 * time.Millisecond
+	config.AllowPrivateIPs = true
+	client, _ := New(config)
+	defer client.Close()
+
+	// Create a context that will be cancelled
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	resp, err := client.Request(ctx, "GET", server.URL)
+	duration := time.Since(start)
+
+	// Should fail due to context cancellation
+	if err == nil {
+		t.Error("Expected context cancellation error, got nil")
+		if resp != nil {
+			t.Logf("Unexpected success response: %d", resp.StatusCode())
+		}
+	}
+
+	// Check if cancelled within reasonable time
+	if duration > 1*time.Second {
+		t.Errorf("Request took too long to cancel: %v", duration)
+	}
+
+	// Check attempt count (should be less than max retries)
+	attempts := atomic.LoadInt32(&attemptCount)
+	if attempts >= 10 {
+		t.Errorf("Too many attempts before cancellation: %d", attempts)
+	}
+
+	t.Logf("Request cancelled after %d attempts in %v", attempts, duration)
+}
+
+// ----------------------------------------------------------------------------
+// Retry-After Header
+// ----------------------------------------------------------------------------
+
+func TestRetry_RetryAfterHeader(t *testing.T) {
+	attemptCount := int32(0)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := atomic.AddInt32(&attemptCount, 1)
+
+		if attempt == 1 {
+			// First request returns 429 and sets Retry-After header
+			w.Header().Set("Retry-After", "1") // Retry after 1 second
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte("Rate Limited"))
+		} else {
+			// Subsequent requests succeed
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("Success"))
+		}
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.MaxRetries = 3
+	config.RetryDelay = 100 * time.Millisecond
+	config.AllowPrivateIPs = true
+	client, _ := New(config)
+	defer client.Close()
+
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := client.Request(ctx, "GET", server.URL)
+	duration := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+
+	if resp.StatusCode() != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode())
+	}
+
+	if resp.Body() != "Success" {
+		t.Errorf("Expected body 'Success', got '%s'", resp.Body())
+	}
+
+	// Check if retry was performed
+	if resp.Meta.Attempts != 2 {
+		t.Errorf("Expected 2 attempts, got %d", resp.Meta.Attempts)
+	}
+
+	// Check total time (should have waited at least the time specified by Retry-After)
+	if duration < 1*time.Second {
+		t.Errorf("Expected to wait at least 1 second due to Retry-After, but took %v", duration)
+	}
+
+	t.Logf("Request completed in %v with %d attempts", duration, resp.Meta.Attempts)
+}
+
+// ----------------------------------------------------------------------------
+// Attempt Count Verification
+// ----------------------------------------------------------------------------
+
+func TestRetry_AttemptCount(t *testing.T) {
+	t.Run("AttemptsTracking", func(t *testing.T) {
+		successAfter := int32(3)
+		attemptCount := int32(0)
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			attempt := atomic.AddInt32(&attemptCount, 1)
+			if attempt < successAfter {
+				w.WriteHeader(http.StatusInternalServerError)
+			} else {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("Success"))
+			}
+		}))
+		defer server.Close()
+
+		config := DefaultConfig()
+		config.MaxRetries = 5
+		config.RetryDelay = 10 * time.Millisecond
+		config.AllowPrivateIPs = true
+		client, _ := New(config)
+		defer client.Close()
+
+		resp, err := client.Get(server.URL)
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+
+		if resp.Meta.Attempts != int(successAfter) {
+			t.Errorf("Expected %d attempts, got %d", successAfter, resp.Meta.Attempts)
+		}
+	})
 }

@@ -24,16 +24,18 @@ package main
 
 import (
     "fmt"
+    "log"
+
     "github.com/cybergodev/httpc"
 )
 
 func main() {
     client, err := httpc.New()
     if err != nil {
-        panic(err)
+        log.Fatal(err)
     }
     defer client.Close()
-    
+
     fmt.Println("HTTPC installed successfully!")
 }
 ```
@@ -143,7 +145,7 @@ func main() {
 
     // Parse JSON response
     var user User
-    if err := result.JSON(&user); err != nil {
+    if err := result.Unmarshal(&user); err != nil {
         log.Fatal(err)
     }
 
@@ -231,7 +233,7 @@ if result.IsServerError() {    // 5xx
 
 // Parse response
 var data map[string]interface{}
-if err := result.JSON(&data); err != nil {
+if err := result.Unmarshal(&data); err != nil {
     return err
 }
 ```
@@ -329,7 +331,7 @@ var response struct {
     Name  string `json:"name"`
     Email string `json:"email"`
 }
-if err := result.JSON(&response); err != nil {
+if err := result.Unmarshal(&response); err != nil {
     return err
 }
 
@@ -378,7 +380,7 @@ func (c *APIClient) GetUser(id int) (*User, error) {
     }
 
     var user User
-    if err := result.JSON(&user); err != nil {
+    if err := result.Unmarshal(&user); err != nil {
         return nil, err
     }
 

@@ -8,17 +8,27 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// Compile-time interface check for io.Closer
+var _ io.Closer = (*DoHResolver)(nil)
 
 // DoHResolver provides DNS-over-HTTPS resolution
 type DoHResolver struct {
 	client    *http.Client
 	providers []*DoHProvider
 	cache     sync.Map
-	cacheTTL  time.Duration
+	cacheTTL  atomic.Int64 // Thread-safe cache TTL (stored as nanoseconds)
+	cacheSize atomic.Int64 // O(1) cache size tracking
+	closed    atomic.Bool  // Prevents double-close and operations after close
 }
+
+// Compile-time interface check
+var _ Resolver = (*DoHResolver)(nil)
 
 // DoHProvider represents a DoH service provider
 type DoHProvider struct {
@@ -29,9 +39,21 @@ type DoHProvider struct {
 
 // CacheEntry holds cached DNS resolution results
 type CacheEntry struct {
-	IPs      []net.IPAddr
-	Expires  time.Time
+	IPs       []net.IPAddr
+	Expires   time.Time
+	decrement atomic.Bool // Ensures cacheSize is decremented only once per entry
 }
+
+// Security constants for DoH
+const (
+	// maxDoHResponseSize limits the maximum size of a DoH response to prevent
+	// memory exhaustion attacks from malicious DNS servers
+	maxDoHResponseSize = 64 * 1024 // 64KB - DNS responses should never be this large
+
+	// maxDoHCacheSize limits the number of cached DNS entries to prevent
+	// unbounded memory growth
+	maxDoHCacheSize = 1000
+)
 
 // DefaultDoHProviders returns common DoH providers
 func DefaultDoHProviders() []*DoHProvider {
@@ -56,14 +78,14 @@ func DefaultDoHProviders() []*DoHProvider {
 
 // NewDoHResolver creates a new DoH resolver
 func NewDoHResolver(providers []*DoHProvider, cacheTTL time.Duration) *DoHResolver {
-	if providers == nil || len(providers) == 0 {
+	if len(providers) == 0 {
 		providers = DefaultDoHProviders()
 	}
 	if cacheTTL == 0 {
 		cacheTTL = 5 * time.Minute
 	}
 
-	return &DoHResolver{
+	r := &DoHResolver{
 		client: &http.Client{
 			Timeout: 5 * time.Second,
 			Transport: &http.Transport{
@@ -71,27 +93,66 @@ func NewDoHResolver(providers []*DoHProvider, cacheTTL time.Duration) *DoHResolv
 					Timeout:   5 * time.Second,
 					KeepAlive: 30 * time.Second,
 				}).DialContext,
-				MaxIdleConns:        10,
-				IdleConnTimeout:     30 * time.Second,
-				DisableCompression:  true,
-				DisableKeepAlives:   false,
-				ForceAttemptHTTP2:   true,
+				MaxIdleConns:       10,
+				IdleConnTimeout:    30 * time.Second,
+				DisableCompression: true,
+				DisableKeepAlives:  false,
+				ForceAttemptHTTP2:  true,
 			},
 		},
 		providers: providers,
-		cacheTTL:  cacheTTL,
 	}
+	r.cacheTTL.Store(int64(cacheTTL))
+	return r
 }
 
 // LookupIPAddr resolves a host name to IP addresses using DoH
 func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
-	// Check cache first
+	// Check if resolver is closed
+	if r.closed.Load() {
+		return nil, fmt.Errorf("DoH resolver is closed")
+	}
+
+	// Check cache first - TOCTOU safe: return cached data if valid, don't delete in read path
 	if cached, ok := r.cache.Load(host); ok {
-		entry := cached.(*CacheEntry)
-		if time.Now().Before(entry.Expires) {
-			return entry.IPs, nil
+		// Safe type assertion to prevent potential panic from corrupted cache
+		entry, ok := cached.(*CacheEntry)
+		if !ok || entry == nil {
+			// Invalid cache entry type - use LoadAndDelete for atomic delete+check
+			// This prevents race conditions where multiple goroutines try to delete the same entry
+			actual, loaded := r.cache.LoadAndDelete(host)
+			if loaded {
+				// Only decrement if we actually removed something
+				// Check if the removed value was also invalid (defensive)
+				if actualEntry, ok := actual.(*CacheEntry); !ok || actualEntry == nil {
+					r.cacheSize.Add(-1)
+				}
+			}
+		} else if time.Now().Before(entry.Expires) {
+			// Return a copy to prevent caller from modifying cached data
+			ips := make([]net.IPAddr, len(entry.IPs))
+			copy(ips, entry.IPs)
+			return ips, nil
+		} else {
+			// Entry expired - use atomic.Bool to ensure we only decrement once per entry
+			// This prevents multiple goroutines from decrementing for the same expired entry
+			if entry.decrement.CompareAndSwap(false, true) {
+				// Use LoadAndDelete to ensure atomic check-then-delete
+				// Only decrement if we successfully deleted this specific entry
+				// SECURITY: Compare the actual value to ensure we're deleting the same entry
+				// This prevents decrementing when another goroutine already replaced it
+				actual, loaded := r.cache.LoadAndDelete(host)
+				if loaded {
+					// Only decrement if the deleted entry is the same one we marked
+					if actualEntry, ok := actual.(*CacheEntry); ok && actualEntry == entry {
+						r.cacheSize.Add(-1)
+					}
+				}
+				// NOTE: We intentionally do NOT reset the decrement flag if the entry
+				// was replaced. The new entry has its own fresh decrement flag.
+				// Resetting would corrupt the new entry's counter management.
+			}
 		}
-		r.cache.Delete(host)
 	}
 
 	// Try each provider until one succeeds
@@ -99,11 +160,16 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 	for _, provider := range r.providers {
 		ips, err := r.lookupWithProvider(ctx, provider, host)
 		if err == nil && len(ips) > 0 {
-			// Cache the result
-			r.cache.Store(host, &CacheEntry{
-				IPs:     ips,
-				Expires: time.Now().Add(r.cacheTTL),
-			})
+			// SECURITY: Only cache if we haven't exceeded the cache size limit
+			// This prevents unbounded memory growth
+			if r.cacheSize.Load() < maxDoHCacheSize {
+				cacheTTL := time.Duration(r.cacheTTL.Load())
+				r.cache.Store(host, &CacheEntry{
+					IPs:     ips,
+					Expires: time.Now().Add(cacheTTL),
+				})
+				r.cacheSize.Add(1)
+			}
 			return ips, nil
 		}
 		lastErr = err
@@ -111,6 +177,11 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 
 	// Fallback to system resolver if all providers fail
 	return r.fallbackLookup(ctx, host, lastErr)
+}
+
+// CacheSize returns the current number of entries in the cache (O(1) via atomic counter)
+func (r *DoHResolver) CacheSize() int64 {
+	return r.cacheSize.Load()
 }
 
 // lookupWithProvider performs DNS lookup using a specific DoH provider
@@ -141,11 +212,18 @@ func (r *DoHResolver) lookupWithProvider(ctx context.Context, provider *DoHProvi
 	return r.parseResponse(resp, provider, host)
 }
 
-// parseResponse parses DoH response
+// parseResponse parses DoH response with size limits to prevent memory exhaustion
 func (r *DoHResolver) parseResponse(resp *http.Response, provider *DoHProvider, host string) ([]net.IPAddr, error) {
-	body, err := io.ReadAll(resp.Body)
+	// SECURITY: Limit response body size to prevent memory exhaustion attacks
+	limitedReader := io.LimitReader(resp.Body, maxDoHResponseSize+1)
+	body, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return nil, fmt.Errorf("read response body failed: %w", err)
+	}
+
+	// SECURITY: Check if response exceeded size limit
+	if len(body) > maxDoHResponseSize {
+		return nil, fmt.Errorf("DoH response exceeds maximum size limit (%d bytes)", maxDoHResponseSize)
 	}
 
 	// Check response type
@@ -171,8 +249,8 @@ func (r *DoHResolver) parseResponse(resp *http.Response, provider *DoHProvider, 
 // parseJSONResponse parses JSON DoH response (Google and AliDNS format)
 func (r *DoHResolver) parseJSONResponse(body []byte, host string) ([]net.IPAddr, error) {
 	type DNSResponse struct {
-		Status  int `json:"Status"`
-		Answer  []struct {
+		Status int `json:"Status"`
+		Answer []struct {
 			Name string `json:"name"`
 			Type int    `json:"type"`
 			Data string `json:"data"`
@@ -221,7 +299,7 @@ func (r *DoHResolver) parseWireFormatResponse(body []byte, host string) ([]net.I
 	// Parse question section
 	qdCount, _ := getUint16(body[4:6])
 	for i := 0; i < int(qdCount); i++ {
-		_, offset, err := parseDomain(body, offset)
+		_, offset, err := parseDomain(body, offset, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -233,7 +311,7 @@ func (r *DoHResolver) parseWireFormatResponse(body []byte, host string) ([]net.I
 	var ips []net.IPAddr
 
 	for i := 0; i < int(anCount); i++ {
-		_, newOffset, err := parseDomain(body, offset)
+		_, newOffset, err := parseDomain(body, offset, 0)
 		if err != nil {
 			break
 		}
@@ -245,8 +323,6 @@ func (r *DoHResolver) parseWireFormatResponse(body []byte, host string) ([]net.I
 
 		// TYPE, CLASS, TTL, RDLENGTH
 		recordType := int(body[offset])<<8 | int(body[offset+1])
-		// class := int(body[offset+2])<<8 | int(body[offset+3])
-		// ttl := int(body[offset+4])<<24 | int(body[offset+5])<<16 | int(body[offset+6])<<8 | int(body[offset+7])
 		rdLength := int(body[offset+8])<<8 | int(body[offset+9])
 		offset += 10
 
@@ -273,8 +349,20 @@ func (r *DoHResolver) parseWireFormatResponse(body []byte, host string) ([]net.I
 	return ips, nil
 }
 
-// parseDomain parses a DNS domain name (RFC 1035)
-func parseDomain(msg []byte, offset int) (string, int, error) {
+// maxDomainRecursion limits the depth of DNS compression pointer recursion
+// to prevent stack overflow from malicious responses with circular pointers.
+// RFC 1035 allows compression, but malformed responses could exploit this.
+const maxDomainRecursion = 10
+
+// parseDomain parses a DNS domain name (RFC 1035) with recursion depth limit.
+// The depth parameter tracks the current recursion depth to prevent stack overflow
+// from malicious DNS responses with circular or deeply nested compression pointers.
+func parseDomain(msg []byte, offset int, depth int) (string, int, error) {
+	// SECURITY: Check recursion depth to prevent stack overflow from circular pointers
+	if depth > maxDomainRecursion {
+		return "", offset, fmt.Errorf("compression pointer depth exceeded (max %d)", maxDomainRecursion)
+	}
+
 	if offset >= len(msg) {
 		return "", offset, fmt.Errorf("offset out of bounds")
 	}
@@ -307,8 +395,8 @@ func parseDomain(msg []byte, offset int) (string, int, error) {
 				compressed = true
 			}
 
-			// Parse the compressed domain
-			compressedName, _, err := parseDomain(msg, pointer)
+			// SECURITY: Pass incremented depth to recursive call
+			compressedName, _, err := parseDomain(msg, pointer, depth+1)
 			if err != nil {
 				return "", originalOffset, err
 			}
@@ -324,15 +412,8 @@ func parseDomain(msg []byte, offset int) (string, int, error) {
 		offset += length
 	}
 
-	domain := ""
-	for i, label := range labels {
-		if i > 0 {
-			domain += "."
-		}
-		domain += label
-	}
-
-	return domain, offset, nil
+	// Use strings.Join for O(n) allocation instead of O(n²) iterative concatenation
+	return strings.Join(labels, "."), offset, nil
 }
 
 // getUint16 parses a big-endian 16-bit unsigned integer
@@ -355,15 +436,53 @@ func (r *DoHResolver) fallbackLookup(ctx context.Context, host string, lastErr e
 }
 
 // ClearCache clears the DNS cache
+// SECURITY: Uses atomic counter reset to avoid race conditions with concurrent
+// cache operations. The counter may be temporarily inaccurate during clear but
+// will self-correct on subsequent operations.
 func (r *DoHResolver) ClearCache() {
+	// First, reset the counter to prevent new entries from being rejected
+	// during the clear operation due to size limit checks
+	r.cacheSize.Store(0)
+	// Then delete all entries - any new entries added during this time
+	// will correctly increment the counter from 0
 	r.cache.Range(func(key, value interface{}) bool {
 		r.cache.Delete(key)
 		return true
 	})
 }
 
-// SetCacheTTL sets the cache TTL duration
+// SetCacheTTL sets the cache TTL duration.
+// Thread-safe: can be called concurrently with other operations.
 func (r *DoHResolver) SetCacheTTL(ttl time.Duration) {
-	r.cacheTTL = ttl
+	r.cacheTTL.Store(int64(ttl))
 	r.ClearCache()
+}
+
+// GetCacheTTL returns the current cache TTL duration.
+// Thread-safe: can be called concurrently with other operations.
+func (r *DoHResolver) GetCacheTTL() time.Duration {
+	return time.Duration(r.cacheTTL.Load())
+}
+
+// Close releases resources held by the DoHResolver.
+// It closes idle connections in the internal HTTP client's transport.
+// Safe to call multiple times - subsequent calls are no-ops.
+// Implements io.Closer for consistent resource management.
+func (r *DoHResolver) Close() error {
+	// Use CompareAndSwap to ensure we only close once
+	if !r.closed.CompareAndSwap(false, true) {
+		return nil // Already closed
+	}
+
+	// Close idle connections in the transport
+	if r.client != nil {
+		if transport, ok := r.client.Transport.(*http.Transport); ok && transport != nil {
+			transport.CloseIdleConnections()
+		}
+	}
+
+	// Clear the cache to release memory
+	r.ClearCache()
+
+	return nil
 }

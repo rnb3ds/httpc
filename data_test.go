@@ -71,7 +71,7 @@ func TestData_JSON(t *testing.T) {
 		}
 
 		var data TestData
-		if err := resp.JSON(&data); err != nil {
+		if err := resp.Unmarshal(&data); err != nil {
 			t.Fatalf("Failed to parse JSON: %v", err)
 		}
 		if data.Message != "response" {
@@ -96,7 +96,7 @@ func TestData_JSON(t *testing.T) {
 		}
 
 		var data map[string]interface{}
-		err = resp.JSON(&data)
+		err = resp.Unmarshal(&data)
 		if err == nil {
 			t.Error("Expected error when parsing invalid JSON")
 		}

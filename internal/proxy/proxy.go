@@ -8,7 +8,7 @@ import (
 
 // Detector provides automatic system proxy detection
 type Detector struct {
-	cache  *proxyConfig
+	cache   *proxyConfig
 	cacheMu sync.RWMutex
 }
 
@@ -25,17 +25,26 @@ func NewDetector() *Detector {
 // GetProxyFunc returns a proxy function that automatically detects system proxy settings.
 // It returns nil if no proxy is configured, which means direct connection.
 func (d *Detector) GetProxyFunc() func(*http.Request) (*url.URL, error) {
+	// Fast path: check cache with read lock
 	d.cacheMu.RLock()
-	if d.cache != nil && d.cache.enabled {
+	if d.cache != nil {
+		proxyFunc := d.cache.proxyFunc
 		d.cacheMu.RUnlock()
-		return d.cache.proxyFunc
+		return proxyFunc
 	}
 	d.cacheMu.RUnlock()
 
+	// Slow path: detect and cache with write lock
+	d.cacheMu.Lock()
+	// Double-check after acquiring write lock (another goroutine may have cached)
+	if d.cache != nil {
+		proxyFunc := d.cache.proxyFunc
+		d.cacheMu.Unlock()
+		return proxyFunc
+	}
+
 	// Detect and cache proxy configuration
 	proxyFunc := d.detect()
-
-	d.cacheMu.Lock()
 	d.cache = &proxyConfig{
 		proxyFunc: proxyFunc,
 		enabled:   proxyFunc != nil,
@@ -66,10 +75,10 @@ func (d *Detector) detectFromEnvironment() func(*http.Request) (*url.URL, error)
 		URL: testURL,
 	}
 
-	if proxyFunc := http.ProxyFromEnvironment; proxyFunc != nil {
-		if u, err := proxyFunc(testReq); err == nil && u != nil {
-			return proxyFunc
-		}
+	// http.ProxyFromEnvironment is a function, not a pointer - it's never nil
+	// Test if it returns a valid proxy for our test request
+	if u, err := http.ProxyFromEnvironment(testReq); err == nil && u != nil {
+		return http.ProxyFromEnvironment
 	}
 	return nil
 }

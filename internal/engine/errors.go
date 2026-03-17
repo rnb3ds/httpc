@@ -9,6 +9,41 @@ import (
 	"strings"
 )
 
+// containsFold reports whether substr is contained within s, case-insensitively.
+// This is more efficient than strings.Contains(strings.ToLower(s), substr)
+// because it performs ASCII-only case folding without allocating a new string.
+func containsFold(s, substr string) bool {
+	if len(substr) == 0 {
+		return true
+	}
+	if len(substr) > len(s) {
+		return false
+	}
+
+	// Convert substr to lowercase once
+	substrLower := strings.ToLower(substr)
+
+	// Sliding window comparison
+	for i := 0; i <= len(s)-len(substr); i++ {
+		match := true
+		for j := 0; j < len(substr); j++ {
+			c := s[i+j]
+			// ASCII lowercase: 'A'-'Z' -> 'a'-'z'
+			if c >= 'A' && c <= 'Z' {
+				c += 32
+			}
+			if byte(c) != substrLower[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
 type ErrorType int
 
 const (
@@ -144,9 +179,12 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 		return nil
 	}
 
+	// Sanitize URL to prevent credential leakage in error storage
+	sanitizedURL := sanitizeURL(reqURL)
+
 	clientErr := &ClientError{
 		Cause:    err,
-		URL:      reqURL,
+		URL:      sanitizedURL,
 		Method:   method,
 		Attempts: attempts,
 	}
@@ -165,13 +203,13 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {
-		errMsg := strings.ToLower(urlErr.Error())
-		if strings.Contains(errMsg, "http2") && strings.Contains(errMsg, "invalid") {
+		errMsg := urlErr.Error()
+		if containsFold(errMsg, "http2") && containsFold(errMsg, "invalid") {
 			clientErr.Type = ErrorTypeValidation
 			clientErr.Message = "invalid HTTP/2 request header"
 			return clientErr
 		}
-		if strings.Contains(errMsg, "parse") || strings.Contains(errMsg, "invalid url") || strings.Contains(errMsg, "missing protocol") {
+		if containsFold(errMsg, "parse") || containsFold(errMsg, "invalid url") || containsFold(errMsg, "missing protocol") {
 			clientErr.Type = ErrorTypeValidation
 			clientErr.Message = "URL validation failed"
 			return clientErr
@@ -180,7 +218,7 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
-		clientErr.Type = ErrorTypeNetwork
+		clientErr.Type = ErrorTypeDNS
 		if dnsErr.IsTimeout {
 			clientErr.Message = "DNS resolution timed out"
 		} else {
@@ -212,69 +250,69 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 		return clientErr
 	}
 
-	errMsg := strings.ToLower(err.Error())
+	errMsg := err.Error()
 	clientErr.Type = ErrorTypeUnknown
-	clientErr.Message = err.Error()
+	clientErr.Message = errMsg
 
 	switch {
-	case strings.Contains(errMsg, "context canceled"):
+	case containsFold(errMsg, "context canceled"):
 		clientErr.Type = ErrorTypeContextCanceled
 		clientErr.Message = "request context was canceled"
-	case strings.Contains(errMsg, "context deadline exceeded"):
+	case containsFold(errMsg, "context deadline exceeded"):
 		clientErr.Type = ErrorTypeTimeout
 		clientErr.Message = "request context deadline exceeded"
-	case strings.Contains(errMsg, "http2") && strings.Contains(errMsg, "invalid"):
+	case containsFold(errMsg, "http2") && containsFold(errMsg, "invalid"):
 		clientErr.Type = ErrorTypeValidation
 		clientErr.Message = "invalid HTTP/2 request header"
-	case strings.Contains(errMsg, "connection refused"):
+	case containsFold(errMsg, "connection refused"):
 		clientErr.Type = ErrorTypeNetwork
 		clientErr.Message = "connection refused by server"
-	case strings.Contains(errMsg, "no such host"):
+	case containsFold(errMsg, "no such host"):
 		clientErr.Type = ErrorTypeNetwork
 		clientErr.Message = "DNS resolution failed"
-	case strings.Contains(errMsg, "connection reset"):
+	case containsFold(errMsg, "connection reset"):
 		clientErr.Type = ErrorTypeNetwork
 		clientErr.Message = "connection reset by peer"
-	case strings.Contains(errMsg, "connection closed") || strings.Contains(errMsg, "peer closed"):
+	case containsFold(errMsg, "connection closed") || containsFold(errMsg, "peer closed"):
 		clientErr.Type = ErrorTypeNetwork
 		clientErr.Message = "connection closed by peer"
-	case strings.Contains(errMsg, "broken pipe"):
+	case containsFold(errMsg, "broken pipe"):
 		clientErr.Type = ErrorTypeNetwork
 		clientErr.Message = "broken pipe"
-	case strings.Contains(errMsg, "network unreachable"):
+	case containsFold(errMsg, "network unreachable"):
 		clientErr.Type = ErrorTypeNetwork
 		clientErr.Message = "network unreachable"
-	case strings.Contains(errMsg, "host unreachable"):
+	case containsFold(errMsg, "host unreachable"):
 		clientErr.Type = ErrorTypeNetwork
 		clientErr.Message = "host unreachable"
-	case (strings.Contains(errMsg, "tls") || strings.Contains(errMsg, "ssl")) && strings.Contains(errMsg, "handshake"):
+	case (containsFold(errMsg, "tls") || containsFold(errMsg, "ssl")) && containsFold(errMsg, "handshake"):
 		clientErr.Type = ErrorTypeTLS
 		clientErr.Message = "TLS handshake error"
-	case (strings.Contains(errMsg, "certificate") || strings.Contains(errMsg, "x509")):
+	case containsFold(errMsg, "certificate") || containsFold(errMsg, "x509"):
 		clientErr.Type = ErrorTypeCertificate
 		clientErr.Message = "certificate validation error"
-	case strings.Contains(errMsg, "transport"):
+	case containsFold(errMsg, "transport"):
 		clientErr.Type = ErrorTypeTransport
 		clientErr.Message = "HTTP transport error"
-	case strings.Contains(errMsg, "protocol error"):
+	case containsFold(errMsg, "protocol error"):
 		clientErr.Type = ErrorTypeTransport
 		clientErr.Message = "HTTP protocol error"
-	case strings.Contains(errMsg, "failed to read response body"):
+	case containsFold(errMsg, "failed to read response body"):
 		clientErr.Type = ErrorTypeResponseRead
 		clientErr.Message = "failed to read response body"
-	case strings.Contains(errMsg, "unexpected eof"):
+	case containsFold(errMsg, "unexpected eof"):
 		clientErr.Type = ErrorTypeResponseRead
 		clientErr.Message = "unexpected end of response"
-	case strings.Contains(errMsg, "validation failed"):
+	case containsFold(errMsg, "validation failed"):
 		clientErr.Type = ErrorTypeValidation
 		clientErr.Message = "request validation failed"
-	case strings.Contains(errMsg, "invalid url") || strings.Contains(errMsg, "missing protocol scheme"):
+	case containsFold(errMsg, "invalid url") || containsFold(errMsg, "missing protocol scheme"):
 		clientErr.Type = ErrorTypeValidation
 		clientErr.Message = "URL validation failed"
-	case strings.Contains(errMsg, "http 4") || strings.Contains(errMsg, "http 5"):
+	case containsFold(errMsg, "http 4") || containsFold(errMsg, "http 5"):
 		clientErr.Type = ErrorTypeHTTP
-	case strings.Contains(errMsg, "timeout") || strings.Contains(errMsg, "timed out"):
-		if !strings.Contains(errMsg, "context") {
+	case containsFold(errMsg, "timeout") || containsFold(errMsg, "timed out"):
+		if !containsFold(errMsg, "context") {
 			clientErr.Type = ErrorTypeTimeout
 			clientErr.Message = "operation timed out"
 		}

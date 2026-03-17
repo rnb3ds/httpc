@@ -338,7 +338,7 @@ func BenchmarkResult_CookieAccess(b *testing.B) {
 	}
 }
 
-func BenchmarkResult_JSON(b *testing.B) {
+func BenchmarkResult_Unmarshal(b *testing.B) {
 	result := &Result{
 		Response: &ResponseInfo{
 			RawBody: []byte(`{"name":"John","age":30,"email":"john@example.com"}`),
@@ -349,7 +349,7 @@ func BenchmarkResult_JSON(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		var data map[string]interface{}
-		_ = result.JSON(&data)
+		_ = result.Unmarshal(&data)
 	}
 }
 

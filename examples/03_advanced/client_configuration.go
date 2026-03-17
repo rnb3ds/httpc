@@ -36,7 +36,7 @@ func demonstrateDefaultConfig() {
 	fmt.Println("--- Example 1: Default Configuration ---")
 
 	// Create client with default settings
-	client, err := httpc.New()
+	client, err := httpc.New(httpc.DefaultConfig())
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -63,7 +63,7 @@ func demonstrateSecureConfig() {
 	fmt.Println("--- Example 2: Secure Configuration ---")
 
 	// Create client with enhanced security
-	client, err := httpc.NewSecure()
+	client, err := httpc.New(httpc.SecureConfig())
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -77,7 +77,7 @@ func demonstrateSecureConfig() {
 	//
 	// Example of custom config for such environments:
 	// config := httpc.SecureConfig()
-	// config.AllowPrivateIPs = true
+	// config.Security.AllowPrivateIPs = true
 	// client, _ := httpc.New(config)
 
 	resp, err := client.Get("https://httpbin.org/get")
@@ -104,7 +104,7 @@ func demonstratePerformanceConfig() {
 	fmt.Println("--- Example 3: Performance Configuration ---")
 
 	// Create client optimized for performance
-	client, err := httpc.NewPerformance()
+	client, err := httpc.New(httpc.PerformanceConfig())
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -129,7 +129,7 @@ func demonstratePerformanceConfig() {
 func demonstrateCustomConfig() {
 	fmt.Println("--- Example 4: Custom Configuration ---")
 
-	// Create custom configuration
+	// Create custom configuration with flat fields (v2.x API)
 	config := httpc.DefaultConfig()
 	config.Timeout = 15 * time.Second
 	config.MaxRetries = 5

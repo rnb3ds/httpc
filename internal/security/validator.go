@@ -14,6 +14,14 @@ type Validator struct {
 	config *Config
 }
 
+// Compile-time interface check for RequestValidator
+var _ RequestValidator = (*Validator)(nil)
+
+// RequestValidator defines the interface for request validation.
+type RequestValidator interface {
+	ValidateRequest(req *Request) error
+}
+
 type Config struct {
 	ValidateURL         bool
 	ValidateHeaders     bool
@@ -76,19 +84,13 @@ func (v *Validator) ValidateRequest(req *Request) error {
 	return nil
 }
 
-const (
-	maxURLLen         = 2048
-	maxHeaderKeyLen   = 256
-	maxHeaderValueLen = 8192
-)
-
 func (v *Validator) validateURL(urlStr string) error {
 	if urlStr == "" {
 		return fmt.Errorf("URL cannot be empty")
 	}
 	urlLen := len(urlStr)
-	if urlLen > maxURLLen {
-		return fmt.Errorf("URL too long (max %d)", maxURLLen)
+	if urlLen > validation.MaxURLLen {
+		return fmt.Errorf("URL too long (max %d)", validation.MaxURLLen)
 	}
 
 	parsedURL, err := url.Parse(urlStr)
@@ -122,13 +124,13 @@ func (v *Validator) validateHost(host string) error {
 	}
 
 	// Check for localhost variations
-	if netutil.IsLocalhost(hostname) {
+	if validation.IsLocalhost(hostname) {
 		return fmt.Errorf("localhost access blocked for security")
 	}
 
 	// If hostname is an IP address, validate it directly
 	if ip := net.ParseIP(hostname); ip != nil {
-		if err := netutil.ValidateIP(ip); err != nil {
+		if err := validation.ValidateIP(ip); err != nil {
 			return fmt.Errorf("private/reserved IP blocked: %s", ip.String())
 		}
 		return nil
@@ -140,42 +142,12 @@ func (v *Validator) validateHost(host string) error {
 }
 
 func (v *Validator) validateHeader(key, value string) error {
-	keyLen := len(key)
-	if keyLen == 0 {
-		return fmt.Errorf("header key cannot be empty")
+	// Use common validation from validation package
+	if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
+		return err
 	}
 
-	if strings.TrimSpace(key) == "" {
-		return fmt.Errorf("header key cannot be empty")
-	}
-
-	if keyLen > maxHeaderKeyLen {
-		return fmt.Errorf("invalid header key")
-	}
-
-	if key[0] == ':' {
-		return fmt.Errorf("invalid header key")
-	}
-
-	for i := range keyLen {
-		c := key[i]
-		if c < 0x20 || c == 0x7F || !validation.IsValidHeaderChar(rune(c)) {
-			return fmt.Errorf("header contains invalid characters")
-		}
-	}
-
-	valueLen := len(value)
-	if valueLen > maxHeaderValueLen {
-		return fmt.Errorf("header value too long (max %d)", maxHeaderValueLen)
-	}
-
-	for i := range valueLen {
-		c := value[i]
-		if (c < 0x20 && c != 0x09) || c == 0x7F {
-			return fmt.Errorf("header contains invalid characters")
-		}
-	}
-
+	// Additional validation for specific header values
 	return validateCommonHeaderValue(key, value)
 }
 
@@ -220,4 +192,3 @@ func (v *Validator) validateRequestSize(body any) error {
 
 	return nil
 }
-

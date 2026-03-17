@@ -189,7 +189,7 @@ if err := prepareFilePath(filePath); err != nil {
 
 ### SecureConfig() - Maximum Security
 ```go
-client, err := httpc.NewSecure()
+client, err := httpc.New(httpc.SecureConfig())
 ```
 - TLS 1.2+ enforced
 - Certificate verification required
@@ -200,7 +200,7 @@ client, err := httpc.NewSecure()
 
 ### DefaultConfig() - Balanced Security
 ```go
-client, err := httpc.New()
+client, err := httpc.New(httpc.DefaultConfig())
 ```
 - TLS 1.2-1.3 supported
 - Certificate verification enabled
@@ -211,7 +211,7 @@ client, err := httpc.New()
 
 ### TestingConfig() - Development Only
 ```go
-// Internal use only - not exposed in public API
+client, err := httpc.New(httpc.TestingConfig())
 ```
 - Relaxed validation
 - Private IPs allowed

@@ -22,8 +22,8 @@ func main() {
 	// 2. State Management
 	demonstrateStateManagement()
 
-	// 3. URL Matching
-	demonstrateURLMatching()
+	// 3. Relative Path Usage
+	demonstrateRelativePaths()
 
 	fmt.Println("\n=== All Examples Completed ===")
 }
@@ -40,7 +40,7 @@ func demonstrateBasicUsage() {
 	defer client.Close()
 
 	// Set persistent headers (sent with every request)
-	err = client.SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+	err = client.SetHeader("User-Agent", "httpc-domain-client/1.0")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func demonstrateBasicUsage() {
 	fmt.Printf("✓ Set %d persistent headers\n", len(client.GetHeaders()))
 
 	// First request
-	resp1, err := client.Get("/")
+	resp1, err := client.Get("/get")
 	if err != nil {
 		log.Printf("Error: %v\n", err)
 		return
@@ -62,7 +62,7 @@ func demonstrateBasicUsage() {
 	fmt.Printf("✓ Received %d cookies\n", len(resp1.ResponseCookies()))
 
 	// Second request - headers and cookies automatically sent
-	resp2, err := client.Get("/search?q=golang")
+	resp2, err := client.Get("/get")
 	if err != nil {
 		log.Printf("Error: %v\n", err)
 		return
@@ -117,9 +117,6 @@ func demonstrateStateManagement() {
 	fmt.Printf("✓ Request with override: Status %d\n", resp.StatusCode())
 	fmt.Printf("✓ Persistent headers still intact: %d\n", len(client.GetHeaders()))
 
-	fmt.Printf("✓ Persistent headers: %d\n", len(client.GetHeaders()))
-	fmt.Printf("✓ Persistent cookies: %d\n", len(client.GetCookies()))
-
 	// Clear state
 	client.ClearCookies()
 	fmt.Printf("✓ Cleared cookies: %d remaining\n", len(client.GetCookies()))
@@ -128,9 +125,9 @@ func demonstrateStateManagement() {
 	fmt.Printf("✓ Cleared headers: %d remaining\n\n", len(client.GetHeaders()))
 }
 
-// demonstrateURLMatching shows URL building behavior
-func demonstrateURLMatching() {
-	fmt.Println("--- URL Building Behavior ---")
+// demonstrateRelativePaths shows relative path usage
+func demonstrateRelativePaths() {
+	fmt.Println("--- Relative Path Usage ---")
 
 	client, err := httpc.NewDomain("https://httpbin.org")
 	if err != nil {
@@ -139,15 +136,14 @@ func demonstrateURLMatching() {
 	defer client.Close()
 
 	// Valid: Relative paths (automatically prefixed with base URL)
-	validPaths := []string{
+	paths := []string{
 		"/get",
-		"/users/123",
-		"/api/v1/data",
-		"/?query=test",
+		"/headers",
+		"/user-agent",
 	}
 
 	fmt.Println("Relative paths (prefixed with base URL):")
-	for _, path := range validPaths {
+	for _, path := range paths {
 		resp, err := client.Get(path)
 		if err != nil {
 			fmt.Printf("  ✗ %s: %v\n", path, err)
@@ -156,24 +152,6 @@ func demonstrateURLMatching() {
 		}
 	}
 
-	// Note: Full URLs are allowed but bypass domain restriction
-	// The DomainClient will send requests to any domain if you provide a full URL
-	// This is by design for flexibility, but be aware of this behavior
-	fmt.Println("\n⚠️  Full URLs (bypass domain restriction):")
-	fullURLs := []string{
-		"https://httpbin.org/ip",   // Same domain, https
-		"https://www.example.com/", // Different domain
-	}
-
-	for _, fullURL := range fullURLs {
-		resp, err := client.Get(fullURL)
-		if err != nil {
-			fmt.Printf("  ✗ %s: %v\n", fullURL, err)
-		} else {
-			fmt.Printf("  ✓ %s → Status %d\n", fullURL, resp.StatusCode())
-		}
-	}
-
-	fmt.Println("\n💡 Best Practice: Use relative paths for domain-restricted requests")
-	fmt.Println("  Full URLs should only be used when intentionally accessing other domains")
+	fmt.Println("\n💡 Best Practice: Use relative paths for domain-scoped requests")
+	fmt.Println("   Example: client.Get(\"/api/users\") instead of full URLs")
 }
