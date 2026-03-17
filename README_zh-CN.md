@@ -298,6 +298,12 @@ if errors.Is(err, context.DeadlineExceeded) {
 
 ### 简单下载
 
+文件下载包含内置的安全保护功能：
+- **UNC 路径阻止** - 防止访问 Windows 网络路径
+- **系统路径保护** - 阻止写入关键系统目录
+- **路径遍历检测** - 防止目录逃逸攻击
+- **恢复支持** - 自动恢复中断的下载
+
 ```go
 result, _ := httpc.DownloadFile(
     "https://example.com/file.zip",

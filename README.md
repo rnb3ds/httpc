@@ -298,6 +298,12 @@ if errors.Is(err, context.DeadlineExceeded) {
 
 ### Simple Download
 
+File downloads include built-in security protections:
+- **UNC path blocking** - Prevents access to Windows network paths
+- **System path protection** - Blocks writes to critical system directories
+- **Path traversal detection** - Prevents directory escape attacks
+- **Resume support** - Automatically resumes interrupted downloads
+
 ```go
 result, _ := httpc.DownloadFile(
     "https://example.com/file.zip",
