@@ -15,6 +15,51 @@ type DomainWhitelist struct {
 	wildcards []string
 }
 
+// normalizeDomain normalizes a domain for consistent comparison.
+// Performs single-pass ASCII whitespace trimming and lowercase conversion
+// to avoid intermediate string allocations from chained TrimSpace+ToLower.
+func normalizeDomain(domain string) string {
+	// Fast path: empty string
+	if len(domain) == 0 {
+		return ""
+	}
+
+	// Find leading/trailing whitespace and check if lowercase needed
+	start := 0
+	end := len(domain)
+	needsLower := false
+
+	// Skip leading whitespace (ASCII only for performance)
+	for start < end && (domain[start] == ' ' || domain[start] == '\t' || domain[start] == '\n' || domain[start] == '\r') {
+		start++
+	}
+
+	// Skip trailing whitespace
+	for end > start && (domain[end-1] == ' ' || domain[end-1] == '\t' || domain[end-1] == '\n' || domain[end-1] == '\r') {
+		end--
+	}
+
+	// Check if any uppercase letters exist
+	for i := start; i < end; i++ {
+		if domain[i] >= 'A' && domain[i] <= 'Z' {
+			needsLower = true
+			break
+		}
+	}
+
+	// Fast path: no changes needed
+	if start == 0 && end == len(domain) && !needsLower {
+		return domain
+	}
+
+	// Build normalized string
+	result := domain[start:end]
+	if needsLower {
+		return strings.ToLower(result)
+	}
+	return result
+}
+
 // NewDomainWhitelist creates a new DomainWhitelist from a list of domains.
 // Domains can be:
 //   - Exact matches: "example.com", "api.example.com"
@@ -24,13 +69,30 @@ type DomainWhitelist struct {
 //
 //	whitelist := security.NewDomainWhitelist("example.com", "*.trusted.org")
 func NewDomainWhitelist(domains ...string) *DomainWhitelist {
+	// Pre-allocate based on input size
+	n := len(domains)
+	exactCap := n          // Most domains are exact matches
+	wildcardCap := n/4 + 1 // Estimate ~25% wildcards (minimum 1)
+
+	// Count wildcards for accurate pre-allocation
+	wildcardCount := 0
+	for _, domain := range domains {
+		if strings.HasPrefix(domain, "*.") {
+			wildcardCount++
+		}
+	}
+	if wildcardCount > wildcardCap {
+		wildcardCap = wildcardCount
+	}
+	exactCap = n - wildcardCount
+
 	dw := &DomainWhitelist{
-		exact:     make(map[string]bool),
-		wildcards: make([]string, 0),
+		exact:     make(map[string]bool, exactCap),
+		wildcards: make([]string, 0, wildcardCap),
 	}
 
 	for _, domain := range domains {
-		domain = strings.TrimSpace(strings.ToLower(domain))
+		domain = normalizeDomain(domain)
 		if domain == "" {
 			continue
 		}
@@ -58,7 +120,7 @@ func (w *DomainWhitelist) IsAllowed(hostname string) bool {
 		return true // No whitelist means all domains are allowed
 	}
 
-	hostname = strings.ToLower(strings.TrimSpace(hostname))
+	hostname = normalizeDomain(hostname)
 	if hostname == "" {
 		return false
 	}
@@ -104,7 +166,7 @@ func (w *DomainWhitelist) Add(domain string) {
 		return
 	}
 
-	domain = strings.TrimSpace(strings.ToLower(domain))
+	domain = normalizeDomain(domain)
 	if domain == "" {
 		return
 	}
@@ -129,7 +191,7 @@ func (w *DomainWhitelist) Remove(domain string) {
 		return
 	}
 
-	domain = strings.TrimSpace(strings.ToLower(domain))
+	domain = normalizeDomain(domain)
 	if domain == "" {
 		return
 	}

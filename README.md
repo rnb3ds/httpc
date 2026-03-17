@@ -16,12 +16,14 @@ A high-performance HTTP client library for Go with enterprise-grade security, ze
 
 | Feature | Description |
 |---------|-------------|
-| 🔒 **Secure by Default** | TLS 1.2+, SSRF protection, CRLF injection prevention |
+| 🔒 **Secure by Default** | TLS 1.2+, SSRF protection, CRLF injection prevention, path traversal blocking |
 | ⚡ **High Performance** | Connection pooling, HTTP/2, goroutine-safe, sync.Pool optimization |
 | 🔄 **Built-in Resilience** | Smart retry with exponential backoff and jitter |
 | 🛠️ **Developer Friendly** | Clean API, intuitive options pattern, comprehensive documentation |
 | 📦 **Zero Dependencies** | Pure Go standard library, no external packages |
 | ✅ **Production Ready** | Battle-tested defaults, extensive test coverage |
+| 🍪 **Cookie Management** | Full cookie jar support with security validation |
+| 📁 **File Operations** | Secure file download with progress tracking and resume support |
 
 ---
 
@@ -272,7 +274,7 @@ fmt.Println(result.Meta.Attempts)      // Retry count
 fmt.Println(result.Meta.RedirectCount) // Redirect count
 fmt.Println(result.Meta.RedirectChain) // Redirect URLs
 
-// String representation (safe for logging)
+// String representation (safe for logging - masks sensitive headers)
 fmt.Println(result.String())
 ```
 
@@ -367,46 +369,6 @@ client.SetHeaders(map[string]string{"X-App": "v1"})
 client.GetHeaders()
 client.DeleteHeader("X-Old")
 client.ClearHeaders()
-```
-
----
-
-## ⚠️ Error Handling
-
-```go
-result, err := httpc.Get(url)
-if err != nil {
-    var clientErr *httpc.ClientError
-    if errors.As(err, &clientErr) {
-        fmt.Printf("Error: %s (code: %s)\n", clientErr.Message, clientErr.Code())
-        fmt.Printf("Retryable: %v\n", clientErr.IsRetryable())
-    }
-    return err
-}
-
-// Check response status
-if !result.IsSuccess() {
-    return fmt.Errorf("unexpected status code: %d", result.StatusCode())
-}
-```
-
-### Error Types
-
-```go
-const (
-    ErrorTypeUnknown        // Unknown or unclassified error
-    ErrorTypeNetwork        // Network-level error (connection refused, DNS failure)
-    ErrorTypeTimeout        // Request timeout
-    ErrorTypeContextCanceled // Context canceled
-    ErrorTypeResponseRead   // Error reading response body
-    ErrorTypeTransport      // HTTP transport error
-    ErrorTypeRetryExhausted // All retries exhausted
-    ErrorTypeTLS            // TLS handshake error
-    ErrorTypeCertificate    // Certificate validation error
-    ErrorTypeDNS            // DNS resolution error
-    ErrorTypeValidation     // Request validation error
-    ErrorTypeHTTP           // HTTP-level error (4xx, 5xx)
-)
 ```
 
 ---
@@ -602,7 +564,7 @@ config := &httpc.Config{
 | Feature | Description |
 |---------|-------------|
 | **TLS 1.2+** | Modern encryption standards by default |
-| **SSRF Protection** | DNS validation blocks private IPs |
+| **SSRF Protection** | Two-layer DNS validation blocks private IPs |
 | **CRLF Injection Prevention** | Header and URL validation |
 | **Path Traversal Protection** | Safe file operations |
 | **Domain Whitelist** | Restrict redirects to allowed domains |
@@ -628,6 +590,46 @@ client, _ := httpc.New(cfg)
 
 // Or use the secure preset
 client, _ := httpc.New(httpc.SecureConfig())
+```
+
+---
+
+## ⚠️ Error Handling
+
+```go
+result, err := httpc.Get(url)
+if err != nil {
+    var clientErr *httpc.ClientError
+    if errors.As(err, &clientErr) {
+        fmt.Printf("Error: %s (code: %s)\n", clientErr.Message, clientErr.Code())
+        fmt.Printf("Retryable: %v\n", clientErr.IsRetryable())
+    }
+    return err
+}
+
+// Check response status
+if !result.IsSuccess() {
+    return fmt.Errorf("unexpected status code: %d", result.StatusCode())
+}
+```
+
+### Error Types
+
+```go
+const (
+    ErrorTypeUnknown        // Unknown or unclassified error
+    ErrorTypeNetwork        // Network-level error (connection refused, DNS failure)
+    ErrorTypeTimeout        // Request timeout
+    ErrorTypeContextCanceled // Context canceled
+    ErrorTypeResponseRead   // Error reading response body
+    ErrorTypeTransport      // HTTP transport error
+    ErrorTypeRetryExhausted // All retries exhausted
+    ErrorTypeTLS            // TLS handshake error
+    ErrorTypeCertificate    // Certificate validation error
+    ErrorTypeDNS            // DNS resolution error
+    ErrorTypeValidation     // Request validation error
+    ErrorTypeHTTP           // HTTP-level error (4xx, 5xx)
+)
 ```
 
 ---

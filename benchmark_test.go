@@ -384,3 +384,133 @@ func newBenchmarkClient() (Client, error) {
 	config.MaxRetries = 0
 	return New(config)
 }
+
+// ============================================================================
+// MULTIPART FORM BENCHMARKS
+// ============================================================================
+
+func BenchmarkClient_MultipartForm(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := newBenchmarkClient()
+	defer client.Close()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		form := &FormData{
+			Fields: map[string]string{
+				"username": "testuser",
+				"email":    "test@example.com",
+				"message":  "This is a test message for benchmarking",
+			},
+			Files: map[string]*FileData{
+				"document": {
+					Filename:    "test.txt",
+					Content:     []byte("Test file content for benchmarking purposes"),
+					ContentType: "text/plain",
+				},
+			},
+		}
+		_, err := client.Post(server.URL, WithFormData(form))
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkClient_MultipartForm_LargeFiles(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := newBenchmarkClient()
+	defer client.Close()
+
+	// Create 50KB file content
+	largeContent := make([]byte, 50*1024)
+	for i := range largeContent {
+		largeContent[i] = byte('A' + (i % 26))
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		form := &FormData{
+			Files: map[string]*FileData{
+				"file": {
+					Filename:    "largefile.bin",
+					Content:     largeContent,
+					ContentType: "application/octet-stream",
+				},
+			},
+		}
+		_, err := client.Post(server.URL, WithFormData(form))
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// ============================================================================
+// QUERY PARAMS BENCHMARKS
+// ============================================================================
+
+func BenchmarkClient_QueryParams(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := newBenchmarkClient()
+	defer client.Close()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_, err := client.Get(server.URL,
+			WithQuery("page", "1"),
+			WithQuery("limit", "100"),
+			WithQuery("sort", "created_at"),
+			WithQuery("order", "desc"),
+			WithQuery("filter", "active"),
+		)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkClient_QueryParams_Typed(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := newBenchmarkClient()
+	defer client.Close()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_, err := client.Get(server.URL,
+			WithQuery("page", 1),
+			WithQuery("limit", 100),
+			WithQuery("active", true),
+			WithQuery("price", 99.99),
+		)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
