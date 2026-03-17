@@ -36,6 +36,17 @@ var stringBuilderPool = sync.Pool{
 	},
 }
 
+// maxMultipartBufferSize limits the maximum buffer size returned to the pool
+// to prevent memory bloat from large file uploads (256KB)
+const maxMultipartBufferSize = 256 * 1024
+
+// multipartBufferPool reduces allocations for multipart form data buffers
+var multipartBufferPool = sync.Pool{
+	New: func() any {
+		return bytes.NewBuffer(make([]byte, 0, 8*1024))
+	},
+}
+
 // pooledStringsReader wraps a strings.Reader and returns it to the pool on EOF
 type pooledStringsReader struct {
 	reader *strings.Reader
@@ -206,6 +217,49 @@ func (c *urlCache) size() int {
 	return len(c.entries)
 }
 
+// getMultipartBuffer gets a bytes.Buffer from the pool for multipart form data
+func getMultipartBuffer() *bytes.Buffer {
+	buf, ok := multipartBufferPool.Get().(*bytes.Buffer)
+	if !ok || buf == nil {
+		return bytes.NewBuffer(make([]byte, 0, 8*1024))
+	}
+	buf.Reset()
+	return buf
+}
+
+// putMultipartBuffer returns a bytes.Buffer to the pool.
+// SECURITY: Resets the buffer before returning to prevent data leakage.
+// Buffers larger than maxMultipartBufferSize are discarded to prevent memory bloat.
+func putMultipartBuffer(buf *bytes.Buffer) {
+	if buf == nil || buf.Cap() > maxMultipartBufferSize {
+		return // Discard large buffers
+	}
+	// SECURITY: Reset clears the buffer and allows GC to collect old data
+	buf.Reset()
+	multipartBufferPool.Put(buf)
+}
+
+// pooledMultipartBuffer wraps a bytes.Buffer and returns it to the pool when fully read.
+// This enables buffer reuse for multipart form data without premature recycling.
+type pooledMultipartBuffer struct {
+	buf   *bytes.Buffer
+	owned bool // Tracks if buffer still needs to be returned to pool
+}
+
+func (r *pooledMultipartBuffer) Read(p []byte) (n int, err error) {
+	if r.buf == nil {
+		return 0, io.EOF
+	}
+	n, err = r.buf.Read(p)
+	if err == io.EOF && r.owned {
+		// Return to pool when fully read
+		putMultipartBuffer(r.buf)
+		r.buf = nil
+		r.owned = false
+	}
+	return n, err
+}
+
 // ClearRequestPools clears all sync.Pool instances used by the request package.
 // This is primarily useful for testing and debugging to ensure a clean state.
 // Note: sync.Pool is automatically managed by the GC, so this is typically not needed
@@ -221,6 +275,11 @@ func ClearRequestPools() {
 		New: func() any {
 			sb := &strings.Builder{}
 			return sb
+		},
+	}
+	multipartBufferPool = sync.Pool{
+		New: func() any {
+			return bytes.NewBuffer(make([]byte, 0, 8*1024))
 		},
 	}
 }
@@ -291,8 +350,9 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 				body = getPooledBytesReader(xmlData)
 				contentType = "application/xml"
 			} else if isFormData(v) {
-				var buf bytes.Buffer
-				writer := multipart.NewWriter(&buf)
+				// Use pooled buffer for multipart form data
+				buf := getMultipartBuffer()
+				writer := multipart.NewWriter(buf)
 
 				fieldsVal := reflect.ValueOf(v).Elem().FieldByName("Fields")
 				filesVal := reflect.ValueOf(v).Elem().FieldByName("Files")
@@ -301,6 +361,7 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 					for _, key := range fieldsVal.MapKeys() {
 						value := fieldsVal.MapIndex(key).String()
 						if err := writer.WriteField(key.String(), value); err != nil {
+							putMultipartBuffer(buf)
 							return nil, fmt.Errorf("write form field failed: %w", err)
 						}
 					}
@@ -343,20 +404,23 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 						}
 
 						if err != nil {
+							putMultipartBuffer(buf)
 							return nil, fmt.Errorf("create form file failed: %w", err)
 						}
 
 						if _, err := part.Write(content); err != nil {
+							putMultipartBuffer(buf)
 							return nil, fmt.Errorf("write file content failed: %w", err)
 						}
 					}
 				}
 
 				if err := writer.Close(); err != nil {
+					putMultipartBuffer(buf)
 					return nil, fmt.Errorf("close multipart writer failed: %w", err)
 				}
 
-				body = &buf
+				body = &pooledMultipartBuffer{buf: buf, owned: true}
 				contentType = writer.FormDataContentType()
 			} else {
 				jsonData, err := json.Marshal(v)

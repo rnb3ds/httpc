@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/cybergodev/httpc/internal/netutil"
 	"github.com/cybergodev/httpc/internal/validation"
 )
 

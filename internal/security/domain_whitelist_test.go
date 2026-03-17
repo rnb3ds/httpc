@@ -275,3 +275,154 @@ func TestDomainWhitelist_Concurrency(t *testing.T) {
 		<-done
 	}
 }
+
+// ============================================================================
+// BENCHMARKS
+// ============================================================================
+
+func BenchmarkNewDomainWhitelist(b *testing.B) {
+	domains := []string{
+		"example.com",
+		"api.example.com",
+		"*.test.org",
+		"*.example.net",
+		"trusted.com",
+		"*.cdn.example.com",
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_ = NewDomainWhitelist(domains...)
+	}
+}
+
+func BenchmarkNewDomainWhitelist_Large(b *testing.B) {
+	// Create a larger list of domains (100 domains)
+	domains := make([]string, 100)
+	for i := 0; i < 100; i++ {
+		if i%4 == 0 {
+			domains[i] = "*.example" + string(rune('0'+i%10)) + ".com"
+		} else {
+			domains[i] = "domain" + string(rune('0'+i%10)) + ".example.com"
+		}
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_ = NewDomainWhitelist(domains...)
+	}
+}
+
+func BenchmarkDomainWhitelist_IsAllowed(b *testing.B) {
+	wl := NewDomainWhitelist(
+		"example.com",
+		"api.example.com",
+		"*.test.org",
+		"*.example.net",
+		"trusted.com",
+		"*.cdn.example.com",
+	)
+
+	testCases := []struct {
+		name     string
+		hostname string
+	}{
+		{"exact_match", "example.com"},
+		{"wildcard_match", "sub.test.org"},
+		{"no_match", "other.com"},
+		{"uppercase", "EXAMPLE.COM"},
+		{"with_whitespace", "  example.com  "},
+	}
+
+	for _, tc := range testCases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			for i := 0; i < b.N; i++ {
+				_ = wl.IsAllowed(tc.hostname)
+			}
+		})
+	}
+}
+
+func BenchmarkDomainWhitelist_IsAllowed_Parallel(b *testing.B) {
+	wl := NewDomainWhitelist(
+		"example.com",
+		"api.example.com",
+		"*.test.org",
+		"*.example.net",
+	)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	b.RunParallel(func(pb *testing.PB) {
+		hostnames := []string{
+			"example.com",
+			"sub.test.org",
+			"other.com",
+			"api.example.com",
+		}
+		i := 0
+		for pb.Next() {
+			_ = wl.IsAllowed(hostnames[i%len(hostnames)])
+			i++
+		}
+	})
+}
+
+func BenchmarkDomainWhitelist_Add(b *testing.B) {
+	wl := NewDomainWhitelist()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		wl.Add("newdomain.com")
+	}
+}
+
+func BenchmarkDomainWhitelist_Remove(b *testing.B) {
+	// Pre-populate with many domains
+	domains := make([]string, 1000)
+	for i := 0; i < 1000; i++ {
+		domains[i] = "domain" + string(rune('0'+i%10)) + ".com"
+	}
+	wl := NewDomainWhitelist(domains...)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		wl.Remove(domains[i%len(domains)])
+	}
+}
+
+func BenchmarkNormalizeDomain(b *testing.B) {
+	testCases := []struct {
+		name   string
+		domain string
+	}{
+		{"already_normalized", "example.com"},
+		{"uppercase", "EXAMPLE.COM"},
+		{"with_whitespace", "  example.com  "},
+		{"complex", "  API.Example.COM  "},
+		{"empty", ""},
+	}
+
+	for _, tc := range testCases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			for i := 0; i < b.N; i++ {
+				_ = normalizeDomain(tc.domain)
+			}
+		})
+	}
+}
