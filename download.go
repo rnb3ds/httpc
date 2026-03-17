@@ -191,9 +191,16 @@ func getSystemPaths() []string {
 		fallthrough
 	default:
 		return []string{
-			"/etc/", "/sys/", "/proc/", "/dev/", "/boot/", "/root/",
+			// Critical system configuration and kernel
+			"/etc/", "/sys/", "/proc/", "/dev/", "/boot/",
+			// Root user directory
+			"/root/",
+			// System executables
 			"/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/",
-			"/lib/", "/lib64/", "/run/", "/sys/fs/",
+			// System libraries
+			"/lib/", "/lib32/", "/lib64/", "/usr/lib/", "/usr/lib32/", "/usr/lib64/",
+			// Runtime directories
+			"/run/", "/var/run/", "/sys/fs/",
 		}
 	}
 }
@@ -211,6 +218,12 @@ func calculateSpeed(bytes int64, duration time.Duration) float64 {
 }
 
 // prepareFilePath validates and prepares file paths with security checks.
+// SECURITY: This function implements multiple layers of protection:
+// 1. UNC path blocking (prevents network resource access)
+// 2. Control character filtering
+// 3. System path protection
+// 4. Path traversal detection
+// 5. Symlink attack prevention
 func prepareFilePath(filePath string) error {
 	filePathLen := len(filePath)
 	if filePathLen == 0 {
@@ -241,6 +254,15 @@ func prepareFilePath(filePath string) error {
 		return fmt.Errorf("failed to resolve path: %w", err)
 	}
 
+	// SECURITY: Check for symlinks to prevent symlink attacks
+	// An attacker could create a symlink pointing to a sensitive file
+	// and trick the application into writing to that file
+	if fi, err := os.Lstat(absPath); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlink paths not allowed for security")
+		}
+	}
+
 	// Check for system path access
 	if isSystemPath(absPath) {
 		return fmt.Errorf("system path access denied for security")
@@ -262,10 +284,47 @@ func prepareFilePath(filePath string) error {
 		}
 	}
 
-	// Create directories
+	// SECURITY: Check parent directory for symlinks as well
+	// This prevents TOCTOU attacks where a directory is replaced with a symlink
 	dir := filepath.Dir(absPath)
+	if dir != absPath { // Avoid infinite recursion at root
+		if err := checkParentDirSymlinks(dir); err != nil {
+			return err
+		}
+	}
+
+	// Create directories
 	if err := os.MkdirAll(dir, dirPermissions); err != nil {
 		return fmt.Errorf("failed to create directories: %w", err)
+	}
+
+	return nil
+}
+
+// checkParentDirSymlinks recursively checks if any parent directory is a symlink
+// to prevent symlink-based path traversal attacks
+func checkParentDirSymlinks(dir string) error {
+	// Resolve the directory to its real path
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		// If the directory doesn't exist yet, that's okay - it will be created
+		if os.IsNotExist(err) {
+			// Check parent recursively
+			parent := filepath.Dir(dir)
+			if parent != dir {
+				return checkParentDirSymlinks(parent)
+			}
+			return nil
+		}
+		return fmt.Errorf("failed to evaluate symlinks: %w", err)
+	}
+
+	// If the resolved path differs from the original, a symlink was involved
+	// Check if the resolved path is in a system directory
+	if resolvedDir != dir {
+		if isSystemPath(resolvedDir) {
+			return fmt.Errorf("symlink resolves to system path")
+		}
 	}
 
 	return nil

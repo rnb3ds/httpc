@@ -608,21 +608,21 @@ func (m *mockRequest) SetMaxRedirects(v *int)          { m.maxRedirects = v }
 
 // mockResponse implements ResponseMutator for testing
 type mockResponse struct {
-	statusCode      int
-	status          string
-	proto           string
-	headers         http.Header
-	body            string
-	rawBody         []byte
-	contentLength   int64
-	duration        time.Duration
-	attempts        int
-	cookies         []*http.Cookie
-	redirectChain   []string
-	redirectCount   int
-	requestHeaders  http.Header
-	requestURL      string
-	requestMethod   string
+	statusCode     int
+	status         string
+	proto          string
+	headers        http.Header
+	body           string
+	rawBody        []byte
+	contentLength  int64
+	duration       time.Duration
+	attempts       int
+	cookies        []*http.Cookie
+	redirectChain  []string
+	redirectCount  int
+	requestHeaders http.Header
+	requestURL     string
+	requestMethod  string
 }
 
 func (m *mockResponse) StatusCode() int             { return m.statusCode }

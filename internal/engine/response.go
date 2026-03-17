@@ -11,6 +11,26 @@ import (
 	"unsafe"
 )
 
+// gzipReaderPool pools gzip.Reader objects to reduce allocations during decompression.
+// Each gzip.NewReader allocates a reader struct and internal buffers.
+var gzipReaderPool = sync.Pool{
+	New: func() any {
+		// Create a dummy reader to initialize the pool
+		// The actual reader will be reset with the real source
+		reader, _ := gzip.NewReader(bytes.NewReader(nil))
+		return reader
+	},
+}
+
+// flateReaderPool pools flate.Reader objects (flate.Resetter interface).
+// flate.NewReader returns an io.ReadCloser that can be reset.
+var flateReaderPool = sync.Pool{
+	New: func() any {
+		// Create a dummy reader to initialize the pool
+		return flate.NewReader(bytes.NewReader(nil))
+	},
+}
+
 const (
 	// defaultBufferSize is the initial size for buffer pool buffers
 	defaultBufferSize = 4 * 1024 // 4KB - good balance for most responses
@@ -197,17 +217,19 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 	isCompressed := false
 	var compressedLr *pooledLimitReader
 	var decompressedLr *pooledLimitReader
+	var decompressor io.ReadCloser // Track decompressor for cleanup
 
 	if encoding := httpResp.Header.Get("Content-Encoding"); encoding != "" {
 		isCompressed = true
 		var err error
 		// SECURITY: Limit compressed data size before decompression to prevent zip bombs
 		compressedLr = getLimitReader(httpResp.Body, maxCompressedSize+1)
-		reader, err = p.createDecompressor(compressedLr, encoding)
+		decompressor, err = p.createDecompressor(compressedLr, encoding)
 		if err != nil {
 			putLimitReader(compressedLr)
 			return nil, fmt.Errorf("failed to create decompressor for %s: %w", encoding, err)
 		}
+		reader = decompressor
 	}
 
 	// Apply decompressed size limit using pooled reader
@@ -216,14 +238,29 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 		reader = decompressedLr
 	}
 
-	// Use pooled buffer for reading
-	buf := getBuffer()
+	// Optimization: Use Content-Length hint for buffer pre-allocation when available
+	// This reduces buffer growth overhead for responses with known size
+	contentLength := httpResp.ContentLength
+	var buf *bytes.Buffer
+
+	// For responses with known content length that fit in stolen threshold,
+	// allocate directly to avoid pool overhead
+	if !isCompressed && contentLength > 0 && contentLength <= int64(bufferStealThreshold) {
+		// Direct allocation: we know the exact size needed
+		body := make([]byte, 0, contentLength)
+		buf = bytes.NewBuffer(body)
+	} else {
+		buf = getBuffer()
+	}
 	bufferStolen := false // Track if we stole the buffer to skip putBuffer
 
 	defer func() {
-		// Only return buffer to pool if we didn't steal it
-		if !bufferStolen {
+		// Only return buffer to pool if we didn't steal it and it's from pool
+		if !bufferStolen && buf != nil {
 			putBuffer(buf)
+		}
+		if decompressor != nil {
+			_ = decompressor.Close() // Close returns pooled reader to pool
 		}
 		if compressedLr != nil {
 			putLimitReader(compressedLr)
@@ -268,19 +305,86 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 }
 
 // createDecompressor creates an appropriate decompressor based on the encoding type.
-func (p *ResponseProcessor) createDecompressor(reader io.Reader, encoding string) (io.Reader, error) {
+// Uses pooled readers for gzip and deflate to reduce allocations.
+func (p *ResponseProcessor) createDecompressor(reader io.Reader, encoding string) (io.ReadCloser, error) {
 	switch encoding {
 	case "gzip":
+		// Try to get a pooled gzip reader
+		if pooled, ok := gzipReaderPool.Get().(*gzip.Reader); ok && pooled != nil {
+			if err := pooled.Reset(reader); err != nil {
+				// Reset failed, put back and create new
+				gzipReaderPool.Put(pooled)
+				return gzip.NewReader(reader)
+			}
+			return &pooledGzipReader{Reader: pooled}, nil
+		}
 		return gzip.NewReader(reader)
 	case "deflate":
+		// Try to get a pooled flate reader
+		if pooled, ok := flateReaderPool.Get().(io.ReadCloser); ok && pooled != nil {
+			// Check if it also implements flate.Resetter
+			if resetter, ok := pooled.(flate.Resetter); ok {
+				if err := resetter.Reset(reader, nil); err != nil {
+					// Reset failed, put back and create new
+					flateReaderPool.Put(pooled)
+					return flate.NewReader(reader), nil
+				}
+				return &pooledFlateReader{reader: pooled}, nil
+			}
+			// Doesn't implement Resetter, put back and create new
+			flateReaderPool.Put(pooled)
+		}
 		return flate.NewReader(reader), nil
 	case "br":
 		return nil, fmt.Errorf("brotli decompression not supported")
 	case "compress", "x-compress":
 		return nil, fmt.Errorf("LZW compression not supported")
 	case "identity", "":
-		return reader, nil
+		return io.NopCloser(reader), nil
 	default:
-		return reader, nil
+		return io.NopCloser(reader), nil
 	}
+}
+
+// pooledGzipReader wraps a pooled gzip.Reader and returns it to the pool on Close.
+type pooledGzipReader struct {
+	*gzip.Reader
+}
+
+func (r *pooledGzipReader) Close() error {
+	if r.Reader == nil {
+		return nil
+	}
+	err := r.Reader.Close()
+	// Reset to nil reader for safety before returning to pool
+	r.Reader.Reset(bytes.NewReader(nil))
+	gzipReaderPool.Put(r.Reader)
+	r.Reader = nil
+	return err
+}
+
+// pooledFlateReader wraps a pooled flate reader and returns it to the pool on Close.
+// flate.NewReader returns an io.ReadCloser that also implements flate.Resetter.
+type pooledFlateReader struct {
+	reader io.ReadCloser
+}
+
+func (r *pooledFlateReader) Read(p []byte) (n int, err error) {
+	if r.reader == nil {
+		return 0, io.EOF
+	}
+	return r.reader.Read(p)
+}
+
+func (r *pooledFlateReader) Close() error {
+	if r.reader == nil {
+		return nil
+	}
+	// Get the Resetter interface to reset and return to pool
+	if resetter, ok := r.reader.(flate.Resetter); ok {
+		resetter.Reset(bytes.NewReader(nil), nil)
+		flateReaderPool.Put(resetter)
+	}
+	r.reader = nil
+	return nil
 }

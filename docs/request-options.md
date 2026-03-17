@@ -108,6 +108,11 @@ resp, err := client.Get(url,
 resp, err := client.Get(url,
     httpc.WithQuery("api_key", "your-api-key"),
 )
+
+// Note: Use WithCookie for cookie-based authentication
+resp, err := client.Get(url,
+    httpc.WithCookie(http.Cookie{Name: "session", Value: "your-session"}),
+)
 ```
 
 ### Custom Authentication
@@ -339,10 +344,10 @@ resp, err := client.Get(url,
 
 ## Cookies
 
-### Send Cookies
+### Send Cookie
 
 ```go
-cookie := &http.Cookie{
+cookie := http.Cookie{
     Name:  "session_id",
     Value: "abc123",
 }
@@ -355,21 +360,26 @@ resp, err := client.Get(url,
 ### Multiple Cookies
 
 ```go
-cookies := []*http.Cookie{
-    {Name: "session_id", Value: "abc123"},
-    {Name: "user_pref", Value: "dark_mode"},
-}
-
+// Use multiple WithCookie calls for multiple cookies
 resp, err := client.Get(url,
-    httpc.WithCookies(cookies),
+    httpc.WithCookie(http.Cookie{Name: "session_id", Value: "abc123"}),
+    httpc.WithCookie(http.Cookie{Name: "user_pref", Value: "dark_mode"}),
 )
 ```
 
-### Simple Cookie (Name/Value)
+### Cookie Map
+
+Convenient way to set multiple simple cookies from a map:
 
 ```go
+cookies := map[string]string{
+    "session_id": "abc123",
+    "user_pref":  "dark_mode",
+    "lang":       "en",
+}
+
 resp, err := client.Get(url,
-    httpc.WithCookieValue("session_id", "abc123"),
+    httpc.WithCookieMap(cookies),
 )
 ```
 
@@ -406,7 +416,8 @@ resp, err := client.Get(url,
 | `WithTimeout(duration)`          | Request timeout      | `WithTimeout(30*time.Second)`           |
 | `WithContext(ctx)`               | Request context      | `WithContext(ctx)`                      |
 | `WithMaxRetries(n)`              | Max retry attempts   | `WithMaxRetries(3)`                     |
-| `WithCookie(cookie)`             | Add cookie           | `WithCookie(http.Cookie{...})`          |
+| `WithCookie(cookie)`             | Add cookie           | `WithCookie(http.Cookie{Name: "n", Value: "v"})` |
+| `WithCookieMap(cookies)`         | Add multiple cookies | `WithCookieMap(map[string]string{...})` |
 | `WithCookieString(cookieStr)`    | Parse cookie string  | `WithCookieString("a=1; b=2")`          |
 | `WithFollowRedirects(follow)`    | Redirect policy      | `WithFollowRedirects(false)`            |
 | `WithMaxRedirects(n)`            | Max redirects        | `WithMaxRedirects(5)`                   |

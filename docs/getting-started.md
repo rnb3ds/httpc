@@ -380,7 +380,7 @@ func (c *APIClient) GetUser(id int) (*User, error) {
     }
 
     var user User
-    if err := result.JSON(&user); err != nil {
+    if err := result.Unmarshal(&user); err != nil {
         return nil, err
     }
 

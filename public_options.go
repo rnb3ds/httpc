@@ -448,6 +448,51 @@ func WithCookie(cookie http.Cookie) RequestOption {
 	}
 }
 
+// WithCookieMap sets multiple cookies from a map of name-value pairs.
+// This is a convenience method for setting multiple simple cookies at once.
+// For cookies with additional attributes (Domain, Path, Secure, etc.),
+// use WithCookie or WithCookieString instead.
+//
+// Example:
+//
+//	cookies := map[string]string{
+//	    "session_id": "abc123",
+//	    "user_pref":  "dark_mode",
+//	    "lang":       "en",
+//	}
+//	result, err := client.Get("https://api.example.com",
+//	    httpc.WithCookieMap(cookies),
+//	)
+func WithCookieMap(cookies map[string]string) RequestOption {
+	return func(r *engine.Request) error {
+		if cookies == nil {
+			return nil
+		}
+
+		existing := r.Cookies()
+		// Pre-allocate capacity to avoid multiple allocations
+		if cap(existing) < len(existing)+len(cookies) {
+			newCookies := make([]http.Cookie, len(existing), len(existing)+len(cookies))
+			copy(newCookies, existing)
+			existing = newCookies
+		}
+
+		for name, value := range cookies {
+			cookie := http.Cookie{
+				Name:  name,
+				Value: value,
+			}
+			if err := validation.ValidateCookie(&cookie); err != nil {
+				return fmt.Errorf("invalid cookie %s: %w", name, err)
+			}
+			existing = append(existing, cookie)
+		}
+
+		r.SetCookies(existing)
+		return nil
+	}
+}
+
 func WithCookieString(cookieString string) RequestOption {
 	return func(r *engine.Request) error {
 		if cookieString == "" {

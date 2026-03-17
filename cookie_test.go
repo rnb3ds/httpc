@@ -86,6 +86,174 @@ func TestCookie_RequestBasicOperations(t *testing.T) {
 // Cookie String Parsing
 // ----------------------------------------------------------------------------
 
+// ----------------------------------------------------------------------------
+// Cookie Map Operations
+// ----------------------------------------------------------------------------
+
+func TestCookie_MapOperations(t *testing.T) {
+	t.Run("WithCookieMap basic", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			cookies := r.Cookies()
+			if len(cookies) != 3 {
+				t.Errorf("Expected 3 cookies, got %d", len(cookies))
+			}
+
+			expected := map[string]string{
+				"session_id": "abc123",
+				"user_pref":  "dark_mode",
+				"lang":       "en",
+			}
+
+			for name, expectedValue := range expected {
+				cookie, err := r.Cookie(name)
+				if err != nil {
+					t.Errorf("Cookie %s not found", name)
+					continue
+				}
+				if cookie.Value != expectedValue {
+					t.Errorf("Cookie %s: expected %s, got %s", name, expectedValue, cookie.Value)
+				}
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		cookies := map[string]string{
+			"session_id": "abc123",
+			"user_pref":  "dark_mode",
+			"lang":       "en",
+		}
+
+		_, err := client.Get(server.URL, WithCookieMap(cookies))
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+	})
+
+	t.Run("WithCookieMap empty map", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			cookies := r.Cookies()
+			if len(cookies) != 0 {
+				t.Errorf("Expected 0 cookies, got %d", len(cookies))
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Get(server.URL, WithCookieMap(map[string]string{}))
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+	})
+
+	t.Run("WithCookieMap nil map", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Get(server.URL, WithCookieMap(nil))
+		if err != nil {
+			t.Fatalf("Request with nil map should not fail: %v", err)
+		}
+	})
+
+	t.Run("WithCookieMap combined with WithCookie", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			cookies := r.Cookies()
+			if len(cookies) != 3 {
+				t.Errorf("Expected 3 cookies, got %d", len(cookies))
+			}
+
+			// Verify all cookies are present
+			expected := map[string]string{
+				"cookie1": "value1",
+				"cookie2": "value2",
+				"cookie3": "value3",
+			}
+
+			for name, expectedValue := range expected {
+				cookie, err := r.Cookie(name)
+				if err != nil {
+					t.Errorf("Cookie %s not found", name)
+					continue
+				}
+				if cookie.Value != expectedValue {
+					t.Errorf("Cookie %s: expected %s, got %s", name, expectedValue, cookie.Value)
+				}
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Get(server.URL,
+			WithCookie(http.Cookie{Name: "cookie1", Value: "value1"}),
+			WithCookieMap(map[string]string{
+				"cookie2": "value2",
+				"cookie3": "value3",
+			}),
+		)
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+	})
+
+	t.Run("WithCookieMap with special characters", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			cookie, err := r.Cookie("token")
+			if err != nil {
+				t.Errorf("Cookie token not found")
+				return
+			}
+			if cookie.Value != "xyz-789_ABC" {
+				t.Errorf("Expected 'xyz-789_ABC', got '%s'", cookie.Value)
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Get(server.URL, WithCookieMap(map[string]string{
+			"token": "xyz-789_ABC",
+		}))
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+	})
+
+	t.Run("WithCookieMap invalid cookie name", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		// Cookie name with invalid character (semicolon)
+		_, err := client.Get(server.URL, WithCookieMap(map[string]string{
+			"invalid;name": "value",
+		}))
+		if err == nil {
+			t.Error("Expected error for invalid cookie name")
+		}
+	})
+}
+
 func TestCookie_StringParsing(t *testing.T) {
 	tests := []struct {
 		name            string

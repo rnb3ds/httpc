@@ -17,7 +17,7 @@ It's important to understand the difference:
 
 ```go
 result, err := client.Get("https://api.example.com",
-    httpc.WithCookieValue("session", "abc123"),  // Request cookie
+    httpc.WithCookie(http.Cookie{Name: "session", Value: "abc123"}),  // Request cookie
 )
 
 // Response cookies (from server's Set-Cookie header)
@@ -38,7 +38,7 @@ The `Result.Request.Headers` field contains all headers that were actually sent 
 ```go
 result, err := client.Get("https://api.example.com",
     httpc.WithHeader("X-API-Key", "secret"),
-    httpc.WithCookieValue("session", "abc123"),
+    httpc.WithCookie(http.Cookie{Name: "session", Value: "abc123"}),
 )
 
 // Access all request headers
@@ -59,8 +59,8 @@ cookieHeader := result.Request.Headers.Get("Cookie")
 
 ```go
 result, err := client.Get("https://api.example.com",
-    httpc.WithCookieValue("session", "abc123"),
-    httpc.WithCookieValue("token", "xyz789"),
+    httpc.WithCookie(http.Cookie{Name: "session", Value: "abc123"}),
+    httpc.WithCookie(http.Cookie{Name: "token", Value: "xyz789"}),
 )
 
 // Get raw Cookie header
@@ -129,7 +129,7 @@ Verify that cookies are being sent correctly:
 
 ```go
 result, err := client.Get("https://api.example.com",
-    httpc.WithCookieValue("auth", "token123"),
+    httpc.WithCookie(http.Cookie{Name: "auth", Value: "token123"}),
 )
 
 if !result.HasRequestCookie("auth") {
@@ -143,7 +143,7 @@ Log complete request information for debugging:
 
 ```go
 result, err := client.Get("https://api.example.com",
-    httpc.WithCookieValue("session", "abc123"),
+    httpc.WithCookie(http.Cookie{Name: "session", Value: "abc123"}),
 )
 
 log.Printf("Request URL: %s", result.Request.URL)
@@ -177,7 +177,7 @@ Compare what you sent vs what you received:
 
 ```go
 result, err := client.Get("https://api.example.com",
-    httpc.WithCookieValue("client_cookie", "value1"),
+    httpc.WithCookie(http.Cookie{Name: "client_cookie", Value: "value1"}),
 )
 
 fmt.Println("Sent to server:")
@@ -211,8 +211,8 @@ func main() {
 
     // Make request with cookies
     result, err := client.Get("https://httpbin.org/cookies",
-        httpc.WithCookieValue("session", "abc123"),
-        httpc.WithCookieValue("user_id", "12345"),
+        httpc.WithCookie(http.Cookie{Name: "session", Value: "abc123"}),
+        httpc.WithCookie(http.Cookie{Name: "user_id", Value: "12345"}),
     )
     if err != nil {
         log.Fatal(err)
