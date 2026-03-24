@@ -2,7 +2,7 @@
 
 This document explains how to inspect the actual HTTP request that was sent, including headers and cookies.
 
-> **Prerequisite**: This is an advanced debugging guide. Ensure you're familiar with [basic patterns](getting-started.md#common-patterns) and [request options](request-options.md) first.
+> **Prerequisite**: This is an advanced debugging guide. Ensure you're familiar with [basic patterns](01_getting-started.md#common-patterns) and [request options](03_request-options.md) first.
 
 ## Overview
 
@@ -251,6 +251,6 @@ func main() {
 
 ## See Also
 
-- [Cookie Handling](./cookies.md) - General cookie usage
-- [Configuration](./configuration.md) - Cookie jar configuration
+- [Cookie API Reference](./06_cookie-api.md) - Cookie handling documentation
+- [Configuration](./02_configuration.md) - Cookie jar configuration
 - [Examples](../examples/) - More examples

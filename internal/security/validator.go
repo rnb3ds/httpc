@@ -84,28 +84,13 @@ func (v *Validator) ValidateRequest(req *Request) error {
 }
 
 func (v *Validator) validateURL(urlStr string) error {
-	if urlStr == "" {
-		return fmt.Errorf("URL cannot be empty")
-	}
-	urlLen := len(urlStr)
-	if urlLen > validation.MaxURLLen {
-		return fmt.Errorf("URL too long (max %d)", validation.MaxURLLen)
+	// Use centralized URL validation from validation package
+	if err := validation.ValidateURL(urlStr); err != nil {
+		return err
 	}
 
-	parsedURL, err := url.Parse(urlStr)
-	if err != nil {
-		return fmt.Errorf("invalid URL: %w", err)
-	}
-	if parsedURL.Scheme == "" {
-		return fmt.Errorf("URL scheme is required")
-	}
-	if parsedURL.Host == "" {
-		return fmt.Errorf("URL host is required")
-	}
-	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		return fmt.Errorf("unsupported URL scheme: %s", parsedURL.Scheme)
-	}
-
+	// Parse URL for host validation (already validated above)
+	parsedURL, _ := url.Parse(urlStr)
 	return v.validateHost(parsedURL.Host)
 }
 

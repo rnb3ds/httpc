@@ -24,10 +24,15 @@ func TestNewSessionManager(t *testing.T) {
 	}
 }
 
-func TestNewSessionManagerWithSecurity(t *testing.T) {
+func TestNewSessionManagerWithConfig(t *testing.T) {
 	securityConfig := validation.StrictCookieSecurityConfig()
-	session := NewSessionManagerWithSecurity(securityConfig)
+	cfg := DefaultSessionConfig()
+	cfg.CookieSecurity = securityConfig
+	session, err := NewSessionManagerWithConfig(cfg)
 
+	if err != nil {
+		t.Fatalf("NewSessionManagerWithConfig error: %v", err)
+	}
 	if session == nil {
 		t.Fatal("Expected non-nil SessionManager")
 	}
@@ -56,7 +61,12 @@ func TestSessionManager_SetCookieSecurity(t *testing.T) {
 func TestSessionManager_CookieSecurityValidation(t *testing.T) {
 	// Create session with strict security
 	securityConfig := validation.StrictCookieSecurityConfig()
-	session := NewSessionManagerWithSecurity(securityConfig)
+	cfg := DefaultSessionConfig()
+	cfg.CookieSecurity = securityConfig
+	session, err := NewSessionManagerWithConfig(cfg)
+	if err != nil {
+		t.Fatalf("NewSessionManagerWithConfig error: %v", err)
+	}
 
 	// Try to set insecure cookie - should fail
 	insecureCookie := &http.Cookie{
@@ -67,7 +77,7 @@ func TestSessionManager_CookieSecurityValidation(t *testing.T) {
 		SameSite: http.SameSiteStrictMode,
 	}
 
-	err := session.SetCookie(insecureCookie)
+	err = session.SetCookie(insecureCookie)
 	if err == nil {
 		t.Error("Expected error for insecure cookie with strict security")
 	}
@@ -110,7 +120,7 @@ func TestSessionManager_SetCookie(t *testing.T) {
 	// Verify cookie was stored
 	stored := session.GetCookie("test")
 	if stored == nil {
-		t.Error("Expected cookie to be stored")
+		t.Fatal("Expected cookie to be stored")
 	}
 	if stored.Value != "value" {
 		t.Errorf("Expected value 'value', got %s", stored.Value)
@@ -269,7 +279,7 @@ func TestSessionManager_UpdateFromResult(t *testing.T) {
 
 	cookie := session.GetCookie("server-cookie")
 	if cookie == nil {
-		t.Error("Expected cookie from result")
+		t.Fatal("Expected cookie from result")
 	}
 	if cookie.Value != "server-value" {
 		t.Errorf("Expected value 'server-value', got %s", cookie.Value)

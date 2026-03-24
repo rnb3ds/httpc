@@ -10,6 +10,26 @@ import (
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
+// SessionConfig configures SessionManager behavior.
+// Use DefaultSessionConfig() to get a configuration with sensible defaults.
+type SessionConfig struct {
+	// CookieSecurity configures cookie security validation.
+	// If nil, no cookie security validation is performed.
+	CookieSecurity *validation.CookieSecurityConfig
+}
+
+// DefaultSessionConfig returns a SessionConfig with default settings.
+// By default, no cookie security validation is performed.
+//
+// Example:
+//
+//	cfg := httpc.DefaultSessionConfig()
+//	cfg.CookieSecurity = validation.StrictCookieSecurityConfig()
+//	sm, err := httpc.NewSessionManager(cfg)
+func DefaultSessionConfig() *SessionConfig {
+	return &SessionConfig{}
+}
+
 // SessionManager manages session state including cookies and headers
 // for DomainClient instances. It provides thread-safe access to session data.
 type SessionManager struct {
@@ -27,14 +47,28 @@ func NewSessionManager() *SessionManager {
 	}
 }
 
-// NewSessionManagerWithSecurity creates a new SessionManager with cookie security validation.
-// The cookieSecurity config is used to validate cookies when they are set.
-func NewSessionManagerWithSecurity(cookieSecurity *validation.CookieSecurityConfig) *SessionManager {
+// NewSessionManagerWithConfig creates a new SessionManager with the given configuration.
+// If no configuration is provided or nil is passed, DefaultSessionConfig() is used.
+//
+// Example:
+//
+//	// Use default configuration
+//	sm, err := httpc.NewSessionManagerWithConfig()
+//
+//	// Use custom configuration
+//	cfg := httpc.DefaultSessionConfig()
+//	cfg.CookieSecurity = mySecurityConfig
+//	sm, err := httpc.NewSessionManagerWithConfig(cfg)
+func NewSessionManagerWithConfig(config ...*SessionConfig) (*SessionManager, error) {
+	cfg := DefaultSessionConfig()
+	if len(config) > 0 && config[0] != nil {
+		cfg = config[0]
+	}
 	return &SessionManager{
 		cookies:        make(map[string]*http.Cookie),
 		headers:        make(map[string]string),
-		cookieSecurity: cookieSecurity,
-	}
+		cookieSecurity: cfg.CookieSecurity,
+	}, nil
 }
 
 // SetCookieSecurity sets the cookie security configuration.

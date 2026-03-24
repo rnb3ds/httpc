@@ -2,7 +2,7 @@
 
 This guide covers all configuration options for HTTPC clients.
 
-> **Prerequisite**: This guide assumes you understand the [Client Setup pattern](getting-started.md#common-patterns) from the Getting Started guide.
+> **Prerequisite**: This guide assumes you understand the [Client Setup pattern](01_getting-started.md#common-patterns) from the Getting Started guide.
 
 ## Table of Contents
 
@@ -296,7 +296,7 @@ client, err := httpc.New(config)
 | `MaxTLSVersion`         | `uint16`      | TLS 1.3 | Maximum TLS version                |
 | `InsecureSkipVerify`    | `bool`        | false   | Skip TLS verification (dangerous)  |
 | `MaxResponseBodySize`   | `int64`       | 10 MB   | Max response body size             |
-| `AllowPrivateIPs`       | `bool`        | false   | Allow private IP addresses         |
+| `AllowPrivateIPs`       | `bool`        | true    | Allow private IP addresses         |
 | `StrictContentLength`   | `bool`        | true    | Enforce Content-Length validation  |
 | `TLSConfig`             | `*tls.Config` | nil     | Custom TLS configuration           |
 

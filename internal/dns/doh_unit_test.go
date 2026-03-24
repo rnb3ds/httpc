@@ -374,3 +374,317 @@ func TestDoHResolver_ConcurrentClearCache(t *testing.T) {
 	wg.Wait()
 	// If we get here without deadlock or panic, the test passes
 }
+
+// ============================================================================
+// parseWireFormatResponse Unit Tests - Error Cases
+// ============================================================================
+
+func TestParseWireFormatResponse_Errors(t *testing.T) {
+	r := &DoHResolver{}
+
+	tests := []struct {
+		name    string
+		body    []byte
+		wantErr bool
+	}{
+		{
+			name:    "Empty body",
+			body:    []byte{},
+			wantErr: true,
+		},
+		{
+			name:    "Too short - 1 byte",
+			body:    []byte{0x00},
+			wantErr: true,
+		},
+		{
+			name:    "Too short - 11 bytes",
+			body:    make([]byte, 11),
+			wantErr: true,
+		},
+		{
+			name: "Valid header no answers",
+			// DNS header with QDCOUNT=0, ANCOUNT=0
+			body:    []byte{0x00, 0x01, 0x81, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00},
+			wantErr: true, // No IP addresses found
+		},
+		{
+			name: "Truncated after question",
+			// DNS header with QDCOUNT=1, but truncated
+			body:    []byte{0x00, 0x01, 0x81, 0x80, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x07, 0x65, 0x78},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := r.parseWireFormatResponse(tt.body, "example.com")
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseWireFormatResponse() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// parseJSONResponse Unit Tests - Error Cases
+// ============================================================================
+
+func TestParseJSONResponse_Errors(t *testing.T) {
+	r := &DoHResolver{}
+
+	tests := []struct {
+		name    string
+		body    []byte
+		wantErr bool
+	}{
+		{
+			name:    "Invalid JSON",
+			body:    []byte(`{invalid json}`),
+			wantErr: true,
+		},
+		{
+			name:    "Empty object",
+			body:    []byte(`{}`),
+			wantErr: true, // No IP addresses found
+		},
+		{
+			name:    "DNS error status",
+			body:    []byte(`{"Status": 2, "Answer": []}`),
+			wantErr: true, // Non-zero status
+		},
+		{
+			name:    "Empty answers",
+			body:    []byte(`{"Status": 0, "Answer": []}`),
+			wantErr: true, // No IP addresses found
+		},
+		{
+			name:    "No A/AAAA records",
+			body:    []byte(`{"Status": 0, "Answer": [{"name": "example.com", "type": 5, "data": "target.com"}]}`),
+			wantErr: true, // No IP addresses found
+		},
+		{
+			name:    "Invalid IP in answer",
+			body:    []byte(`{"Status": 0, "Answer": [{"name": "example.com", "type": 1, "data": "invalid-ip"}]}`),
+			wantErr: true, // No valid IPs after parsing
+		},
+		{
+			name:    "Valid A record",
+			body:    []byte(`{"Status": 0, "Answer": [{"name": "example.com", "type": 1, "data": "8.8.8.8"}]}`),
+			wantErr: false,
+		},
+		{
+			name:    "Valid AAAA record",
+			body:    []byte(`{"Status": 0, "Answer": [{"name": "example.com", "type": 28, "data": "2001:4860:4860::8888"}]}`),
+			wantErr: false,
+		},
+		{
+			name:    "NXDOMAIN status (3) with empty answers",
+			body:    []byte(`{"Status": 3, "Answer": []}`),
+			wantErr: true, // No IP addresses
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ips, err := r.parseJSONResponse(tt.body, "example.com")
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseJSONResponse() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && len(ips) == 0 {
+				t.Error("Expected at least one IP address")
+			}
+		})
+	}
+}
+
+// ============================================================================
+// Cache Limit Tests
+// ============================================================================
+
+func TestDoHResolver_CacheLimit(t *testing.T) {
+	// Create resolver with a custom configuration
+	resolver := NewDoHResolver(nil, 5*time.Minute)
+	defer resolver.Close()
+
+	ctx := context.Background()
+
+	// Populate cache with multiple entries
+	hosts := []string{
+		"www.google.com",
+		"www.example.com",
+		"www.cloudflare.com",
+		"www.github.com",
+		"www.microsoft.com",
+	}
+
+	for _, host := range hosts {
+		_, _ = resolver.LookupIPAddr(ctx, host)
+	}
+
+	// Verify cache has entries
+	size := resolver.CacheSize()
+	t.Logf("Cache size after %d lookups: %d", len(hosts), size)
+
+	// Clear cache and verify
+	resolver.ClearCache()
+	if resolver.CacheSize() != 0 {
+		t.Errorf("Cache size after clear = %d, want 0", resolver.CacheSize())
+	}
+}
+
+// ============================================================================
+// Provider Priority Tests
+// ============================================================================
+
+func TestDoHResolver_ProviderPriority(t *testing.T) {
+	// Create custom providers with different priorities
+	providers := []*DoHProvider{
+		{
+			Name:     "primary",
+			Template: "https://1.1.1.1/dns-query?name={name}&type=A",
+			Priority: 1,
+		},
+		{
+			Name:     "secondary",
+			Template: "https://dns.google/resolve?name={name}&type=A",
+			Priority: 2,
+		},
+	}
+
+	resolver := NewDoHResolver(providers, 5*time.Minute)
+	defer resolver.Close()
+
+	// Verify providers are set
+	if len(resolver.providers) != 2 {
+		t.Errorf("Expected 2 providers, got %d", len(resolver.providers))
+	}
+
+	// Verify order
+	if resolver.providers[0].Priority > resolver.providers[1].Priority {
+		t.Error("Providers should be ordered by priority")
+	}
+}
+
+// ============================================================================
+// HTTP Client Timeout Tests
+// ============================================================================
+
+func TestDoHResolver_HTTPTimeout(t *testing.T) {
+	// Create resolver with short timeout
+	resolver := NewDoHResolver(nil, 5*time.Minute)
+	defer resolver.Close()
+
+	// Create context with very short timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+	defer cancel()
+
+	// Wait for context to expire
+	time.Sleep(2 * time.Nanosecond)
+
+	_, err := resolver.LookupIPAddr(ctx, "www.google.com")
+	if err == nil {
+		t.Error("Expected timeout error")
+	}
+}
+
+// ============================================================================
+// Edge Cases
+// ============================================================================
+
+func TestDoHResolver_InvalidProviderTemplate(t *testing.T) {
+	// Create resolver with invalid provider template
+	providers := []*DoHProvider{
+		{
+			Name:     "invalid",
+			Template: "http://[::1]:namedpipe",
+			Priority: 1,
+		},
+	}
+
+	resolver := NewDoHResolver(providers, 5*time.Minute)
+	defer resolver.Close()
+
+	ctx := context.Background()
+
+	// Should fall back to system resolver
+	_, err := resolver.LookupIPAddr(ctx, "www.google.com")
+	// The fallback might succeed, so we just verify it doesn't panic
+	_ = err
+}
+
+func TestDoHResolver_CacheExpirationRaceCondition(t *testing.T) {
+	resolver := NewDoHResolver(nil, 100*time.Millisecond)
+	defer resolver.Close()
+
+	ctx := context.Background()
+
+	// First lookup to populate cache
+	_, _ = resolver.LookupIPAddr(ctx, "www.google.com")
+
+	var wg sync.WaitGroup
+	errors := make(chan error, 20)
+
+	// Concurrent reads during cache expiration
+	for i := 0; i < 10; i++ {
+		wg.Add(2)
+
+		// Reader 1
+		go func() {
+			defer wg.Done()
+			_, err := resolver.LookupIPAddr(ctx, "www.google.com")
+			if err != nil {
+				errors <- err
+			}
+		}()
+
+		// Reader 2
+		go func() {
+			defer wg.Done()
+			_, err := resolver.LookupIPAddr(ctx, "www.google.com")
+			if err != nil {
+				errors <- err
+			}
+		}()
+
+		// Small delay to allow cache expiration
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	wg.Wait()
+	close(errors)
+
+	for err := range errors {
+		t.Logf("Concurrent lookup error (may be expected): %v", err)
+	}
+}
+
+func TestDoHResolver_MultipleProvidersFailover(t *testing.T) {
+	// Create providers with first one invalid to test failover
+	providers := []*DoHProvider{
+		{
+			Name:     "invalid-first",
+			Template: "http://invalid.localhost:99999/dns?name={name}",
+			Priority: 1,
+		},
+		{
+			Name:     "valid-fallback",
+			Template: "https://dns.google/resolve?name={name}&type=A",
+			Priority: 2,
+		},
+	}
+
+	resolver := NewDoHResolver(providers, 5*time.Minute)
+	defer resolver.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Should fail over to valid provider or system resolver
+	ips, err := resolver.LookupIPAddr(ctx, "www.google.com")
+	if err != nil {
+		t.Logf("Lookup error (may be expected in test env): %v", err)
+	} else {
+		t.Logf("Successfully resolved with failover: %d IPs", len(ips))
+	}
+}

@@ -2,7 +2,7 @@
 
 This guide covers all available request options in HTTPC for customizing HTTP requests.
 
-> **Prerequisite**: Before diving into request options, make sure you understand the [Common Patterns from Getting Started](getting-started.md#common-patterns), especially the Client Setup and Error Handling patterns.
+> **Prerequisite**: Before diving into request options, make sure you understand the [Common Patterns from Getting Started](01_getting-started.md#common-patterns), especially the Client Setup and Error Handling patterns.
 
 ## Table of Contents
 
@@ -233,8 +233,7 @@ resp, err := client.Post(url,
 
 ```go
 resp, err := client.Post(url,
-    httpc.WithBody([]byte("raw data")),
-    httpc.WithHeader("Content-Type", "application/octet-stream"),
+    httpc.WithBody([]byte("raw data")),  // Auto-detects as application/octet-stream
 )
 ```
 
@@ -393,6 +392,78 @@ resp, err := client.Get(url,
 )
 ```
 
+## Request Callbacks
+
+### Pre-Request Callback
+
+Execute code before the request is sent:
+
+```go
+result, err := client.Get("https://api.example.com",
+    httpc.WithOnRequest(func(req httpc.RequestMutator) error {
+        log.Printf("Sending %s request to %s", req.Method(), req.URL())
+        // Optionally modify the request
+        req.SetHeader("X-Request-ID", generateID())
+        return nil
+    }),
+)
+```
+
+### Post-Response Callback
+
+Execute code after the response is received:
+
+```go
+result, err := client.Get("https://api.example.com",
+    httpc.WithOnResponse(func(resp httpc.ResponseMutator) error {
+        log.Printf("Received response: %d %s", resp.StatusCode(), resp.Status())
+        // Optionally inspect or modify the response
+        return nil
+    }),
+)
+```
+
+### Chained Callbacks
+
+Multiple callbacks are executed in order:
+
+```go
+result, err := client.Get(url,
+    httpc.WithOnRequest(loggingMiddleware),
+    httpc.WithOnRequest(authMiddleware),
+    httpc.WithOnResponse(metricsMiddleware),
+)
+```
+
+## Advanced Body Options
+
+### WithBody (Auto-Detect Body Type)
+
+Use `WithBody` for automatic body type detection:
+
+```go
+// Auto-detect body type
+result, err := client.Post(url,
+    httpc.WithBody(data),  // Auto-detects based on type
+)
+
+// Explicit body type
+result, err := client.Post(url,
+    httpc.WithBody(data, httpc.BodyJSON),  // Force JSON
+    httpc.WithBody(data, httpc.BodyXML),   // Force XML
+    httpc.WithBody(data, httpc.BodyForm),  // Force form
+    httpc.WithBody(data, httpc.BodyBinary), // Force binary
+)
+```
+
+**Auto-detection rules:**
+- `string` → text/plain
+- `[]byte` → application/octet-stream
+- `map[string]string` → application/x-www-form-urlencoded
+- `*FormData` → multipart/form-data
+- `io.Reader` → passed through (no Content-Type set)
+- Other types → application/json
+
 ## Complete Reference
 
 ### All Request Options
@@ -410,7 +481,8 @@ resp, err := client.Get(url,
 | `WithXML(data)`                  | XML body             | `WithXML(struct{...})`                  |
 | `WithForm(data)`                 | Form data            | `WithForm(map[string]string{...})`      |
 | `WithBinary(data, ct)`           | Binary data          | `WithBinary([]byte{...}, "image/png")`  |
-| `WithBody(data)`                 | Raw body             | `WithBody([]byte{...})`                 |
+| `WithBody(data)`          | Auto-detect body     | `WithBody(data)`                 |
+| `WithBody(data, kind)`    | Body with type hint  | `WithBody(data, httpc.BodyJSON)` |
 | `WithFile(field, name, content)` | Single file          | `WithFile("file", "doc.pdf", data)`     |
 | `WithFormData(fd)`               | Multipart form       | `WithFormData(&FormData{...})`          |
 | `WithTimeout(duration)`          | Request timeout      | `WithTimeout(30*time.Second)`           |
@@ -419,8 +491,11 @@ resp, err := client.Get(url,
 | `WithCookie(cookie)`             | Add cookie           | `WithCookie(http.Cookie{Name: "n", Value: "v"})` |
 | `WithCookieMap(cookies)`         | Add multiple cookies | `WithCookieMap(map[string]string{...})` |
 | `WithCookieString(cookieStr)`    | Parse cookie string  | `WithCookieString("a=1; b=2")`          |
+| `WithSecureCookie(cfg)`          | Cookie security      | `WithSecureCookie(&validation.CookieSecurityConfig{...})` |
 | `WithFollowRedirects(follow)`    | Redirect policy      | `WithFollowRedirects(false)`            |
 | `WithMaxRedirects(n)`            | Max redirects        | `WithMaxRedirects(5)`                   |
+| `WithOnRequest(callback)`        | Pre-request callback | `WithOnRequest(func(req) error { ... })` |
+| `WithOnResponse(callback)`       | Post-response callback | `WithOnResponse(func(resp) error { ... })` |
 
 ## Best Practices
 

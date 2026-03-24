@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 func TestChain(t *testing.T) {
@@ -1031,7 +1033,7 @@ func TestSanitizeAuditURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := sanitizeAuditURL(tt.input)
+			result := validation.SanitizeURL(tt.input)
 			if result != tt.expected {
 				t.Errorf("expected %q, got %q", tt.expected, result)
 			}

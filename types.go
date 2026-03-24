@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/cookiejar"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -254,6 +253,39 @@ type Handler = types.Handler
 // type compatibility between public and internal layers.
 type MiddlewareFunc = types.MiddlewareFunc
 
+// BodyKind represents the type of request body for WithBody.
+type BodyKind int
+
+const (
+	// BodyAuto auto-detects body type based on input data.
+	// Auto-detection rules:
+	//   - string → text/plain
+	//   - []byte → application/octet-stream
+	//   - map[string]string → application/x-www-form-urlencoded
+	//   - *FormData → multipart/form-data
+	//   - io.Reader → passed through (no Content-Type set)
+	//   - other types → application/json
+	BodyAuto BodyKind = iota
+
+	// BodyJSON forces JSON encoding regardless of input type.
+	BodyJSON
+
+	// BodyXML forces XML encoding regardless of input type.
+	BodyXML
+
+	// BodyForm forces application/x-www-form-urlencoded encoding.
+	// Input must be map[string]string or compatible type.
+	BodyForm
+
+	// BodyBinary forces binary/octet-stream encoding.
+	// Input must be []byte or string.
+	BodyBinary
+
+	// BodyMultipart forces multipart/form-data encoding.
+	// Input must be *FormData.
+	BodyMultipart
+)
+
 // DefaultConfig returns a Config with production-ready defaults.
 // The returned config is safe for modification.
 //
@@ -445,32 +477,5 @@ func (c *Config) String() string {
 // maskProxyURL masks credentials in a proxy URL for safe logging.
 // Returns the URL with credentials replaced by "***:***".
 func maskProxyURL(proxyURL string) string {
-	if proxyURL == "" {
-		return ""
-	}
-
-	parsedURL, err := url.Parse(proxyURL)
-	if err != nil {
-		return "<invalid>"
-	}
-
-	if parsedURL.User == nil {
-		return parsedURL.String()
-	}
-
-	_, hasPassword := parsedURL.User.Password()
-	parsedURL.User = nil
-
-	path := parsedURL.Path
-	if parsedURL.RawQuery != "" {
-		path += "?" + parsedURL.RawQuery
-	}
-	if parsedURL.Fragment != "" {
-		path += "#" + parsedURL.Fragment
-	}
-
-	if hasPassword {
-		return fmt.Sprintf("%s://***:***@%s%s", parsedURL.Scheme, parsedURL.Host, path)
-	}
-	return fmt.Sprintf("%s://***@%s%s", parsedURL.Scheme, parsedURL.Host, path)
+	return validation.SanitizeURL(proxyURL)
 }

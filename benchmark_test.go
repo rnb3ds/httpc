@@ -2,6 +2,7 @@ package httpc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -513,4 +514,238 @@ func BenchmarkClient_QueryParams_Typed(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+// ============================================================================
+// COMPONENT-LEVEL BENCHMARKS - Isolate specific operations
+// ============================================================================
+
+func BenchmarkHeaderCopy(b *testing.B) {
+	src := http.Header{}
+	src.Set("Content-Type", "application/json")
+	src.Set("Authorization", "Bearer token123")
+	src.Set("X-Request-Id", "abc-123-def")
+	src.Set("User-Agent", "httpc/1.0")
+	src.Set("Accept", "application/json")
+	src.Add("Set-Cookie", "session=abc123")
+	src.Add("Set-Cookie", "user=john")
+
+	dst := http.Header{}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		for k := range dst {
+			delete(dst, k)
+		}
+		// Use the internal CopyHeader through a public wrapper or test helper
+		// For now, simulate the operation
+		for k, v := range src {
+			newVals := make([]string, len(v))
+			copy(newVals, v)
+			dst[k] = newVals
+		}
+	}
+}
+
+func BenchmarkHeaderCopy_Batch(b *testing.B) {
+	src := http.Header{}
+	src.Set("Content-Type", "application/json")
+	src.Set("Authorization", "Bearer token123")
+	src.Set("X-Request-Id", "abc-123-def")
+	src.Set("User-Agent", "httpc/1.0")
+	src.Set("Accept", "application/json")
+	src.Add("Set-Cookie", "session=abc123")
+	src.Add("Set-Cookie", "user=john")
+
+	dst := http.Header{}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		for k := range dst {
+			delete(dst, k)
+		}
+		// Batch allocation - count first, then allocate once
+		totalValues := 0
+		for _, v := range src {
+			totalValues += len(v)
+		}
+		allValues := make([]string, totalValues)
+		valueIdx := 0
+		for k, v := range src {
+			if len(v) > 0 {
+				endIdx := valueIdx + len(v)
+				newVals := allValues[valueIdx:endIdx]
+				copy(newVals, v)
+				dst[k] = newVals
+				valueIdx = endIdx
+			}
+		}
+	}
+}
+
+func BenchmarkJSONMarshal(b *testing.B) {
+	payload := map[string]interface{}{
+		"name":  "test",
+		"value": 123,
+		"tags":  []string{"a", "b", "c"},
+		"nested": map[string]interface{}{
+			"key": "value",
+			"num": 456,
+		},
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_, _ = json.Marshal(payload)
+	}
+}
+
+func BenchmarkQueryEncode(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := newBenchmarkClient()
+	defer client.Close()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_, err := client.Get(server.URL,
+			WithQuery("page", 1),
+			WithQuery("limit", 100),
+			WithQuery("sort", "created_at"),
+			WithQuery("search", "hello world"),
+		)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkMultipartBuild(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := newBenchmarkClient()
+	defer client.Close()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		form := &FormData{
+			Fields: map[string]string{
+				"username": "testuser",
+				"email":    "test@example.com",
+			},
+			Files: map[string]*FileData{
+				"avatar": {
+					Filename:    "avatar.png",
+					Content:     []byte(strings.Repeat("x", 1024)),
+					ContentType: "image/png",
+				},
+			},
+		}
+		_, err := client.Post(server.URL, WithFormData(form))
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkResult_Unmarshal_Opt(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"name":"test","value":123,"nested":{"key":"value"},"items":[1,2,3,4,5]}`))
+	}))
+	defer server.Close()
+
+	client, _ := newBenchmarkClient()
+	defer client.Close()
+
+	type TestResponse struct {
+		Name   string               `json:"name"`
+		Value  int                  `json:"value"`
+		Nested struct{ Key string } `json:"nested"`
+		Items  []int                `json:"items"`
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		result, err := client.Get(server.URL)
+		if err != nil {
+			b.Fatal(err)
+		}
+		var resp TestResponse
+		if err := result.Unmarshal(&resp); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkConcurrent_SameURL(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	}))
+	defer server.Close()
+
+	client, _ := newBenchmarkClient()
+	defer client.Close()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, err := client.Get(server.URL)
+			if err != nil {
+				b.Error(err)
+			}
+		}
+	})
+}
+
+func BenchmarkConcurrent_DifferentURLs(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	}))
+	defer server.Close()
+
+	client, _ := newBenchmarkClient()
+	defer client.Close()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	var counter int64
+
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			url := fmt.Sprintf("%s?req=%d", server.URL, i)
+			_, err := client.Get(url)
+			if err != nil {
+				b.Error(err)
+			}
+			i++
+		}
+		_ = counter
+	})
 }

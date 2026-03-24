@@ -472,9 +472,10 @@ func TestUtilityFunctions(t *testing.T) {
 		}
 	})
 
-	t.Run("DefaultDownloadOptions", func(t *testing.T) {
+	t.Run("DefaultDownloadConfig", func(t *testing.T) {
 		filePath := "test/file.txt"
-		opts := DefaultDownloadOptions(filePath)
+		opts := DefaultDownloadConfig()
+		opts.FilePath = filePath
 
 		if opts.FilePath != filePath {
 			t.Errorf("Expected FilePath %s, got %s", filePath, opts.FilePath)
@@ -556,7 +557,8 @@ func TestRequest_WithOptions(t *testing.T) {
 	defer client.Close()
 
 	t.Run("WithContext", func(t *testing.T) {
-		ctx := context.WithValue(context.Background(), "test-key", "test-value")
+		type ctxKey string
+		ctx := context.WithValue(context.Background(), ctxKey("test-key"), "test-value")
 		result, err := client.Request(ctx, "GET", server.URL)
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)

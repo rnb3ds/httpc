@@ -137,7 +137,7 @@ func demonstrateFileDownload(client httpc.Client) {
 	}
 
 	// 2. Download with progress tracking
-	opts := &httpc.DownloadOptions{
+	opts := &httpc.DownloadConfig{
 		FilePath:  "downloads/sample-file.bin",
 		Overwrite: true,
 		ProgressCallback: func(downloaded, total int64, speed float64) {
@@ -167,7 +167,7 @@ func demonstrateFileDownload(client httpc.Client) {
 	}
 
 	// 3. Download with authentication
-	authOpts := &httpc.DownloadOptions{
+	authOpts := &httpc.DownloadConfig{
 		FilePath:  "downloads/authenticated-file.txt",
 		Overwrite: true,
 	}
@@ -202,7 +202,7 @@ func demonstrateFileDownload(client httpc.Client) {
 
 	// 5. Resume interrupted download (demonstration)
 	resumeFilePath := "downloads/resume-test.bin"
-	resumeOpts := &httpc.DownloadOptions{
+	resumeOpts := &httpc.DownloadConfig{
 		FilePath:       resumeFilePath,
 		ResumeDownload: true,
 		Overwrite:      false,

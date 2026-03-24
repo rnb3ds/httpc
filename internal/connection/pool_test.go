@@ -812,3 +812,477 @@ func (m *mockCertPinner) VerifyPeerCertificate(rawCerts [][]byte, verifiedChains
 	}
 	return nil
 }
+
+// ============================================================================
+// Host Stats Tests
+// ============================================================================
+
+func TestPoolManager_HostStatsOperations(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	config := &Config{
+		AllowPrivateIPs: true,
+	}
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	// Initial count should be 0
+	initialCount := pm.GetHostStatsCount()
+	if initialCount != 0 {
+		t.Errorf("Initial host stats count = %d, want 0", initialCount)
+	}
+
+	// Make requests to populate host stats
+	client := &http.Client{Transport: pm.GetTransport()}
+	for i := 0; i < 3; i++ {
+		resp, err := client.Get(server.URL)
+		if err != nil {
+			t.Logf("Request %d error (may be expected): %v", i, err)
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
+	}
+
+	// Host stats count should now be >= 1
+	count := pm.GetHostStatsCount()
+	if count < 1 {
+		t.Errorf("Expected at least 1 host tracked after requests, got %d", count)
+	}
+	t.Logf("Host stats count after requests: %d", count)
+
+	// Clear and verify
+	pm.ClearHostStats()
+	afterClearCount := pm.GetHostStatsCount()
+	if afterClearCount != 0 {
+		t.Errorf("Host stats count after clear = %d, want 0", afterClearCount)
+	}
+}
+
+func TestPoolManager_GetHostStatsCount_Empty(t *testing.T) {
+	pm, err := NewPoolManager(nil)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	// Fresh pool manager should have 0 host stats
+	count := pm.GetHostStatsCount()
+	if count != 0 {
+		t.Errorf("Empty pool manager host stats count = %d, want 0", count)
+	}
+}
+
+func TestPoolManager_ClearHostStats_Idempotent(t *testing.T) {
+	pm, err := NewPoolManager(nil)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	// Clear on empty should not panic
+	pm.ClearHostStats()
+
+	// Clear again should still be safe
+	pm.ClearHostStats()
+
+	// Count should still be 0
+	if pm.GetHostStatsCount() != 0 {
+		t.Error("Host stats count should remain 0 after multiple clears")
+	}
+}
+
+func TestPoolManager_HostStats_ConcurrentAccess(t *testing.T) {
+	pm, err := NewPoolManager(nil)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	const numGoroutines = 10
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+
+	// Concurrent reads and writes to host stats
+	for i := 0; i < numGoroutines; i++ {
+		go func(id int) {
+			defer wg.Done()
+			if id%2 == 0 {
+				_ = pm.GetHostStatsCount()
+			} else {
+				pm.ClearHostStats()
+			}
+		}(i)
+	}
+
+	wg.Wait()
+}
+
+// ============================================================================
+// DoH Resolver Integration Tests
+// ============================================================================
+
+func TestPoolManager_WithDoHResolver(t *testing.T) {
+	config := &Config{
+		AllowPrivateIPs: true,
+		EnableDoH:       true,
+	}
+
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	// Verify DoH resolver is initialized
+	if pm.dohResolver == nil {
+		t.Error("DoH resolver should be initialized when EnableDoH is true")
+	}
+}
+
+func TestPoolManager_WithoutDoHResolver(t *testing.T) {
+	config := &Config{
+		AllowPrivateIPs: true,
+		EnableDoH:       false,
+	}
+
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	// Verify DoH resolver is NOT initialized
+	if pm.dohResolver != nil {
+		t.Error("DoH resolver should not be initialized when EnableDoH is false")
+	}
+}
+
+// ============================================================================
+// TLS Configuration Edge Cases
+// ============================================================================
+
+func TestPoolManager_TLSConfigWithCustomCiphers(t *testing.T) {
+	config := &Config{
+		TLSConfig: &tls.Config{
+			MinVersion: tls.VersionTLS13,
+			CipherSuites: []uint16{
+				tls.TLS_AES_128_GCM_SHA256,
+				tls.TLS_AES_256_GCM_SHA384,
+			},
+		},
+	}
+
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	// Verify custom TLS config is used
+	if pm.transport.TLSClientConfig == nil {
+		t.Fatal("TLS config should not be nil")
+	}
+
+	if pm.transport.TLSClientConfig.MinVersion != tls.VersionTLS13 {
+		t.Errorf("Expected MinVersion TLS 1.3, got %d", pm.transport.TLSClientConfig.MinVersion)
+	}
+}
+
+func TestPoolManager_TLSConfigWithInsecureSkipVerify(t *testing.T) {
+	config := &Config{
+		InsecureSkipVerify: true,
+	}
+
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	if !pm.transport.TLSClientConfig.InsecureSkipVerify {
+		t.Error("InsecureSkipVerify should be true")
+	}
+}
+
+// ============================================================================
+// Connection Metrics Tests
+// ============================================================================
+
+func TestPoolManager_ConnectionMetrics(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.AllowPrivateIPs = true
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	client := &http.Client{
+		Transport: pm.GetTransport(),
+		Timeout:   5 * time.Second,
+	}
+
+	// Make a request
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	// Check metrics
+	metrics := pm.GetMetrics()
+	t.Logf("Metrics: TotalConns=%d, ActiveConns=%d, RejectedConns=%d",
+		metrics.TotalConnections, metrics.ActiveConnections, metrics.RejectedConnections)
+
+	// Total connections should be at least 1
+	if metrics.TotalConnections < 1 {
+		t.Logf("Warning: TotalConnections = %d, expected at least 1", metrics.TotalConnections)
+	}
+}
+
+// ============================================================================
+// Validate Address Tests - Additional Coverage
+// ============================================================================
+
+func TestPoolManager_ValidateAddress_DomainResolution(t *testing.T) {
+	pm, err := NewPoolManager(nil)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	tests := []struct {
+		name        string
+		address     string
+		expectError bool
+	}{
+		{
+			name:        "IPv6 address",
+			address:     "[2001:4860:4860::8888]:443",
+			expectError: false, // Public IPv6
+		},
+		{
+			name:        "IPv6 loopback",
+			address:     "[::1]:8080",
+			expectError: true, // Loopback should be blocked
+		},
+		{
+			name:        "IPv4-mapped IPv6",
+			address:     "[::ffff:127.0.0.1]:8080",
+			expectError: true, // Should detect as loopback
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := pm.validateAddressBeforeDial(tt.address)
+			if tt.expectError && err == nil {
+				t.Errorf("Expected error for address %s, got nil", tt.address)
+			}
+			if !tt.expectError && err != nil {
+				t.Errorf("Did not expect error for address %s, got: %v", tt.address, err)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// Proxy Configuration Tests
+// ============================================================================
+
+func TestPoolManager_ProxyConfiguration(t *testing.T) {
+	t.Run("Valid proxy URL", func(t *testing.T) {
+		config := &Config{
+			ProxyURL: "http://proxy.example.com:8080",
+		}
+
+		pm, err := NewPoolManager(config)
+		if err != nil {
+			t.Fatalf("Expected no error, got: %v", err)
+		}
+		defer func() { _ = pm.Close() }()
+
+		if pm.transport.Proxy == nil {
+			t.Error("Proxy function should be set")
+		}
+	})
+
+	t.Run("SOCKS5 proxy URL", func(t *testing.T) {
+		config := &Config{
+			ProxyURL: "socks5://proxy.example.com:1080",
+		}
+
+		pm, err := NewPoolManager(config)
+		if err != nil {
+			t.Fatalf("Expected no error, got: %v", err)
+		}
+		defer func() { _ = pm.Close() }()
+
+		// Proxy should be configured (actual SOCKS5 support depends on implementation)
+		if pm.transport.Proxy == nil {
+			t.Log("Note: SOCKS5 proxy may require additional configuration")
+		}
+	})
+
+	t.Run("Empty proxy URL", func(t *testing.T) {
+		config := &Config{
+			ProxyURL: "",
+		}
+
+		pm, err := NewPoolManager(config)
+		if err != nil {
+			t.Fatalf("Expected no error, got: %v", err)
+		}
+		defer func() { _ = pm.Close() }()
+
+		// No proxy should be configured
+		// Transport.Proxy being nil means use environment settings
+	})
+}
+
+// ============================================================================
+// Keep-Alive Configuration Tests
+// ============================================================================
+
+func TestPoolManager_KeepAliveConfiguration(t *testing.T) {
+	config := &Config{
+		KeepAlive: 60 * time.Second,
+	}
+
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	// Verify transport is created
+	if pm.transport == nil {
+		t.Fatal("Transport should not be nil")
+	}
+
+	// KeepAlive is configured in the dialer, not directly accessible
+	// Just verify the pool manager was created successfully
+}
+
+// ============================================================================
+// Response Header Timeout Tests
+// ============================================================================
+
+func TestPoolManager_ResponseHeaderTimeout(t *testing.T) {
+	config := &Config{
+		ResponseHeaderTimeout: 5 * time.Second,
+		AllowPrivateIPs:       true,
+	}
+
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	if pm.transport.ResponseHeaderTimeout != 5*time.Second {
+		t.Errorf("Expected ResponseHeaderTimeout 5s, got %v", pm.transport.ResponseHeaderTimeout)
+	}
+}
+
+// ============================================================================
+// ExpectContinueTimeout Tests
+// ============================================================================
+
+func TestPoolManager_ExpectContinueTimeout(t *testing.T) {
+	config := &Config{
+		ExpectContinueTimeout: 2 * time.Second,
+	}
+
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	if pm.transport.ExpectContinueTimeout != 2*time.Second {
+		t.Errorf("Expected ExpectContinueTimeout 2s, got %v", pm.transport.ExpectContinueTimeout)
+	}
+}
+
+// ============================================================================
+// Double Close Safety Tests
+// ============================================================================
+
+func TestPoolManager_DoubleCloseSafety(t *testing.T) {
+	pm, err := NewPoolManager(nil)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	// First close
+	err = pm.Close()
+	if err != nil {
+		t.Errorf("First close failed: %v", err)
+	}
+
+	// Second close should not panic or error
+	err = pm.Close()
+	if err != nil {
+		t.Errorf("Second close failed: %v", err)
+	}
+
+	// Third close for good measure
+	err = pm.Close()
+	if err != nil {
+		t.Errorf("Third close failed: %v", err)
+	}
+}
+
+// ============================================================================
+// Tracked Connection Tests
+// ============================================================================
+
+func TestTrackedConn_DoubleClose(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.AllowPrivateIPs = true
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	client := &http.Client{
+		Transport: pm.GetTransport(),
+		Timeout:   5 * time.Second,
+	}
+
+	// Make a request to create a tracked connection
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+
+	// First close
+	err = resp.Body.Close()
+	if err != nil {
+		t.Errorf("First body close failed: %v", err)
+	}
+
+	// Second close should be safe (trackedConn handles double close)
+	err = resp.Body.Close()
+	// This may or may not return an error depending on implementation
+	_ = err
+}

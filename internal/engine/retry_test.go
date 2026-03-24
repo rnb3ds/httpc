@@ -461,3 +461,203 @@ func TestRetryEngine_GetJitter_ZeroMax(t *testing.T) {
 		t.Errorf("Expected 0 jitter for 0 maxJitter, got %v", jitter)
 	}
 }
+
+// ============================================================================
+// PARSE RETRY-AFTER HEADER TESTS
+// ============================================================================
+
+func TestParseRetryAfterHeader(t *testing.T) {
+	tests := []struct {
+		name        string
+		headers     http.Header
+		expectDelay time.Duration
+		expectMin   time.Duration // For time-based tests (future dates)
+	}{
+		{
+			name:        "Nil headers",
+			headers:     nil,
+			expectDelay: 0,
+		},
+		{
+			name:        "Empty headers",
+			headers:     http.Header{},
+			expectDelay: 0,
+		},
+		{
+			name:        "No Retry-After header",
+			headers:     http.Header{"Content-Type": {"application/json"}},
+			expectDelay: 0,
+		},
+		{
+			name:        "Delta-seconds format",
+			headers:     http.Header{"Retry-After": {"30"}},
+			expectDelay: 30 * time.Second,
+		},
+		{
+			name:        "Delta-seconds zero",
+			headers:     http.Header{"Retry-After": {"0"}},
+			expectDelay: 0,
+		},
+		{
+			name:        "Delta-seconds negative-like string",
+			headers:     http.Header{"Retry-After": {"-1"}},
+			expectDelay: 0, // strconv.Atoi fails on negative in this implementation
+		},
+		{
+			name:        "Delta-seconds large value",
+			headers:     http.Header{"Retry-After": {"3600"}},
+			expectDelay: 3600 * time.Second,
+		},
+		{
+			name:        "Invalid number format",
+			headers:     http.Header{"Retry-After": {"abc"}},
+			expectDelay: 0,
+		},
+		{
+			name:        "Invalid date format",
+			headers:     http.Header{"Retry-After": {"Not-A-Date"}},
+			expectDelay: 0,
+		},
+		{
+			name:        "Empty header value",
+			headers:     http.Header{"Retry-After": {""}},
+			expectDelay: 0,
+		},
+		{
+			name:        "Multiple values uses first",
+			headers:     http.Header{"Retry-After": {"30", "60"}},
+			expectDelay: 30 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			delay := parseRetryAfterHeader(tt.headers)
+
+			if tt.expectMin > 0 {
+				// For time-based expectations, check minimum
+				if delay < tt.expectMin {
+					t.Errorf("Expected delay >= %v, got %v", tt.expectMin, delay)
+				}
+			} else {
+				if delay != tt.expectDelay {
+					t.Errorf("Expected delay %v, got %v", tt.expectDelay, delay)
+				}
+			}
+		})
+	}
+}
+
+func TestParseRetryAfterHeader_HTTPDateFormat(t *testing.T) {
+	t.Run("Future date returns positive delay", func(t *testing.T) {
+		// Create a date 30 seconds in the future
+		futureTime := time.Now().Add(30 * time.Second).UTC()
+		httpDate := futureTime.Format(time.RFC1123)
+
+		headers := http.Header{"Retry-After": {httpDate}}
+		delay := parseRetryAfterHeader(headers)
+
+		// Should be approximately 30 seconds (allow some tolerance for test execution)
+		if delay < 25*time.Second || delay > 35*time.Second {
+			t.Errorf("Expected delay around 30s, got %v", delay)
+		}
+	})
+
+	t.Run("Past date returns zero", func(t *testing.T) {
+		// Create a date in the past
+		pastTime := time.Now().Add(-30 * time.Second).UTC()
+		httpDate := pastTime.Format(time.RFC1123)
+
+		headers := http.Header{"Retry-After": {httpDate}}
+		delay := parseRetryAfterHeader(headers)
+
+		if delay != 0 {
+			t.Errorf("Expected 0 delay for past date, got %v", delay)
+		}
+	})
+
+	t.Run("Current time returns zero or very small delay", func(t *testing.T) {
+		// Create a date at current time
+		now := time.Now().UTC()
+		httpDate := now.Format(time.RFC1123)
+
+		headers := http.Header{"Retry-After": {httpDate}}
+		delay := parseRetryAfterHeader(headers)
+
+		// Should be very small (0 or close to it)
+		if delay > 5*time.Second {
+			t.Errorf("Expected very small delay for current time, got %v", delay)
+		}
+	})
+}
+
+func TestParseRetryAfterHeader_EdgeCases(t *testing.T) {
+	t.Run("Whitespace in value", func(t *testing.T) {
+		headers := http.Header{"Retry-After": {" 30 "}}
+		delay := parseRetryAfterHeader(headers)
+
+		// strconv.Atoi does NOT trim whitespace, so this should fail and return 0
+		if delay != 0 {
+			t.Errorf("Expected 0s delay for whitespace value, got %v", delay)
+		}
+	})
+
+	t.Run("Float value falls back to date parsing", func(t *testing.T) {
+		headers := http.Header{"Retry-After": {"30.5"}}
+		delay := parseRetryAfterHeader(headers)
+
+		// Float should fail both integer and date parsing
+		if delay != 0 {
+			t.Errorf("Expected 0 delay for invalid float, got %v", delay)
+		}
+	})
+
+	t.Run("Very large seconds value", func(t *testing.T) {
+		headers := http.Header{"Retry-After": {"86400"}} // 24 hours
+		delay := parseRetryAfterHeader(headers)
+
+		if delay != 86400*time.Second {
+			t.Errorf("Expected 86400s delay, got %v", delay)
+		}
+	})
+}
+
+func TestRetryEngine_GetDelayWithResponse(t *testing.T) {
+	config := &Config{
+		RetryDelay:    100 * time.Millisecond,
+		BackoffFactor: 2.0,
+		Jitter:        false,
+	}
+
+	engine := NewRetryEngine(config)
+
+	t.Run("Uses Retry-After header when present", func(t *testing.T) {
+		resp := &Response{}
+		resp.SetHeaders(http.Header{"Retry-After": {"50"}})
+
+		delay := engine.GetDelayWithResponse(0, resp)
+
+		if delay != 50*time.Second {
+			t.Errorf("Expected 50s delay from Retry-After, got %v", delay)
+		}
+	})
+
+	t.Run("Falls back to exponential backoff when no header", func(t *testing.T) {
+		resp := &Response{}
+		resp.SetHeaders(http.Header{})
+
+		delay := engine.GetDelayWithResponse(0, resp)
+
+		if delay != 100*time.Millisecond {
+			t.Errorf("Expected 100ms exponential delay, got %v", delay)
+		}
+	})
+
+	t.Run("Nil response uses exponential backoff", func(t *testing.T) {
+		delay := engine.GetDelayWithResponse(1, nil)
+
+		if delay != 200*time.Millisecond {
+			t.Errorf("Expected 200ms exponential delay, got %v", delay)
+		}
+	})
+}

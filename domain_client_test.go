@@ -1364,7 +1364,8 @@ func TestDomainClient_DownloadWithOptions_Progress(t *testing.T) {
 	tmpFile := filepath.Join(os.TempDir(), "test_download_progress.txt")
 	defer os.Remove(tmpFile)
 
-	opts := httpc.DefaultDownloadOptions(tmpFile)
+	opts := httpc.DefaultDownloadConfig()
+	opts.FilePath = tmpFile
 	opts.ProgressCallback = func(downloaded, total int64, speed float64) {
 		progressCalls++
 		lastProgress = downloaded
@@ -1409,7 +1410,8 @@ func TestDomainClient_DownloadWithOptions_Overwrite(t *testing.T) {
 
 	os.WriteFile(tmpFile, initialContent, 0644)
 
-	opts := httpc.DefaultDownloadOptions(tmpFile)
+	opts := httpc.DefaultDownloadConfig()
+	opts.FilePath = tmpFile
 	opts.Overwrite = true
 
 	result, err := client.DownloadWithOptions("/file.txt", opts)
@@ -1457,7 +1459,8 @@ func TestDomainClient_DownloadWithOptions_Resume(t *testing.T) {
 
 	os.WriteFile(tmpFile, partialContent, 0644)
 
-	opts := httpc.DefaultDownloadOptions(tmpFile)
+	opts := httpc.DefaultDownloadConfig()
+	opts.FilePath = tmpFile
 	opts.ResumeDownload = true
 
 	result, err := client.DownloadWithOptions("/file.bin", opts)

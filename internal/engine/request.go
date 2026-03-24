@@ -40,10 +40,64 @@ var stringBuilderPool = sync.Pool{
 // to prevent memory bloat from large file uploads (256KB)
 const maxMultipartBufferSize = 256 * 1024
 
+// maxJSONBufferSize limits the maximum buffer size for JSON encoding (1MB)
+const maxJSONBufferSize = 1024 * 1024
+
+// mimeHeaderPool reduces allocations for textproto.MIMEHeader in multipart uploads
+var mimeHeaderPool = sync.Pool{
+	New: func() any {
+		h := make(textproto.MIMEHeader, 4) // Pre-allocate for typical multipart headers
+		return &h
+	},
+}
+
+// urlPool reduces allocations for url.URL objects during cloning
+var urlPool = sync.Pool{
+	New: func() any {
+		return &url.URL{}
+	},
+}
+
+// getMIMEHeader retrieves a textproto.MIMEHeader from the pool
+func getMIMEHeader() *textproto.MIMEHeader {
+	h, ok := mimeHeaderPool.Get().(*textproto.MIMEHeader)
+	if !ok || h == nil {
+		tmp := make(textproto.MIMEHeader, 4)
+		return &tmp
+	}
+	// Clear for reuse
+	for k := range *h {
+		delete(*h, k)
+	}
+	return h
+}
+
+// putMIMEHeader returns a textproto.MIMEHeader to the pool
+func putMIMEHeader(h *textproto.MIMEHeader) {
+	if h == nil || len(*h) > 16 {
+		return // Don't pool large headers
+	}
+	// Clear values for GC and security
+	for k, v := range *h {
+		for i := range v {
+			v[i] = ""
+		}
+		delete(*h, k)
+	}
+	mimeHeaderPool.Put(h)
+}
+
 // multipartBufferPool reduces allocations for multipart form data buffers
 var multipartBufferPool = sync.Pool{
 	New: func() any {
 		return bytes.NewBuffer(make([]byte, 0, 8*1024))
+	},
+}
+
+// jsonBufferPool reduces allocations for JSON encoding buffers
+var jsonBufferPool = sync.Pool{
+	New: func() any {
+		return bytes.NewBuffer(make([]byte, 0, 512))
 	},
 }
 
@@ -110,7 +164,11 @@ func getPooledBytesReader(b []byte) io.Reader {
 }
 
 // urlCache provides a thread-safe LRU-like cache for parsed URLs
-// to avoid expensive url.Parse() calls for repeated URLs
+// to avoid expensive url.Parse() calls for repeated URLs.
+//
+// SECURITY: The cache uses a sanitized cache key (without sensitive query parameters)
+// to prevent credential leakage. The actual parsed URL (with all parameters) is still
+// returned to the caller, but the cache key excludes sensitive data.
 type urlCache struct {
 	mu      sync.RWMutex
 	entries map[string]*url.URL
@@ -125,13 +183,82 @@ var globalURLCache = &urlCache{
 	maxSize: 1024,
 }
 
-// Get retrieves a parsed URL from cache or parses and caches it
+// sensitiveQueryParamNames contains query parameter names that should be excluded
+// from cache keys to prevent credential leakage in logs and cache dumps.
+// SECURITY: This list covers common sensitive parameter names but may not be exhaustive.
+// Applications handling highly sensitive data should implement additional filtering.
+var sensitiveQueryParamNames = map[string]bool{
+	// OAuth and authentication tokens
+	"token": true, "access_token": true, "refresh_token": true,
+	"id_token": true, "idtoken": true, "bearer": true,
+	// API keys and secrets
+	"api_key": true, "apikey": true, "key": true,
+	"secret": true, "secret_key": true, "client_secret": true,
+	"private_key": true, "privatekey": true, "private-key": true,
+	// Passwords and credentials
+	"password": true, "passwd": true, "pass": true, "pwd": true,
+	"credential": true, "credentials": true,
+	// Authentication headers
+	"auth": true, "authorization": true,
+	// Session identifiers
+	"session_id": true, "sessionid": true, "session": true,
+	// JWT and signatures
+	"jwt": true, "signature": true, "sign": true, "sig": true,
+	// OAuth authorization codes
+	"code": true,
+}
+
+// sanitizeCacheKey creates a cache-safe version of the URL by removing sensitive
+// query parameters. This prevents credentials from being stored in cache keys.
+func sanitizeCacheKey(rawURL string) string {
+	// Fast path: check if URL contains query parameters
+	if !strings.Contains(rawURL, "?") {
+		return rawURL // No query params, safe to use as-is
+	}
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL // Fallback to original on parse error
+	}
+
+	// Check if any sensitive params exist
+	query := parsed.Query()
+	hasSensitive := false
+	for key := range query {
+		if sensitiveQueryParamNames[strings.ToLower(key)] {
+			hasSensitive = true
+			break
+		}
+	}
+
+	if !hasSensitive {
+		return rawURL // No sensitive params, safe to use as-is
+	}
+
+	// Clone URL and remove sensitive params
+	cloned := cloneURL(parsed)
+	newQuery := cloned.Query()
+	for key := range newQuery {
+		if sensitiveQueryParamNames[strings.ToLower(key)] {
+			newQuery.Set(key, "[REDACTED]")
+		}
+	}
+	cloned.RawQuery = newQuery.Encode()
+	return cloned.String()
+}
+
+// Get retrieves a parsed URL from cache or parses and caches it.
+// SECURITY: Uses sanitized cache key to prevent credential leakage.
 func (c *urlCache) Get(rawURL string) (*url.URL, error) {
+	// SECURITY: Use sanitized key for cache lookup
+	cacheKey := sanitizeCacheKey(rawURL)
+
 	// Fast path: read lock for cache hit
 	c.mu.RLock()
-	if parsed, ok := c.entries[rawURL]; ok {
+	if parsed, ok := c.entries[cacheKey]; ok {
 		c.mu.RUnlock()
-		return parsed, nil
+		// SECURITY: Return a clone to prevent modification of cached entry
+		return cloneURL(parsed), nil
 	}
 	c.mu.RUnlock()
 
@@ -140,8 +267,8 @@ func (c *urlCache) Get(rawURL string) (*url.URL, error) {
 	defer c.mu.Unlock()
 
 	// Double-check after acquiring write lock
-	if parsed, ok := c.entries[rawURL]; ok {
-		return parsed, nil
+	if parsed, ok := c.entries[cacheKey]; ok {
+		return cloneURL(parsed), nil
 	}
 
 	parsed, err := url.Parse(rawURL)
@@ -161,30 +288,33 @@ func (c *urlCache) Get(rawURL string) (*url.URL, error) {
 	// Clone the URL to ensure cached entries are immutable
 	// This prevents modifications from affecting cached values
 	cloned := cloneURL(parsed)
-	c.entries[rawURL] = cloned
-	c.keys = append(c.keys, rawURL)
+	c.entries[cacheKey] = cloned
+	c.keys = append(c.keys, cacheKey)
 
-	return cloned, nil
+	return cloneURL(cloned), nil
 }
 
-// cloneURL creates a deep copy of a URL to ensure cached entries remain immutable
+// cloneURL creates a deep copy of a URL using pooled allocation
+// to ensure cached entries remain immutable
 func cloneURL(u *url.URL) *url.URL {
 	if u == nil {
 		return nil
 	}
-	cloned := &url.URL{
-		Scheme:      u.Scheme,
-		Opaque:      u.Opaque,
-		User:        u.User,
-		Host:        u.Host,
-		Path:        u.Path,
-		RawPath:     u.RawPath,
-		OmitHost:    u.OmitHost,
-		ForceQuery:  u.ForceQuery,
-		RawQuery:    u.RawQuery,
-		Fragment:    u.Fragment,
-		RawFragment: u.RawFragment,
+	cloned, ok := urlPool.Get().(*url.URL)
+	if !ok || cloned == nil {
+		cloned = &url.URL{}
 	}
+	cloned.Scheme = u.Scheme
+	cloned.Opaque = u.Opaque
+	cloned.User = u.User // Userinfo is immutable, safe to share
+	cloned.Host = u.Host
+	cloned.Path = u.Path
+	cloned.RawPath = u.RawPath
+	cloned.OmitHost = u.OmitHost
+	cloned.ForceQuery = u.ForceQuery
+	cloned.RawQuery = u.RawQuery
+	cloned.Fragment = u.Fragment
+	cloned.RawFragment = u.RawFragment
 	return cloned
 }
 
@@ -260,6 +390,46 @@ func (r *pooledMultipartBuffer) Read(p []byte) (n int, err error) {
 	return n, err
 }
 
+// getJSONBuffer retrieves a bytes.Buffer from the pool for JSON encoding.
+func getJSONBuffer() *bytes.Buffer {
+	buf, ok := jsonBufferPool.Get().(*bytes.Buffer)
+	if !ok || buf == nil {
+		return bytes.NewBuffer(make([]byte, 0, 512))
+	}
+	buf.Reset()
+	return buf
+}
+
+// putJSONBuffer returns a bytes.Buffer to the JSON pool.
+// SECURITY: Resets the buffer before returning to prevent data leakage.
+// Buffers larger than maxJSONBufferSize are discarded to prevent memory bloat.
+func putJSONBuffer(buf *bytes.Buffer) {
+	if buf == nil || buf.Cap() > maxJSONBufferSize {
+		return
+	}
+	buf.Reset()
+	jsonBufferPool.Put(buf)
+}
+
+// pooledJSONBuffer wraps a bytes.Buffer for JSON data and returns it to the pool when fully read.
+type pooledJSONBuffer struct {
+	buf   *bytes.Buffer
+	owned bool
+}
+
+func (r *pooledJSONBuffer) Read(p []byte) (n int, err error) {
+	if r.buf == nil {
+		return 0, io.EOF
+	}
+	n, err = r.buf.Read(p)
+	if err == io.EOF && r.owned {
+		putJSONBuffer(r.buf)
+		r.buf = nil
+		r.owned = false
+	}
+	return n, err
+}
+
 // ClearRequestPools clears all sync.Pool instances used by the request package.
 // This is primarily useful for testing and debugging to ensure a clean state.
 // Note: sync.Pool is automatically managed by the GC, so this is typically not needed
@@ -283,9 +453,6 @@ func ClearRequestPools() {
 		},
 	}
 }
-
-// FormData and FileData are now defined in internal/types package.
-// Use types.FormData and types.FileData for type checking.
 
 type RequestProcessor struct {
 	config *Config
@@ -316,11 +483,8 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 		// Clone the cached URL before modifying it with query params
 		// This ensures the cached version remains immutable
 		parsedURL = cloneURL(parsedURL)
-		query := parsedURL.Query()
-		for key, value := range req.QueryParams() {
-			query.Add(key, formatQueryParam(value))
-		}
-		parsedURL.RawQuery = query.Encode()
+		// Use optimized query encoder that avoids url.Values allocation
+		parsedURL.RawQuery = AppendQueryParams(parsedURL.RawQuery, req.QueryParams())
 	}
 
 	var body io.Reader
@@ -393,12 +557,29 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 						var err error
 
 						if contentType != "" {
-							h := make(textproto.MIMEHeader)
-							h.Set("Content-Disposition",
-								fmt.Sprintf(`form-data; name="%s"; filename="%s"`,
-									escapeQuotes(key.String()), escapeQuotes(filename)))
+							h := getMIMEHeader()
+							// Build Content-Disposition without fmt.Sprintf for better performance
+							sb, _ := stringBuilderPool.Get().(*strings.Builder)
+							if sb == nil {
+								sb = &strings.Builder{}
+							}
+							sb.Reset()
+							escapedKey := escapeQuotes(key.String())
+							escapedFilename := escapeQuotes(filename)
+							// Pre-calculate size: "form-data; name=" + escapedKey + "; filename=" + escapedFilename
+							sb.Grow(21 + len(escapedKey) + 12 + len(escapedFilename) + 2)
+							sb.WriteString(`form-data; name="`)
+							sb.WriteString(escapedKey)
+							sb.WriteString(`"; filename="`)
+							sb.WriteString(escapedFilename)
+							sb.WriteByte('"')
+							contentDisposition := sb.String()
+							stringBuilderPool.Put(sb)
+
+							h.Set("Content-Disposition", contentDisposition)
 							h.Set("Content-Type", contentType)
-							part, err = writer.CreatePart(h)
+							part, err = writer.CreatePart(*h)
+							putMIMEHeader(h)
 						} else {
 							part, err = writer.CreateFormFile(key.String(), filename)
 						}
@@ -423,11 +604,19 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 				body = &pooledMultipartBuffer{buf: buf, owned: true}
 				contentType = writer.FormDataContentType()
 			} else {
-				jsonData, err := json.Marshal(v)
-				if err != nil {
+				// Use pooled buffer for JSON encoding to reduce allocations
+				buf := getJSONBuffer()
+				encoder := json.NewEncoder(buf)
+				if err := encoder.Encode(v); err != nil {
+					putJSONBuffer(buf)
 					return nil, fmt.Errorf("marshal JSON failed: %w", err)
 				}
-				body = getPooledBytesReader(jsonData)
+				// Trim trailing newline added by json.Encoder.Encode
+				// to maintain compatibility with json.Marshal behavior
+				if b := buf.Bytes(); len(b) > 0 && b[len(b)-1] == '\n' {
+					buf.Truncate(len(b) - 1)
+				}
+				body = &pooledJSONBuffer{buf: buf, owned: true}
 				contentType = "application/json"
 			}
 		}

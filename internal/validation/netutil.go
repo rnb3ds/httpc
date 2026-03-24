@@ -3,6 +3,7 @@ package validation
 import (
 	"fmt"
 	"net"
+	"net/url"
 )
 
 // IsPrivateOrReservedIP checks if an IP address is private, reserved, or
@@ -171,4 +172,36 @@ func hasPrefixFold(s, prefix string) bool {
 		}
 	}
 	return true
+}
+
+// ValidateURL performs comprehensive URL validation including:
+// - Empty check
+// - Length check
+// - Parse validation
+// - Scheme validation (http/https only)
+// - Host validation
+//
+// This function centralizes URL validation logic for use by security.Validator.
+func ValidateURL(urlStr string) error {
+	if urlStr == "" {
+		return fmt.Errorf("URL cannot be empty")
+	}
+	if len(urlStr) > MaxURLLen {
+		return fmt.Errorf("URL too long (max %d)", MaxURLLen)
+	}
+
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if parsedURL.Scheme == "" {
+		return fmt.Errorf("URL scheme is required")
+	}
+	if parsedURL.Host == "" {
+		return fmt.Errorf("URL host is required")
+	}
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return fmt.Errorf("unsupported URL scheme: %s", parsedURL.Scheme)
+	}
+	return nil
 }

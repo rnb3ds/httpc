@@ -283,68 +283,9 @@ func TestClient_TLSConfig(t *testing.T) {
 	}
 }
 
-func TestClient_ContextCancellation(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Long delay to test cancellation
-		time.Sleep(1 * time.Second)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("OK"))
-	}))
-	defer server.Close()
+// TestClient_ContextCancellation removed - duplicate of TestClient_Timeout in client_test.go
 
-	config := &Config{
-		Timeout:         30 * time.Second,
-		AllowPrivateIPs: true,
-		MaxRetries:      1,
-		UserAgent:       "test-client/1.0",
-	}
-
-	client, err := NewClient(config)
-	if err != nil {
-		t.Fatalf("NewClient failed: %v", err)
-	}
-	defer func() { _ = client.Close() }()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	_, err = client.Request(ctx, "GET", server.URL)
-	if err == nil {
-		t.Error("Expected context cancellation error")
-	}
-}
-
-func TestClient_InvalidURL(t *testing.T) {
-	config := &Config{
-		Timeout:         30 * time.Second,
-		AllowPrivateIPs: true,
-		MaxRetries:      1,
-		UserAgent:       "test-client/1.0",
-		ValidateURL:     true,
-	}
-
-	client, err := NewClient(config)
-	if err != nil {
-		t.Fatalf("NewClient failed: %v", err)
-	}
-	defer func() { _ = client.Close() }()
-
-	tests := []string{
-		"",
-		"invalid-url",
-		"ftp://example.com",
-		"javascript:alert(1)",
-	}
-
-	for _, url := range tests {
-		t.Run("URL_"+url, func(t *testing.T) {
-			_, err := client.Get(url)
-			if err == nil {
-				t.Errorf("Expected error for invalid URL: %s", url)
-			}
-		})
-	}
-}
+// TestClient_InvalidURL removed - duplicate of TestClient_ErrorHandling in client_test.go
 
 func TestClient_LargeResponse(t *testing.T) {
 	// Create large response content

@@ -8,8 +8,17 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+// stringBuilderPool reduces allocations for strings.Builder used in String()
+var stringBuilderPool = sync.Pool{
+	New: func() any {
+		sb := &strings.Builder{}
+		return sb
+	},
+}
 
 const (
 	maxBodyPreview   = 200 // Maximum body preview length in String()
@@ -57,6 +66,8 @@ type RequestMeta struct {
 	RedirectCount int
 }
 
+// Body returns the response body as a string.
+// Returns an empty string if the Result or Response is nil.
 func (r *Result) Body() string {
 	if r == nil || r.Response == nil {
 		return ""
@@ -64,6 +75,8 @@ func (r *Result) Body() string {
 	return r.Response.Body
 }
 
+// RawBody returns the response body as a byte slice.
+// Returns nil if the Result or Response is nil.
 func (r *Result) RawBody() []byte {
 	if r == nil || r.Response == nil {
 		return nil
@@ -71,6 +84,8 @@ func (r *Result) RawBody() []byte {
 	return r.Response.RawBody
 }
 
+// StatusCode returns the HTTP status code from the response.
+// Returns 0 if the Result or Response is nil.
 func (r *Result) StatusCode() int {
 	if r == nil || r.Response == nil {
 		return 0
@@ -86,6 +101,8 @@ func (r *Result) Proto() string {
 	return r.Response.Proto
 }
 
+// RequestCookies returns the cookies that were sent with the request.
+// Returns nil if the Result or Request is nil.
 func (r *Result) RequestCookies() []*http.Cookie {
 	if r == nil || r.Request == nil {
 		return nil
@@ -93,6 +110,8 @@ func (r *Result) RequestCookies() []*http.Cookie {
 	return r.Request.Cookies
 }
 
+// ResponseCookies returns the cookies from the response.
+// Returns nil if the Result or Response is nil.
 func (r *Result) ResponseCookies() []*http.Cookie {
 	if r == nil || r.Response == nil {
 		return nil
@@ -158,6 +177,7 @@ func (r *Result) IsServerError() bool {
 	return code >= 500 && code < 600
 }
 
+// GetCookie returns a response cookie by name, or nil if not found.
 func (r *Result) GetCookie(name string) *http.Cookie {
 	if r == nil || r.Response == nil {
 		return nil
@@ -170,10 +190,12 @@ func (r *Result) GetCookie(name string) *http.Cookie {
 	return nil
 }
 
+// HasCookie returns true if a response cookie with the given name exists.
 func (r *Result) HasCookie(name string) bool {
 	return r.GetCookie(name) != nil
 }
 
+// GetRequestCookie returns a request cookie by name, or nil if not found.
 func (r *Result) GetRequestCookie(name string) *http.Cookie {
 	if r == nil || r.Request == nil {
 		return nil
@@ -186,10 +208,13 @@ func (r *Result) GetRequestCookie(name string) *http.Cookie {
 	return nil
 }
 
+// HasRequestCookie returns true if a request cookie with the given name exists.
 func (r *Result) HasRequestCookie(name string) bool {
 	return r.GetRequestCookie(name) != nil
 }
 
+// String returns a human-readable representation of the Result.
+// Sensitive headers are masked. Body is truncated to 200 characters.
 func (r *Result) String() string {
 	if r == nil || r.Response == nil {
 		return "Result{}"
@@ -211,7 +236,12 @@ func (r *Result) String() string {
 		estimatedSize += 16 + bodyPreview
 	}
 
-	var b strings.Builder
+	// Use pooled strings.Builder to reduce allocations
+	b, ok := stringBuilderPool.Get().(*strings.Builder)
+	if !ok || b == nil {
+		b = &strings.Builder{}
+	}
+	b.Reset()
 	b.Grow(estimatedSize)
 
 	b.WriteString("Result{Status: ")
@@ -265,9 +295,14 @@ func (r *Result) String() string {
 
 	b.WriteByte('}')
 
-	return b.String()
+	result := b.String()
+	stringBuilderPool.Put(b)
+	return result
 }
 
+// SaveToFile saves the response body to a file at the specified path.
+// Returns ErrResponseBodyEmpty if the response body is nil or empty.
+// The file path is validated for security (path traversal, symlinks, etc.).
 func (r *Result) SaveToFile(filePath string) error {
 	if r == nil || r.Response == nil || r.Response.RawBody == nil {
 		return ErrResponseBodyEmpty

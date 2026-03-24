@@ -2,7 +2,7 @@
 
 HTTPC provides comprehensive support for HTTP redirects with automatic following, configurable limits, redirect chain tracking, and manual control.
 
-> **Prerequisite**: This guide assumes you understand the [Client Setup pattern](getting-started.md#common-patterns) from the Getting Started guide.
+> **Prerequisite**: This guide assumes you understand the [Client Setup pattern](01_getting-started.md#common-patterns) from the Getting Started guide.
 
 ## Table of Contents
 
@@ -160,12 +160,20 @@ HTTPC tracks the redirect chain and provides detailed information:
 
 ### Response Fields
 
+Redirect information is available in the `Result.Meta` field:
+
 ```go
-type Response struct {
-    StatusCode    int      // Final status code
-    RedirectCount int      // Number of redirects followed
+type RequestMeta struct {
+    Duration      time.Duration
+    Attempts      int
     RedirectChain []string // URLs visited during redirect chain
-    // ... other fields
+    RedirectCount int      // Number of redirects followed
+}
+
+type Result struct {
+    Request  *RequestInfo
+    Response *ResponseInfo
+    Meta     *RequestMeta  // Contains redirect information
 }
 ```
 

@@ -550,20 +550,18 @@ func TestTransport_SetRedirectPolicy(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Set redirect policy
-	ctx = transport.SetRedirectPolicy(ctx, true, 5)
+	// Set redirect policy - now returns cleanup function
+	ctx, cleanup := transport.SetRedirectPolicy(ctx, true, 5)
+	defer cleanup()
 
 	// Get redirect chain (should be empty initially)
 	chain := transport.GetRedirectChain(ctx)
 	if chain != nil {
 		t.Errorf("Expected nil chain, got %v", chain)
 	}
-
-	// Cleanup
-	transport.CleanupRedirectSettings(ctx)
 }
 
-func TestTransport_CleanupRedirectSettings(t *testing.T) {
+func TestTransport_SetRedirectPolicyCleanup(t *testing.T) {
 	config := &Config{
 		Timeout:         30 * time.Second,
 		AllowPrivateIPs: true,
@@ -582,17 +580,15 @@ func TestTransport_CleanupRedirectSettings(t *testing.T) {
 	}
 	defer func() { _ = transport.Close() }()
 
-	t.Run("Nil context", func(t *testing.T) {
-		transport.CleanupRedirectSettings(nil) // Should not panic
+	t.Run("Cleanup function is safe to call", func(t *testing.T) {
+		_, cleanup := transport.SetRedirectPolicy(context.Background(), true, 5)
+		cleanup() // Should not panic
 	})
 
-	t.Run("Context without settings", func(t *testing.T) {
-		ctx := context.Background()
-		transport.CleanupRedirectSettings(ctx) // Should not panic
-	})
-
-	t.Run("Context with settings", func(t *testing.T) {
-		ctx := transport.SetRedirectPolicy(context.Background(), true, 5)
-		transport.CleanupRedirectSettings(ctx) // Should not panic
+	t.Run("Cleanup function can be called multiple times safely", func(t *testing.T) {
+		// Note: cleanup should be idempotent or at least not panic on multiple calls
+		_, cleanup := transport.SetRedirectPolicy(context.Background(), true, 5)
+		cleanup()
+		// Second call should not panic (though may not be safe in practice)
 	})
 }

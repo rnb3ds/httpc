@@ -35,21 +35,16 @@ func putCookiesSlice(slice *[]*http.Cookie) {
 
 // parseCookieHeader parses a Cookie header value into http.Cookie slice.
 // Optimized to minimize string allocations by using index-based trimming.
+// SECURITY: Returns a newly allocated slice to avoid pool reuse issues.
 func parseCookieHeader(cookieHeader string) []*http.Cookie {
 	if cookieHeader == "" {
 		return nil
 	}
 
-	// Use pooled slice for parsing
+	// Use pooled slice for intermediate parsing
 	cookiesPtr := getCookiesSlice()
-	defer func() {
-		// Return slice to pool if we're returning nil or a different slice
-		if len(*cookiesPtr) == 0 {
-			putCookiesSlice(cookiesPtr)
-		}
-	}()
-
 	cookies := *cookiesPtr
+
 	headerLen := len(cookieHeader)
 	start := 0
 
@@ -80,12 +75,16 @@ func parseCookieHeader(cookieHeader string) []*http.Cookie {
 	}
 
 	if len(cookies) == 0 {
+		putCookiesSlice(cookiesPtr)
 		return nil
 	}
 
-	// Return the slice; caller is responsible for not pooling it
-	*cookiesPtr = cookies
-	return cookies
+	// SECURITY: Copy to new slice before returning pooled buffer
+	// This prevents the returned slice from being reused by another request
+	result := make([]*http.Cookie, len(cookies))
+	copy(result, cookies)
+	putCookiesSlice(cookiesPtr)
+	return result
 }
 
 // trimSpaceIndices returns the start and end indices of s[low:high] after trimming whitespace.

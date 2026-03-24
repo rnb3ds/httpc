@@ -89,8 +89,9 @@ type HostStats struct {
 	IdleConns      int64
 	TotalConns     int64
 	FailedConns    int64
-	LastUsed       int64 // Unix timestamp
-	AverageLatency int64 // Nanoseconds
+	LastUsed       int64      // Unix timestamp
+	AverageLatency int64      // Nanoseconds
+	mu             sync.Mutex // Protects AverageLatency updates
 }
 
 // Metrics provides connection pool performance metrics
@@ -421,15 +422,16 @@ func (pm *PoolManager) updateConnectionMetrics(host string, connTime int64, succ
 		atomic.AddInt64(&stats.TotalConns, 1)
 		atomic.AddInt64(&stats.ActiveConns, 1)
 
-		// Update average latency with limited retries to prevent CPU thrashing
-		const maxAtomicRetries = 10
-		for i := 0; i < maxAtomicRetries; i++ {
-			current := atomic.LoadInt64(&stats.AverageLatency)
-			newAvg := (current*9 + connTime) / 10
-			if atomic.CompareAndSwapInt64(&stats.AverageLatency, current, newAvg) {
-				break
-			}
+		// Use mutex for latency update to ensure consistency under high contention
+		// This is acceptable since latency tracking is not on the critical path
+		stats.mu.Lock()
+		current := stats.AverageLatency
+		if current == 0 {
+			stats.AverageLatency = connTime
+		} else {
+			stats.AverageLatency = (current*9 + connTime) / 10
 		}
+		stats.mu.Unlock()
 	} else {
 		atomic.AddInt64(&stats.FailedConns, 1)
 	}

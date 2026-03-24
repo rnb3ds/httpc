@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // ============================================================================
@@ -29,13 +31,19 @@ func TestErrorClassification_NetworkErrors(t *testing.T) {
 			name:         "Connection refused",
 			err:          &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED},
 			expectedType: ErrorTypeNetwork,
-			isRetryable:  true,
+			isRetryable:  true, // syscall.ECONNREFUSED is a known retryable error
 		},
 		{
-			name:         "DNS resolution failure",
+			name:         "DNS resolution failure (not temporary)",
 			err:          &net.DNSError{Err: "no such host", Name: "nonexistent.example.com"},
 			expectedType: ErrorTypeDNS,
-			isRetryable:  true,
+			isRetryable:  false, // DNS errors without IsTemporary/IsTimeout are not retryable
+		},
+		{
+			name:         "DNS resolution timeout",
+			err:          &net.DNSError{Err: "timeout", Name: "example.com", IsTimeout: true},
+			expectedType: ErrorTypeDNS,
+			isRetryable:  true, // DNS timeout is retryable
 		},
 		{
 			name:         "Connection timeout",
@@ -47,13 +55,13 @@ func TestErrorClassification_NetworkErrors(t *testing.T) {
 			name:         "Connection reset",
 			err:          &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET},
 			expectedType: ErrorTypeNetwork,
-			isRetryable:  true,
+			isRetryable:  true, // syscall.ECONNRESET is a known retryable error
 		},
 		{
 			name:         "Network unreachable",
 			err:          &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ENETUNREACH},
 			expectedType: ErrorTypeNetwork,
-			isRetryable:  true,
+			isRetryable:  true, // syscall.ENETUNREACH is a known retryable error
 		},
 	}
 
@@ -87,7 +95,7 @@ func TestErrorClassification_ContextErrors(t *testing.T) {
 			name:         "Context deadline exceeded",
 			err:          context.DeadlineExceeded,
 			expectedType: ErrorTypeTimeout,
-			isRetryable:  true,
+			isRetryable:  false, // Context deadline exceeded is not retryable
 		},
 		{
 			name:         "Context cancelled",
@@ -285,7 +293,7 @@ func TestErrorSanitization(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sanitized := sanitizeURL(tt.url)
+			sanitized := validation.SanitizeURL(tt.url)
 			if sanitized != tt.expectedURL {
 				t.Errorf("Expected sanitized URL %s, got %s", tt.expectedURL, sanitized)
 			}

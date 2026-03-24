@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
@@ -299,6 +300,162 @@ func WithXML(data any) RequestOption {
 	}
 }
 
+// WithBody sets the request body with automatic or explicit type detection.
+// When kind is BodyAuto (or omitted), the body type is auto-detected based on the input:
+//   - string → text/plain
+//   - []byte → application/octet-stream
+//   - map[string]string → application/x-www-form-urlencoded
+//   - *FormData → multipart/form-data
+//   - io.Reader → passed through (no Content-Type set)
+//   - other types → application/json (default)
+//
+// Explicit kinds (BodyJSON, BodyXML, BodyForm, BodyBinary, BodyMultipart) override auto-detection.
+//
+// Example:
+//
+//	// Auto-detect (JSON for struct/map)
+//	result, err := client.Post(ctx, url, httpc.WithBody(data, httpc.BodyAuto))
+//
+//	// Explicit XML
+//	result, err := client.Post(ctx, url, httpc.WithBody(data, httpc.BodyXML))
+//
+//	// Auto-detect omitted (same as BodyAuto)
+//	result, err := client.Post(ctx, url, httpc.WithBody(data))
+func WithBody(data any, kind ...BodyKind) RequestOption {
+	return func(r *engine.Request) error {
+		if data == nil {
+			return fmt.Errorf("request body cannot be nil")
+		}
+
+		bodyKind := BodyAuto
+		if len(kind) > 0 {
+			bodyKind = kind[0]
+		}
+
+		switch bodyKind {
+		case BodyJSON:
+			r.SetBody(data)
+			r.SetHeader("Content-Type", "application/json")
+		case BodyXML:
+			r.SetBody(data)
+			r.SetHeader("Content-Type", "application/xml")
+		case BodyForm:
+			formData, err := convertToForm(data)
+			if err != nil {
+				return fmt.Errorf("convert to form data: %w", err)
+			}
+			r.SetBody(formData)
+			r.SetHeader("Content-Type", "application/x-www-form-urlencoded")
+		case BodyBinary:
+			binaryData, err := convertToBinary(data)
+			if err != nil {
+				return fmt.Errorf("convert to binary: %w", err)
+			}
+			r.SetBody(binaryData)
+			r.SetHeader("Content-Type", "application/octet-stream")
+		case BodyMultipart:
+			formData, ok := data.(*FormData)
+			if !ok {
+				return fmt.Errorf("multipart body requires *FormData, got %T", data)
+			}
+			r.SetBody(formData)
+		case BodyAuto:
+			fallthrough
+		default:
+			contentType, err := setAutoDetectedBody(r, data)
+			if err != nil {
+				return err
+			}
+			if contentType != "" {
+				r.SetHeader("Content-Type", contentType)
+			}
+		}
+
+		return nil
+	}
+}
+
+// convertToForm converts data to url-encoded form string.
+func convertToForm(data any) (string, error) {
+	switch v := data.(type) {
+	case map[string]string:
+		if v == nil {
+			return "", fmt.Errorf("form data cannot be nil")
+		}
+		values := make(url.Values, len(v))
+		for k, val := range v {
+			values.Set(k, val)
+		}
+		return values.Encode(), nil
+	case url.Values:
+		if v == nil {
+			return "", fmt.Errorf("form data cannot be nil")
+		}
+		return v.Encode(), nil
+	default:
+		return "", fmt.Errorf("form body requires map[string]string or url.Values, got %T", data)
+	}
+}
+
+// convertToBinary converts data to []byte for binary body.
+func convertToBinary(data any) ([]byte, error) {
+	switch v := data.(type) {
+	case []byte:
+		if v == nil {
+			return nil, fmt.Errorf("binary data cannot be nil")
+		}
+		return v, nil
+	case string:
+		if v == "" {
+			return nil, fmt.Errorf("binary data cannot be empty")
+		}
+		return []byte(v), nil
+	default:
+		return nil, fmt.Errorf("binary body requires []byte or string, got %T", data)
+	}
+}
+
+// setAutoDetectedBody sets body with auto-detected content type.
+// Returns the content type to set, or empty string if no Content-Type should be set.
+func setAutoDetectedBody(r *engine.Request, data any) (string, error) {
+	switch v := data.(type) {
+	case string:
+		r.SetBody(v)
+		return "text/plain; charset=utf-8", nil
+	case []byte:
+		if v == nil {
+			return "", fmt.Errorf("binary data cannot be nil")
+		}
+		r.SetBody(v)
+		return "application/octet-stream", nil
+	case *FormData:
+		if v == nil {
+			return "", fmt.Errorf("form data cannot be nil")
+		}
+		r.SetBody(v)
+		// Content-Type will be set by multipart writer with boundary
+		return "", nil
+	case io.Reader:
+		r.SetBody(v)
+		// Don't set Content-Type for raw reader, let caller handle it
+		return "", nil
+	case map[string]string:
+		if v == nil {
+			return "", fmt.Errorf("form data cannot be nil")
+		}
+		values := make(url.Values, len(v))
+		for k, val := range v {
+			values.Set(k, val)
+		}
+		r.SetBody(values.Encode())
+		return "application/x-www-form-urlencoded", nil
+	default:
+		// Default to JSON for all other types
+		r.SetBody(data)
+		return "application/json", nil
+	}
+}
+
 func WithForm(data map[string]string) RequestOption {
 	return func(r *engine.Request) error {
 		if data == nil {
@@ -387,13 +544,6 @@ func WithMaxRetries(maxRetries int) RequestOption {
 			return fmt.Errorf("%w: must be 0-10, got %d", ErrInvalidRetry, maxRetries)
 		}
 		r.SetMaxRetries(maxRetries)
-		return nil
-	}
-}
-
-func WithBody(body any) RequestOption {
-	return func(r *engine.Request) error {
-		r.SetBody(body)
 		return nil
 	}
 }

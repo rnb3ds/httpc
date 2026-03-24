@@ -7,6 +7,9 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"syscall"
+
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // containsFold reports whether substr is contained within s, case-insensitively.
@@ -75,7 +78,7 @@ type ClientError struct {
 func (e *ClientError) Error() string {
 	var baseMsg string
 	if e.URL != "" && e.Method != "" {
-		sanitizedURL := sanitizeURL(e.URL)
+		sanitizedURL := validation.SanitizeURL(e.URL)
 		baseMsg = fmt.Sprintf("%s %s: %s", e.Method, sanitizedURL, e.Message)
 	} else {
 		baseMsg = e.Message
@@ -88,61 +91,160 @@ func (e *ClientError) Error() string {
 	return baseMsg
 }
 
-func sanitizeURL(urlStr string) string {
-	parsedURL, err := url.Parse(urlStr)
-	if err != nil {
-		return urlStr
-	}
-
-	if parsedURL.User == nil {
-		return parsedURL.String()
-	}
-
-	_, hasPassword := parsedURL.User.Password()
-	parsedURL.User = nil
-
-	path := parsedURL.Path
-	if parsedURL.RawQuery != "" {
-		path += "?" + parsedURL.RawQuery
-	}
-	if parsedURL.Fragment != "" {
-		path += "#" + parsedURL.Fragment
-	}
-
-	if hasPassword {
-		return fmt.Sprintf("%s://***:***@%s%s", parsedURL.Scheme, parsedURL.Host, path)
-	}
-	return fmt.Sprintf("%s://***@%s%s", parsedURL.Scheme, parsedURL.Host, path)
-}
-
 func (e *ClientError) Unwrap() error {
 	return e.Cause
 }
 
+// IsRetryable determines if the error is retryable based on its type and cause.
 func (e *ClientError) IsRetryable() bool {
+	// Check for context errors first - they are never retryable
+	if e.isContextError() {
+		return false
+	}
+
 	switch e.Type {
 	case ErrorTypeContextCanceled, ErrorTypeValidation, ErrorTypeTLS, ErrorTypeCertificate:
 		return false
-	case ErrorTypeNetwork, ErrorTypeTimeout, ErrorTypeTransport, ErrorTypeDNS:
+	case ErrorTypeDNS:
+		return e.isRetryableDNSError()
+	case ErrorTypeNetwork:
+		return e.isRetryableNetworkError()
+	case ErrorTypeTimeout, ErrorTypeTransport:
 		return true
 	case ErrorTypeResponseRead:
-		if e.Cause != nil {
-			var netErr *net.OpError
-			if errors.As(e.Cause, &netErr) {
-				return true
-			}
-			errMsg := e.Cause.Error()
-			return strings.Contains(errMsg, "EOF") || strings.Contains(errMsg, "connection") || strings.Contains(errMsg, "timeout")
-		}
-		return true
+		return e.isRetryableResponseReadError()
 	case ErrorTypeHTTP:
-		msg := e.Message
-		return strings.Contains(msg, "HTTP 429") || strings.Contains(msg, "HTTP 500") ||
-			strings.Contains(msg, "HTTP 502") || strings.Contains(msg, "HTTP 503") ||
-			strings.Contains(msg, "HTTP 504")
+		return e.isRetryableHTTPStatus()
 	default:
 		return false
 	}
+}
+
+// isContextError checks if the cause is a context-related error.
+func (e *ClientError) isContextError() bool {
+	if e.Cause == nil {
+		return false
+	}
+	return errors.Is(e.Cause, context.Canceled) || errors.Is(e.Cause, context.DeadlineExceeded)
+}
+
+// isRetryableDNSError checks if DNS error is temporary or timeout.
+func (e *ClientError) isRetryableDNSError() bool {
+	if e.Cause == nil {
+		return false
+	}
+	var dnsErr *net.DNSError
+	if errors.As(e.Cause, &dnsErr) {
+		return dnsErr.IsTemporary || dnsErr.IsTimeout
+	}
+	return false
+}
+
+// isRetryableNetworkError determines if a network error is retryable.
+func (e *ClientError) isRetryableNetworkError() bool {
+	if e.Cause == nil {
+		return false
+	}
+
+	// Check for wrapped ClientError
+	var innerClientErr *ClientError
+	if errors.As(e.Cause, &innerClientErr) {
+		return e.isRetryableWrappedError(innerClientErr)
+	}
+
+	// Check for OpError
+	var opErr *net.OpError
+	if errors.As(e.Cause, &opErr) {
+		return e.isRetryableOpError(opErr)
+	}
+
+	// Check for generic net.Error
+	var netErr net.Error
+	if errors.As(e.Cause, &netErr) {
+		return netErr.Timeout()
+	}
+
+	// Check error message patterns
+	return isRetryableNetworkMessage(e.Cause.Error())
+}
+
+// isRetryableWrappedError checks if a wrapped ClientError is retryable.
+func (e *ClientError) isRetryableWrappedError(innerClientErr *ClientError) bool {
+	if innerClientErr.Cause != nil {
+		if isRetryableNetworkMessage(innerClientErr.Cause.Error()) {
+			return true
+		}
+	}
+	return innerClientErr.IsRetryable()
+}
+
+// isRetryableOpError determines if a net.OpError is retryable.
+func (e *ClientError) isRetryableOpError(opErr *net.OpError) bool {
+	// Context errors are not retryable
+	if opErr.Err != nil && (errors.Is(opErr.Err, context.Canceled) || errors.Is(opErr.Err, context.DeadlineExceeded)) {
+		return false
+	}
+	// Timeout is retryable
+	if opErr.Timeout() {
+		return true
+	}
+	// Check for syscall errors
+	if opErr.Err != nil {
+		var errno syscall.Errno
+		if errors.As(opErr.Err, &errno) {
+			if isRetryableSyscallError(errno) {
+				return true
+			}
+		}
+		// Check error message patterns
+		if isRetryableNetworkMessage(opErr.Err.Error()) {
+			return true
+		}
+	}
+	return false
+}
+
+// isRetryableSyscallError checks if a syscall errno indicates a retryable condition.
+func isRetryableSyscallError(errno syscall.Errno) bool {
+	switch errno {
+	case syscall.ECONNREFUSED, syscall.ECONNRESET, syscall.EPIPE,
+		syscall.ETIMEDOUT, syscall.ENETUNREACH, syscall.EHOSTUNREACH:
+		return true
+	default:
+		return false
+	}
+}
+
+// isRetryableNetworkMessage checks if an error message indicates a retryable network condition.
+func isRetryableNetworkMessage(errMsg string) bool {
+	msg := strings.ToLower(errMsg)
+	return strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "eof") ||
+		strings.Contains(msg, "connection closed") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "network error") ||
+		strings.Contains(msg, "transport failed")
+}
+
+// isRetryableResponseReadError determines if a response read error is retryable.
+func (e *ClientError) isRetryableResponseReadError() bool {
+	if e.Cause == nil {
+		return true
+	}
+	var netErr *net.OpError
+	if errors.As(e.Cause, &netErr) {
+		return true
+	}
+	errMsg := e.Cause.Error()
+	return strings.Contains(errMsg, "EOF") || strings.Contains(errMsg, "connection") || strings.Contains(errMsg, "timeout")
+}
+
+// isRetryableHTTPStatus checks if HTTP status code indicates a retryable condition.
+func (e *ClientError) isRetryableHTTPStatus() bool {
+	msg := e.Message
+	return strings.Contains(msg, "HTTP 429") || strings.Contains(msg, "HTTP 500") ||
+		strings.Contains(msg, "HTTP 502") || strings.Contains(msg, "HTTP 503") ||
+		strings.Contains(msg, "HTTP 504")
 }
 
 func (e *ClientError) Code() string {
@@ -180,7 +282,7 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 	}
 
 	// Sanitize URL to prevent credential leakage in error storage
-	sanitizedURL := sanitizeURL(reqURL)
+	sanitizedURL := validation.SanitizeURL(reqURL)
 
 	clientErr := &ClientError{
 		Cause:    err,

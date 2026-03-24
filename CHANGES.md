@@ -4,6 +4,45 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ---
 
+## v1.3.9 - API Unification & Performance Optimization (2026-03-24)
+
+### Breaking Changes
+- `DownloadOptions` type alias removed: Use `DownloadConfig` directly
+- `DefaultDownloadOptions(filePath)` removed: Use `DefaultDownloadConfig()` and set `FilePath` manually
+- `NewSessionManagerWithSecurity(security)` removed: Use `NewSessionManagerWithConfig(config)` instead
+
+### Added
+- `BodyKind` type and `WithBody(data, kind...)` for unified body type handling with auto-detection
+- `DownloadConfig` type and `DefaultDownloadConfig()` following Config pattern
+- `SessionConfig` type and `DefaultSessionConfig()` for session manager configuration
+- `NewSessionManagerWithConfig(config)` config-based constructor for SessionManager
+- Component-level benchmarks: header copy, JSON marshal, query encode, multipart build, concurrent URL cache
+
+### Changed
+- `CopyHeader()` and `CloneHeader()` use batch allocation strategy (~83% allocation reduction for headers)
+- `cloneURL()` uses pooled `url.URL` objects
+- `EncodeQueryParams()` and `AppendQueryParams()` use custom `queryEscape()` with zero-allocation fast path
+- Content-Disposition header building uses `strings.Builder` instead of `fmt.Sprintf`
+- Updated documentation to recommend `DomainClienter` interface usage
+
+### Fixed
+- Memory leak in `CopyHeader()`: pooled slices now properly allocated for long-lived references
+- TOCTOU race condition in DNS cache size limit check using atomic CAS
+- Pool reuse issue in `parseCookieHeader()` returning corrupted data
+- Metrics update reliability under high contention using mutex instead of CAS loop
+- Static analysis issues: context key types, nil context, potential nil pointer dereference
+
+### Performance
+- Header operations: 83% reduction in allocations (6 → 1 allocs/op for 7 headers)
+- Query encoding: ~6% reduction for strings without special characters
+- Multipart uploads: Reduced allocations via `mimeHeaderPool` and `urlPool`
+
+### Removed
+- Unused `clearAllPools()`, `getCacheStats()`, `cacheStats` type from `client.go`
+- Unused `WithTransport()` from `internal/engine/client.go`
+
+---
+
 ## v1.3.8 - Security Hardening & Performance Optimization (2026-03-17)
 
 ### Added
@@ -13,7 +52,7 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 - **Audit Middleware JSON**: Structured JSON output for security audit logging
 - **`WithCookieMap()`**: Batch set multiple cookies from a map
 - **`WithSecureCookie()`**: Request option for cookie security validation
-- **Memory Management APIs**: `ClearURLCache()`, `ClearAllPools()`, `GetCacheStats()` for long-running applications
+- **Memory Management API**: `ClearURLCache()` for long-running applications
 - **DoHResolver.Close()**: Proper resource cleanup for DNS-over-HTTPS resolver
 
 ### Changed
