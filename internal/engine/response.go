@@ -45,24 +45,17 @@ const (
 	// malicious payload could exhaust memory during decompression.
 	maxCompressedSize = 100 * 1024 * 1024 // 100MB compressed data limit
 
-	// smallBufferThreshold is the threshold for using pre-allocated small buffers
-	// This avoids pool overhead for very small responses
-	smallBufferThreshold = 512 // 512 bytes
+	// SECURITY: defaultMaxDecompressedSize is the default limit for decompressed
+	// response body size when MaxResponseBodySize is not explicitly configured.
+	// This provides a safety net against compression bombs where 100MB of
+	// highly compressible data (e.g., zeros) could decompress to many gigabytes.
+	defaultMaxDecompressedSize = 500 * 1024 * 1024 // 500MB decompressed data limit
 )
 
 // bufferPool reuses byte buffers for response body reading
 var bufferPool = sync.Pool{
 	New: func() any {
 		return bytes.NewBuffer(make([]byte, 0, defaultBufferSize))
-	},
-}
-
-// smallBufferPool provides pre-allocated small byte slices for tiny responses
-// This avoids the overhead of the buffer pool for very small responses
-var smallBufferPool = sync.Pool{
-	New: func() any {
-		buf := make([]byte, 0, smallBufferThreshold)
-		return &buf
 	},
 }
 
@@ -144,12 +137,15 @@ func putBuffer(buf *bytes.Buffer) {
 	// Let large buffers be garbage collected to prevent memory bloat
 }
 
-// getResponse retrieves a Response object from the pool
+// getResponse retrieves a Response object from the pool.
+// SECURITY: Resets all fields to zero values to prevent data leakage from previous requests.
 func getResponse() *Response {
 	resp, ok := responsePool.Get().(*Response)
 	if !ok || resp == nil {
 		return &Response{}
 	}
+	// SECURITY: Clear all fields to prevent sensitive data leakage
+	*resp = Response{}
 	return resp
 }
 
@@ -206,12 +202,27 @@ func (p *ResponseProcessor) Process(httpResp *http.Response) (*Response, error) 
 }
 
 // bytesToString performs a zero-allocation conversion from []byte to string.
-// SAFE because the input slice must be a fresh copy that will not be modified.
-// IMPORTANT: The input slice must be newly allocated (not from a pool) and must
-// not be modified after this function returns, as the returned string shares
-// the same underlying memory.
+//
+// # Safety Guarantee
+//
+// This function is safe ONLY when the following conditions are met:
+//  1. The input slice is a freshly allocated copy (not from a pool)
+//  2. The input slice will not be modified after this function returns
+//  3. The caller does not retain a reference to the underlying bytes
+//
+// In this file, readBody() guarantees these conditions by:
+//   - Returning a freshly allocated byte slice (not a pooled buffer)
+//   - Never reusing the returned slice
+//
+// # SECURITY CONTRACT
+//
+// This function MUST NOT be used anywhere else in the codebase without explicit
+// security review. Violating the above conditions will cause undefined behavior
+// including memory corruption and data leakage.
+//
+// IMPORTANT: Do not use this function elsewhere without understanding these guarantees.
 func bytesToString(b []byte) string {
-	// Handle nil slice and empty slice to prevent panic
+	// len(nil) == 0, so this handles both nil and empty slices safely
 	if len(b) == 0 {
 		return ""
 	}
@@ -220,6 +231,15 @@ func bytesToString(b []byte) string {
 
 // readBody reads and optionally decompresses the response body with size limits.
 // Uses buffer and limit reader pools to reduce heap allocations.
+//
+// # SECURITY CONTRACT
+//
+// This function MUST return a freshly allocated []byte that is safe for use with
+// bytesToString(). The returned slice:
+//   - Must NOT be from a sync.Pool (must be a new allocation or stolen backing array)
+//   - Must NOT be retained by any other reference
+//   - Must NOT be modified after being passed to bytesToString()
+//
 // SECURITY: Implements protection against decompression bomb attacks.
 func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 	if httpResp.Body == nil {
@@ -245,11 +265,14 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 		reader = decompressor
 	}
 
-	// Apply decompressed size limit using pooled reader
-	if maxSize := p.config.MaxResponseBodySize; maxSize > 0 {
-		decompressedLr = getLimitReader(reader, maxSize+1)
-		reader = decompressedLr
+	// SECURITY: Apply decompressed size limit using pooled reader
+	// Use configured limit if set, otherwise use default to prevent compression bombs
+	maxSize := p.config.MaxResponseBodySize
+	if maxSize <= 0 {
+		maxSize = defaultMaxDecompressedSize
 	}
+	decompressedLr = getLimitReader(reader, maxSize+1)
+	reader = decompressedLr
 
 	// Optimization: Use Content-Length hint for buffer pre-allocation when available
 	// This reduces buffer growth overhead for responses with known size
@@ -296,8 +319,8 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 		return nil, fmt.Errorf("compressed response body exceeds security limit of %d bytes (potential zip bomb)", maxCompressedSize)
 	}
 
-	// Check decompressed size limit
-	if maxSize := p.config.MaxResponseBodySize; maxSize > 0 && int64(len(body)) > maxSize {
+	// Check decompressed size limit (uses same maxSize calculation as limit reader above)
+	if int64(len(body)) > maxSize {
 		return nil, fmt.Errorf("response body exceeds limit of %d bytes", maxSize)
 	}
 
@@ -332,8 +355,9 @@ func (p *ResponseProcessor) createDecompressor(reader io.Reader, encoding string
 		// Try to get a pooled gzip reader
 		if pooled, ok := gzipReaderPool.Get().(*gzip.Reader); ok && pooled != nil {
 			if err := pooled.Reset(reader); err != nil {
-				// Reset failed, put back and create new
-				gzipReaderPool.Put(pooled)
+				// SECURITY: Reset failed - discard the reader instead of returning to pool.
+				// A reader in error state may cause issues for subsequent users.
+				// The discarded reader will be garbage collected.
 				return gzip.NewReader(reader)
 			}
 			return &pooledGzipReader{Reader: pooled}, nil
@@ -345,14 +369,14 @@ func (p *ResponseProcessor) createDecompressor(reader io.Reader, encoding string
 			// Check if it also implements flate.Resetter
 			if resetter, ok := pooled.(flate.Resetter); ok {
 				if err := resetter.Reset(reader, nil); err != nil {
-					// Reset failed, put back and create new
-					flateReaderPool.Put(pooled)
+					// SECURITY: Reset failed - discard the reader instead of returning to pool.
+					// A reader in error state may cause issues for subsequent users.
+					// The discarded reader will be garbage collected.
 					return flate.NewReader(reader), nil
 				}
 				return &pooledFlateReader{reader: pooled}, nil
 			}
-			// Doesn't implement Resetter, put back and create new
-			flateReaderPool.Put(pooled)
+			// Doesn't implement Resetter, discard and create new
 		}
 		return flate.NewReader(reader), nil
 	case "br":
@@ -433,12 +457,6 @@ func ClearResponsePools() {
 	bufferPool = sync.Pool{
 		New: func() any {
 			return bytes.NewBuffer(make([]byte, 0, defaultBufferSize))
-		},
-	}
-	smallBufferPool = sync.Pool{
-		New: func() any {
-			buf := make([]byte, 0, smallBufferThreshold)
-			return &buf
 		},
 	}
 	responsePool = sync.Pool{

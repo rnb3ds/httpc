@@ -14,9 +14,6 @@ import (
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
-// redirectKey is the context key for storing per-request redirect settings
-type redirectKey struct{}
-
 // maxInlineRedirects is the number of redirects we can track inline without heap allocation.
 // Most redirects are < 5, so 8 provides a good balance.
 const maxInlineRedirects = 8
@@ -99,6 +96,7 @@ func getRedirectSettings() *redirectSettings {
 }
 
 // putRedirectSettings returns a redirectSettings to the pool after resetting it.
+// SECURITY: Clears all redirect URLs to prevent sensitive URL leakage.
 func putRedirectSettings(s *redirectSettings) {
 	if s == nil {
 		return
@@ -111,8 +109,12 @@ func putRedirectSettings(s *redirectSettings) {
 	for i := range s.inlineChain {
 		s.inlineChain[i] = ""
 	}
-	// Clear overflow chain but keep the slice for reuse
+	// SECURITY: Clear overflow chain data to prevent memory leaks
+	// Each URL string reference must be cleared to allow GC
 	if s.overflowChain != nil {
+		for i := range s.overflowChain {
+			s.overflowChain[i] = ""
+		}
 		s.overflowChain = s.overflowChain[:0]
 	}
 	redirectSettingsPool.Put(s)
@@ -171,7 +173,7 @@ func NewTransport(config *Config, pool *connection.PoolManager) (*Transport, err
 // It reads per-request settings from the context and validates redirect targets for SSRF
 func (t *Transport) checkRedirect(req *http.Request, via []*http.Request) error {
 	// Get redirect settings from context
-	settings, ok := req.Context().Value(redirectKey{}).(*redirectSettings)
+	settings, ok := req.Context().Value(redirectContextKey{}).(*redirectSettings)
 	if !ok {
 		// No settings in context, use defaults
 		return nil
@@ -264,36 +266,41 @@ func (t *Transport) validateRedirectTarget(targetURL *url.URL) error {
 	return nil
 }
 
-// SetRedirectPolicy updates the redirect policy for a specific request
-// Returns a new context with the redirect settings.
-func (t *Transport) SetRedirectPolicy(ctx context.Context, followRedirects bool, maxRedirects int) context.Context {
+// redirectContextKey is a typed context key for redirect settings.
+// Using a typed key avoids collisions with other context keys.
+type redirectContextKey struct{}
+
+// SetRedirectPolicy updates the redirect policy for a specific request.
+// Returns a new context with the redirect settings and a cleanup function.
+//
+// IMPORTANT: The returned cleanup function MUST be called after the request completes
+// to return settings to the pool. Use defer to ensure cleanup:
+//
+//	ctx, cleanup := transport.SetRedirectPolicy(ctx, true, 5)
+//	defer cleanup()
+//
+// SECURITY: Failure to call cleanup will cause memory leaks and pool exhaustion.
+func (t *Transport) SetRedirectPolicy(ctx context.Context, followRedirects bool, maxRedirects int) (context.Context, func()) {
 	settings := getRedirectSettings()
 	settings.followRedirects = followRedirects
 	settings.maxRedirects = maxRedirects
-	return context.WithValue(ctx, redirectKey{}, settings)
+	newCtx := context.WithValue(ctx, redirectContextKey{}, settings)
+
+	// Return cleanup function that captures the settings reference
+	cleanup := func() {
+		putRedirectSettings(settings)
+	}
+
+	return newCtx, cleanup
 }
 
 // GetRedirectChain returns the redirect chain from the context
 func (t *Transport) GetRedirectChain(ctx context.Context) []string {
-	settings, ok := ctx.Value(redirectKey{}).(*redirectSettings)
+	settings, ok := ctx.Value(redirectContextKey{}).(*redirectSettings)
 	if !ok || settings.chainLen == 0 {
 		return nil
 	}
 	return settings.getChain()
-}
-
-// CleanupRedirectSettings releases redirect settings back to the pool.
-// This MUST be called after the request completes to prevent memory leaks.
-// It safely handles nil or invalid contexts.
-func (t *Transport) CleanupRedirectSettings(ctx context.Context) {
-	if ctx == nil {
-		return
-	}
-	settings, ok := ctx.Value(redirectKey{}).(*redirectSettings)
-	if !ok || settings == nil {
-		return
-	}
-	putRedirectSettings(settings)
 }
 
 // RoundTrip executes an HTTP round trip
@@ -353,6 +360,18 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 				// Clear the map to prevent data leakage between requests
 				for k := range cookieMap {
 					delete(cookieMap, k)
+				}
+				// SECURITY: Clear each Cookie's sensitive fields to prevent cross-request data leakage
+				// The http.Cookie objects are retained in memory until overwritten, so we must
+				// explicitly clear their Value, Domain, and Path fields.
+				for i := range *mergedPtr {
+					if (*mergedPtr)[i] != nil {
+						(*mergedPtr)[i].Value = ""
+						(*mergedPtr)[i].Domain = ""
+						(*mergedPtr)[i].Path = ""
+						(*mergedPtr)[i].RawExpires = ""
+						(*mergedPtr)[i].Raw = ""
+					}
 				}
 				// Clear the slice but keep capacity for reuse
 				*mergedPtr = (*mergedPtr)[:0]

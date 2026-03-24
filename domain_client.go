@@ -12,6 +12,11 @@ import (
 // DomainClient provides a client scoped to a specific domain with session management.
 // It maintains cookies and headers across requests and provides convenient methods
 // for making HTTP requests relative to a base URL.
+//
+// For better flexibility, use the DomainClienter interface instead of the concrete type:
+//
+//	var dc httpc.DomainClienter
+//	dc, err := httpc.NewDomain("https://api.example.com")
 type DomainClient struct {
 	client    Client
 	baseURL   string
@@ -24,6 +29,11 @@ type DomainClient struct {
 // The client automatically manages cookies and headers across requests.
 // If no configuration is provided or nil is passed, DefaultConfig() is used.
 // Note: Cookies are automatically enabled for DomainClient.
+//
+// For better flexibility, assign the result to DomainClienter interface:
+//
+//	var dc httpc.DomainClienter
+//	dc, err := httpc.NewDomain("https://api.example.com")
 //
 // Examples:
 //
@@ -150,7 +160,7 @@ func (dc *DomainClient) DownloadFile(path string, filePath string, options ...Re
 }
 
 // DownloadWithOptions downloads a file with custom download options.
-func (dc *DomainClient) DownloadWithOptions(path string, downloadOpts *DownloadOptions, options ...RequestOption) (*DownloadResult, error) {
+func (dc *DomainClient) DownloadWithOptions(path string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error) {
 	fullURL, err := dc.buildURL(path)
 	if err != nil {
 		return nil, err
@@ -164,27 +174,10 @@ func (dc *DomainClient) DownloadWithOptions(path string, downloadOpts *DownloadO
 	return dc.client.DownloadWithOptions(fullURL, downloadOpts, allOptions...)
 }
 
+// request is an internal helper that delegates to Request with a background context.
+// This eliminates code duplication between Request() and the convenience methods.
 func (dc *DomainClient) request(method, path string, options ...RequestOption) (*Result, error) {
-	fullURL, err := dc.buildURL(path)
-	if err != nil {
-		return nil, err
-	}
-
-	managedOptions := dc.session.PrepareOptions()
-	allOptions := append(managedOptions, options...)
-
-	dc.session.CaptureFromOptions(options)
-
-	result, err := dc.client.Request(context.Background(), method, fullURL, allOptions...)
-	if err != nil {
-		return nil, err
-	}
-
-	if result != nil {
-		dc.session.UpdateFromResult(result)
-	}
-
-	return result, nil
+	return dc.Request(context.Background(), method, path, options...)
 }
 
 func (dc *DomainClient) buildURL(pathStr string) (string, error) {

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net"
 	"testing"
+
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // ============================================================================
@@ -102,7 +104,7 @@ func TestSanitizeURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := sanitizeURL(tt.input)
+			result := validation.SanitizeURL(tt.input)
 			if result != tt.expected {
 				t.Errorf("Expected %q, got %q", tt.expected, result)
 			}
@@ -132,9 +134,16 @@ func TestClientError_IsRetryable(t *testing.T) {
 		expected  bool
 	}{
 		{
-			name:      "Network error is retryable",
+			name:      "Network error with timeout is retryable",
 			errorType: ErrorTypeNetwork,
+			cause:     &net.OpError{Op: "dial", Net: "tcp", Err: &mockNetError{timeout: true}},
 			expected:  true,
+		},
+		{
+			name:      "Network error without cause is not retryable",
+			errorType: ErrorTypeNetwork,
+			cause:     nil,
+			expected:  false,
 		},
 		{
 			name:      "Timeout error is retryable",

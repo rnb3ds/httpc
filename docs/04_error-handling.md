@@ -2,7 +2,7 @@
 
 This guide covers comprehensive error handling patterns and best practices for HTTPC.
 
-> **Prerequisite**: This guide builds on the [Error Handling Pattern](getting-started.md#error-handling-pattern) from the Getting Started guide. Master that pattern first before exploring advanced techniques.
+> **Prerequisite**: This guide builds on the [Error Handling Pattern](01_getting-started.md#error-handling-pattern) from the Getting Started guide. Master that pattern first before exploring advanced techniques.
 
 ## Table of Contents
 
@@ -448,10 +448,16 @@ func fetchWithNetworkRetry(client httpc.Client, url string) ([]byte, error) {
    }
    ```
 
-6. **Handle circuit breaker errors**
+6. **Use typed errors for classification**
    ```go
-   if strings.Contains(err.Error(), "circuit breaker is open") {
-       return useFallback()
+   var clientErr *httpc.ClientError
+   if errors.As(err, &clientErr) {
+       switch clientErr.Code() {
+       case httpc.ErrorTypeTimeout:
+           // Handle timeout specifically
+       case httpc.ErrorTypeNetwork:
+           // Handle network errors
+       }
    }
    ```
 

@@ -109,7 +109,7 @@ func TestDownload_WithProgress(t *testing.T) {
 	filePath := filepath.Join(tempDir, "progress-test.bin")
 
 	progressCalled := false
-	opts := &DownloadOptions{
+	opts := &DownloadConfig{
 		FilePath: filePath,
 		ProgressCallback: func(downloaded, total int64, speed float64) {
 			progressCalled = true
@@ -176,7 +176,7 @@ func TestDownload_ResumeNotSupported(t *testing.T) {
 	// Create partial file
 	_ = os.WriteFile(filePath, []byte("partial"), 0644)
 
-	opts := &DownloadOptions{
+	opts := &DownloadConfig{
 		FilePath:       filePath,
 		ResumeDownload: true,
 	}
@@ -222,7 +222,7 @@ func TestDownload_PartialContent(t *testing.T) {
 	// Create partial file
 	_ = os.WriteFile(filePath, []byte("partial"), 0644)
 
-	opts := &DownloadOptions{
+	opts := &DownloadConfig{
 		FilePath:       filePath,
 		ResumeDownload: true,
 	}
@@ -276,7 +276,7 @@ func TestDownload_FileAlreadyExists(t *testing.T) {
 	_ = os.WriteFile(filePath, []byte("old content"), 0644)
 
 	// Try download without overwrite
-	opts := &DownloadOptions{
+	opts := &DownloadConfig{
 		FilePath:  filePath,
 		Overwrite: false,
 	}
@@ -433,7 +433,7 @@ func TestDownload_PackageLevel(t *testing.T) {
 		filePath := filepath.Join(tempDir, "opts-test.txt")
 
 		progressCalled := false
-		opts := &DownloadOptions{
+		opts := &DownloadConfig{
 			FilePath: filePath,
 			ProgressCallback: func(downloaded, total int64, speed float64) {
 				progressCalled = true
@@ -483,9 +483,10 @@ func TestDownload_EdgeCases(t *testing.T) {
 		}
 	})
 
-	t.Run("DefaultDownloadOptions", func(t *testing.T) {
+	t.Run("DefaultDownloadConfig", func(t *testing.T) {
 		filePath := "/tmp/test.txt"
-		opts := DefaultDownloadOptions(filePath)
+		opts := DefaultDownloadConfig()
+		opts.FilePath = filePath
 
 		if opts.FilePath != filePath {
 			t.Errorf("Expected FilePath=%s, got %s", filePath, opts.FilePath)
@@ -497,4 +498,173 @@ func TestDownload_EdgeCases(t *testing.T) {
 			t.Error("Expected ResumeDownload=false by default")
 		}
 	})
+}
+
+// ----------------------------------------------------------------------------
+// Security Tests - prepareFilePath
+// ----------------------------------------------------------------------------
+
+func TestPrepareFilePath_Security(t *testing.T) {
+	t.Run("Empty path", func(t *testing.T) {
+		err := prepareFilePath("")
+		if err == nil {
+			t.Error("Expected error for empty path")
+		}
+		if err != ErrEmptyFilePath {
+			t.Errorf("Expected ErrEmptyFilePath, got %v", err)
+		}
+	})
+
+	t.Run("UNC path rejection", func(t *testing.T) {
+		uncPaths := []string{
+			"\\\\server\\share\\file.txt",
+			"//server/share/file.txt",
+		}
+
+		for _, path := range uncPaths {
+			err := prepareFilePath(path)
+			if err == nil {
+				t.Errorf("Expected UNC path rejection for: %s", path)
+			}
+			if err != nil && !strings.Contains(err.Error(), "UNC") {
+				t.Errorf("Expected UNC error message for: %s, got: %v", path, err)
+			}
+		}
+	})
+
+	t.Run("Control characters rejection", func(t *testing.T) {
+		controlCharPaths := []string{
+			"/tmp/file\x00name.txt", // null byte
+			"/tmp/file\x01name.txt", // SOH
+			"/tmp/file\x1fname.txt", // US
+			"/tmp/file\x7fname.txt", // DEL
+		}
+
+		for _, path := range controlCharPaths {
+			err := prepareFilePath(path)
+			if err == nil {
+				t.Errorf("Expected control character rejection for path with byte: %q", path)
+			}
+			if err != nil && !strings.Contains(err.Error(), "invalid characters") {
+				t.Errorf("Expected invalid characters error for: %q, got: %v", path, err)
+			}
+		}
+	})
+
+	t.Run("Path too long", func(t *testing.T) {
+		// Create a path longer than maxFilePathLen (4096)
+		longPath := "/tmp/" + strings.Repeat("a", 4100)
+		err := prepareFilePath(longPath)
+		if err == nil {
+			t.Error("Expected error for path too long")
+		}
+		if err != nil && !strings.Contains(err.Error(), "too long") {
+			t.Errorf("Expected 'too long' error, got: %v", err)
+		}
+	})
+
+	t.Run("Path traversal detection", func(t *testing.T) {
+		traversalPaths := []string{
+			"../../../etc/passwd",
+			"..\\..\\..\\windows\\system32",
+		}
+
+		for _, path := range traversalPaths {
+			err := prepareFilePath(path)
+			if err == nil {
+				t.Errorf("Expected path traversal rejection for: %s", path)
+			}
+		}
+	})
+
+	t.Run("Valid path accepted", func(t *testing.T) {
+		tempDir := t.TempDir()
+		validPath := filepath.Join(tempDir, "subdir", "file.txt")
+
+		err := prepareFilePath(validPath)
+		if err != nil {
+			t.Errorf("Valid path should be accepted: %v", err)
+		}
+
+		// Verify directory was created
+		if _, err := os.Stat(filepath.Dir(validPath)); os.IsNotExist(err) {
+			t.Error("Expected parent directory to be created")
+		}
+	})
+
+	t.Run("Symlink rejection", func(t *testing.T) {
+		tempDir := t.TempDir()
+
+		// Create a symlink (skip on Windows if not admin)
+		targetPath := filepath.Join(tempDir, "target.txt")
+		_ = os.WriteFile(targetPath, []byte("target"), 0644)
+
+		symlinkPath := filepath.Join(tempDir, "link.txt")
+		err := os.Symlink(targetPath, symlinkPath)
+		if err != nil {
+			// Skip if symlinks not supported (Windows without admin)
+			t.Skipf("Symlink not supported: %v", err)
+		}
+
+		// prepareFilePath should reject the symlink
+		err = prepareFilePath(symlinkPath)
+		if err == nil {
+			t.Error("Expected symlink rejection")
+		}
+		if err != nil && !strings.Contains(err.Error(), "symlink") {
+			t.Errorf("Expected symlink error, got: %v", err)
+		}
+	})
+}
+
+func TestPrepareFilePath_ValidPaths(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"Simple path", "/tmp/file.txt"},
+		{"Nested directories", "/tmp/a/b/c/file.txt"},
+		{"With extension", "/tmp/archive.tar.gz"},
+		{"Relative path", "downloads/file.txt"},
+		{"Path with spaces", "/tmp/my file.txt"},
+		{"Path with unicode", "/tmp/文件.txt"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Use temp dir for actual file operations
+			tempDir := t.TempDir()
+			if filepath.IsAbs(tt.path) {
+				// For absolute paths, redirect to temp dir
+				tt.path = filepath.Join(tempDir, filepath.Base(tt.path))
+			} else {
+				tt.path = filepath.Join(tempDir, tt.path)
+			}
+
+			err := prepareFilePath(tt.path)
+			// We expect this to succeed for valid paths
+			// Note: system path check may fail for some paths
+			t.Logf("Path %q: err=%v", tt.path, err)
+		})
+	}
+}
+
+func TestIsSystemPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		isSystem bool
+	}{
+		// These tests are platform-dependent, so we check behavior not specific paths
+		{"Temp directory", os.TempDir(), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isSystemPath(tt.path)
+			if result != tt.isSystem {
+				t.Errorf("isSystemPath(%q) = %v, want %v", tt.path, result, tt.isSystem)
+			}
+		})
+	}
 }

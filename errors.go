@@ -93,7 +93,7 @@ var (
 	ErrEmptyFilePath = errors.New("file path cannot be empty")
 
 	// ErrFileExists is returned when file already exists and Overwrite is false.
-	// Set Overwrite=true or ResumeDownload=true in DownloadOptions.
+	// Set Overwrite=true or ResumeDownload=true in DownloadConfig.
 	ErrFileExists = errors.New("file already exists")
 
 	// ErrResponseBodyEmpty is returned when attempting to parse empty response body.

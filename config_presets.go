@@ -80,7 +80,13 @@ func SecureConfig() *Config {
 }
 
 // PerformanceConfig returns a configuration optimized for high-throughput scenarios.
-// This config uses larger connection pools, longer timeouts, and relaxed validation.
+// This config uses larger connection pools, longer timeouts, while maintaining
+// essential security validations.
+//
+// SECURITY NOTE: This configuration maintains URL and header validation for security.
+// If you need to disable these for maximum performance in a trusted environment,
+// manually set cfg.ValidateURL = false and cfg.ValidateHeaders = false, but be
+// aware of the security implications (injection attacks, SSRF).
 func PerformanceConfig() *Config {
 	cfg := DefaultConfig()
 
@@ -96,11 +102,11 @@ func PerformanceConfig() *Config {
 	cfg.MaxConnsPerHost = 20
 	cfg.EnableCookies = true
 
-	// Security - relaxed for performance
+	// Security - maintain essential validation for security
 	cfg.MaxResponseBodySize = 50 * 1024 * 1024 // 50MB
-	cfg.StrictContentLength = false
-	cfg.ValidateURL = true
-	cfg.ValidateHeaders = false
+	cfg.StrictContentLength = false            // Can be relaxed for performance
+	cfg.ValidateURL = true                     // SECURITY: Keep URL validation
+	cfg.ValidateHeaders = true                 // SECURITY: Keep header validation (O(1) lookup table)
 
 	// Retry - faster retries
 	cfg.RetryDelay = 500 * time.Millisecond

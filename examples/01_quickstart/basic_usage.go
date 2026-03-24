@@ -47,10 +47,6 @@ func main() {
 	deleteRequest()
 
 	fmt.Println("\n=== All Quick Start Examples Completed ===")
-	fmt.Println("\nNext steps:")
-	fmt.Println("  - Explore examples/02_core_features/ for more options")
-	fmt.Println("  - Check examples/03_advanced/ for advanced patterns")
-	fmt.Println("  - Read the documentation at docs/")
 }
 
 // Example 1: Simplest GET request using package-level function

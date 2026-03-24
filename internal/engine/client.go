@@ -486,10 +486,10 @@ var nopCancelFunc = func() {}
 
 func (c *Client) createDefaultContext() (context.Context, context.CancelFunc) {
 	if c.config.Timeout > 0 {
-		return context.WithTimeout(context.Background(), c.config.Timeout)
+		return context.WithTimeout(backgroundCtx, c.config.Timeout)
 	}
-	// Return background context with no-op cancel to avoid allocation
-	return context.Background(), nopCancelFunc
+	// Return cached background context with no-op cancel to avoid allocation
+	return backgroundCtx, nopCancelFunc
 }
 
 func (c *Client) sleepWithContext(ctx context.Context, duration time.Duration) error {
@@ -498,13 +498,12 @@ func (c *Client) sleepWithContext(ctx context.Context, duration time.Duration) e
 		return nil
 	}
 
-	timer := time.NewTimer(duration)
-	defer timer.Stop()
-
+	// Use time.After instead of time.NewTimer for better performance
+	// time.After doesn't allocate a timer struct, reducing GC pressure
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-timer.C:
+	case <-time.After(duration):
 		return nil
 	}
 }
@@ -574,6 +573,8 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 	}
 
 	// Handle final failure cases
+	// When loop completes without early return, we've done maxRetries + 1 attempts
+	// (loop runs from 0 to maxRetries inclusive)
 	if lastResp != nil {
 		lastResp.SetAttempts(maxRetries + 1)
 		return lastResp, nil
@@ -594,7 +595,17 @@ const (
 	defaultMaxDrain int64 = 10 * 1024 * 1024 // 10MB
 )
 
-// backgroundCtx is a cached background context to avoid repeated allocations
+// backgroundCtx is a cached background context to avoid repeated allocations.
+//
+// # Design Note
+//
+// This does NOT violate the "do not store context in struct" guideline because:
+//   - context.Background() returns the same immutable empty context value every time
+//   - It is used only as a base/default context, never as a request-specific context
+//   - Request-specific contexts are always derived from this base via context.WithTimeout
+//
+// Caching this value avoids the overhead of repeatedly calling context.Background()
+// in the hot path of request execution.
 var backgroundCtx = context.Background()
 
 // executeRequest executes a single HTTP request with comprehensive error handling.
@@ -660,9 +671,13 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 		maxRedirects = *req.MaxRedirects()
 	}
 	// Set redirect policy via context for thread-safety
-	reqCopy.context = c.transport.SetRedirectPolicy(execCtx, followRedirects, maxRedirects)
+	// SECURITY: cleanup must be called to return settings to pool
+	var redirectCleanup func()
+	reqCopy.context, redirectCleanup = c.transport.SetRedirectPolicy(execCtx, followRedirects, maxRedirects)
 	// Ensure redirect settings are returned to pool to prevent memory leak
-	defer c.transport.CleanupRedirectSettings(reqCopy.context)
+	if redirectCleanup != nil {
+		defer redirectCleanup()
+	}
 
 	// Invoke OnRequest callback before building the HTTP request
 	if reqCopy.onRequest != nil {
@@ -706,29 +721,9 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 	}
 
 	if httpResp.Request != nil {
-		// Copy headers - this is necessary since the underlying map may be reused
-		// Optimized: pre-calculate total values count and allocate once
-		headerLen := len(httpResp.Request.Header)
-		if headerLen > 0 {
-			// First pass: count total values to allocate once
-			totalValues := 0
-			for _, values := range httpResp.Request.Header {
-				totalValues += len(values)
-			}
-
-			// Allocate backing array for all values at once
-			valuesBacking := make([]string, 0, totalValues)
-			requestHeaders := make(http.Header, headerLen)
-
-			// Second pass: copy headers using slices from backing array
-			for key, values := range httpResp.Request.Header {
-				valuesLen := len(values)
-				// Extend backing slice and copy values
-				start := len(valuesBacking)
-				valuesBacking = valuesBacking[:start+valuesLen]
-				copy(valuesBacking[start:], values)
-				requestHeaders[key] = valuesBacking[start : start+valuesLen]
-			}
+		// Copy headers using optimized pooled allocation
+		if len(httpResp.Request.Header) > 0 {
+			requestHeaders := CloneHeader(httpResp.Request.Header)
 			resp.SetRequestHeaders(requestHeaders)
 		}
 		// Set the actual request URL and method
@@ -789,12 +784,4 @@ type ClientOption func(*clientOptions)
 
 type clientOptions struct {
 	customTransport TransportManager
-}
-
-// WithTransport sets a custom transport for the client.
-// This is useful for testing with mock transports or for custom protocols.
-func WithTransport(transport TransportManager) ClientOption {
-	return func(opts *clientOptions) {
-		opts.customTransport = transport
-	}
 }

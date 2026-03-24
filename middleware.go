@@ -2,9 +2,10 @@ package httpc
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"time"
 
 	"github.com/cybergodev/httpc/internal/validation"
@@ -141,13 +142,17 @@ func RecoveryMiddleware() MiddlewareFunc {
 
 // RequestIDMiddleware creates a middleware that adds a unique request ID to each request.
 // The request ID is added to the request headers with the specified header name.
-// If generator is nil, a default time-based ID generator is used.
+// If generator is nil, a cryptographically secure random ID generator is used.
+//
+// SECURITY: The default generator uses crypto/rand to produce unpredictable request IDs,
+// preventing request ID guessing attacks in security-sensitive applications.
 func RequestIDMiddleware(headerName string, generator func() string) MiddlewareFunc {
 	if generator == nil {
 		generator = func() string {
-			// Use single timestamp call and combine with counter for uniqueness
-			ts := time.Now().UnixNano()
-			return fmt.Sprintf("%d-%04d", ts, ts&0xFFFF)
+			// SECURITY: Use cryptographically secure random for unpredictable request IDs
+			var b [16]byte
+			_, _ = cryptorand.Read(b[:])
+			return hex.EncodeToString(b[:])
 		}
 	}
 
@@ -279,7 +284,7 @@ func AuditMiddlewareWithConfig(onAudit func(event AuditEvent), config *AuditMidd
 			event := AuditEvent{
 				Timestamp: start,
 				Method:    req.Method(),
-				URL:       sanitizeAuditURL(req.URL()),
+				URL:       validation.SanitizeURL(req.URL()),
 				Duration:  duration,
 				Error:     err,
 			}
@@ -325,33 +330,4 @@ func AuditMiddlewareJSON(onAudit func(event AuditEvent)) MiddlewareFunc {
 	config := DefaultAuditMiddlewareConfig()
 	config.Format = "json"
 	return AuditMiddlewareWithConfig(onAudit, config)
-}
-
-// sanitizeAuditURL removes credentials from a URL for safe logging.
-// URLs with credentials are transformed from user:pass@host to ***:***@host.
-func sanitizeAuditURL(urlStr string) string {
-	parsedURL, err := url.Parse(urlStr)
-	if err != nil {
-		return urlStr
-	}
-
-	if parsedURL.User == nil {
-		return parsedURL.String()
-	}
-
-	_, hasPassword := parsedURL.User.Password()
-	parsedURL.User = nil
-
-	path := parsedURL.Path
-	if parsedURL.RawQuery != "" {
-		path += "?" + parsedURL.RawQuery
-	}
-	if parsedURL.Fragment != "" {
-		path += "#" + parsedURL.Fragment
-	}
-
-	if hasPassword {
-		return fmt.Sprintf("%s://***:***@%s%s", parsedURL.Scheme, parsedURL.Host, path)
-	}
-	return fmt.Sprintf("%s://***@%s%s", parsedURL.Scheme, parsedURL.Host, path)
 }

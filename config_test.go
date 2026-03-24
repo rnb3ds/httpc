@@ -2,6 +2,7 @@ package httpc
 
 import (
 	"crypto/tls"
+	"strings"
 	"testing"
 	"time"
 )
@@ -408,4 +409,157 @@ func TestConfig_AdvancedFields(t *testing.T) {
 		}
 		defer client.Close()
 	})
+}
+
+// ----------------------------------------------------------------------------
+// Config.String() Tests
+// ----------------------------------------------------------------------------
+
+func TestConfig_String(t *testing.T) {
+	t.Run("Nil config", func(t *testing.T) {
+		var config *Config = nil
+		result := config.String()
+		if result != "Config{<nil>}" {
+			t.Errorf("Expected 'Config{<nil>}', got %q", result)
+		}
+	})
+
+	t.Run("Default config", func(t *testing.T) {
+		config := DefaultConfig()
+		result := config.String()
+
+		// Verify key parts are present
+		if !strings.Contains(result, "Config{") {
+			t.Error("String should start with 'Config{'")
+		}
+		if !strings.Contains(result, "Timeout:") {
+			t.Error("String should contain 'Timeout:'")
+		}
+		if !strings.Contains(result, "ProxyURL:") {
+			t.Error("String should contain 'ProxyURL:'")
+		}
+		if !strings.Contains(result, "TLSConfig:") {
+			t.Error("String should contain 'TLSConfig:'")
+		}
+		if !strings.Contains(result, "<default>") {
+			t.Error("String should contain '<default>' for nil TLSConfig")
+		}
+	})
+
+	t.Run("Config with TLS", func(t *testing.T) {
+		config := DefaultConfig()
+		config.TLSConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		}
+
+		result := config.String()
+		if !strings.Contains(result, "<configured>") {
+			t.Error("String should contain '<configured>' for non-nil TLSConfig")
+		}
+	})
+
+	t.Run("Config with proxy", func(t *testing.T) {
+		config := DefaultConfig()
+		config.ProxyURL = "http://user:password@proxy.example.com:8080"
+
+		result := config.String()
+		// Password should be masked
+		if strings.Contains(result, "password") {
+			t.Error("String should not contain plaintext password")
+		}
+		if !strings.Contains(result, "ProxyURL:") {
+			t.Error("String should contain 'ProxyURL:'")
+		}
+	})
+
+	t.Run("Config with all fields", func(t *testing.T) {
+		config := &Config{
+			Timeout:             30 * time.Second,
+			DialTimeout:         5 * time.Second,
+			TLSHandshakeTimeout: 5 * time.Second,
+			MaxIdleConns:        100,
+			MaxConnsPerHost:     20,
+			ProxyURL:            "http://proxy:8080",
+			InsecureSkipVerify:  true,
+			AllowPrivateIPs:     true,
+			MaxRetries:          3,
+			BackoffFactor:       1.5,
+			UserAgent:           "test-agent",
+			FollowRedirects:     false,
+		}
+
+		result := config.String()
+
+		// Verify all key fields are present
+		expectedParts := []string{
+			"Timeout:",
+			"DialTimeout:",
+			"TLSHandshakeTimeout:",
+			"MaxIdleConns:",
+			"MaxConnsPerHost:",
+			"ProxyURL:",
+			"InsecureSkipVerify:",
+			"AllowPrivateIPs:",
+			"MaxRetries:",
+			"BackoffFactor:",
+			"UserAgent:",
+			"FollowRedirects:",
+		}
+
+		for _, part := range expectedParts {
+			if !strings.Contains(result, part) {
+				t.Errorf("String should contain %q", part)
+			}
+		}
+	})
+}
+
+// ----------------------------------------------------------------------------
+// maskProxyURL Tests (via Config.String())
+// ----------------------------------------------------------------------------
+
+func TestMaskProxyURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		proxyURL string
+		// We test this via Config.String() since maskProxyURL is not exported
+		contains    string
+		notContains string
+	}{
+		{
+			name:     "Empty URL",
+			proxyURL: "",
+			contains: "ProxyURL:",
+		},
+		{
+			name:     "URL without credentials",
+			proxyURL: "http://proxy.example.com:8080",
+			contains: "proxy.example.com",
+		},
+		{
+			name:        "URL with credentials",
+			proxyURL:    "http://user:secret@proxy.example.com:8080",
+			notContains: "secret",
+		},
+		{
+			name:     "SOCKS5 URL",
+			proxyURL: "socks5://proxy.example.com:1080",
+			contains: "socks5",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := DefaultConfig()
+			config.ProxyURL = tt.proxyURL
+			result := config.String()
+
+			if tt.contains != "" && !strings.Contains(result, tt.contains) {
+				t.Errorf("Expected result to contain %q, got: %s", tt.contains, result)
+			}
+			if tt.notContains != "" && strings.Contains(result, tt.notContains) {
+				t.Errorf("Expected result NOT to contain %q, got: %s", tt.notContains, result)
+			}
+		})
+	}
 }

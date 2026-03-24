@@ -1,12 +1,13 @@
 # HTTPC - Production-Ready HTTP Client for Go
 
-[![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)](https://golang.org)
+[![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://golang.org)
 [![Go Reference](https://pkg.go.dev/badge/github.com/cybergodev/httpc.svg)](https://pkg.go.dev/github.com/cybergodev/httpc)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Security](https://img.shields.io/badge/Security-Hardened-red.svg)](SECURITY.md)
 [![Zero Deps](https://img.shields.io/badge/deps-zero-brightgreen.svg)](go.mod)
+[![Thread Safe](https://img.shields.io/badge/thread%20safe-%E2%9C%93-brightgreen.svg)](docs/09_concurrency-safety.md)
 
-A high-performance HTTP client library for Go with enterprise-grade security, zero external dependencies, and production-ready defaults.
+A high-performance HTTP client library for Go with enterprise-grade security, minimal dependencies, and production-ready defaults.
 
 **[中文文档](README_zh-CN.md)**
 
@@ -17,10 +18,10 @@ A high-performance HTTP client library for Go with enterprise-grade security, ze
 | Feature | Description |
 |---------|-------------|
 | 🔒 **Secure by Default** | TLS 1.2+, SSRF protection, CRLF injection prevention, path traversal blocking |
-| ⚡ **High Performance** | Connection pooling, HTTP/2, goroutine-safe, sync.Pool optimization |
+| ⚡ **High Performance** | Connection pooling, HTTP/2, goroutine-safe, `sync.Pool` optimization |
 | 🔄 **Built-in Resilience** | Smart retry with exponential backoff and jitter |
 | 🛠️ **Developer Friendly** | Clean API, intuitive options pattern, comprehensive documentation |
-| 📦 **Zero Dependencies** | Pure Go standard library, no external packages |
+| 📦 **Minimal Dependencies** | Only `golang.org/x/sys` for system-level operations |
 | ✅ **Production Ready** | Battle-tested defaults, extensive test coverage |
 | 🍪 **Cookie Management** | Full cookie jar support with security validation |
 | 📁 **File Operations** | Secure file download with progress tracking and resume support |
@@ -32,6 +33,8 @@ A high-performance HTTP client library for Go with enterprise-grade security, ze
 ```bash
 go get -u github.com/cybergodev/httpc
 ```
+
+**Requirements:** Go 1.25+
 
 ---
 
@@ -86,6 +89,38 @@ func main() {
 }
 ```
 
+### Using Client Instance (Recommended)
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+
+    "github.com/cybergodev/httpc"
+)
+
+func main() {
+    // Create a reusable client
+    client, err := httpc.New(httpc.DefaultConfig())
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer client.Close()
+
+    // Make multiple requests
+    result, err := client.Get("https://api.example.com/users",
+        httpc.WithQuery("page", 1),
+        httpc.WithQuery("limit", 20),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("Status: %d\n", result.StatusCode())
+}
+```
+
 ---
 
 ## 📖 HTTP Methods
@@ -124,8 +159,8 @@ httpc.WithHeader("Authorization", "Bearer token")
 
 // Multiple headers
 httpc.WithHeaderMap(map[string]string{
-    "X-Custom": "value",
-    "X-Request-ID": "123",
+    "X-Custom":      "value",
+    "X-Request-ID":  "123",
 })
 
 // User-Agent
@@ -168,7 +203,7 @@ httpc.WithForm(map[string]string{"key": "value"})
 httpc.WithFormData(formData)
 httpc.WithFile("file", "document.pdf", fileBytes)
 
-// Raw body
+// Raw body (auto-detect Content-Type)
 httpc.WithBody([]byte("raw data"))
 httpc.WithBinary(binaryData, "application/pdf")
 ```
@@ -229,7 +264,7 @@ httpc.WithOnResponse(func(resp httpc.ResponseMutator) error {
 | **Headers** | `WithHeader(key, value)`, `WithHeaderMap(map)`, `WithUserAgent(ua)` |
 | **Auth** | `WithBearerToken(token)`, `WithBasicAuth(user, pass)` |
 | **Query** | `WithQuery(key, value)`, `WithQueryMap(map)` |
-| **Body** | `WithJSON(data)`, `WithXML(data)`, `WithForm(map)`, `WithFormData(form)`, `WithFile(field, filename, content)`, `WithBody([]byte)`, `WithBinary([]byte, contentType?)` |
+| **Body** | `WithJSON(data)`, `WithXML(data)`, `WithForm(map)`, `WithFormData(form)`, `WithFile(field, filename, content)`, `WithBody(data)`, `WithBinary([]byte, contentType?)` |
 | **Cookies** | `WithCookie(cookie)`, `WithCookieMap(map)`, `WithCookieString("a=1; b=2")`, `WithSecureCookie(config)` |
 | **Control** | `WithTimeout(dur)`, `WithMaxRetries(n)`, `WithContext(ctx)` |
 | **Redirects** | `WithFollowRedirects(bool)`, `WithMaxRedirects(n)` |
@@ -319,7 +354,8 @@ fmt.Printf("Downloaded: %s at %s/s\n",
 ### Download with Progress
 
 ```go
-opts := httpc.DefaultDownloadOptions("downloads/large.zip")
+opts := httpc.DefaultDownloadConfig()
+opts.FilePath = "downloads/large.zip"
 opts.ProgressCallback = func(downloaded, total int64, speed float64) {
     pct := float64(downloaded) / float64(total) * 100
     fmt.Printf("\r%.1f%% - %s/s", pct, httpc.FormatSpeed(speed))
@@ -330,7 +366,8 @@ result, _ := httpc.DownloadWithOptions(url, opts)
 ### Resume Download
 
 ```go
-opts := httpc.DefaultDownloadOptions("downloads/large.zip")
+opts := httpc.DefaultDownloadConfig()
+opts.FilePath = "downloads/large.zip"
 opts.ResumeDownload = true
 result, _ := httpc.DownloadWithOptions(url, opts)
 if result.Resumed {
@@ -674,13 +711,15 @@ defer httpc.ReleaseResult(result)
 
 | Resource | Description |
 |----------|-------------|
-| [Getting Started](docs/getting-started.md) | Installation and first steps |
-| [Configuration](docs/configuration.md) | Client configuration and presets |
-| [Request Options](docs/request-options.md) | Complete options reference |
-| [Error Handling](docs/error-handling.md) | Error handling patterns |
-| [File Download](docs/file-download.md) | File download with progress |
-| [HTTP Redirects](docs/redirects.md) | Redirect handling and tracking |
-| [Cookie API](docs/cookie-api-reference.md) | Cookie management |
+| [Getting Started](docs/01_getting-started.md) | Installation and first steps |
+| [Configuration](docs/02_configuration.md) | Client configuration and presets |
+| [Request Options](docs/03_request-options.md) | Complete options reference |
+| [Error Handling](docs/04_error-handling.md) | Error handling patterns |
+| [HTTP Redirects](docs/05_redirects.md) | Redirect handling and tracking |
+| [Cookie API](docs/06_cookie-api.md) | Cookie management |
+| [File Download](docs/07_file-download.md) | File download with progress |
+| [Request Inspection](docs/08_request-inspection.md) | Request/response inspection |
+| [Concurrency Safety](docs/09_concurrency-safety.md) | Thread safety guarantees |
 | [Security](SECURITY.md) | Security features and best practices |
 
 ### Example Code

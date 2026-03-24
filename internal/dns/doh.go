@@ -39,9 +39,8 @@ type DoHProvider struct {
 
 // CacheEntry holds cached DNS resolution results
 type CacheEntry struct {
-	IPs       []net.IPAddr
-	Expires   time.Time
-	decrement atomic.Bool // Ensures cacheSize is decremented only once per entry
+	IPs     []net.IPAddr
+	Expires time.Time
 }
 
 // Security constants for DoH
@@ -134,23 +133,18 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 			copy(ips, entry.IPs)
 			return ips, nil
 		} else {
-			// Entry expired - use atomic.Bool to ensure we only decrement once per entry
-			// This prevents multiple goroutines from decrementing for the same expired entry
-			if entry.decrement.CompareAndSwap(false, true) {
-				// Use LoadAndDelete to ensure atomic check-then-delete
-				// Only decrement if we successfully deleted this specific entry
-				// SECURITY: Compare the actual value to ensure we're deleting the same entry
-				// This prevents decrementing when another goroutine already replaced it
-				actual, loaded := r.cache.LoadAndDelete(host)
-				if loaded {
-					// Only decrement if the deleted entry is the same one we marked
-					if actualEntry, ok := actual.(*CacheEntry); ok && actualEntry == entry {
-						r.cacheSize.Add(-1)
-					}
+			// Entry expired - use LoadAndDelete for atomic delete
+			// SECURITY: Simplified approach - LoadAndDelete is atomic, so only one goroutine
+			// will successfully delete the entry. This eliminates the TOCTOU race condition
+			// between the decrement CAS and the actual deletion.
+			actual, loaded := r.cache.LoadAndDelete(host)
+			if loaded {
+				// Only decrement if the deleted entry is the one we found (same pointer)
+				// This handles the case where another goroutine replaced the entry between
+				// our Load() and LoadAndDelete() calls
+				if actualEntry, ok := actual.(*CacheEntry); ok && actualEntry == entry {
+					r.cacheSize.Add(-1)
 				}
-				// NOTE: We intentionally do NOT reset the decrement flag if the entry
-				// was replaced. The new entry has its own fresh decrement flag.
-				// Resetting would corrupt the new entry's counter management.
 			}
 		}
 	}
@@ -160,15 +154,23 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 	for _, provider := range r.providers {
 		ips, err := r.lookupWithProvider(ctx, provider, host)
 		if err == nil && len(ips) > 0 {
-			// SECURITY: Only cache if we haven't exceeded the cache size limit
-			// This prevents unbounded memory growth
-			if r.cacheSize.Load() < maxDoHCacheSize {
-				cacheTTL := time.Duration(r.cacheTTL.Load())
-				r.cache.Store(host, &CacheEntry{
-					IPs:     ips,
-					Expires: time.Now().Add(cacheTTL),
-				})
-				r.cacheSize.Add(1)
+			// SECURITY: Use CAS to atomically reserve cache slot before storing
+			// This prevents TOCTOU race where multiple goroutines could exceed cache limit
+			for {
+				current := r.cacheSize.Load()
+				if current >= maxDoHCacheSize {
+					break // Cache full, don't store but still return result
+				}
+				if r.cacheSize.CompareAndSwap(current, current+1) {
+					// Successfully reserved slot, now store the entry
+					cacheTTL := time.Duration(r.cacheTTL.Load())
+					r.cache.Store(host, &CacheEntry{
+						IPs:     ips,
+						Expires: time.Now().Add(cacheTTL),
+					})
+					break
+				}
+				// CAS failed due to contention, retry
 			}
 			return ips, nil
 		}
@@ -352,7 +354,9 @@ func (r *DoHResolver) parseWireFormatResponse(body []byte, host string) ([]net.I
 // maxDomainRecursion limits the depth of DNS compression pointer recursion
 // to prevent stack overflow from malicious responses with circular pointers.
 // RFC 1035 allows compression, but malformed responses could exploit this.
-const maxDomainRecursion = 10
+// SECURITY: Increased from 10 to 16 to handle edge cases with legitimate but
+// deeply nested compression while still preventing stack overflow.
+const maxDomainRecursion = 16
 
 // parseDomain parses a DNS domain name (RFC 1035) with recursion depth limit.
 // The depth parameter tracks the current recursion depth to prevent stack overflow

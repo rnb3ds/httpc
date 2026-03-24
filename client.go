@@ -158,7 +158,7 @@ type Client interface {
 
 	// File download methods
 	DownloadFile(url string, filePath string, options ...RequestOption) (*DownloadResult, error)
-	DownloadWithOptions(url string, downloadOpts *DownloadOptions, options ...RequestOption) (*DownloadResult, error)
+	DownloadWithOptions(url string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error)
 
 	// Close releases resources held by the client
 	Close() error
@@ -345,22 +345,12 @@ func (c *clientImpl) Options(url string, options ...RequestOption) (*Result, err
 }
 
 // doRequest executes an HTTP request with the given method and options.
+// It delegates to Request with a background context for convenience methods.
 func (c *clientImpl) doRequest(method, url string, options []RequestOption) (*Result, error) {
-	ctx := context.Background()
-
-	// Use middleware chain if configured
-	if c.hasMiddlewares {
-		return c.executeWithMiddleware(ctx, method, url, options)
-	}
-
-	// Direct path when no middlewares (zero overhead)
-	resp, err := c.engine.Request(ctx, method, url, options...)
-	if err != nil {
-		return nil, err
-	}
-	return convertResponseToResult(resp), nil
+	return c.Request(context.Background(), method, url, options...)
 }
 
+// Request executes an HTTP request with the given context, method, URL, and options.
 func (c *clientImpl) Request(ctx context.Context, method, url string, options ...RequestOption) (*Result, error) {
 	// Use middleware chain if configured
 	if c.hasMiddlewares {
@@ -411,18 +401,17 @@ func (c *clientImpl) Close() error {
 }
 
 var (
-	defaultClient   atomic.Pointer[clientImpl]
-	defaultClientMu sync.Mutex
+	defaultClient atomic.Pointer[clientImpl]
 )
 
 func getDefaultClient() (Client, error) {
-	defaultClientMu.Lock()
-	defer defaultClientMu.Unlock()
-
-	if defaultClient.Load() != nil {
-		return defaultClient.Load(), nil
+	// Fast path: check if already initialized (lock-free)
+	if client := defaultClient.Load(); client != nil {
+		return client, nil
 	}
 
+	// Slow path: initialize with CAS to avoid allocation races
+	// Create new client outside of any lock
 	newClient, err := New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize default client: %w", err)
@@ -433,7 +422,13 @@ func getDefaultClient() (Client, error) {
 		return nil, fmt.Errorf("unexpected client type")
 	}
 
-	defaultClient.Store(impl)
+	// CAS: only store if not already set by another goroutine
+	// If CAS fails, another goroutine won the race - use their client
+	if !defaultClient.CompareAndSwap(nil, impl) {
+		// Another goroutine initialized first, close ours and use theirs
+		_ = impl.Close() // best-effort cleanup
+		return defaultClient.Load(), nil
+	}
 	return impl, nil
 }
 
@@ -441,17 +436,18 @@ func getDefaultClient() (Client, error) {
 // After calling this, the next package-level function call will create a new client.
 // This function is safe for concurrent use.
 func CloseDefaultClient() error {
-	defaultClientMu.Lock()
-	defer defaultClientMu.Unlock()
-
-	client := defaultClient.Load()
-	if client == nil {
-		return nil
+	// Atomically swap out the client and close it
+	for {
+		client := defaultClient.Load()
+		if client == nil {
+			return nil
+		}
+		// Try to atomically clear the pointer
+		if defaultClient.CompareAndSwap(client, nil) {
+			return client.Close()
+		}
+		// CAS failed - another goroutine modified it, retry
 	}
-
-	err := client.Close()
-	defaultClient.Store(nil)
-	return err
 }
 
 func Get(url string, options ...RequestOption) (*Result, error) {
@@ -540,64 +536,92 @@ func SetDefaultClient(client Client) error {
 		return fmt.Errorf("only clients created by this package are supported")
 	}
 
-	defaultClientMu.Lock()
-	defer defaultClientMu.Unlock()
-
+	// Atomically swap the old client with the new one
 	var closeErr error
-	if oldClient := defaultClient.Load(); oldClient != nil {
-		closeErr = oldClient.Close()
+	for {
+		oldClient := defaultClient.Load()
+		// Try to atomically swap the pointer
+		if defaultClient.CompareAndSwap(oldClient, impl) {
+			// Successfully swapped - close the old client
+			if oldClient != nil {
+				closeErr = oldClient.Close()
+			}
+			break
+		}
+		// CAS failed - another goroutine modified it, retry
 	}
-
-	defaultClient.Store(impl)
 	return closeErr
 }
 
 const (
-	minIdleConnsPerHost    = 2
-	maxIdleConnsPerHostCap = 10
-	retryDelayMultiplier   = 3
+	minIdleConnsPerHost    = 2  // Minimum idle connections per host
+	maxIdleConnsPerHostCap = 10 // Maximum cap for idle connections per host
+	retryDelayMultiplier   = 3  // Retry delay multiplication factor
 )
 
+// calculateIdleConnsPerHost calculates the optimal number of idle connections per host
+// based on MaxConnsPerHost configuration.
+func calculateIdleConnsPerHost(maxConnsPerHost int) int {
+	if maxConnsPerHost == 0 {
+		// Unlimited max connections - use reasonable default for idle
+		return maxIdleConnsPerHostCap
+	}
+	idleConns := maxConnsPerHost / 2
+	if idleConns < minIdleConnsPerHost {
+		return minIdleConnsPerHost
+	}
+	if idleConns > maxIdleConnsPerHostCap {
+		return maxIdleConnsPerHostCap
+	}
+	return idleConns
+}
+
+// resolveTLSVersions returns the minimum and maximum TLS versions from config.
+// Falls back to TLS 1.2 and TLS 1.3 if not specified.
+func resolveTLSVersions(cfg *Config) (min, max uint16) {
+	min = cfg.MinTLSVersion
+	if min == 0 {
+		min = tls.VersionTLS12
+	}
+	max = cfg.MaxTLSVersion
+	if max == 0 {
+		max = tls.VersionTLS13
+	}
+	return min, max
+}
+
+// calculateMaxRetryDelay calculates the maximum retry delay based on configuration.
+// Formula: min(RetryDelay * BackoffFactor * 3, 30s)
+func calculateMaxRetryDelay(cfg *Config) time.Duration {
+	const (
+		defaultMaxRetryDelay  = 5 * time.Second
+		absoluteMaxRetryDelay = 30 * time.Second
+	)
+
+	if cfg.RetryDelay <= 0 || cfg.BackoffFactor <= 0 {
+		return defaultMaxRetryDelay
+	}
+
+	calculated := time.Duration(float64(cfg.RetryDelay) * cfg.BackoffFactor * retryDelayMultiplier)
+	if calculated > absoluteMaxRetryDelay {
+		return absoluteMaxRetryDelay
+	}
+	if calculated < defaultMaxRetryDelay {
+		return defaultMaxRetryDelay
+	}
+	return calculated
+}
+
+// convertToEngineConfig converts public Config to engine Config.
+// It uses helper functions for cleaner separation of concerns.
 func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 	if cfg == nil {
 		cfg = DefaultConfig()
 	}
 
-	// Calculate idle connections per host with proper bounds
-	idleConnsPerHost := cfg.MaxConnsPerHost / 2
-
-	// Handle edge cases for MaxConnsPerHost
-	// - If 0 (unlimited), use default idle connections
-	// - If very small (< 2*minIdleConnsPerHost), use minimum
-	// - Otherwise, use half of MaxConnsPerHost
-	if cfg.MaxConnsPerHost == 0 {
-		// Unlimited max connections - use reasonable default for idle
-		idleConnsPerHost = maxIdleConnsPerHostCap
-	} else if idleConnsPerHost < minIdleConnsPerHost {
-		idleConnsPerHost = minIdleConnsPerHost
-	} else if idleConnsPerHost > maxIdleConnsPerHostCap {
-		idleConnsPerHost = maxIdleConnsPerHostCap
-	}
-
-	minTLSVersion := cfg.MinTLSVersion
-	if minTLSVersion == 0 {
-		minTLSVersion = tls.VersionTLS12
-	}
-
-	maxTLSVersion := cfg.MaxTLSVersion
-	if maxTLSVersion == 0 {
-		maxTLSVersion = tls.VersionTLS13
-	}
-
-	const (
-		defaultMaxRetryDelay  = 5 * time.Second
-		absoluteMaxRetryDelay = 30 * time.Second
-	)
-	maxRetryDelay := defaultMaxRetryDelay
-	if cfg.RetryDelay > 0 && cfg.BackoffFactor > 0 {
-		calculated := time.Duration(float64(cfg.RetryDelay) * cfg.BackoffFactor * retryDelayMultiplier)
-		maxRetryDelay = min(calculated, absoluteMaxRetryDelay)
-	}
+	idleConnsPerHost := calculateIdleConnsPerHost(cfg.MaxConnsPerHost)
+	minTLSVersion, maxTLSVersion := resolveTLSVersions(cfg)
+	maxRetryDelay := calculateMaxRetryDelay(cfg)
 
 	cookieJar, err := createCookieJar(cfg.EnableCookies)
 	if err != nil {
@@ -757,47 +781,4 @@ func createCookieJar(enableCookies bool) (http.CookieJar, error) {
 		return nil, fmt.Errorf("failed to create cookie jar: %w", err)
 	}
 	return jar, nil
-}
-
-// ClearAllPools clears all internal sync.Pool instances used by the httpc library.
-// This is primarily useful for testing and debugging to ensure a clean state.
-// Note: sync.Pool is automatically managed by the GC, so this is typically not needed
-// in production code. The pools will be repopulated on next use.
-//
-// This function clears:
-//   - Result pool (client level)
-//   - URL cache (request processor)
-//   - Request pools (strings/bytes readers, string builders)
-//   - Response pools (gzip/flate readers, buffers)
-//   - Transport pools (redirect settings, cookie maps)
-func ClearAllPools() {
-	// Clear result pool
-	resultPool = sync.Pool{
-		New: func() any {
-			return &Result{
-				Request:  &RequestInfo{},
-				Response: &ResponseInfo{},
-				Meta:     &RequestMeta{},
-			}
-		},
-	}
-
-	// Clear engine pools
-	engine.ClearURLCache()
-	engine.ClearRequestPools()
-	engine.ClearResponsePools()
-	engine.ClearPools()
-}
-
-// GetCacheStats returns statistics about internal caches and pools.
-// Useful for monitoring memory usage in production environments.
-func GetCacheStats() CacheStats {
-	return CacheStats{
-		URLCacheSize: engine.GetURLCacheSize(),
-	}
-}
-
-// CacheStats holds statistics about internal caches.
-type CacheStats struct {
-	URLCacheSize int // Number of entries in the URL cache
 }

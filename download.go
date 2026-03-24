@@ -15,12 +15,30 @@ import (
 // Parameters: downloaded bytes, total bytes, current speed in bytes/second.
 type DownloadProgressCallback func(downloaded, total int64, speed float64)
 
-// DownloadOptions configures file download behavior.
-type DownloadOptions struct {
+// DownloadConfig configures file download behavior.
+// Use DefaultDownloadConfig() to get a configuration with sensible defaults.
+type DownloadConfig struct {
 	FilePath         string
 	ProgressCallback DownloadProgressCallback
 	Overwrite        bool
 	ResumeDownload   bool
+}
+
+// DefaultDownloadConfig returns a DownloadConfig with default settings.
+// Overwrite and ResumeDownload are both false by default.
+// Caller must set FilePath before use.
+//
+// Example:
+//
+//	cfg := httpc.DefaultDownloadConfig()
+//	cfg.FilePath = "/downloads/file.zip"
+//	cfg.Overwrite = true
+//	result, err := client.DownloadWithOptions(url, cfg)
+func DefaultDownloadConfig() *DownloadConfig {
+	return &DownloadConfig{
+		Overwrite:      false,
+		ResumeDownload: false,
+	}
 }
 
 // DownloadResult contains information about a completed download.
@@ -32,16 +50,6 @@ type DownloadResult struct {
 	StatusCode    int
 	ContentLength int64
 	Resumed       bool
-}
-
-// DefaultDownloadOptions creates download options with default settings.
-// Overwrite and ResumeDownload are both false by default.
-func DefaultDownloadOptions(filePath string) *DownloadOptions {
-	return &DownloadOptions{
-		FilePath:       filePath,
-		Overwrite:      false,
-		ResumeDownload: false,
-	}
 }
 
 // DownloadFile downloads a file from the given URL to the specified file path using the default client.
@@ -57,7 +65,7 @@ func DownloadFile(url string, filePath string, options ...RequestOption) (*Downl
 
 // DownloadWithOptions downloads a file with custom download options using the default client.
 // Returns DownloadResult with download statistics or an error if the download fails.
-func DownloadWithOptions(url string, downloadOpts *DownloadOptions, options ...RequestOption) (*DownloadResult, error) {
+func DownloadWithOptions(url string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error) {
 	client, err := getDefaultClient()
 	if err != nil {
 		return nil, err
@@ -67,15 +75,16 @@ func DownloadWithOptions(url string, downloadOpts *DownloadOptions, options ...R
 }
 
 func (c *clientImpl) DownloadFile(url string, filePath string, options ...RequestOption) (*DownloadResult, error) {
-	downloadOpts := DefaultDownloadOptions(filePath)
+	downloadOpts := DefaultDownloadConfig()
+	downloadOpts.FilePath = filePath
 	return c.downloadFile(context.Background(), url, downloadOpts, options...)
 }
 
-func (c *clientImpl) DownloadWithOptions(url string, downloadOpts *DownloadOptions, options ...RequestOption) (*DownloadResult, error) {
+func (c *clientImpl) DownloadWithOptions(url string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error) {
 	return c.downloadFile(context.Background(), url, downloadOpts, options...)
 }
 
-func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *DownloadOptions, options ...RequestOption) (result *DownloadResult, err error) {
+func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *DownloadConfig, options ...RequestOption) (result *DownloadResult, err error) {
 	if opts == nil {
 		return nil, fmt.Errorf("download options cannot be nil")
 	}
@@ -206,6 +215,7 @@ func getSystemPaths() []string {
 }
 
 // getOS returns the current operating system.
+// Kept as a wrapper for testability - allows mocking in unit tests.
 func getOS() string {
 	return runtime.GOOS
 }

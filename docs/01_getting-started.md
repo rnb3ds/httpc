@@ -187,7 +187,7 @@ resp, err := client.Get(url,
 )
 ```
 
-**See also:** [Request Options Guide](request-options.md) for complete reference.
+**See also:** [Request Options Guide](03_request-options.md) for complete reference.
 
 ### Error Handling
 
@@ -210,7 +210,7 @@ if !result.IsSuccess() {
 fmt.Println(result.Body())
 ```
 
-**See also:** [Error Handling Guide](error-handling.md) for comprehensive patterns.
+**See also:** [Error Handling Guide](04_error-handling.md) for comprehensive patterns.
 
 ### Response Helpers
 
@@ -426,13 +426,14 @@ data, err := fetchData(ctx, "https://api.example.com/large-data")
 
 Now that you understand the basics, explore these guides:
 
-- **[Request Options](request-options.md)** - Complete reference for all request options
-- **[Configuration](configuration.md)** - Client configuration and presets
-- **[Error Handling](error-handling.md)** - Advanced error handling patterns
-- **[File Downloads](file-download.md)** - Download files with progress tracking
-- **[Cookie Management](cookie-api-reference.md)** - Automatic and manual cookie handling
-- **[Redirects](redirects.md)** - Handle HTTP redirects
-- **[Request Inspection](request-inspection.md)** - Debug and inspect requests
+- **[Request Options](03_request-options.md)** - Complete reference for all request options
+- **[Configuration](02_configuration.md)** - Client configuration and presets
+- **[Error Handling](04_error-handling.md)** - Advanced error handling patterns
+- **[Redirects](05_redirects.md)** - Handle HTTP redirects
+- **[Cookie Management](06_cookie-api.md)** - Automatic and manual cookie handling
+- **[File Downloads](07_file-download.md)** - Download files with progress tracking
+- **[Request Inspection](08_request-inspection.md)** - Debug and inspect requests
+- **[Concurrency Safety](09_concurrency-safety.md)** - Thread-safe usage patterns
 
 ---
 
@@ -458,7 +459,7 @@ client, err := httpc.New(httpc.DefaultConfig())
 client, err := httpc.New(httpc.SecureConfig())
 ```
 
-**See also:** [Configuration Guide](configuration.md) for detailed configuration options.
+**See also:** [Configuration Guide](02_configuration.md) for detailed configuration options.
 
 
 ## Quick Tips

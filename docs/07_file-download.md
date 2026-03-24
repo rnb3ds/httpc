@@ -2,7 +2,7 @@
 
 This guide covers all aspects of downloading files using HTTPC, from simple downloads to advanced features like progress tracking and resume support.
 
-> **Prerequisite**: This guide assumes you understand the [Client Setup and Error Handling patterns](getting-started.md#common-patterns) from the Getting Started guide.
+> **Prerequisite**: This guide assumes you understand the [Client Setup and Error Handling patterns](01_getting-started.md#common-patterns) from the Getting Started guide.
 
 ## Table of Contents
 
@@ -98,7 +98,8 @@ Track download completion:
 **Note**: The current implementation loads the entire response into memory before writing to disk, so the progress callback is called once at the end with final statistics. This is suitable for most files but may not provide real-time progress updates during the download.
 
 ```go
-opts := httpc.DefaultDownloadOptions("downloads/large-file.zip")
+opts := httpc.DefaultDownloadConfig()
+opts.FilePath = "downloads/large-file.zip"
 opts.Overwrite = true
 
 opts.ProgressCallback = func(downloaded, total int64, speed float64) {
@@ -151,7 +152,8 @@ opts.ProgressCallback = func(downloaded, total int64, speed float64) {
 Configure for optimal large file downloads:
 
 ```go
-opts := httpc.DefaultDownloadOptions("downloads/large-video.mp4")
+opts := httpc.DefaultDownloadConfig()
+opts.FilePath = "downloads/large-video.mp4"
 opts.Overwrite = true
 
 opts.ProgressCallback = func(downloaded, total int64, speed float64) {
@@ -221,7 +223,7 @@ result, err := client.DownloadFile(
 ### All Download Options
 
 ```go
-opts := &httpc.DownloadOptions{
+opts := &httpc.DownloadConfig{
     // Required
     FilePath: "downloads/file.zip",
     
@@ -326,7 +328,8 @@ httpc.WithTimeout(30 * time.Minute)
 ### 3. Enable Resume for Large Files
 
 ```go
-opts := httpc.DefaultDownloadOptions(filePath)
+opts := httpc.DefaultDownloadConfig()
+opts.FilePath = filePath
 opts.ResumeDownload = true  // Always enable for large files
 ```
 
@@ -361,7 +364,7 @@ speed := httpc.FormatSpeed(1048576.0)  // "1.00 MB/s"
 
 ## Examples
 
-See the [file_download.go](../examples/03_advanced/file_download.go) example for complete working code.
+See the [file_operations.go](../examples/03_advanced/file_operations.go) example for complete working code.
 
 
 ---
