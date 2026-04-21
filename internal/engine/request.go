@@ -736,23 +736,6 @@ func isFormData(v any) bool {
 	if v == nil {
 		return false
 	}
-	// Check if it's a pointer to types.FormData
-	if _, ok := v.(*types.FormData); ok {
-		return true
-	}
-	// Fallback to reflection for compatible types from different packages
-	t := reflect.TypeOf(v)
-	if t.Kind() != reflect.Ptr {
-		return false
-	}
-	t = t.Elem()
-	if t.Kind() != reflect.Struct {
-		return false
-	}
-	if t.Name() != "FormData" {
-		return false
-	}
-	_, hasFields := t.FieldByName("Fields")
-	_, hasFiles := t.FieldByName("Files")
-	return hasFields && hasFiles
+	_, ok := v.(*types.FormData)
+	return ok
 }

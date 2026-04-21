@@ -143,7 +143,10 @@ func TestConcurrentDomainClientSession(t *testing.T) {
 
 // TestConcurrentSessionManager tests SessionManager under concurrent access.
 func TestConcurrentSessionManager(t *testing.T) {
-	sm := httpc.NewSessionManager()
+	sm, err := httpc.NewSessionManager()
+	if err != nil {
+		t.Fatalf("NewSessionManager error: %v", err)
+	}
 
 	const numGoroutines = 100
 	const opsPerGoroutine = 50
@@ -198,7 +201,10 @@ func TestConcurrentSessionManager(t *testing.T) {
 // This test verifies the fix for the TOCTOU race condition where cookieSecurity was accessed outside the lock.
 func TestConcurrentSessionManagerWithCookieSecurity(t *testing.T) {
 	// Create session manager without security first
-	sm := httpc.NewSessionManager()
+	sm, err := httpc.NewSessionManager()
+	if err != nil {
+		t.Fatalf("NewSessionManager error: %v", err)
+	}
 
 	const numGoroutines = 50
 	const opsPerGoroutine = 20
@@ -642,7 +648,7 @@ func TestConcurrentCookieJar(t *testing.T) {
 	defer server.Close()
 
 	cfg := httpc.DefaultConfig()
-	cfg.EnableCookies = true
+	cfg.Connection.EnableCookies = true
 
 	client, err := httpc.New(cfg)
 	if err != nil {
@@ -798,8 +804,8 @@ func TestConcurrentMiddlewareExecution(t *testing.T) {
 	defer server.Close()
 
 	cfg := httpc.DefaultConfig()
-	cfg.AllowPrivateIPs = true
-	cfg.Middlewares = []httpc.MiddlewareFunc{
+	cfg.Security.AllowPrivateIPs = true
+	cfg.Middleware.Middlewares = []httpc.MiddlewareFunc{
 		httpc.LoggingMiddleware(func(format string, args ...any) {
 			atomic.AddInt64(&callCount, 1)
 		}),
@@ -845,7 +851,7 @@ func TestConcurrentMixedOperations(t *testing.T) {
 	defer server.Close()
 
 	cfg := httpc.DefaultConfig()
-	cfg.AllowPrivateIPs = true
+	cfg.Security.AllowPrivateIPs = true
 	client, err := httpc.New(cfg)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)

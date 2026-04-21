@@ -43,13 +43,14 @@ func DefaultDownloadConfig() *DownloadConfig {
 
 // DownloadResult contains information about a completed download.
 type DownloadResult struct {
-	FilePath      string
-	BytesWritten  int64
-	Duration      time.Duration
-	AverageSpeed  float64
-	StatusCode    int
-	ContentLength int64
-	Resumed       bool
+	FilePath         string
+	BytesWritten     int64
+	Duration         time.Duration
+	AverageSpeed     float64
+	StatusCode       int
+	ContentLength    int64
+	Resumed          bool
+	ResponseCookies  []*http.Cookie
 }
 
 // DownloadFile downloads a file from the given URL to the specified file path using the default client.
@@ -74,14 +75,44 @@ func DownloadWithOptions(url string, downloadOpts *DownloadConfig, options ...Re
 	return client.DownloadWithOptions(url, downloadOpts, options...)
 }
 
+// DownloadFileWithContext downloads a file using the default client with context control.
+// The context parameter allows for timeout and cancellation control during the download.
+func DownloadFileWithContext(ctx context.Context, url string, filePath string, options ...RequestOption) (*DownloadResult, error) {
+	client, err := getDefaultClient()
+	if err != nil {
+		return nil, err
+	}
+	return client.DownloadFileWithContext(ctx, url, filePath, options...)
+}
+
+// DownloadWithOptionsWithContext downloads a file with custom download options and context control.
+// The context parameter allows for timeout and cancellation control during the download.
+func DownloadWithOptionsWithContext(ctx context.Context, url string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error) {
+	client, err := getDefaultClient()
+	if err != nil {
+		return nil, err
+	}
+	return client.DownloadWithOptionsWithContext(ctx, url, downloadOpts, options...)
+}
+
 func (c *clientImpl) DownloadFile(url string, filePath string, options ...RequestOption) (*DownloadResult, error) {
-	downloadOpts := DefaultDownloadConfig()
-	downloadOpts.FilePath = filePath
-	return c.downloadFile(context.Background(), url, downloadOpts, options...)
+	return c.DownloadFileWithContext(context.Background(), url, filePath, options...)
 }
 
 func (c *clientImpl) DownloadWithOptions(url string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error) {
-	return c.downloadFile(context.Background(), url, downloadOpts, options...)
+	return c.DownloadWithOptionsWithContext(context.Background(), url, downloadOpts, options...)
+}
+
+// DownloadFileWithContext downloads a file with context control for cancellation and timeouts.
+func (c *clientImpl) DownloadFileWithContext(ctx context.Context, url string, filePath string, options ...RequestOption) (*DownloadResult, error) {
+	downloadOpts := DefaultDownloadConfig()
+	downloadOpts.FilePath = filePath
+	return c.downloadFile(ctx, url, downloadOpts, options...)
+}
+
+// DownloadWithOptionsWithContext downloads a file with custom download options and context control.
+func (c *clientImpl) DownloadWithOptionsWithContext(ctx context.Context, url string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error) {
+	return c.downloadFile(ctx, url, downloadOpts, options...)
 }
 
 func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *DownloadConfig, options ...RequestOption) (result *DownloadResult, err error) {
@@ -102,7 +133,11 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 		}
 		if opts.ResumeDownload {
 			resumeOffset = fileInfo.Size()
-			options = append(options, WithHeader("Range", fmt.Sprintf("bytes=%d-", resumeOffset)))
+			rangeOption := WithHeader("Range", fmt.Sprintf("bytes=%d-", resumeOffset))
+			combined := make([]RequestOption, len(options)+1)
+			copy(combined, options)
+			combined[len(options)] = rangeOption
+			options = combined
 		}
 	}
 
@@ -115,17 +150,19 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	rawBody := resp.Response.RawBody
 	contentLength := resp.Response.ContentLength
 	duration := resp.Meta.Duration
+	responseCookies := resp.Response.Cookies
 
 	resumed := resumeOffset > 0 && statusCode == http.StatusPartialContent
 	if resumeOffset > 0 && statusCode == http.StatusRequestedRangeNotSatisfiable {
 		return &DownloadResult{
-			FilePath:      opts.FilePath,
-			BytesWritten:  0,
-			Duration:      duration,
-			AverageSpeed:  0,
-			StatusCode:    statusCode,
-			ContentLength: resumeOffset,
-			Resumed:       false,
+			FilePath:         opts.FilePath,
+			BytesWritten:     0,
+			Duration:         duration,
+			AverageSpeed:     0,
+			StatusCode:       statusCode,
+			ContentLength:    resumeOffset,
+			Resumed:          false,
+			ResponseCookies:  responseCookies,
 		}, nil
 	}
 
@@ -164,13 +201,14 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	}
 
 	return &DownloadResult{
-		FilePath:      opts.FilePath,
-		BytesWritten:  bytesWritten,
-		Duration:      duration,
-		AverageSpeed:  avgSpeed,
-		StatusCode:    statusCode,
-		ContentLength: contentLength,
-		Resumed:       resumed,
+		FilePath:         opts.FilePath,
+		BytesWritten:     bytesWritten,
+		Duration:         duration,
+		AverageSpeed:     avgSpeed,
+		StatusCode:       statusCode,
+		ContentLength:    contentLength,
+		Resumed:          resumed,
+		ResponseCookies:  responseCookies,
 	}, nil
 }
 
@@ -414,13 +452,12 @@ func FormatSpeed(bytesPerSecond float64) string {
 
 	units := [6]string{"KB/s", "MB/s", "GB/s", "TB/s", "PB/s", "EB/s"}
 	div := unit
+	exp := 0
 
-	for exp := 0; exp < 6; exp++ {
-		if bytesPerSecond < div*unit || exp == 5 {
-			return fmt.Sprintf("%.2f %s", bytesPerSecond/div, units[exp])
-		}
+	for n := bytesPerSecond / unit; n >= unit && exp < 5; n /= unit {
 		div *= unit
+		exp++
 	}
 
-	return fmt.Sprintf("%.2f %s", bytesPerSecond/div, units[5])
+	return fmt.Sprintf("%.2f %s", bytesPerSecond/div, units[exp])
 }

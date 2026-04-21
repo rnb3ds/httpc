@@ -80,10 +80,6 @@ const (
 	UserIDKey AuditContextKey = "user_id"
 )
 
-// Note: engine.Request now directly implements the RequestMutator interface,
-// and engine.Response now directly implements the ResponseMutator interface.
-// The adapters have been removed to eliminate the GC overhead.
-
 // Chain combines multiple middlewares into a single middleware.
 // Middlewares are executed in the order they are provided (first to last).
 // The final handler is executed after all middlewares have processed the request.
@@ -320,12 +316,11 @@ func AuditMiddlewareWithConfig(onAudit func(event AuditEvent), config *AuditMidd
 // This is a convenience function for structured logging systems.
 // like ELK, Splunk, or cloud logging services.
 //
-// Example:
+// Deprecated: Use AuditMiddlewareWithConfig with Format:"json" instead:
 //
-//	auditMiddleware := httpc.AuditMiddlewareJSON(func(event httpc.AuditEvent) {
-//	    data, _ := json.Marshal(event)
-//	    log.Printf("[AUDIT] %s", data)
-//	})
+//	cfg := httpc.DefaultAuditMiddlewareConfig()
+//	cfg.Format = "json"
+//	auditMiddleware := httpc.AuditMiddlewareWithConfig(onAudit, cfg)
 func AuditMiddlewareJSON(onAudit func(event AuditEvent)) MiddlewareFunc {
 	config := DefaultAuditMiddlewareConfig()
 	config.Format = "json"

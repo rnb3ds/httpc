@@ -30,8 +30,8 @@ package httpc
 // Create a client with custom configuration:
 //
 //	cfg := httpc.DefaultConfig()
-//	cfg.Timeout = 60 * time.Second
-//	cfg.MaxRetries = 5
+//	cfg.Timeouts.Request = 60 * time.Second
+//	cfg.Retry.MaxRetries = 5
 //	client, err := httpc.New(cfg)
 //
 // Use preset configurations:
@@ -48,7 +48,7 @@ package httpc
 //
 //	// Enable SSRF protection
 //	cfg := httpc.DefaultConfig()
-//	cfg.AllowPrivateIPs = false
+//	cfg.Security.AllowPrivateIPs = false
 //	client, err := httpc.New(cfg)
 //
 //	// Or use the secure preset (has SSRF protection enabled)
@@ -107,6 +107,9 @@ package httpc
 //	// Headers automatically included
 //	result, err := dc.Request(ctx, "GET", "/users")
 //
+//	// Headers automatically included
+//	result, err := dc.Request(ctx, "GET", "/users")
+//
 // # Context Handling
 //
 // Use context for timeout and cancellation:
@@ -159,6 +162,8 @@ type Client interface {
 	// File download methods
 	DownloadFile(url string, filePath string, options ...RequestOption) (*DownloadResult, error)
 	DownloadWithOptions(url string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error)
+	DownloadFileWithContext(ctx context.Context, url string, filePath string, options ...RequestOption) (*DownloadResult, error)
+	DownloadWithOptionsWithContext(ctx context.Context, url string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error)
 
 	// Close releases resources held by the client
 	Close() error
@@ -212,7 +217,7 @@ type clientImpl struct {
 //
 //	// Use custom configuration
 //	cfg := httpc.DefaultConfig()
-//	cfg.Timeout = 60 * time.Second
+//	cfg.Timeouts.Request = 60 * time.Second
 //	client, err := httpc.New(cfg)
 //
 //	// Use preset configuration
@@ -240,12 +245,12 @@ func New(config ...*Config) (Client, error) {
 
 	client := &clientImpl{
 		engine:         engineClient,
-		hasMiddlewares: len(cfg.Middlewares) > 0,
+		hasMiddlewares: len(cfg.Middleware.Middlewares) > 0,
 	}
 
 	// Build middleware chain if middlewares are configured
 	if client.hasMiddlewares {
-		client.middlewareChain = client.buildMiddlewareChain(cfg.Middlewares)
+		client.middlewareChain = client.buildMiddlewareChain(cfg.Middleware.Middlewares)
 	}
 
 	return client, nil
@@ -258,21 +263,33 @@ func New(config ...*Config) (Client, error) {
 func deepCopyConfig(src *Config) *Config {
 	dst := *src
 
-	// Deep copy headers
-	if src.Headers != nil {
-		dst.Headers = make(map[string]string, len(src.Headers))
-		maps.Copy(dst.Headers, src.Headers)
+	// Deep copy middleware headers
+	if src.Middleware.Headers != nil {
+		dst.Middleware.Headers = make(map[string]string, len(src.Middleware.Headers))
+		maps.Copy(dst.Middleware.Headers, src.Middleware.Headers)
 	}
 
 	// Deep copy middlewares slice
-	if len(src.Middlewares) > 0 {
-		dst.Middlewares = make([]MiddlewareFunc, len(src.Middlewares))
-		copy(dst.Middlewares, src.Middlewares)
+	if len(src.Middleware.Middlewares) > 0 {
+		dst.Middleware.Middlewares = make([]MiddlewareFunc, len(src.Middleware.Middlewares))
+		copy(dst.Middleware.Middlewares, src.Middleware.Middlewares)
+	}
+
+	// Deep copy redirect whitelist
+	if len(src.Security.RedirectWhitelist) > 0 {
+		dst.Security.RedirectWhitelist = make([]string, len(src.Security.RedirectWhitelist))
+		copy(dst.Security.RedirectWhitelist, src.Security.RedirectWhitelist)
 	}
 
 	// Clone TLS config if present
-	if src.TLSConfig != nil {
-		dst.TLSConfig = src.TLSConfig.Clone()
+	if src.Security.TLSConfig != nil {
+		dst.Security.TLSConfig = src.Security.TLSConfig.Clone()
+	}
+
+	// Deep copy cookie security config if present
+	if src.Security.CookieSecurity != nil {
+		cookieSec := *src.Security.CookieSecurity
+		dst.Security.CookieSecurity = &cookieSec
 	}
 
 	return &dst
@@ -316,30 +333,37 @@ func (c *clientImpl) buildMiddlewareChain(middlewares []MiddlewareFunc) Handler 
 	return chain
 }
 
+// Get makes a GET request to the specified URL using the client's configuration.
 func (c *clientImpl) Get(url string, options ...RequestOption) (*Result, error) {
 	return c.doRequest("GET", url, options)
 }
 
+// Post makes a POST request to the specified URL using the client's configuration.
 func (c *clientImpl) Post(url string, options ...RequestOption) (*Result, error) {
 	return c.doRequest("POST", url, options)
 }
 
+// Put makes a PUT request to the specified URL using the client's configuration.
 func (c *clientImpl) Put(url string, options ...RequestOption) (*Result, error) {
 	return c.doRequest("PUT", url, options)
 }
 
+// Patch makes a PATCH request to the specified URL using the client's configuration.
 func (c *clientImpl) Patch(url string, options ...RequestOption) (*Result, error) {
 	return c.doRequest("PATCH", url, options)
 }
 
+// Delete makes a DELETE request to the specified URL using the client's configuration.
 func (c *clientImpl) Delete(url string, options ...RequestOption) (*Result, error) {
 	return c.doRequest("DELETE", url, options)
 }
 
+// Head makes a HEAD request to the specified URL using the client's configuration.
 func (c *clientImpl) Head(url string, options ...RequestOption) (*Result, error) {
 	return c.doRequest("HEAD", url, options)
 }
 
+// Options makes an OPTIONS request to the specified URL using the client's configuration.
 func (c *clientImpl) Options(url string, options ...RequestOption) (*Result, error) {
 	return c.doRequest("OPTIONS", url, options)
 }
@@ -450,6 +474,7 @@ func CloseDefaultClient() error {
 	}
 }
 
+// Get makes a GET request to the specified URL using the default client.
 func Get(url string, options ...RequestOption) (*Result, error) {
 	client, err := getDefaultClient()
 	if err != nil {
@@ -458,6 +483,7 @@ func Get(url string, options ...RequestOption) (*Result, error) {
 	return client.Get(url, options...)
 }
 
+// Post makes a POST request to the specified URL using the default client.
 func Post(url string, options ...RequestOption) (*Result, error) {
 	client, err := getDefaultClient()
 	if err != nil {
@@ -466,6 +492,7 @@ func Post(url string, options ...RequestOption) (*Result, error) {
 	return client.Post(url, options...)
 }
 
+// Put makes a PUT request to the specified URL using the default client.
 func Put(url string, options ...RequestOption) (*Result, error) {
 	client, err := getDefaultClient()
 	if err != nil {
@@ -474,6 +501,7 @@ func Put(url string, options ...RequestOption) (*Result, error) {
 	return client.Put(url, options...)
 }
 
+// Patch makes a PATCH request to the specified URL using the default client.
 func Patch(url string, options ...RequestOption) (*Result, error) {
 	client, err := getDefaultClient()
 	if err != nil {
@@ -482,6 +510,7 @@ func Patch(url string, options ...RequestOption) (*Result, error) {
 	return client.Patch(url, options...)
 }
 
+// Delete makes a DELETE request to the specified URL using the default client.
 func Delete(url string, options ...RequestOption) (*Result, error) {
 	client, err := getDefaultClient()
 	if err != nil {
@@ -490,6 +519,7 @@ func Delete(url string, options ...RequestOption) (*Result, error) {
 	return client.Delete(url, options...)
 }
 
+// Head makes a HEAD request to the specified URL using the default client.
 func Head(url string, options ...RequestOption) (*Result, error) {
 	client, err := getDefaultClient()
 	if err != nil {
@@ -498,6 +528,7 @@ func Head(url string, options ...RequestOption) (*Result, error) {
 	return client.Head(url, options...)
 }
 
+// Options makes an OPTIONS request to the specified URL using the default client.
 func Options(url string, options ...RequestOption) (*Result, error) {
 	client, err := getDefaultClient()
 	if err != nil {
@@ -579,11 +610,11 @@ func calculateIdleConnsPerHost(maxConnsPerHost int) int {
 // resolveTLSVersions returns the minimum and maximum TLS versions from config.
 // Falls back to TLS 1.2 and TLS 1.3 if not specified.
 func resolveTLSVersions(cfg *Config) (min, max uint16) {
-	min = cfg.MinTLSVersion
+	min = cfg.Security.MinTLSVersion
 	if min == 0 {
 		min = tls.VersionTLS12
 	}
-	max = cfg.MaxTLSVersion
+	max = cfg.Security.MaxTLSVersion
 	if max == 0 {
 		max = tls.VersionTLS13
 	}
@@ -598,11 +629,11 @@ func calculateMaxRetryDelay(cfg *Config) time.Duration {
 		absoluteMaxRetryDelay = 30 * time.Second
 	)
 
-	if cfg.RetryDelay <= 0 || cfg.BackoffFactor <= 0 {
+	if cfg.Retry.Delay <= 0 || cfg.Retry.BackoffFactor <= 0 {
 		return defaultMaxRetryDelay
 	}
 
-	calculated := time.Duration(float64(cfg.RetryDelay) * cfg.BackoffFactor * retryDelayMultiplier)
+	calculated := time.Duration(float64(cfg.Retry.Delay) * cfg.Retry.BackoffFactor * retryDelayMultiplier)
 	if calculated > absoluteMaxRetryDelay {
 		return absoluteMaxRetryDelay
 	}
@@ -619,51 +650,51 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		cfg = DefaultConfig()
 	}
 
-	idleConnsPerHost := calculateIdleConnsPerHost(cfg.MaxConnsPerHost)
+	idleConnsPerHost := calculateIdleConnsPerHost(cfg.Connection.MaxConnsPerHost)
 	minTLSVersion, maxTLSVersion := resolveTLSVersions(cfg)
 	maxRetryDelay := calculateMaxRetryDelay(cfg)
 
-	cookieJar, err := createCookieJar(cfg.EnableCookies)
+	cookieJar, err := createCookieJar(cfg.Connection.EnableCookies)
 	if err != nil {
 		return nil, err
 	}
 
 	return &engine.Config{
-		Timeout:               cfg.Timeout,
-		DialTimeout:           cfg.DialTimeout,
+		Timeout:               cfg.Timeouts.Request,
+		DialTimeout:           cfg.Timeouts.Dial,
 		KeepAlive:             30 * time.Second,
-		TLSHandshakeTimeout:   cfg.TLSHandshakeTimeout,
-		ResponseHeaderTimeout: cfg.ResponseHeaderTimeout,
-		IdleConnTimeout:       cfg.IdleConnTimeout,
-		MaxIdleConns:          cfg.MaxIdleConns,
+		TLSHandshakeTimeout:   cfg.Timeouts.TLSHandshake,
+		ResponseHeaderTimeout: cfg.Timeouts.ResponseHeader,
+		IdleConnTimeout:       cfg.Timeouts.IdleConn,
+		MaxIdleConns:          cfg.Connection.MaxIdleConns,
 		MaxIdleConnsPerHost:   idleConnsPerHost,
-		MaxConnsPerHost:       cfg.MaxConnsPerHost,
-		ProxyURL:              cfg.ProxyURL,
-		EnableSystemProxy:     cfg.EnableSystemProxy,
-		TLSConfig:             cfg.TLSConfig,
+		MaxConnsPerHost:       cfg.Connection.MaxConnsPerHost,
+		ProxyURL:              cfg.Connection.ProxyURL,
+		EnableSystemProxy:     cfg.Connection.EnableSystemProxy,
+		TLSConfig:             cfg.Security.TLSConfig,
 		MinTLSVersion:         minTLSVersion,
 		MaxTLSVersion:         maxTLSVersion,
-		InsecureSkipVerify:    cfg.InsecureSkipVerify,
-		MaxResponseBodySize:   cfg.MaxResponseBodySize,
-		ValidateURL:           cfg.ValidateURL,
-		ValidateHeaders:       cfg.ValidateHeaders,
-		AllowPrivateIPs:       cfg.AllowPrivateIPs,
-		StrictContentLength:   cfg.StrictContentLength,
-		MaxRetries:            cfg.MaxRetries,
-		RetryDelay:            cfg.RetryDelay,
+		InsecureSkipVerify:    cfg.Security.InsecureSkipVerify,
+		MaxResponseBodySize:   cfg.Security.MaxResponseBodySize,
+		ValidateURL:           cfg.Security.ValidateURL,
+		ValidateHeaders:       cfg.Security.ValidateHeaders,
+		AllowPrivateIPs:       cfg.Security.AllowPrivateIPs,
+		StrictContentLength:   cfg.Security.StrictContentLength,
+		MaxRetries:            cfg.Retry.MaxRetries,
+		RetryDelay:            cfg.Retry.Delay,
 		MaxRetryDelay:         maxRetryDelay,
-		BackoffFactor:         cfg.BackoffFactor,
-		Jitter:                cfg.EnableJitter,
-		CustomRetryPolicy:     cfg.CustomRetryPolicy,
-		UserAgent:             cfg.UserAgent,
-		Headers:               cfg.Headers,
-		FollowRedirects:       cfg.FollowRedirects,
-		MaxRedirects:          cfg.MaxRedirects,
-		EnableHTTP2:           cfg.EnableHTTP2,
+		BackoffFactor:         cfg.Retry.BackoffFactor,
+		Jitter:                cfg.Retry.EnableJitter,
+		CustomRetryPolicy:     cfg.Retry.CustomPolicy,
+		UserAgent:             cfg.Middleware.UserAgent,
+		Headers:               cfg.Middleware.Headers,
+		FollowRedirects:       cfg.Middleware.FollowRedirects,
+		MaxRedirects:          cfg.Middleware.MaxRedirects,
+		EnableHTTP2:           cfg.Connection.EnableHTTP2,
 		CookieJar:             cookieJar,
-		EnableCookies:         cfg.EnableCookies,
-		EnableDoH:             cfg.EnableDoH,
-		DoHCacheTTL:           cfg.DoHCacheTTL,
+		EnableCookies:         cfg.Connection.EnableCookies,
+		EnableDoH:             cfg.Connection.EnableDoH,
+		DoHCacheTTL:           cfg.Connection.DoHCacheTTL,
 	}, nil
 }
 

@@ -192,8 +192,11 @@ func (p *ResponseProcessor) Process(httpResp *http.Response) (*Response, error) 
 	resp.SetHeaders(httpResp.Header)
 	// SECURITY: readBody returns a freshly allocated copy (not pooled buffer),
 	// so zero-copy string conversion is safe here.
+	// Copy body for RawBody so the string from bytesToString is safe from mutation.
+	rawBody := make([]byte, len(body))
+	copy(rawBody, body)
 	resp.SetBody(bytesToString(body))
-	resp.SetRawBody(body)
+	resp.SetRawBody(rawBody)
 	resp.SetContentLength(contentLength)
 	resp.SetProto(httpResp.Proto)
 	resp.SetCookies(httpResp.Cookies())

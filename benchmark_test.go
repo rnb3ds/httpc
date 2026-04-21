@@ -160,9 +160,9 @@ func BenchmarkClient_WithRetry(b *testing.B) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.MaxRetries = 3
-	config.RetryDelay = 1 * time.Millisecond
-	config.AllowPrivateIPs = true
+	config.Retry.MaxRetries = 3
+	config.Retry.Delay = 1 * time.Millisecond
+	config.Security.AllowPrivateIPs = true
 
 	client, _ := New(config)
 	defer client.Close()
@@ -233,7 +233,7 @@ func BenchmarkDefaultClient_Get(b *testing.B) {
 
 	// Ensure default client is initialized
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	_ = SetDefaultClient(client)
 	defer func() { _ = CloseDefaultClient() }()
@@ -381,8 +381,8 @@ func BenchmarkResult_String(b *testing.B) {
 
 func newBenchmarkClient() (Client, error) {
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
-	config.MaxRetries = 0
+	config.Security.AllowPrivateIPs = true
+	config.Retry.MaxRetries = 0
 	return New(config)
 }
 

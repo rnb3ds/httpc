@@ -39,27 +39,19 @@ type SessionManager struct {
 	cookieSecurity *validation.CookieSecurityConfig
 }
 
-// NewSessionManager creates a new SessionManager with empty session state.
-func NewSessionManager() *SessionManager {
-	return &SessionManager{
-		cookies: make(map[string]*http.Cookie),
-		headers: make(map[string]string),
-	}
-}
-
-// NewSessionManagerWithConfig creates a new SessionManager with the given configuration.
+// NewSessionManager creates a new SessionManager with the given configuration.
 // If no configuration is provided or nil is passed, DefaultSessionConfig() is used.
 //
-// Example:
+// Examples:
 //
 //	// Use default configuration
-//	sm, err := httpc.NewSessionManagerWithConfig()
+//	sm, err := httpc.NewSessionManager()
 //
 //	// Use custom configuration
 //	cfg := httpc.DefaultSessionConfig()
 //	cfg.CookieSecurity = mySecurityConfig
-//	sm, err := httpc.NewSessionManagerWithConfig(cfg)
-func NewSessionManagerWithConfig(config ...*SessionConfig) (*SessionManager, error) {
+//	sm, err := httpc.NewSessionManager(cfg)
+func NewSessionManager(config ...*SessionConfig) (*SessionManager, error) {
 	cfg := DefaultSessionConfig()
 	if len(config) > 0 && config[0] != nil {
 		cfg = config[0]
@@ -281,6 +273,22 @@ func (s *SessionManager) UpdateFromResult(result *Result) {
 	}
 }
 
+// UpdateFromCookies updates session cookies from a slice of http.Cookie.
+func (s *SessionManager) UpdateFromCookies(cookies []*http.Cookie) {
+	if len(cookies) == 0 {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, cookie := range cookies {
+		if cookie != nil {
+			s.cookies[cookie.Name] = cookie
+		}
+	}
+}
+
 // CaptureFromOptions extracts cookies and headers from RequestOptions
 // and stores them in the session.
 func (s *SessionManager) CaptureFromOptions(options []RequestOption) {
@@ -311,10 +319,18 @@ func (s *SessionManager) CaptureFromOptions(options []RequestOption) {
 
 	for i := range cookies {
 		cookie := &cookies[i]
+		if s.cookieSecurity != nil {
+			if err := validation.ValidateCookieSecurity(cookie, s.cookieSecurity); err != nil {
+				continue
+			}
+		}
 		s.cookies[cookie.Name] = cookie
 	}
 
 	for key, value := range headers {
+		if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
+			continue
+		}
 		s.headers[key] = value
 	}
 }

@@ -21,88 +21,52 @@ type CertificatePinner interface {
 	VerifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error
 }
 
-// PublicKeyPinner pins one or more public keys.
+// PublicKeyPinner pins one or more public keys by their SHA-256 hash.
 // The peer certificate's public key must match one of the pinned keys.
+// Internally delegates to SPKIHashPinner for verification.
 type PublicKeyPinner struct {
-	publicKeyHashes map[string]bool // SHA-256 hashes of DER-encoded public keys
+	inner *SPKIHashPinner
 }
 
 // NewPublicKeyPinner creates a new pinner from raw public keys.
 // Each public key should be in DER-encoded PKIX format (as used in x509 certificates).
+// If no valid keys are provided, the returned pinner will have nil inner and
+// VerifyPeerCertificate will be a no-op (accept all).
 func NewPublicKeyPinner(publicKeys ...[]byte) *PublicKeyPinner {
-	p := &PublicKeyPinner{
-		publicKeyHashes: make(map[string]bool),
-	}
-
+	hashes := make([]string, 0, len(publicKeys))
 	for _, pk := range publicKeys {
 		if len(pk) > 0 {
 			hash := sha256.Sum256(pk)
-			p.publicKeyHashes[base64.StdEncoding.EncodeToString(hash[:])] = true
+			hashes = append(hashes, base64.StdEncoding.EncodeToString(hash[:]))
 		}
 	}
-
-	return p
+	inner, _ := NewSPKIHashPinner(hashes...)
+	return &PublicKeyPinner{inner: inner}
 }
 
 // NewPublicKeyPinnerFromBase64 creates a new pinner from base64-encoded public key hashes.
 // Each hash should be the SHA-256 hash of the DER-encoded public key, base64-encoded.
+// If no valid hashes are provided, the returned pinner will have nil inner and
+// VerifyPeerCertificate will be a no-op (accept all).
 func NewPublicKeyPinnerFromBase64(hashes ...string) *PublicKeyPinner {
-	p := &PublicKeyPinner{
-		publicKeyHashes: make(map[string]bool),
-	}
-
-	for _, h := range hashes {
-		h = strings.TrimSpace(h)
-		if h != "" {
-			p.publicKeyHashes[h] = true
-		}
-	}
-
-	return p
+	inner, _ := NewSPKIHashPinner(hashes...)
+	return &PublicKeyPinner{inner: inner}
 }
 
 // Pin returns a description of the pinned public keys.
 func (p *PublicKeyPinner) Pin() string {
-	if p == nil || len(p.publicKeyHashes) == 0 {
+	if p == nil || p.inner == nil {
 		return "no-pins"
 	}
-	return fmt.Sprintf("public-key-pins:%d", len(p.publicKeyHashes))
+	return fmt.Sprintf("public-key-pins:%d", len(p.inner.hashes))
 }
 
 // VerifyPeerCertificate verifies that one of the peer certificates matches a pinned public key.
-func (p *PublicKeyPinner) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-	if p == nil || len(p.publicKeyHashes) == 0 {
-		return nil // No pins configured
+func (p *PublicKeyPinner) VerifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+	if p == nil || p.inner == nil {
+		return nil
 	}
-
-	if len(rawCerts) == 0 {
-		return fmt.Errorf("no peer certificates provided")
-	}
-
-	// Check each certificate in the chain
-	for _, rawCert := range rawCerts {
-		cert, err := x509.ParseCertificate(rawCert)
-		if err != nil {
-			continue // Skip invalid certificates
-		}
-
-		// Get the public key bytes
-		pubKeyBytes, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
-		if err != nil {
-			continue // Skip certificates with unsupported key types
-		}
-
-		// Hash the public key
-		hash := sha256.Sum256(pubKeyBytes)
-		hashStr := base64.StdEncoding.EncodeToString(hash[:])
-
-		// Check if it matches any pinned key
-		if p.publicKeyHashes[hashStr] {
-			return nil // Match found
-		}
-	}
-
-	return fmt.Errorf("certificate pinning failed: no matching public key found")
+	return p.inner.VerifyPeerCertificate(rawCerts, verifiedChains)
 }
 
 // SPKIHashPinner pins certificates by their Subject Public Key Info (SPKI) hash.

@@ -84,7 +84,7 @@ func TestLoggingMiddleware(t *testing.T) {
 	defer ts.Close()
 
 	cfg := testConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		LoggingMiddleware(logger),
 	}
 
@@ -119,7 +119,7 @@ func TestRecoveryMiddleware(t *testing.T) {
 	}
 
 	cfg := testConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		RecoveryMiddleware(),
 		panicMiddleware,
 	}
@@ -154,7 +154,7 @@ func TestRequestIDMiddleware(t *testing.T) {
 	defer ts.Close()
 
 	cfg := testConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		RequestIDMiddleware("X-Request-ID", func() string {
 			return "test-request-id-123"
 		}),
@@ -184,8 +184,8 @@ func TestTimeoutMiddleware(t *testing.T) {
 	defer ts.Close()
 
 	cfg := testConfig()
-	cfg.Timeout = 5 * time.Second
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Timeouts.Request = 5 * time.Second
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		TimeoutMiddleware(10 * time.Millisecond),
 	}
 
@@ -220,7 +220,7 @@ func TestHeaderMiddleware(t *testing.T) {
 	defer ts.Close()
 
 	cfg := testConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		HeaderMiddleware(map[string]string{
 			"X-Custom-Header": "custom-value",
 			"Authorization":   "Bearer test-token",
@@ -263,7 +263,7 @@ func TestMetricsMiddleware(t *testing.T) {
 	defer ts.Close()
 
 	cfg := testConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		MetricsMiddleware(func(method, url string, statusCode int, duration time.Duration, err error) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -332,7 +332,7 @@ func TestMultipleMiddlewares(t *testing.T) {
 	}
 
 	cfg := testConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		createMiddleware("A"),
 		createMiddleware("B"),
 		createMiddleware("C"),
@@ -398,7 +398,7 @@ func TestMiddlewareCanModifyRequest(t *testing.T) {
 	defer ts.Close()
 
 	cfg := testConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		func(next Handler) Handler {
 			return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 				req.SetHeader("X-Modified-By-Middleware", "modified-value")
@@ -431,7 +431,7 @@ func TestMiddlewareCanModifyResponse(t *testing.T) {
 	defer ts.Close()
 
 	cfg := testConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		func(next Handler) Handler {
 			return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 				resp, err := next(ctx, req)
@@ -479,7 +479,7 @@ func BenchmarkMiddlewareOverhead(b *testing.B) {
 
 	b.Run("WithMiddleware", func(b *testing.B) {
 		cfg := testConfig()
-		cfg.Middlewares = []MiddlewareFunc{
+		cfg.Middleware.Middlewares = []MiddlewareFunc{
 			func(next Handler) Handler {
 				return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 					return next(ctx, req)
@@ -497,7 +497,7 @@ func BenchmarkMiddlewareOverhead(b *testing.B) {
 
 	b.Run("WithThreeMiddlewares", func(b *testing.B) {
 		cfg := testConfig()
-		cfg.Middlewares = []MiddlewareFunc{
+		cfg.Middleware.Middlewares = []MiddlewareFunc{
 			func(next Handler) Handler {
 				return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 					return next(ctx, req)
@@ -533,7 +533,7 @@ func TestConcurrentMiddlewareAccess(t *testing.T) {
 	var callCount int64
 
 	cfg := testConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		func(next Handler) Handler {
 			return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 				atomic.AddInt64(&callCount, 1)
@@ -679,7 +679,7 @@ func TestAuditMiddleware(t *testing.T) {
 	defer ts.Close()
 
 	cfg := testConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		AuditMiddleware(func(event AuditEvent) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -722,7 +722,7 @@ func TestAuditMiddlewareWithContextValues(t *testing.T) {
 	defer ts.Close()
 
 	cfg := testConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		AuditMiddleware(func(event AuditEvent) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -766,7 +766,7 @@ func TestAuditMiddlewareWithConfig(t *testing.T) {
 	defer ts.Close()
 
 	cfg := testConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		AuditMiddlewareWithConfig(func(event AuditEvent) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -807,7 +807,7 @@ func TestAuditMiddlewareJSON(t *testing.T) {
 	defer ts.Close()
 
 	cfg := testConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		AuditMiddlewareJSON(func(event AuditEvent) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -839,7 +839,7 @@ func TestAuditMiddlewareWithError(t *testing.T) {
 	var mu sync.Mutex
 
 	cfg := testConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		AuditMiddleware(func(event AuditEvent) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -891,7 +891,7 @@ func TestRequestIDMiddleware_NilGenerator(t *testing.T) {
 
 	cfg := testConfig()
 	// Pass nil generator - should use default
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		RequestIDMiddleware("X-Request-ID", nil),
 	}
 
@@ -920,7 +920,7 @@ func TestRequestIDMiddleware_ExistingHeader(t *testing.T) {
 	defer ts.Close()
 
 	cfg := testConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		RequestIDMiddleware("X-Request-ID", func() string { return "generated-id" }),
 	}
 
@@ -943,7 +943,7 @@ func TestRequestIDMiddleware_ExistingHeader(t *testing.T) {
 
 func TestHeaderMiddleware_InvalidHeader(t *testing.T) {
 	cfg := testConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		HeaderMiddleware(map[string]string{
 			"X-Invalid": "value\r\nX-Injected: malicious", // CRLF injection attempt
 		}),

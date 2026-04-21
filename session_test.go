@@ -12,7 +12,10 @@ import (
 // ============================================================================
 
 func TestNewSessionManager(t *testing.T) {
-	session := NewSessionManager()
+	session, err := NewSessionManager()
+	if err != nil {
+		t.Fatalf("NewSessionManager error: %v", err)
+	}
 	if session == nil {
 		t.Fatal("Expected non-nil SessionManager")
 	}
@@ -28,10 +31,10 @@ func TestNewSessionManagerWithConfig(t *testing.T) {
 	securityConfig := validation.StrictCookieSecurityConfig()
 	cfg := DefaultSessionConfig()
 	cfg.CookieSecurity = securityConfig
-	session, err := NewSessionManagerWithConfig(cfg)
+	session, err := NewSessionManager(cfg)
 
 	if err != nil {
-		t.Fatalf("NewSessionManagerWithConfig error: %v", err)
+		t.Fatalf("NewSessionManager error: %v", err)
 	}
 	if session == nil {
 		t.Fatal("Expected non-nil SessionManager")
@@ -42,7 +45,10 @@ func TestNewSessionManagerWithConfig(t *testing.T) {
 }
 
 func TestSessionManager_SetCookieSecurity(t *testing.T) {
-	session := NewSessionManager()
+	session, err := NewSessionManager()
+	if err != nil {
+		t.Fatalf("NewSessionManager error: %v", err)
+	}
 
 	// Initially no security config
 	if session.cookieSecurity != nil {
@@ -63,9 +69,9 @@ func TestSessionManager_CookieSecurityValidation(t *testing.T) {
 	securityConfig := validation.StrictCookieSecurityConfig()
 	cfg := DefaultSessionConfig()
 	cfg.CookieSecurity = securityConfig
-	session, err := NewSessionManagerWithConfig(cfg)
+	session, err := NewSessionManager(cfg)
 	if err != nil {
-		t.Fatalf("NewSessionManagerWithConfig error: %v", err)
+		t.Fatalf("NewSessionManager error: %v", err)
 	}
 
 	// Try to set insecure cookie - should fail
@@ -99,10 +105,13 @@ func TestSessionManager_CookieSecurityValidation(t *testing.T) {
 }
 
 func TestSessionManager_SetCookie(t *testing.T) {
-	session := NewSessionManager()
+	session, err := NewSessionManager()
+	if err != nil {
+		t.Fatalf("NewSessionManager error: %v", err)
+	}
 
 	// Test nil cookie
-	err := session.SetCookie(nil)
+	err = session.SetCookie(nil)
 	if err == nil {
 		t.Error("Expected error for nil cookie")
 	}
@@ -128,14 +137,17 @@ func TestSessionManager_SetCookie(t *testing.T) {
 }
 
 func TestSessionManager_SetCookies(t *testing.T) {
-	session := NewSessionManager()
+	session, err := NewSessionManager()
+	if err != nil {
+		t.Fatalf("NewSessionManager error: %v", err)
+	}
 
 	cookies := []*http.Cookie{
 		{Name: "cookie1", Value: "value1"},
 		{Name: "cookie2", Value: "value2"},
 	}
 
-	err := session.SetCookies(cookies)
+	err = session.SetCookies(cookies)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
@@ -147,7 +159,10 @@ func TestSessionManager_SetCookies(t *testing.T) {
 }
 
 func TestSessionManager_DeleteCookie(t *testing.T) {
-	session := NewSessionManager()
+	session, err := NewSessionManager()
+	if err != nil {
+		t.Fatalf("NewSessionManager error: %v", err)
+	}
 
 	// Add cookie
 	cookie := &http.Cookie{Name: "test", Value: "value"}
@@ -164,7 +179,10 @@ func TestSessionManager_DeleteCookie(t *testing.T) {
 }
 
 func TestSessionManager_ClearCookies(t *testing.T) {
-	session := NewSessionManager()
+	session, err := NewSessionManager()
+	if err != nil {
+		t.Fatalf("NewSessionManager error: %v", err)
+	}
 
 	// Add multiple cookies
 	_ = session.SetCookie(&http.Cookie{Name: "c1", Value: "v1"})
@@ -181,10 +199,13 @@ func TestSessionManager_ClearCookies(t *testing.T) {
 }
 
 func TestSessionManager_SetHeader(t *testing.T) {
-	session := NewSessionManager()
+	session, err := NewSessionManager()
+	if err != nil {
+		t.Fatalf("NewSessionManager error: %v", err)
+	}
 
 	// Test valid header
-	err := session.SetHeader("X-Custom", "value")
+	err = session.SetHeader("X-Custom", "value")
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
@@ -197,14 +218,17 @@ func TestSessionManager_SetHeader(t *testing.T) {
 }
 
 func TestSessionManager_SetHeaders(t *testing.T) {
-	session := NewSessionManager()
+	session, err := NewSessionManager()
+	if err != nil {
+		t.Fatalf("NewSessionManager error: %v", err)
+	}
 
 	headers := map[string]string{
 		"X-Header-1": "value1",
 		"X-Header-2": "value2",
 	}
 
-	err := session.SetHeaders(headers)
+	err = session.SetHeaders(headers)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
@@ -216,7 +240,10 @@ func TestSessionManager_SetHeaders(t *testing.T) {
 }
 
 func TestSessionManager_DeleteHeader(t *testing.T) {
-	session := NewSessionManager()
+	session, err := NewSessionManager()
+	if err != nil {
+		t.Fatalf("NewSessionManager error: %v", err)
+	}
 
 	_ = session.SetHeader("X-Test", "value")
 	session.DeleteHeader("X-Test")
@@ -228,7 +255,10 @@ func TestSessionManager_DeleteHeader(t *testing.T) {
 }
 
 func TestSessionManager_ClearHeaders(t *testing.T) {
-	session := NewSessionManager()
+	session, err := NewSessionManager()
+	if err != nil {
+		t.Fatalf("NewSessionManager error: %v", err)
+	}
 
 	_ = session.SetHeader("X-Header-1", "value1")
 	_ = session.SetHeader("X-Header-2", "value2")
@@ -242,7 +272,10 @@ func TestSessionManager_ClearHeaders(t *testing.T) {
 }
 
 func TestSessionManager_PrepareOptions(t *testing.T) {
-	session := NewSessionManager()
+	session, err := NewSessionManager()
+	if err != nil {
+		t.Fatalf("NewSessionManager error: %v", err)
+	}
 
 	// Test empty session
 	options := session.PrepareOptions()
@@ -261,7 +294,10 @@ func TestSessionManager_PrepareOptions(t *testing.T) {
 }
 
 func TestSessionManager_UpdateFromResult(t *testing.T) {
-	session := NewSessionManager()
+	session, err := NewSessionManager()
+	if err != nil {
+		t.Fatalf("NewSessionManager error: %v", err)
+	}
 
 	// Test nil result
 	session.UpdateFromResult(nil)
@@ -288,7 +324,10 @@ func TestSessionManager_UpdateFromResult(t *testing.T) {
 
 func TestSessionManager_SecurityValidation(t *testing.T) {
 	// Test that SetCookieSecurity affects subsequent SetCookie calls
-	session := NewSessionManager()
+	session, err := NewSessionManager()
+	if err != nil {
+		t.Fatalf("NewSessionManager error: %v", err)
+	}
 
 	// Set security config after creation
 	securityConfig := validation.DefaultCookieSecurityConfig()
@@ -302,7 +341,7 @@ func TestSessionManager_SecurityValidation(t *testing.T) {
 		Secure: false,
 	}
 
-	err := session.SetCookie(insecureCookie)
+	err = session.SetCookie(insecureCookie)
 	if err == nil {
 		t.Error("Expected error for insecure cookie with RequireSecure=true")
 	}

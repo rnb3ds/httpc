@@ -268,33 +268,26 @@ func TestEnforceCookieSecurity(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := EnforceCookieSecurity(tt.cookie, tt.config)
+			EnforceCookieSecurity(tt.cookie, tt.config)
 
 			if tt.cookie == nil {
-				if result != nil {
-					t.Error("expected nil result for nil cookie")
-				}
 				return
 			}
 
-			if result == nil {
-				t.Fatal("expected non-nil result")
+			if tt.cookie.Secure != tt.wantSecure {
+				t.Errorf("Secure = %v, want %v", tt.cookie.Secure, tt.wantSecure)
 			}
 
-			if result.Secure != tt.wantSecure {
-				t.Errorf("Secure = %v, want %v", result.Secure, tt.wantSecure)
+			if tt.cookie.HttpOnly != tt.wantHttpOnly {
+				t.Errorf("HttpOnly = %v, want %v", tt.cookie.HttpOnly, tt.wantHttpOnly)
 			}
 
-			if result.HttpOnly != tt.wantHttpOnly {
-				t.Errorf("HttpOnly = %v, want %v", result.HttpOnly, tt.wantHttpOnly)
+			if tt.wantSameSite != 0 && tt.cookie.SameSite != tt.wantSameSite {
+				t.Errorf("SameSite = %v, want %v", tt.cookie.SameSite, tt.wantSameSite)
 			}
 
-			if tt.wantSameSite != 0 && result.SameSite != tt.wantSameSite {
-				t.Errorf("SameSite = %v, want %v", result.SameSite, tt.wantSameSite)
-			}
-
-			if tt.wantPath != "" && result.Path != tt.wantPath {
-				t.Errorf("Path = %q, want %q", result.Path, tt.wantPath)
+			if tt.wantPath != "" && tt.cookie.Path != tt.wantPath {
+				t.Errorf("Path = %q, want %q", tt.cookie.Path, tt.wantPath)
 			}
 		})
 	}

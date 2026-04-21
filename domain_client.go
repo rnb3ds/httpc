@@ -30,10 +30,8 @@ type DomainClient struct {
 // If no configuration is provided or nil is passed, DefaultConfig() is used.
 // Note: Cookies are automatically enabled for DomainClient.
 //
-// For better flexibility, assign the result to DomainClienter interface:
-//
-//	var dc httpc.DomainClienter
-//	dc, err := httpc.NewDomain("https://api.example.com")
+// Returns a DomainClienter interface for flexibility and testability.
+// Type-assert to *DomainClient if access to the concrete type is needed.
 //
 // Examples:
 //
@@ -42,7 +40,7 @@ type DomainClient struct {
 //
 //	// Use custom configuration
 //	cfg := httpc.DefaultConfig()
-//	cfg.Timeout = 60 * time.Second
+//	cfg.Timeouts.Request = 60 * time.Second
 //	dc, err := httpc.NewDomain("https://api.example.com", cfg)
 //
 //	// Set session headers
@@ -50,7 +48,7 @@ type DomainClient struct {
 //
 //	// Make requests relative to base URL
 //	result, err := dc.Get("/users")
-func NewDomain(baseURL string, config ...*Config) (*DomainClient, error) {
+func NewDomain(baseURL string, config ...*Config) (DomainClienter, error) {
 	parsedURL, err := url.Parse(baseURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid base URL: %w", err)
@@ -63,15 +61,23 @@ func NewDomain(baseURL string, config ...*Config) (*DomainClient, error) {
 	// Create config with cookies enabled
 	var cfg *Config
 	if len(config) > 0 && config[0] != nil {
-		cfg = config[0]
+		if err := ValidateConfig(config[0]); err != nil {
+			return nil, fmt.Errorf("invalid configuration: %w", err)
+		}
+		cfg = deepCopyConfig(config[0])
 	} else {
 		cfg = DefaultConfig()
 	}
-	cfg.EnableCookies = true
+	cfg.Connection.EnableCookies = true
 
 	client, err := New(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client: %w", err)
+	}
+
+	session, err := NewSessionManager()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create session: %w", err)
 	}
 
 	return &DomainClient{
@@ -79,46 +85,54 @@ func NewDomain(baseURL string, config ...*Config) (*DomainClient, error) {
 		baseURL:   baseURL,
 		parsedURL: parsedURL, // Cache parsed URL for efficient URL building
 		domain:    parsedURL.Hostname(),
-		session:   NewSessionManager(),
+		session:   session,
 	}, nil
 }
 
-// Get makes a GET request to the specified path.
+// Get makes a GET request to the specified path relative to the base URL.
+// If path is a full URL (with scheme), it is used directly.
 func (dc *DomainClient) Get(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("GET", path, options...)
 }
 
-// Post makes a POST request to the specified path.
+// Post makes a POST request to the specified path relative to the base URL.
+// If path is a full URL (with scheme), it is used directly.
 func (dc *DomainClient) Post(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("POST", path, options...)
 }
 
-// Put makes a PUT request to the specified path.
+// Put makes a PUT request to the specified path relative to the base URL.
+// If path is a full URL (with scheme), it is used directly.
 func (dc *DomainClient) Put(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("PUT", path, options...)
 }
 
-// Patch makes a PATCH request to the specified path.
+// Patch makes a PATCH request to the specified path relative to the base URL.
+// If path is a full URL (with scheme), it is used directly.
 func (dc *DomainClient) Patch(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("PATCH", path, options...)
 }
 
-// Delete makes a DELETE request to the specified path.
+// Delete makes a DELETE request to the specified path relative to the base URL.
+// If path is a full URL (with scheme), it is used directly.
 func (dc *DomainClient) Delete(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("DELETE", path, options...)
 }
 
-// Head makes a HEAD request to the specified path.
+// Head makes a HEAD request to the specified path relative to the base URL.
+// If path is a full URL (with scheme), it is used directly.
 func (dc *DomainClient) Head(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("HEAD", path, options...)
 }
 
-// Options makes an OPTIONS request to the specified path.
+// Options makes an OPTIONS request to the specified path relative to the base URL.
+// If path is a full URL (with scheme), it is used directly.
 func (dc *DomainClient) Options(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("OPTIONS", path, options...)
 }
 
-// Request makes an HTTP request with the specified method and path.
+// Request makes an HTTP request with the specified method and path relative to the base URL.
+// If path is a full URL (with scheme), it is used directly.
 // The context parameter allows for timeout and cancellation control.
 // This method makes DomainClient compatible with the Client interface.
 func (dc *DomainClient) Request(ctx context.Context, method, path string, options ...RequestOption) (*Result, error) {
@@ -127,10 +141,7 @@ func (dc *DomainClient) Request(ctx context.Context, method, path string, option
 		return nil, err
 	}
 
-	managedOptions := dc.session.PrepareOptions()
-	allOptions := append(managedOptions, options...)
-
-	dc.session.CaptureFromOptions(options)
+	allOptions := dc.prepareSessionOptions(options)
 
 	result, err := dc.client.Request(ctx, method, fullURL, allOptions...)
 	if err != nil {
@@ -145,33 +156,68 @@ func (dc *DomainClient) Request(ctx context.Context, method, path string, option
 }
 
 // DownloadFile downloads a file from the specified path to the given file path.
+// Response cookies are captured into the session, consistent with Request behavior.
 func (dc *DomainClient) DownloadFile(path string, filePath string, options ...RequestOption) (*DownloadResult, error) {
-	fullURL, err := dc.buildURL(path)
-	if err != nil {
-		return nil, err
-	}
-
-	managedOptions := dc.session.PrepareOptions()
-	allOptions := append(managedOptions, options...)
-
-	dc.session.CaptureFromOptions(options)
-
-	return dc.client.DownloadFile(fullURL, filePath, allOptions...)
+	return dc.DownloadFileWithContext(context.Background(), path, filePath, options...)
 }
 
 // DownloadWithOptions downloads a file with custom download options.
+// Response cookies are captured into the session, consistent with Request behavior.
 func (dc *DomainClient) DownloadWithOptions(path string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error) {
+	return dc.DownloadWithOptionsWithContext(context.Background(), path, downloadOpts, options...)
+}
+
+// DownloadFileWithContext downloads a file with context control for cancellation and timeouts.
+// Response cookies are captured into the session, consistent with Request behavior.
+func (dc *DomainClient) DownloadFileWithContext(ctx context.Context, path string, filePath string, options ...RequestOption) (*DownloadResult, error) {
 	fullURL, err := dc.buildURL(path)
 	if err != nil {
 		return nil, err
 	}
 
+	allOptions := dc.prepareSessionOptions(options)
+
+	result, err := dc.client.DownloadFileWithContext(ctx, fullURL, filePath, allOptions...)
+	if err != nil {
+		return nil, err
+	}
+
+	dc.captureDownloadCookies(result)
+	return result, nil
+}
+
+// DownloadWithOptionsWithContext downloads a file with custom download options and context control.
+// Response cookies are captured into the session, consistent with Request behavior.
+func (dc *DomainClient) DownloadWithOptionsWithContext(ctx context.Context, path string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error) {
+	fullURL, err := dc.buildURL(path)
+	if err != nil {
+		return nil, err
+	}
+
+	allOptions := dc.prepareSessionOptions(options)
+
+	result, err := dc.client.DownloadWithOptionsWithContext(ctx, fullURL, downloadOpts, allOptions...)
+	if err != nil {
+		return nil, err
+	}
+
+	dc.captureDownloadCookies(result)
+	return result, nil
+}
+
+// prepareSessionOptions merges session state (headers, cookies) with user-provided options.
+func (dc *DomainClient) prepareSessionOptions(options []RequestOption) []RequestOption {
 	managedOptions := dc.session.PrepareOptions()
 	allOptions := append(managedOptions, options...)
-
 	dc.session.CaptureFromOptions(options)
+	return allOptions
+}
 
-	return dc.client.DownloadWithOptions(fullURL, downloadOpts, allOptions...)
+// captureDownloadCookies captures response cookies from a download result into the session.
+func (dc *DomainClient) captureDownloadCookies(result *DownloadResult) {
+	if result != nil {
+		dc.session.UpdateFromCookies(result.ResponseCookies)
+	}
 }
 
 // request is an internal helper that delegates to Request with a background context.
@@ -211,7 +257,19 @@ func (dc *DomainClient) buildURL(pathStr string) (string, error) {
 
 	// Clone the cached URL to avoid modifying the original
 	result := *dc.parsedURL
-	result.Path = stdpath.Join(dc.parsedURL.Path, pathStr)
+
+	// Parse pathStr to separate path from query/fragment
+	parsed, err := url.Parse(pathStr)
+	if err != nil {
+		return "", fmt.Errorf("invalid path %q: %w", pathStr, err)
+	}
+	result.Path = stdpath.Join(dc.parsedURL.Path, parsed.Path)
+	if parsed.RawQuery != "" {
+		result.RawQuery = parsed.RawQuery
+	}
+	if parsed.Fragment != "" {
+		result.Fragment = parsed.Fragment
+	}
 	return result.String(), nil
 }
 

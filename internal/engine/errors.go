@@ -23,19 +23,19 @@ func containsFold(s, substr string) bool {
 		return false
 	}
 
-	// Convert substr to lowercase once
-	substrLower := strings.ToLower(substr)
-
-	// Sliding window comparison
+	// Sliding window comparison with ASCII case folding (zero allocation)
 	for i := 0; i <= len(s)-len(substr); i++ {
 		match := true
 		for j := 0; j < len(substr); j++ {
-			c := s[i+j]
-			// ASCII lowercase: 'A'-'Z' -> 'a'-'z'
-			if c >= 'A' && c <= 'Z' {
-				c += 32
+			sc := s[i+j]
+			tc := substr[j]
+			if sc >= 'A' && sc <= 'Z' {
+				sc += 32
 			}
-			if byte(c) != substrLower[j] {
+			if tc >= 'A' && tc <= 'Z' {
+				tc += 32
+			}
+			if sc != tc {
 				match = false
 				break
 			}
@@ -235,16 +235,26 @@ func (e *ClientError) isRetryableResponseReadError() bool {
 	if errors.As(e.Cause, &netErr) {
 		return true
 	}
-	errMsg := e.Cause.Error()
-	return strings.Contains(errMsg, "EOF") || strings.Contains(errMsg, "connection") || strings.Contains(errMsg, "timeout")
+	errMsg := strings.ToLower(e.Cause.Error())
+	return strings.Contains(errMsg, "eof") || strings.Contains(errMsg, "connection") || strings.Contains(errMsg, "timeout")
 }
 
 // isRetryableHTTPStatus checks if HTTP status code indicates a retryable condition.
 func (e *ClientError) isRetryableHTTPStatus() bool {
-	msg := e.Message
-	return strings.Contains(msg, "HTTP 429") || strings.Contains(msg, "HTTP 500") ||
-		strings.Contains(msg, "HTTP 502") || strings.Contains(msg, "HTTP 503") ||
-		strings.Contains(msg, "HTTP 504")
+	switch e.StatusCode {
+	case 429, 500, 502, 503, 504:
+		return true
+	}
+	// Fallback: extract status code from message when StatusCode is not set
+	if e.StatusCode == 0 {
+		msg := e.Message
+		for _, prefix := range []string{"HTTP 429", "HTTP 500", "HTTP 502", "HTTP 503", "HTTP 504"} {
+			if strings.Contains(msg, prefix) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (e *ClientError) Code() string {
@@ -413,6 +423,7 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 		clientErr.Message = "URL validation failed"
 	case containsFold(errMsg, "http 4") || containsFold(errMsg, "http 5"):
 		clientErr.Type = ErrorTypeHTTP
+		clientErr.StatusCode = extractStatusCode(errMsg)
 	case containsFold(errMsg, "timeout") || containsFold(errMsg, "timed out"):
 		if !containsFold(errMsg, "context") {
 			clientErr.Type = ErrorTypeTimeout
@@ -422,3 +433,22 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 
 	return clientErr
 }
+
+// extractStatusCode extracts a 3-digit HTTP status code from an error message.
+func extractStatusCode(msg string) int {
+	lower := strings.ToLower(msg)
+	for i := 0; i <= len(lower)-3; i++ {
+		if lower[i] >= '4' && lower[i] <= '5' && isDigit(lower[i+1]) && isDigit(lower[i+2]) {
+			code := int(lower[i]-'0')*100 + int(lower[i+1]-'0')*10 + int(lower[i+2]-'0')
+			if code >= 400 && code <= 599 {
+				// Verify it looks like an HTTP status, not arbitrary digits
+				if i > 0 && lower[i-1] == ' ' {
+					return code
+				}
+			}
+		}
+	}
+	return 0
+}
+
+func isDigit(b byte) bool { return b >= '0' && b <= '9' }

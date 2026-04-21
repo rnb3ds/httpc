@@ -20,13 +20,13 @@ func Test_SSRF_DefaultProtection(t *testing.T) {
 
 	// AllowPrivateIPs is true by default for compatibility
 	// Users can set AllowPrivateIPs = false to enable SSRF protection
-	if !cfg.AllowPrivateIPs {
+	if !cfg.Security.AllowPrivateIPs {
 		t.Error("AllowPrivateIPs should be true by default for compatibility")
 	}
 
 	// Verify SSRF protection can be enabled
-	cfg.AllowPrivateIPs = false
-	if cfg.AllowPrivateIPs {
+	cfg.Security.AllowPrivateIPs = false
+	if cfg.Security.AllowPrivateIPs {
 		t.Error("AllowPrivateIPs should be configurable to false for SSRF protection")
 	}
 }
@@ -60,7 +60,7 @@ func Test_SSRF_ExplicitOptIn(t *testing.T) {
 // Test_SSRF_BlocksLocalhost verifies that localhost is blocked when SSRF protection is enabled
 func Test_SSRF_BlocksLocalhost(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.AllowPrivateIPs = false // Enable SSRF protection
+	cfg.Security.AllowPrivateIPs = false // Enable SSRF protection
 
 	client, err := New(cfg)
 	if err != nil {
@@ -87,8 +87,8 @@ func Test_SSRF_BlocksLocalhost(t *testing.T) {
 func Test_SSRF_RedirectProtection(t *testing.T) {
 	// Create a new config that disallows private IPs for redirect testing
 	cfg := DefaultConfig()
-	cfg.AllowPrivateIPs = false
-	cfg.FollowRedirects = true
+	cfg.Security.AllowPrivateIPs = false
+	cfg.Middleware.FollowRedirects = true
 
 	client, err := New(cfg)
 	if err != nil {
@@ -116,7 +116,7 @@ func Test_SSRF_RedirectProtection(t *testing.T) {
 // Test_DecompressionBombProtection verifies that decompression bombs are blocked
 func Test_DecompressionBombProtection(t *testing.T) {
 	cfg := testConfig()
-	cfg.MaxResponseBodySize = 1000 // Very small limit for testing
+	cfg.Security.MaxResponseBodySize = 1000 // Very small limit for testing
 
 	client, err := New(cfg)
 	if err != nil {
@@ -152,10 +152,10 @@ func Test_TestingConfig_Warning(t *testing.T) {
 	// But we can verify the config is created correctly
 	cfg := TestingConfig()
 
-	if !cfg.AllowPrivateIPs {
+	if !cfg.Security.AllowPrivateIPs {
 		t.Error("TestingConfig should have AllowPrivateIPs = true")
 	}
-	if !cfg.InsecureSkipVerify {
+	if !cfg.Security.InsecureSkipVerify {
 		t.Error("TestingConfig should have InsecureSkipVerify = true")
 	}
 }
@@ -165,11 +165,11 @@ func Test_SecureConfig_Production(t *testing.T) {
 	cfg := SecureConfig()
 
 	// SecureConfig should have strict SSRF protection
-	if cfg.AllowPrivateIPs {
+	if cfg.Security.AllowPrivateIPs {
 		t.Error("SecureConfig should have AllowPrivateIPs = false")
 	}
 	// SecureConfig should not follow redirects
-	if cfg.FollowRedirects {
+	if cfg.Middleware.FollowRedirects {
 		t.Error("SecureConfig should have FollowRedirects = false")
 	}
 }
@@ -203,7 +203,7 @@ func Test_Context_Cancellation(t *testing.T) {
 // Test_Timeout_Enforcement verifies that timeouts are properly enforced
 func Test_Timeout_Enforcement(t *testing.T) {
 	cfg := testConfig()
-	cfg.Timeout = 100 * time.Millisecond // Very short timeout
+	cfg.Timeouts.Request = 100 * time.Millisecond // Very short timeout
 
 	client, err := New(cfg)
 	if err != nil {
@@ -341,7 +341,7 @@ func Test_PanicSafety_MiddlewarePanicRecovery(t *testing.T) {
 	}
 
 	cfg := testConfig()
-	cfg.Middlewares = []MiddlewareFunc{
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
 		RecoveryMiddleware(),
 		panickingMiddleware,
 	}
@@ -413,10 +413,13 @@ func Test_PanicSafety_SessionManagerNilInput(t *testing.T) {
 		}
 	}()
 
-	session := NewSessionManager()
+	session, err := NewSessionManager()
+	if err != nil {
+		t.Fatalf("NewSessionManager error: %v", err)
+	}
 
 	// nil cookie should return error, not panic
-	err := session.SetCookie(nil)
+	err = session.SetCookie(nil)
 	if err == nil {
 		t.Error("Expected error for nil cookie")
 	}

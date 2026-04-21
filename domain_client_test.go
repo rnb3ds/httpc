@@ -88,7 +88,7 @@ func TestDomainClient_AutomaticCookieManagement(t *testing.T) {
 	defer server.Close()
 
 	cfg := httpc.TestingConfig()
-	cfg.AllowPrivateIPs = true
+	cfg.Security.AllowPrivateIPs = true
 	client, err := httpc.NewDomain(server.URL, cfg)
 	if err != nil {
 		t.Fatalf("NewDomain() error = %v", err)
@@ -140,7 +140,7 @@ func TestDomainClient_AutomaticHeaderManagement(t *testing.T) {
 	defer server.Close()
 
 	cfg := httpc.TestingConfig()
-	cfg.AllowPrivateIPs = true
+	cfg.Security.AllowPrivateIPs = true
 	client, err := httpc.NewDomain(server.URL, cfg)
 	if err != nil {
 		t.Fatalf("NewDomain() error = %v", err)
@@ -178,7 +178,7 @@ func TestDomainClient_CookieOverride(t *testing.T) {
 	defer server.Close()
 
 	cfg := httpc.TestingConfig()
-	cfg.AllowPrivateIPs = true
+	cfg.Security.AllowPrivateIPs = true
 	client, err := httpc.NewDomain(server.URL, cfg)
 	if err != nil {
 		t.Fatalf("NewDomain() error = %v", err)
@@ -209,7 +209,7 @@ func TestDomainClient_HeaderOverride(t *testing.T) {
 	defer server.Close()
 
 	cfg := httpc.TestingConfig()
-	cfg.AllowPrivateIPs = true
+	cfg.Security.AllowPrivateIPs = true
 	client, err := httpc.NewDomain(server.URL, cfg)
 	if err != nil {
 		t.Fatalf("NewDomain() error = %v", err)
@@ -443,7 +443,7 @@ func TestDomainClient_PathHandling(t *testing.T) {
 			defer server.Close()
 
 			cfg := httpc.TestingConfig()
-			cfg.AllowPrivateIPs = true
+			cfg.Security.AllowPrivateIPs = true
 			client, err := httpc.NewDomain(server.URL, cfg)
 			if err != nil {
 				t.Fatalf("NewDomain() error = %v", err)
@@ -473,7 +473,7 @@ func TestDomainClient_FullURLHandling(t *testing.T) {
 	defer differentDomainServer.Close()
 
 	cfg := httpc.TestingConfig()
-	cfg.AllowPrivateIPs = true
+	cfg.Security.AllowPrivateIPs = true
 	client, err := httpc.NewDomain(sameDomainServer.URL, cfg)
 	if err != nil {
 		t.Fatalf("NewDomain() error = %v", err)
@@ -544,7 +544,7 @@ func TestDomainClient_SameDomainCookiePersistence(t *testing.T) {
 	defer server.Close()
 
 	cfg := httpc.TestingConfig()
-	cfg.AllowPrivateIPs = true
+	cfg.Security.AllowPrivateIPs = true
 	client, err := httpc.NewDomain(server.URL, cfg)
 	if err != nil {
 		t.Fatalf("NewDomain() error = %v", err)
@@ -618,7 +618,7 @@ func TestDomainClient_DomainMatching(t *testing.T) {
 			defer server.Close()
 
 			cfg := httpc.TestingConfig()
-			cfg.AllowPrivateIPs = true
+			cfg.Security.AllowPrivateIPs = true
 
 			// Use test server URL as base
 			client, err := httpc.NewDomain(server.URL, cfg)
@@ -656,7 +656,7 @@ func TestDomainClient_AllHTTPMethods(t *testing.T) {
 			defer server.Close()
 
 			cfg := httpc.TestingConfig()
-			cfg.AllowPrivateIPs = true
+			cfg.Security.AllowPrivateIPs = true
 			client, err := httpc.NewDomain(server.URL, cfg)
 			if err != nil {
 				t.Fatalf("NewDomain() error = %v", err)
@@ -698,7 +698,7 @@ func TestDomainClient_ConcurrentAccess(t *testing.T) {
 	defer server.Close()
 
 	cfg := httpc.TestingConfig()
-	cfg.AllowPrivateIPs = true
+	cfg.Security.AllowPrivateIPs = true
 	client, err := httpc.NewDomain(server.URL, cfg)
 	if err != nil {
 		t.Fatalf("NewDomain() error = %v", err)
@@ -813,7 +813,7 @@ func TestDomainClient_AutoPersistRequestOptions(t *testing.T) {
 	defer server.Close()
 
 	cfg := httpc.TestingConfig()
-	cfg.AllowPrivateIPs = true
+	cfg.Security.AllowPrivateIPs = true
 	client, err := httpc.NewDomain(server.URL, cfg)
 	if err != nil {
 		t.Fatalf("NewDomain() error = %v", err)
@@ -858,7 +858,7 @@ func TestDomainClient_AutoPersistWithFullURL(t *testing.T) {
 	defer server.Close()
 
 	cfg := httpc.TestingConfig()
-	cfg.AllowPrivateIPs = true
+	cfg.Security.AllowPrivateIPs = true
 	client, err := httpc.NewDomain(server.URL, cfg)
 	if err != nil {
 		t.Fatalf("NewDomain() error = %v", err)
@@ -913,7 +913,7 @@ func TestDomainClient_AutoPersistMultipleCookies(t *testing.T) {
 	defer server.Close()
 
 	cfg := httpc.TestingConfig()
-	cfg.AllowPrivateIPs = true
+	cfg.Security.AllowPrivateIPs = true
 	client, err := httpc.NewDomain(server.URL, cfg)
 	if err != nil {
 		t.Fatalf("NewDomain() error = %v", err)
@@ -954,7 +954,7 @@ func TestDomainClient_AutoPersistHeaderMap(t *testing.T) {
 	defer server.Close()
 
 	cfg := httpc.TestingConfig()
-	cfg.AllowPrivateIPs = true
+	cfg.Security.AllowPrivateIPs = true
 	client, err := httpc.NewDomain(server.URL, cfg)
 	if err != nil {
 		t.Fatalf("NewDomain() error = %v", err)
@@ -1018,7 +1018,7 @@ func TestDomainClient_AutoPersistOverride(t *testing.T) {
 	defer server.Close()
 
 	cfg := httpc.TestingConfig()
-	cfg.AllowPrivateIPs = true
+	cfg.Security.AllowPrivateIPs = true
 	client, err := httpc.NewDomain(server.URL, cfg)
 	if err != nil {
 		t.Fatalf("NewDomain() error = %v", err)
@@ -1080,7 +1080,7 @@ func TestDomainClient_RealWorldScenario(t *testing.T) {
 	defer server.Close()
 
 	cfg := httpc.TestingConfig()
-	cfg.AllowPrivateIPs = true
+	cfg.Security.AllowPrivateIPs = true
 	client, err := httpc.NewDomain(server.URL, cfg)
 	if err != nil {
 		t.Fatalf("NewDomain() error = %v", err)
