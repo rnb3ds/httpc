@@ -126,6 +126,7 @@ type Transport struct {
 	httpClient        *http.Client
 	config            *Config
 	allowPrivateIPs   bool                      // Cached for performance in redirect checks
+	exemptNets        []*net.IPNet              // SSRF exempt CIDR ranges
 	redirectWhitelist *security.DomainWhitelist // Whitelist for redirect domains
 }
 
@@ -148,6 +149,7 @@ func NewTransport(config *Config, pool *connection.PoolManager) (*Transport, err
 		transport:         transport,
 		config:            config,
 		allowPrivateIPs:   config.AllowPrivateIPs,
+		exemptNets:        config.ExemptNets,
 		redirectWhitelist: config.RedirectWhitelist,
 	}
 
@@ -260,7 +262,7 @@ func (t *Transport) validateRedirectTarget(targetURL *url.URL) error {
 
 	// If host is an IP address, validate it directly
 	if ip := net.ParseIP(host); ip != nil {
-		if err := validation.ValidateIP(ip); err != nil {
+		if err := validation.ValidateIPWithExemptions(ip, t.exemptNets); err != nil {
 			return fmt.Errorf("private/reserved IP blocked")
 		}
 		return nil
@@ -275,7 +277,7 @@ func (t *Transport) validateRedirectTarget(targetURL *url.URL) error {
 	}
 
 	for _, ip := range ips {
-		if err := validation.ValidateIP(ip); err != nil {
+		if err := validation.ValidateIPWithExemptions(ip, t.exemptNets); err != nil {
 			return fmt.Errorf("redirect domain resolves to blocked address")
 		}
 	}

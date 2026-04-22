@@ -3,6 +3,7 @@ package httpc
 import (
 	"crypto/tls"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"strconv"
@@ -108,6 +109,12 @@ type SecurityConfig struct {
 	// Default: false (SSRF protection enabled). Set to true only when
 	// connecting to internal services (VPNs, proxies, corporate networks).
 	AllowPrivateIPs bool
+
+	// SSRFExemptCIDRs specifies CIDR ranges exempted from SSRF blocking.
+	// When AllowPrivateIPs is false, IPs matching these CIDRs are still allowed.
+	// Useful for VPN/Tailscale (100.64.0.0/10) or VPC (10.0.0.0/8) access.
+	// Invalid CIDRs cause New() to return an error.
+	SSRFExemptCIDRs []string
 
 	// ValidateURL enables URL validation. Default: true.
 	ValidateURL bool
@@ -370,6 +377,13 @@ func ValidateConfig(cfg *Config) error {
 	// Validate security settings
 	if cfg.Security.MaxResponseBodySize < 0 || cfg.Security.MaxResponseBodySize > maxResponseBodySize {
 		return fmt.Errorf("Security.MaxResponseBodySize must be 0-1GB, got %d", cfg.Security.MaxResponseBodySize)
+	}
+
+	// Validate SSRF exempt CIDRs
+	for _, cidr := range cfg.Security.SSRFExemptCIDRs {
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			return fmt.Errorf("Security.SSRFExemptCIDRs: invalid CIDR %q: %w", cidr, err)
+		}
 	}
 
 	// Validate retry settings

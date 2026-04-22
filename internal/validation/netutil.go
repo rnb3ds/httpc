@@ -29,7 +29,6 @@ func IsPrivateOrReservedIP(ip net.IP) bool {
 		// Check for reserved IP ranges
 		if ip4[0] >= 240 || // Class E (240.0.0.0/4) - Reserved
 			ip4[0] == 0 || // "This" Network (0.0.0.0/8)
-			(ip4[0] == 100 && (ip4[1]&0xC0) == 64) || // Carrier-grade NAT (100.64.0.0/10)
 			(ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 0) || // IETF Protocol Assignments (192.0.0.0/24)
 			(ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 2) || // Documentation TEST-NET-1 (192.0.2.0/24)
 			(ip4[0] == 192 && ip4[1] == 88 && ip4[2] == 99) || // 6to4 Relay Anycast (192.88.99.0/24)
@@ -46,21 +45,13 @@ func IsPrivateOrReservedIP(ip net.IP) bool {
 		if ip[0] == 0x20 && ip[1] == 0x01 && ip[2] == 0x0d && ip[3] == 0xb8 {
 			return true
 		}
-		// Link-local IPv6: fe80::/10 (RFC 4291)
-		if ip[0] == 0xfe && (ip[1]&0xc0) == 0x80 {
-			return true
-		}
-		// Unique local IPv6: fc00::/7 (RFC 4193)
-		if (ip[0] & 0xfe) == 0xfc {
-			return true
-		}
-		// IPv6 loopback beyond just ::1 (full ::1/128 range is handled by IsLoopback)
-		// IPv4-mapped IPv6 loopback: ::ffff:127.0.0.0/104
-		if ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] == 0 &&
+		// NAT64 well-known prefix 64:ff9b::/96 (RFC 6052)
+		// Validates embedded IPv4 to prevent SSRF bypass via IPv6.
+		if ip[0] == 0x00 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b &&
 			ip[4] == 0 && ip[5] == 0 && ip[6] == 0 && ip[7] == 0 &&
-			ip[8] == 0 && ip[9] == 0 && ip[10] == 0xff && ip[11] == 0xff &&
-			ip[12] == 127 {
-			return true
+			ip[8] == 0 && ip[9] == 0 && ip[10] == 0 && ip[11] == 0 {
+			embeddedIP := net.IPv4(ip[12], ip[13], ip[14], ip[15])
+			return IsPrivateOrReservedIP(embeddedIP)
 		}
 	}
 
@@ -71,6 +62,42 @@ func IsPrivateOrReservedIP(ip net.IP) bool {
 // Returns an error if the IP is blocked by security policy.
 func ValidateIP(ip net.IP) error {
 	if IsPrivateOrReservedIP(ip) {
+		return fmt.Errorf("blocked IP: %s", ip.String())
+	}
+	return nil
+}
+
+// ParseExemptCIDRs parses a list of CIDR strings into net.IPNet slices.
+// Returns nil, nil for empty input.
+func ParseExemptCIDRs(cidrs []string) ([]*net.IPNet, error) {
+	if len(cidrs) == 0 {
+		return nil, nil
+	}
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid CIDR %q: %w", cidr, err)
+		}
+		nets = append(nets, ipNet)
+	}
+	return nets, nil
+}
+
+// IsIPExempted checks if an IP address matches any of the exempt CIDR ranges.
+func IsIPExempted(ip net.IP, nets []*net.IPNet) bool {
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidateIPWithExemptions checks if an IP is allowed, considering exempt CIDR ranges.
+// IPs that are private/reserved but match an exempt CIDR are allowed.
+func ValidateIPWithExemptions(ip net.IP, exemptNets []*net.IPNet) error {
+	if IsPrivateOrReservedIP(ip) && !IsIPExempted(ip, exemptNets) {
 		return fmt.Errorf("blocked IP: %s", ip.String())
 	}
 	return nil

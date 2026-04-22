@@ -68,6 +68,8 @@ type Config struct {
 
 	AllowPrivateIPs bool
 
+	ExemptNets []*net.IPNet
+
 	DisableCompression bool
 	DisableKeepAlives  bool
 	ForceAttemptHTTP2  bool
@@ -218,7 +220,7 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 			// SSRF protection check
 			if !pm.config.AllowPrivateIPs {
 				for _, ip := range ips {
-					if err := validation.ValidateIP(ip.IP); err != nil {
+					if err := validation.ValidateIPWithExemptions(ip.IP, pm.config.ExemptNets); err != nil {
 						atomic.AddInt64(&pm.rejectedConns, 1)
 						return nil, fmt.Errorf("SSRF protection: %w", err)
 					}
@@ -301,7 +303,7 @@ func (pm *PoolManager) resolveAndValidateAddress(address string) (string, error)
 
 	// If the address is already an IP, validate it directly
 	if ip := net.ParseIP(host); ip != nil {
-		if err := validation.ValidateIP(ip); err != nil {
+		if err := validation.ValidateIPWithExemptions(ip, pm.config.ExemptNets); err != nil {
 			return "", err
 		}
 		return address, nil
@@ -315,7 +317,7 @@ func (pm *PoolManager) resolveAndValidateAddress(address string) (string, error)
 
 	// Check all resolved IPs — if any point to a private/reserved address, block it
 	for _, ip := range ips {
-		if err := validation.ValidateIP(ip); err != nil {
+		if err := validation.ValidateIPWithExemptions(ip, pm.config.ExemptNets); err != nil {
 			return "", fmt.Errorf("domain %s resolves to blocked address: %w", host, err)
 		}
 	}

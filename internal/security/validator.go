@@ -27,6 +27,7 @@ type Config struct {
 	ValidateHeaders     bool
 	MaxResponseBodySize int64
 	AllowPrivateIPs     bool
+	ExemptNets          []*net.IPNet
 }
 
 type Request struct {
@@ -42,7 +43,7 @@ func NewValidator() *Validator {
 		ValidateURL:         true,
 		ValidateHeaders:     true,
 		MaxResponseBodySize: 50 * 1024 * 1024,
-		AllowPrivateIPs:     true,
+		AllowPrivateIPs:     false,
 	}
 
 	return &Validator{
@@ -118,7 +119,7 @@ func (v *Validator) validateHost(host string) error {
 
 	// If hostname is an IP address, validate it directly
 	if ip := net.ParseIP(hostname); ip != nil {
-		if err := validation.ValidateIP(ip); err != nil {
+		if err := validation.ValidateIPWithExemptions(ip, v.config.ExemptNets); err != nil {
 			return fmt.Errorf("private/reserved IP blocked: %s", ip.String())
 		}
 		return nil

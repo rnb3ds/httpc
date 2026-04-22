@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -67,6 +68,7 @@ type Config struct {
 	ValidateURL         bool
 	ValidateHeaders     bool
 	AllowPrivateIPs     bool
+	ExemptNets          []*net.IPNet
 	StrictContentLength bool
 
 	MaxRetries    int
@@ -287,6 +289,7 @@ func NewClient(config *Config, opts ...clientOption) (*Client, error) {
 		connConfig.EnableSystemProxy = config.EnableSystemProxy
 		connConfig.CookieJar = config.CookieJar
 		connConfig.AllowPrivateIPs = config.AllowPrivateIPs
+		connConfig.ExemptNets = config.ExemptNets
 		connConfig.EnableDoH = config.EnableDoH
 		connConfig.DoHCacheTTL = config.DoHCacheTTL
 
@@ -310,6 +313,7 @@ func NewClient(config *Config, opts ...clientOption) (*Client, error) {
 		ValidateHeaders:     config.ValidateHeaders,
 		MaxResponseBodySize: config.MaxResponseBodySize,
 		AllowPrivateIPs:     config.AllowPrivateIPs,
+		ExemptNets:          config.ExemptNets,
 	}
 	client.validator = security.NewValidatorWithConfig(validatorConfig)
 

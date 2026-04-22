@@ -138,6 +138,7 @@ import (
 
 	"github.com/cybergodev/httpc/internal/engine"
 	"github.com/cybergodev/httpc/internal/security"
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // Doer is a minimal interface for executing HTTP requests.
@@ -293,6 +294,12 @@ func deepCopyConfig(src *Config) *Config {
 	if src.Security.CookieSecurity != nil {
 		cookieSec := *src.Security.CookieSecurity
 		dst.Security.CookieSecurity = &cookieSec
+	}
+
+	// Deep copy SSRF exempt CIDRs
+	if len(src.Security.SSRFExemptCIDRs) > 0 {
+		dst.Security.SSRFExemptCIDRs = make([]string, len(src.Security.SSRFExemptCIDRs))
+		copy(dst.Security.SSRFExemptCIDRs, src.Security.SSRFExemptCIDRs)
 	}
 
 	return &dst
@@ -728,6 +735,15 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 
 	if len(cfg.Security.RedirectWhitelist) > 0 {
 		engineConfig.RedirectWhitelist = security.NewDomainWhitelist(cfg.Security.RedirectWhitelist...)
+	}
+
+	// Parse SSRF exempt CIDRs
+	if len(cfg.Security.SSRFExemptCIDRs) > 0 {
+		exemptNets, err := validation.ParseExemptCIDRs(cfg.Security.SSRFExemptCIDRs)
+		if err != nil {
+			return nil, fmt.Errorf("invalid SSRF exempt CIDRs: %w", err)
+		}
+		engineConfig.ExemptNets = exemptNets
 	}
 
 	return engineConfig, nil
