@@ -129,15 +129,21 @@ func demonstratePerformanceConfig() {
 func demonstrateCustomConfig() {
 	fmt.Println("--- Example 4: Custom Configuration ---")
 
-	// Create custom configuration with flat fields (v2.x API)
+	// Create custom configuration using hierarchical sub-structs
 	config := httpc.DefaultConfig()
-	config.Timeout = 15 * time.Second
-	config.MaxRetries = 5
-	config.MaxIdleConns = 200
-	config.MaxConnsPerHost = 50
-	config.UserAgent = "MyApp/1.0"
-	config.FollowRedirects = true
-	config.EnableCookies = true
+	config.Timeouts.Request = 15 * time.Second
+	config.Retry.MaxRetries = 5
+	config.Connection.MaxIdleConns = 200
+	config.Connection.MaxConnsPerHost = 50
+	config.Middleware.UserAgent = "MyApp/1.0"
+	config.Middleware.FollowRedirects = true
+	config.Connection.EnableCookies = true
+
+	// Validate configuration before use
+	if err := httpc.ValidateConfig(config); err != nil {
+		fmt.Printf("Invalid config: %v\n", err)
+		return
+	}
 
 	client, err := httpc.New(config)
 	if err != nil {
@@ -166,49 +172,49 @@ func demonstrateConfigComparison() {
 	// Scenario 1: Quick API calls
 	fmt.Println("Scenario 1: Quick API Calls (< 5s)")
 	quickConfig := httpc.DefaultConfig()
-	quickConfig.Timeout = 2 * time.Second
-	quickConfig.MaxRetries = 0
+	quickConfig.Timeouts.Request = 2 * time.Second
+	quickConfig.Retry.MaxRetries = 0
 	fmt.Println("  Timeout: 2s, Retries: 0")
 	fmt.Println("  Use case: Health checks, fast endpoints\n ")
 
 	// Scenario 2: Standard API calls
 	fmt.Println("Scenario 2: Standard API Calls (5-15s)")
 	standardConfig := httpc.DefaultConfig()
-	standardConfig.Timeout = 10 * time.Second
-	standardConfig.MaxRetries = 2
+	standardConfig.Timeouts.Request = 10 * time.Second
+	standardConfig.Retry.MaxRetries = 2
 	fmt.Println("  Timeout: 10s, Retries: 2")
 	fmt.Println("  Use case: Most REST API calls\n ")
 
 	// Scenario 3: Long operations
 	fmt.Println("Scenario 3: Long Operations (15-60s)")
 	longConfig := httpc.DefaultConfig()
-	longConfig.Timeout = 30 * time.Second
-	longConfig.MaxRetries = 3
+	longConfig.Timeouts.Request = 30 * time.Second
+	longConfig.Retry.MaxRetries = 3
 	fmt.Println("  Timeout: 30s, Retries: 3")
 	fmt.Println("  Use case: File uploads, complex queries\n ")
 
 	// Scenario 4: Background jobs
 	fmt.Println("Scenario 4: Background Jobs (> 60s)")
 	backgroundConfig := httpc.DefaultConfig()
-	backgroundConfig.Timeout = 120 * time.Second
-	backgroundConfig.MaxRetries = 5
+	backgroundConfig.Timeouts.Request = 120 * time.Second
+	backgroundConfig.Retry.MaxRetries = 5
 	fmt.Println("  Timeout: 120s, Retries: 5")
 	fmt.Println("  Use case: Batch processing, webhooks\n ")
 
 	// Scenario 5: High security
 	fmt.Println("Scenario 5: High Security")
 	secureConfig := httpc.SecureConfig()
-	secureConfig.MinTLSVersion = tls.VersionTLS13
-	secureConfig.AllowPrivateIPs = false
-	secureConfig.StrictContentLength = true
+	secureConfig.Security.MinTLSVersion = tls.VersionTLS13
+	secureConfig.Security.AllowPrivateIPs = false
+	secureConfig.Security.StrictContentLength = true
 	fmt.Println("  TLS 1.3+, SSRF protection, strict validation")
 	fmt.Println("  Use case: Financial, healthcare, sensitive data\n ")
 
 	// Scenario 6: High throughput
 	fmt.Println("Scenario 6: High Throughput")
 	perfConfig := httpc.PerformanceConfig()
-	perfConfig.MaxIdleConns = 500
-	perfConfig.MaxConnsPerHost = 100
+	perfConfig.Connection.MaxIdleConns = 500
+	perfConfig.Connection.MaxConnsPerHost = 100
 	fmt.Println("  High connection limits, optimized pooling")
 	fmt.Println("  Use case: Web scraping, bulk operations\n ")
 
@@ -216,8 +222,14 @@ func demonstrateConfigComparison() {
 	fmt.Println("Scenario 7: Special Network Environments")
 	fmt.Println("For networks using reserved IP ranges (e.g., 198.18.0.0/15):")
 	specialConfig := httpc.SecureConfig()
-	specialConfig.AllowPrivateIPs = true // Enable for private/reserved networks
+	specialConfig.Security.AllowPrivateIPs = true // Enable for private/reserved networks
 	fmt.Println("  Start with SecureConfig()")
 	fmt.Println("  Set AllowPrivateIPs: true")
 	fmt.Println("  Use case: Corporate intranets, testing environments, VPN networks\n ")
+
+	// Scenario 8: Minimal configuration
+	fmt.Println("Scenario 8: Minimal Configuration")
+	_ = httpc.MinimalConfig() // No retries, short timeouts, minimal features
+	fmt.Println("  No retries, short timeouts, minimal features")
+	fmt.Println("  Use case: Simple scripts, CLI tools, one-shot requests\n ")
 }

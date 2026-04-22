@@ -94,6 +94,7 @@ func Chain(middlewares ...MiddlewareFunc) MiddlewareFunc {
 
 // LoggingMiddleware creates a middleware that logs request and response information.
 // The log function receives formatted log messages (similar to log.Printf).
+// SECURITY: URLs are sanitized to remove credentials before logging.
 func LoggingMiddleware(log func(format string, args ...any)) MiddlewareFunc {
 	return func(next Handler) Handler {
 		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
@@ -106,10 +107,12 @@ func LoggingMiddleware(log func(format string, args ...any)) MiddlewareFunc {
 				status = resp.StatusCode()
 			}
 
+			sanitizedURL := validation.SanitizeURL(req.URL())
+
 			if err != nil {
-				log("%s %s -> error: %v (%v)", req.Method(), req.URL(), err, duration)
+				log("%s %s -> error: %v (%v)", req.Method(), sanitizedURL, err, duration)
 			} else {
-				log("%s %s -> %d (%v)", req.Method(), req.URL(), status, duration)
+				log("%s %s -> %d (%v)", req.Method(), sanitizedURL, status, duration)
 			}
 
 			return resp, err
@@ -310,19 +313,4 @@ func AuditMiddlewareWithConfig(onAudit func(event AuditEvent), config *AuditMidd
 			return resp, err
 		}
 	}
-}
-
-// AuditMiddlewareJSON creates a middleware that outputs audit events as JSON.
-// This is a convenience function for structured logging systems.
-// like ELK, Splunk, or cloud logging services.
-//
-// Deprecated: Use AuditMiddlewareWithConfig with Format:"json" instead:
-//
-//	cfg := httpc.DefaultAuditMiddlewareConfig()
-//	cfg.Format = "json"
-//	auditMiddleware := httpc.AuditMiddlewareWithConfig(onAudit, cfg)
-func AuditMiddlewareJSON(onAudit func(event AuditEvent)) MiddlewareFunc {
-	config := DefaultAuditMiddlewareConfig()
-	config.Format = "json"
-	return AuditMiddlewareWithConfig(onAudit, config)
 }

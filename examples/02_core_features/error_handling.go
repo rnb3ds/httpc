@@ -33,6 +33,9 @@ func main() {
 	// Example 6: Comprehensive error handling pattern
 	demonstrateComprehensivePattern()
 
+	// Example 7: Structured error types
+	demonstrateStructuredErrors()
+
 	fmt.Println("\n=== All Examples Completed ===")
 }
 
@@ -282,4 +285,54 @@ func fetchUserData(userID int) (map[string]any, error) {
 	}
 
 	return result, nil
+}
+
+// demonstrateStructuredErrors shows ClientError type checking
+func demonstrateStructuredErrors() {
+	fmt.Println("--- Example 7: Structured Error Types ---")
+
+	client, err := httpc.New()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer client.Close()
+
+	// Trigger a timeout to get a structured error
+	resp, err := client.Get("https://echo.hoppscotch.io",
+		httpc.WithTimeout(1*time.Nanosecond),
+	)
+	if err != nil {
+		// Type-assert to ClientError for structured inspection
+		var clientErr *httpc.ClientError
+		if errors.As(err, &clientErr) {
+			fmt.Printf("ClientError detected:\n")
+			fmt.Printf("  Type:       %d\n", clientErr.Type)
+			fmt.Printf("  Code:       %s\n", clientErr.Code())
+			fmt.Printf("  Message:    %s\n", clientErr.Message)
+			fmt.Printf("  URL:        %s\n", clientErr.URL)
+			fmt.Printf("  Method:     %s\n", clientErr.Method)
+			fmt.Printf("  Retryable:  %v\n", clientErr.IsRetryable())
+
+			// Check specific error types
+			switch clientErr.Type {
+			case httpc.ErrorTypeTimeout:
+				fmt.Println("  Category:   Timeout error")
+			case httpc.ErrorTypeNetwork:
+				fmt.Println("  Category:   Network error")
+			case httpc.ErrorTypeDNS:
+				fmt.Println("  Category:   DNS resolution error")
+			case httpc.ErrorTypeTLS:
+				fmt.Println("  Category:   TLS/SSL error")
+			case httpc.ErrorTypeHTTP:
+				fmt.Printf("  Category:   HTTP error (status %d)\n", clientErr.StatusCode)
+			case httpc.ErrorTypeRetryExhausted:
+				fmt.Println("  Category:   Retry limit exceeded")
+			}
+		} else {
+			fmt.Printf("Standard error: %v\n", err)
+		}
+	} else {
+		fmt.Printf("Request succeeded: %d\n", resp.StatusCode())
+	}
+	fmt.Println()
 }

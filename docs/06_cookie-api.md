@@ -20,6 +20,7 @@ Methods to access cookies returned by the server via `Set-Cookie` header:
 | Method | Description | Example |
 |--------|-------------|---------|
 | `result.Response.Cookies` | All response cookies | `for _, c := range result.Response.Cookies { ... }` |
+| `result.ResponseCookies()` | All response cookies (method) | `cookies := result.ResponseCookies()` |
 | `result.GetCookie(name)` | Get specific cookie | `cookie := result.GetCookie("session")` |
 | `result.HasCookie(name)` | Check if cookie exists | `if result.HasCookie("session") { ... }` |
 
@@ -30,6 +31,7 @@ Methods to inspect cookies that were sent in the request via `Cookie` header:
 | Method | Description | Example |
 |--------|-------------|---------|
 | `result.Request.Cookies` | All request cookies | `for _, c := range result.Request.Cookies { ... }` |
+| `result.RequestCookies()` | All request cookies (method) | `cookies := result.RequestCookies()` |
 | `result.GetRequestCookie(name)` | Get specific cookie | `cookie := result.GetRequestCookie("session")` |
 | `result.HasRequestCookie(name)` | Check if cookie was sent | `if result.HasRequestCookie("session") { ... }` |
 
@@ -45,7 +47,10 @@ import (
 )
 
 func main() {
-    client, _ := httpc.New()
+    client, err := httpc.New()
+    if err != nil {
+        log.Fatal(err)
+    }
     defer client.Close()
 
     // Send request with cookies
@@ -141,8 +146,11 @@ Enable cookie jar for automatic cookie persistence:
 
 ```go
 config := httpc.DefaultConfig()
-config.EnableCookies = true
-client, _ := httpc.New(config)
+config.Connection.EnableCookies = true
+client, err := httpc.New(config)
+if err != nil {
+    log.Fatal(err)
+}
 
 // First request - server sets cookies
 result1, _ := client.Get("https://api.example.com/login")

@@ -99,10 +99,12 @@ func DownloadWithOptionsWithContext(ctx context.Context, url string, downloadOpt
 	return client.DownloadWithOptionsWithContext(ctx, url, downloadOpts, options...)
 }
 
+// DownloadFile downloads a file from the given URL to the specified file path.
 func (c *clientImpl) DownloadFile(url string, filePath string, options ...RequestOption) (*DownloadResult, error) {
 	return c.DownloadFileWithContext(context.Background(), url, filePath, options...)
 }
 
+// DownloadWithOptions downloads a file with custom download options.
 func (c *clientImpl) DownloadWithOptions(url string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error) {
 	return c.DownloadWithOptionsWithContext(context.Background(), url, downloadOpts, options...)
 }
@@ -149,6 +151,7 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	if err != nil {
 		return nil, fmt.Errorf("download request failed: %w", err)
 	}
+	defer ReleaseResult(resp)
 
 	statusCode := resp.Response.StatusCode
 	rawBody := resp.Response.RawBody
@@ -430,6 +433,7 @@ func isSystemPath(path string) bool {
 	return false
 }
 
+// FormatBytes formats a byte count as a human-readable string (e.g., "1.50 MB").
 func FormatBytes(bytes int64) string {
 	const unit = 1024
 	if bytes < unit {
@@ -448,6 +452,7 @@ func FormatBytes(bytes int64) string {
 	return fmt.Sprintf("%.2f %cB", float64(bytes)/float64(div), units[exp])
 }
 
+// FormatSpeed formats a byte-per-second rate as a human-readable string (e.g., "1.50 MB/s").
 func FormatSpeed(bytesPerSecond float64) string {
 	const unit = 1024.0
 	if bytesPerSecond < unit {

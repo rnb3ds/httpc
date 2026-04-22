@@ -84,10 +84,11 @@ func TestMockTransport_SetRedirectPolicy(t *testing.T) {
 	ctx := context.Background()
 
 	// Should return context unchanged
-	result := mock.SetRedirectPolicy(ctx, true, 5)
+	result, cleanup := mock.SetRedirectPolicy(ctx, true, 5)
 	if result != ctx {
 		t.Error("Expected context to be returned unchanged")
 	}
+	cleanup()
 }
 
 func TestMockTransport_GetRedirectChain(t *testing.T) {

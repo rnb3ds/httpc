@@ -13,7 +13,7 @@ import (
 // For GET/POST/PUT/DELETE basics, see 01_quickstart/basic_usage.go
 
 func main() {
-	fmt.Println("=== HTTP Methods Examples ===\n")
+	fmt.Println("=== HTTP Methods Examples ===")
 
 	client, err := httpc.New()
 	if err != nil {
@@ -55,7 +55,7 @@ func demonstrateHEAD(client httpc.Client) {
 	fmt.Println("  - Check if resource exists (404 vs 200)")
 	fmt.Println("  - Get file size before downloading")
 	fmt.Println("  - Check Last-Modified for caching")
-	fmt.Println("  - Verify resource metadata without transfer overhead\n")
+	fmt.Println("  - Verify resource metadata without transfer overhead")
 }
 
 // demonstrateOPTIONS shows OPTIONS request usage
@@ -79,7 +79,7 @@ func demonstrateOPTIONS(client httpc.Client) {
 	fmt.Println("\nUse cases:")
 	fmt.Println("  - CORS preflight requests")
 	fmt.Println("  - Discover API capabilities")
-	fmt.Println("  - Check allowed methods before making actual request\n")
+	fmt.Println("  - Check allowed methods before making actual request")
 }
 
 // demonstratePATCH shows PATCH request usage
@@ -113,7 +113,7 @@ func demonstratePATCH(client httpc.Client) {
 	fmt.Println("\nPATCH vs PUT:")
 	fmt.Println("  - PATCH: Update only specified fields")
 	fmt.Println("  - PUT: Replace entire resource")
-	fmt.Println("  - Use PATCH for partial updates to reduce payload\n")
+	fmt.Println("  - Use PATCH for partial updates to reduce payload")
 }
 
 // demonstrateMethodComparison shows method comparison table

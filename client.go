@@ -135,6 +135,7 @@ import (
 	"time"
 
 	"github.com/cybergodev/httpc/internal/engine"
+	"github.com/cybergodev/httpc/internal/security"
 )
 
 // Doer is a minimal interface for executing HTTP requests.
@@ -380,6 +381,7 @@ func (c *clientImpl) doRequest(method, url string, options []RequestOption) (*Re
 }
 
 // Request executes an HTTP request with the given context, method, URL, and options.
+// The context parameter allows for timeout and cancellation control.
 func (c *clientImpl) Request(ctx context.Context, method, url string, options ...RequestOption) (*Result, error) {
 	// Use middleware chain if configured
 	if c.hasMiddlewares {
@@ -391,13 +393,27 @@ func (c *clientImpl) Request(ctx context.Context, method, url string, options ..
 	if err != nil {
 		return nil, err
 	}
-	return convertResponseToResult(resp), nil
+	result := convertResponseToResult(resp)
+	engine.ReleaseResponse(resp)
+	return result, nil
+}
+
+// middlewareRequestPool reduces allocations for engine.Request objects in the middleware path
+var middlewareRequestPool = sync.Pool{
+	New: func() any {
+		return &engine.Request{}
+	},
 }
 
 // executeWithMiddleware executes a request through the middleware chain.
 func (c *clientImpl) executeWithMiddleware(ctx context.Context, method, url string, options []RequestOption) (*Result, error) {
-	// Build engine request from options using setters
-	engineReq := &engine.Request{}
+	// Use pooled engine.Request to avoid allocation on every middleware request
+	engineReq, ok := middlewareRequestPool.Get().(*engine.Request)
+	if !ok || engineReq == nil {
+		engineReq = &engine.Request{}
+	}
+	// Reset to zero state (fields may contain stale data from previous use)
+	*engineReq = engine.Request{}
 	engineReq.SetMethod(method)
 	engineReq.SetURL(url)
 	engineReq.SetContext(ctx)
@@ -406,6 +422,7 @@ func (c *clientImpl) executeWithMiddleware(ctx context.Context, method, url stri
 	for _, opt := range options {
 		if opt != nil {
 			if err := opt(engineReq); err != nil {
+				middlewareRequestPool.Put(engineReq)
 				return nil, fmt.Errorf("failed to apply request option: %w", err)
 			}
 		}
@@ -414,10 +431,16 @@ func (c *clientImpl) executeWithMiddleware(ctx context.Context, method, url stri
 	// Execute through middleware chain - engine.Request now implements RequestMutator
 	respAccessor, err := c.middlewareChain(ctx, engineReq)
 	if err != nil {
+		middlewareRequestPool.Put(engineReq)
 		return nil, err
 	}
 
-	return convertResponseToResult(respAccessor), nil
+	result := convertResponseToResult(respAccessor)
+	if engineResp, ok := respAccessor.(*engine.Response); ok {
+		engine.ReleaseResponse(engineResp)
+	}
+	middlewareRequestPool.Put(engineReq)
+	return result, nil
 }
 
 func (c *clientImpl) Close() error {
@@ -430,7 +453,8 @@ func (c *clientImpl) Close() error {
 }
 
 var (
-	defaultClient atomic.Pointer[clientImpl]
+	defaultClient   atomic.Pointer[clientImpl]
+	defaultClientMu sync.Mutex
 )
 
 func getDefaultClient() (Client, error) {
@@ -439,8 +463,15 @@ func getDefaultClient() (Client, error) {
 		return client, nil
 	}
 
-	// Slow path: initialize with CAS to avoid allocation races
-	// Create new client outside of any lock
+	// Slow path: mutex-protected initialization ensures exactly one client
+	defaultClientMu.Lock()
+	defer defaultClientMu.Unlock()
+
+	// Double-check after acquiring lock
+	if client := defaultClient.Load(); client != nil {
+		return client, nil
+	}
+
 	newClient, err := New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize default client: %w", err)
@@ -451,13 +482,7 @@ func getDefaultClient() (Client, error) {
 		return nil, fmt.Errorf("unexpected client type")
 	}
 
-	// CAS: only store if not already set by another goroutine
-	// If CAS fails, another goroutine won the race - use their client
-	if !defaultClient.CompareAndSwap(nil, impl) {
-		// Another goroutine initialized first, close ours and use theirs
-		_ = impl.Close() // best-effort cleanup
-		return defaultClient.Load(), nil
-	}
+	defaultClient.Store(impl)
 	return impl, nil
 }
 
@@ -465,18 +490,15 @@ func getDefaultClient() (Client, error) {
 // After calling this, the next package-level function call will create a new client.
 // This function is safe for concurrent use.
 func CloseDefaultClient() error {
-	// Atomically swap out the client and close it
-	for {
-		client := defaultClient.Load()
-		if client == nil {
-			return nil
-		}
-		// Try to atomically clear the pointer
-		if defaultClient.CompareAndSwap(client, nil) {
-			return client.Close()
-		}
-		// CAS failed - another goroutine modified it, retry
+	defaultClientMu.Lock()
+	defer defaultClientMu.Unlock()
+
+	client := defaultClient.Load()
+	if client == nil {
+		return nil
 	}
+	defaultClient.Store(nil)
+	return client.Close()
 }
 
 // Get makes a GET request to the specified URL using the default client.
@@ -576,19 +598,15 @@ func SetDefaultClient(client Client) error {
 		return fmt.Errorf("cannot set a closed client as default")
 	}
 
-	// Atomically swap the old client with the new one
+	defaultClientMu.Lock()
+	defer defaultClientMu.Unlock()
+
+	// Swap the old client with the new one
 	var closeErr error
-	for {
-		oldClient := defaultClient.Load()
-		// Try to atomically swap the pointer
-		if defaultClient.CompareAndSwap(oldClient, impl) {
-			// Successfully swapped - close the old client
-			if oldClient != nil {
-				closeErr = oldClient.Close()
-			}
-			break
-		}
-		// CAS failed - another goroutine modified it, retry
+	oldClient := defaultClient.Load()
+	defaultClient.Store(impl)
+	if oldClient != nil {
+		closeErr = oldClient.Close()
 	}
 	return closeErr
 }
@@ -668,7 +686,7 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		return nil, err
 	}
 
-	return &engine.Config{
+	engineConfig := &engine.Config{
 		Timeout:               cfg.Timeouts.Request,
 		DialTimeout:           cfg.Timeouts.Dial,
 		KeepAlive:             30 * time.Second,
@@ -704,7 +722,13 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		EnableCookies:         cfg.Connection.EnableCookies,
 		EnableDoH:             cfg.Connection.EnableDoH,
 		DoHCacheTTL:           cfg.Connection.DoHCacheTTL,
-	}, nil
+	}
+
+	if len(cfg.Security.RedirectWhitelist) > 0 {
+		engineConfig.RedirectWhitelist = security.NewDomainWhitelist(cfg.Security.RedirectWhitelist...)
+	}
+
+	return engineConfig, nil
 }
 
 // resultPool reduces heap allocations for Result objects.
@@ -743,6 +767,14 @@ func getResult() *Result {
 func ReleaseResult(r *Result) {
 	if r == nil {
 		return
+	}
+	// Sanitize sensitive body data before returning to pool.
+	// Skip zeroing for large bodies (>64KB) since the struct zeroing below
+	// drops the reference anyway, allowing GC to reclaim the backing array.
+	if len(r.Response.RawBody) <= 64*1024 {
+		for i := range r.Response.RawBody {
+			r.Response.RawBody[i] = 0
+		}
 	}
 	*r.Request = RequestInfo{}
 	*r.Response = ResponseInfo{}
@@ -796,7 +828,7 @@ func createCookieJar(enableCookies bool) (http.CookieJar, error) {
 	if !enableCookies {
 		return nil, nil
 	}
-	jar, err := NewCookieJar()
+	jar, err := newCookieJar()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create cookie jar: %w", err)
 	}

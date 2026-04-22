@@ -35,12 +35,16 @@ var sensitiveHeaders = map[string]bool{
 	"Proxy-Authorization": true,
 }
 
+// Result wraps an HTTP response with request metadata and convenience methods.
+// Obtain a Result from Client.Request() or package-level functions like Get(), Post(), etc.
+// Call ReleaseResult(r) when done to return it to the pool.
 type Result struct {
 	Request  *RequestInfo
 	Response *ResponseInfo
 	Meta     *RequestMeta
 }
 
+// RequestInfo contains details about the HTTP request that was sent.
 type RequestInfo struct {
 	URL     string
 	Method  string
@@ -48,6 +52,7 @@ type RequestInfo struct {
 	Cookies []*http.Cookie
 }
 
+// ResponseInfo contains the HTTP response data including status, headers, body, and cookies.
 type ResponseInfo struct {
 	StatusCode    int
 	Status        string
@@ -59,6 +64,7 @@ type ResponseInfo struct {
 	Cookies       []*http.Cookie
 }
 
+// RequestMeta contains metadata about the request execution including timing and redirect info.
 type RequestMeta struct {
 	Duration      time.Duration
 	Attempts      int

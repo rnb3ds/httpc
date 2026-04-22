@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"math"
 	"math/rand/v2"
 	"net/http"
 	"strconv"
@@ -56,7 +55,11 @@ func (r *RetryEngine) GetDelayWithResponse(attempt int, resp *Response) time.Dur
 // parseRetryAfterHeader parses the Retry-After header and returns the delay duration.
 // Returns 0 if the header is not present or cannot be parsed.
 // Supports both delta-seconds and HTTP-date formats per RFC 7231.
+// SECURITY: The delay is capped at maxRetryAfterDelay (60s) to prevent a malicious
+// server from causing indefinite waits via unreasonably large Retry-After values.
 func parseRetryAfterHeader(headers http.Header) time.Duration {
+	const maxRetryAfterDelay = 60 * time.Second
+
 	if headers == nil {
 		return 0
 	}
@@ -70,12 +73,19 @@ func parseRetryAfterHeader(headers http.Header) time.Duration {
 
 	// Try parsing as seconds (delta-seconds format)
 	if seconds, err := strconv.Atoi(retryAfter); err == nil && seconds > 0 {
-		return time.Duration(seconds) * time.Second
+		delay := time.Duration(seconds) * time.Second
+		if delay > maxRetryAfterDelay {
+			delay = maxRetryAfterDelay
+		}
+		return delay
 	}
 
 	// Try parsing as HTTP date (RFC1123 format)
 	if retryTime, err := time.Parse(time.RFC1123, retryAfter); err == nil {
 		if delay := time.Until(retryTime); delay > 0 {
+			if delay > maxRetryAfterDelay {
+				delay = maxRetryAfterDelay
+			}
 			return delay
 		}
 	}
@@ -84,6 +94,7 @@ func parseRetryAfterHeader(headers http.Header) time.Duration {
 }
 
 // calculateExponentialDelay calculates the exponential backoff delay with optional jitter.
+// Uses iterative multiplication instead of math.Pow for better performance.
 func (r *RetryEngine) calculateExponentialDelay(attempt int) time.Duration {
 	delay := r.config.RetryDelay
 	if delay <= 0 {
@@ -95,19 +106,24 @@ func (r *RetryEngine) calculateExponentialDelay(attempt int) time.Duration {
 		backoffFactor = 2.0
 	}
 
-	exponentialDelay := time.Duration(float64(delay) * math.Pow(backoffFactor, float64(attempt)))
+	// Iterative multiplication avoids math.Pow's transcendental function overhead
+	exponentialDelay := float64(delay)
+	for i := 0; i < attempt; i++ {
+		exponentialDelay *= backoffFactor
+	}
+	result := time.Duration(exponentialDelay)
 
 	// Apply max delay cap
-	if r.config.MaxRetryDelay > 0 && exponentialDelay > r.config.MaxRetryDelay {
-		exponentialDelay = r.config.MaxRetryDelay
+	if r.config.MaxRetryDelay > 0 && result > r.config.MaxRetryDelay {
+		result = r.config.MaxRetryDelay
 	}
 
 	// Apply jitter to prevent thundering herd
 	if r.config.Jitter {
-		exponentialDelay = r.applyJitter(exponentialDelay)
+		result = r.applyJitter(result)
 	}
 
-	return exponentialDelay
+	return result
 }
 
 // applyJitter adds randomization to the delay to prevent thundering herd problems.

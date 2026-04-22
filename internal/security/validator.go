@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/cybergodev/httpc/internal/types"
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
@@ -157,16 +158,23 @@ func (v *Validator) validateRequestSize(body any) error {
 	}
 
 	var size int64
-	switch v := body.(type) {
+	switch b := body.(type) {
 	case string:
-		size = int64(len(v))
+		size = int64(len(b))
 	case []byte:
-		size = int64(len(v))
+		size = int64(len(b))
 	case url.Values:
-		size = int64(len(v.Encode()))
+		size = int64(len(b.Encode()))
+	case *types.FormData:
+		for _, v := range b.Fields {
+			size += int64(len(v))
+		}
+		for _, f := range b.Files {
+			size += int64(len(f.Content))
+		}
 	default:
-		// For complex types (FormData, io.Reader, etc.), size validation
-		// occurs during request serialization in the request processor
+		// For io.Reader and other types, caller is responsible for size control.
+		// Consider wrapping with io.LimitReader for untrusted sources.
 		return nil
 	}
 

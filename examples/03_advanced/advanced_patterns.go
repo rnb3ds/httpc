@@ -14,7 +14,7 @@ import (
 // This example demonstrates advanced patterns and optimization techniques
 
 func main() {
-	fmt.Println("=== Advanced Patterns & Optimization ===\n")
+	fmt.Println("=== Advanced Patterns & Optimization ===")
 
 	// 1. Request/Response Callbacks
 	demonstrateCallbacks()
@@ -76,7 +76,7 @@ func demonstrateCallbacks() {
 	fmt.Println("  - Request logging and debugging")
 	fmt.Println("  - Response validation before processing")
 	fmt.Println("  - Custom metrics collection")
-	fmt.Println("  - Request modification on-the-fly\n")
+	fmt.Println("  - Request modification on-the-fly")
 }
 
 // demonstrateResultPool shows result pool optimization
@@ -121,7 +121,7 @@ func demonstrateResultPool() {
 	fmt.Println("  - High-throughput applications (1000+ requests/sec)")
 	fmt.Println("  - Memory-constrained environments")
 	fmt.Println("  - Long-running services")
-	fmt.Println("\nWARNING: Never use Result after calling ReleaseResult!\n")
+	fmt.Println("\nWARNING: Never use Result after calling ReleaseResult!")
 }
 
 // demonstrateTestingConfig shows TestingConfig preset
@@ -166,7 +166,7 @@ func demonstrateTestingConfig() {
 	fmt.Println()
 	fmt.Println("        resp, err := client.Request(ctx, \"GET\", testServer.URL)")
 	fmt.Println("        // assert.NoError(t, err)")
-	fmt.Println("    }\n")
+	fmt.Println("    }")
 }
 
 // demonstrateDefaultClient shows default client management
@@ -185,8 +185,12 @@ func demonstrateDefaultClient() {
 
 	// Set custom default client
 	customClient, err := httpc.New(&httpc.Config{
-		Timeout:    5 * time.Second,
-		MaxRetries: 0,
+		Timeouts: httpc.TimeoutConfig{
+			Request: 5 * time.Second,
+		},
+		Retry: httpc.RetryConfig{
+			MaxRetries: 0,
+		},
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -215,7 +219,7 @@ func demonstrateDefaultClient() {
 	fmt.Println("\nUse cases:")
 	fmt.Println("  - Application-wide configuration")
 	fmt.Println("  - Lazy initialization")
-	fmt.Println("  - Testing with custom client\n")
+	fmt.Println("  - Testing with custom client")
 }
 
 // demonstrateMemoryOptimization shows memory optimization techniques
@@ -276,5 +280,5 @@ func demonstrateMemoryOptimization() {
 	fmt.Println("  2. Use ReleaseResult() for high-throughput scenarios")
 	fmt.Println("  3. Configure appropriate timeouts to avoid goroutine leaks")
 	fmt.Println("  4. Use PerformanceConfig() for high-concurrency applications")
-	fmt.Println("  5. Close clients when done (releases connection pool)\n")
+	fmt.Println("  5. Close clients when done (releases connection pool)")
 }

@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -278,13 +277,11 @@ func (c *urlCache) Get(rawURL string) (*url.URL, error) {
 		c.keys = c.keys[1:]
 	}
 
-	// Clone the URL to ensure cached entries are immutable
-	// This prevents modifications from affecting cached values
-	cloned := cloneURL(parsed)
-	c.entries[cacheKey] = cloned
+	// Store the parsed URL directly — callers always receive a clone
+	c.entries[cacheKey] = parsed
 	c.keys = append(c.keys, cacheKey)
 
-	return cloneURL(cloned), nil
+	return cloneURL(parsed), nil
 }
 
 // cloneURL creates a deep copy of a URL
@@ -470,10 +467,7 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 	}
 
 	if len(req.QueryParams()) > 0 {
-		// Clone the cached URL before modifying it with query params
-		// This ensures the cached version remains immutable
-		parsedURL = cloneURL(parsedURL)
-		// Use optimized query encoder that avoids url.Values allocation
+		// parsedURL is already a clone from the cache, safe to modify directly.
 		parsedURL.RawQuery = AppendQueryParams(parsedURL.RawQuery, req.QueryParams())
 	}
 
@@ -503,86 +497,60 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 				}
 				body = getPooledBytesReader(xmlData)
 				contentType = "application/xml"
-			} else if isFormData(v) {
+			} else if fd, ok := v.(*types.FormData); ok {
 				// Use pooled buffer for multipart form data
 				buf := getMultipartBuffer()
 				writer := multipart.NewWriter(buf)
 
-				fieldsVal := reflect.ValueOf(v).Elem().FieldByName("Fields")
-				filesVal := reflect.ValueOf(v).Elem().FieldByName("Files")
-
-				if fieldsVal.IsValid() && fieldsVal.Kind() == reflect.Map {
-					for _, key := range fieldsVal.MapKeys() {
-						value := fieldsVal.MapIndex(key).String()
-						if err := writer.WriteField(key.String(), value); err != nil {
-							putMultipartBuffer(buf)
-							return nil, fmt.Errorf("write form field failed: %w", err)
-						}
+				for key, value := range fd.Fields {
+					if err := writer.WriteField(key, value); err != nil {
+						putMultipartBuffer(buf)
+						return nil, fmt.Errorf("write form field failed: %w", err)
 					}
 				}
 
-				if filesVal.IsValid() && filesVal.Kind() == reflect.Map {
-					for _, key := range filesVal.MapKeys() {
-						fileDataValue := filesVal.MapIndex(key)
-						if !fileDataValue.IsValid() || fileDataValue.IsNil() {
-							continue
-						}
-						fileDataElem := fileDataValue.Elem()
+				for key, fileData := range fd.Files {
+					if fileData == nil {
+						continue
+					}
 
-						filename := ""
-						var content []byte
-						contentType := ""
+					var part io.Writer
+					var err error
 
-						if f := fileDataElem.FieldByName("Filename"); f.IsValid() && f.Kind() == reflect.String {
-							filename = f.String()
+					if fileData.ContentType != "" {
+						h := getMIMEHeader()
+						sb, _ := stringBuilderPool.Get().(*strings.Builder)
+						if sb == nil {
+							sb = &strings.Builder{}
 						}
-						if f := fileDataElem.FieldByName("Content"); f.IsValid() && f.Kind() == reflect.Slice {
-							content = f.Bytes()
-						}
-						if f := fileDataElem.FieldByName("ContentType"); f.IsValid() && f.Kind() == reflect.String {
-							contentType = f.String()
-						}
+						sb.Reset()
+						escapedKey := escapeQuotes(key)
+						escapedFilename := escapeQuotes(fileData.Filename)
+						sb.Grow(21 + len(escapedKey) + 12 + len(escapedFilename) + 2)
+						sb.WriteString(`form-data; name="`)
+						sb.WriteString(escapedKey)
+						sb.WriteString(`"; filename="`)
+						sb.WriteString(escapedFilename)
+						sb.WriteByte('"')
+						contentDisposition := sb.String()
+						stringBuilderPool.Put(sb)
 
-						var part io.Writer
-						var err error
+						h.Set("Content-Disposition", contentDisposition)
+						h.Set("Content-Type", fileData.ContentType)
+						part, err = writer.CreatePart(*h)
+						putMIMEHeader(h)
+					} else {
+						part, err = writer.CreateFormFile(key, fileData.Filename)
+					}
 
-						if contentType != "" {
-							h := getMIMEHeader()
-							// Build Content-Disposition without fmt.Sprintf for better performance
-							sb, _ := stringBuilderPool.Get().(*strings.Builder)
-							if sb == nil {
-								sb = &strings.Builder{}
-							}
-							sb.Reset()
-							escapedKey := escapeQuotes(key.String())
-							escapedFilename := escapeQuotes(filename)
-							// Pre-calculate size: "form-data; name=" + escapedKey + "; filename=" + escapedFilename
-							sb.Grow(21 + len(escapedKey) + 12 + len(escapedFilename) + 2)
-							sb.WriteString(`form-data; name="`)
-							sb.WriteString(escapedKey)
-							sb.WriteString(`"; filename="`)
-							sb.WriteString(escapedFilename)
-							sb.WriteByte('"')
-							contentDisposition := sb.String()
-							stringBuilderPool.Put(sb)
+					if err != nil {
+						putMultipartBuffer(buf)
+						return nil, fmt.Errorf("create form file failed: %w", err)
+					}
 
-							h.Set("Content-Disposition", contentDisposition)
-							h.Set("Content-Type", contentType)
-							part, err = writer.CreatePart(*h)
-							putMIMEHeader(h)
-						} else {
-							part, err = writer.CreateFormFile(key.String(), filename)
-						}
-
-						if err != nil {
-							putMultipartBuffer(buf)
-							return nil, fmt.Errorf("create form file failed: %w", err)
-						}
-
-						if _, err := part.Write(content); err != nil {
-							putMultipartBuffer(buf)
-							return nil, fmt.Errorf("write file content failed: %w", err)
-						}
+					if _, err := part.Write(fileData.Content); err != nil {
+						putMultipartBuffer(buf)
+						return nil, fmt.Errorf("write file content failed: %w", err)
 					}
 				}
 
@@ -612,12 +580,10 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 		}
 	}
 
-	httpReq, err := http.NewRequest(req.Method(), parsedURL.String(), body)
+	httpReq, err := http.NewRequestWithContext(req.Context(), req.Method(), parsedURL.String(), body)
 	if err != nil {
 		return nil, fmt.Errorf("create HTTP request failed: %w", err)
 	}
-
-	httpReq = httpReq.WithContext(req.Context())
 
 	if contentType != "" && httpReq.Header.Get("Content-Type") == "" {
 		httpReq.Header.Set("Content-Type", contentType)
@@ -720,12 +686,4 @@ func formatQueryParam(v any) string {
 	default:
 		return fmt.Sprintf("%v", val)
 	}
-}
-
-func isFormData(v any) bool {
-	if v == nil {
-		return false
-	}
-	_, ok := v.(*types.FormData)
-	return ok
 }

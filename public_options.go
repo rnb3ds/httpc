@@ -435,6 +435,8 @@ func WithTimeout(timeout time.Duration) RequestOption {
 	}
 }
 
+// WithContext sets the context for the request, enabling timeout and cancellation control.
+// The context overrides the client's default timeout for this request.
 func WithContext(ctx context.Context) RequestOption {
 	return func(r *engine.Request) error {
 		if ctx == nil {

@@ -53,11 +53,11 @@ The underlying connection pool is thread-safe. HTTPC uses Go's `http.Transport` 
 
 ### Cookie Jar
 
-When `EnableCookies` is set to `true`, the cookie jar is safe for concurrent access:
+When `Connection.EnableCookies` is set to `true`, the cookie jar is safe for concurrent access:
 
 ```go
 config := httpc.DefaultConfig()
-config.EnableCookies = true
+config.Connection.EnableCookies = true
 
 client, err := httpc.New(config)
 if err != nil {
@@ -110,7 +110,7 @@ for i := 0; i < 5; i++ {
     wg.Add(1)
     go func(id int) {
         defer wg.Done()
-        result, err := dc.Get(context.Background(), "/users/%d", id)
+        result, err := dc.Get(fmt.Sprintf("/users/%d", id))
         // Handle result
     }(i)
 }
@@ -131,7 +131,7 @@ func init() {
     var err error
     globalClient, err = httpc.New()
     if err != nil {
-        panic(err)
+        log.Fatalf("failed to initialize HTTP client: %v", err)
     }
 }
 
@@ -151,7 +151,15 @@ func makeRequest(url string) (*httpc.Result, error) {
 }
 
 // ✅ CORRECT: Reuse client
-var sharedClient, _ = httpc.New()
+var sharedClient httpc.Client
+
+func init() {
+    var err error
+    sharedClient, err = httpc.New()
+    if err != nil {
+        log.Fatalf("failed to create shared client: %v", err)
+    }
+}
 
 func makeRequest(url string) (*httpc.Result, error) {
     return sharedClient.Get(url)

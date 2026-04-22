@@ -32,7 +32,10 @@ func main() {
 	// Example 5: Audit middleware
 	demonstrateAuditMiddleware()
 
-	// Example 6: Chaining middlewares
+	// Example 6: Header middleware
+	demonstrateHeaderMiddleware()
+
+	// Example 7: Chaining middlewares
 	demonstrateMiddlewareChain()
 
 	fmt.Println("\n=== All Examples Completed ===")
@@ -44,7 +47,7 @@ func demonstrateLoggingMiddleware() {
 
 	// Create client with logging middleware
 	config := httpc.DefaultConfig()
-	config.Middlewares = []httpc.MiddlewareFunc{
+	config.Middleware.Middlewares = []httpc.MiddlewareFunc{
 		httpc.LoggingMiddleware(log.Printf),
 	}
 
@@ -72,7 +75,7 @@ func demonstrateRequestIDMiddleware() {
 
 	// Create client with request ID middleware
 	config := httpc.DefaultConfig()
-	config.Middlewares = []httpc.MiddlewareFunc{
+	config.Middleware.Middlewares = []httpc.MiddlewareFunc{
 		httpc.RequestIDMiddleware("X-Request-ID", nil),
 	}
 
@@ -112,7 +115,7 @@ func demonstrateMetricsMiddleware() {
 
 	// Create client with metrics middleware
 	config := httpc.DefaultConfig()
-	config.Middlewares = []httpc.MiddlewareFunc{
+	config.Middleware.Middlewares = []httpc.MiddlewareFunc{
 		httpc.MetricsMiddleware(func(method, url string, statusCode int, duration time.Duration, err error) {
 			mu.Lock()
 			key := fmt.Sprintf("%s %s", method, url)
@@ -156,7 +159,7 @@ func demonstrateRecoveryMiddleware() {
 
 	// Create client with recovery middleware
 	config := httpc.DefaultConfig()
-	config.Middlewares = []httpc.MiddlewareFunc{
+	config.Middleware.Middlewares = []httpc.MiddlewareFunc{
 		httpc.RecoveryMiddleware(),
 		httpc.LoggingMiddleware(log.Printf),
 	}
@@ -184,7 +187,7 @@ func demonstrateAuditMiddleware() {
 
 	// Create client with audit middleware
 	config := httpc.DefaultConfig()
-	config.Middlewares = []httpc.MiddlewareFunc{
+	config.Middleware.Middlewares = []httpc.MiddlewareFunc{
 		httpc.AuditMiddleware(func(event httpc.AuditEvent) {
 			log.Printf("[AUDIT] %s %s -> %d (%v) attempts=%d user=%s ip=%s",
 				event.Method, event.URL, event.StatusCode, event.Duration, event.Attempts,
@@ -210,13 +213,42 @@ func demonstrateAuditMiddleware() {
 	fmt.Printf("Request completed: Status %d\n\n", resp.StatusCode())
 }
 
+// demonstrateHeaderMiddleware shows adding default headers via middleware
+func demonstrateHeaderMiddleware() {
+	fmt.Println("--- Example 6: Header Middleware ---")
+
+	// Create client with header middleware for default headers on every request
+	config := httpc.DefaultConfig()
+	config.Middleware.Middlewares = []httpc.MiddlewareFunc{
+		httpc.HeaderMiddleware(map[string]string{
+			"X-App-Version": "1.0.0",
+			"X-Client-ID":   "my-client",
+		}),
+	}
+
+	client, err := httpc.New(config)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer client.Close()
+
+	resp, err := client.Get("https://httpbin.org/headers")
+	if err != nil {
+		log.Printf("Request failed: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Status: %d\n", resp.StatusCode())
+	fmt.Println("Headers added to every request via middleware\n ")
+}
+
 // demonstrateMiddlewareChain shows combining multiple middlewares
 func demonstrateMiddlewareChain() {
-	fmt.Println("--- Example 6: Middleware Chain ---")
+	fmt.Println("--- Example 7: Middleware Chain ---")
 
 	// Create client with multiple chained middlewares
 	config := httpc.DefaultConfig()
-	config.Middlewares = []httpc.MiddlewareFunc{
+	config.Middleware.Middlewares = []httpc.MiddlewareFunc{
 		// Order matters: first middleware runs first for request, last for response
 		httpc.RequestIDMiddleware("X-Correlation-ID", nil),
 		httpc.RecoveryMiddleware(),

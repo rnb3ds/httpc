@@ -60,7 +60,7 @@ func example2NoFollow() {
 
 	// Configure client to not follow redirects
 	config := httpc.DefaultConfig()
-	config.FollowRedirects = false
+	config.Middleware.FollowRedirects = false
 	client, err := httpc.New(config)
 	if err != nil {
 		log.Fatal(err)
@@ -86,8 +86,8 @@ func example3MaxRedirects() {
 
 	// Configure client with redirect limit
 	config := httpc.DefaultConfig()
-	config.FollowRedirects = true
-	config.MaxRedirects = 2 // Only follow up to 2 redirects
+	config.Middleware.FollowRedirects = true
+	config.Middleware.MaxRedirects = 2 // Only follow up to 2 redirects
 	client, err := httpc.New(config)
 	if err != nil {
 		log.Fatal(err)
@@ -189,7 +189,7 @@ func example6ManualHandling() {
 
 	// Disable automatic redirects
 	config := httpc.DefaultConfig()
-	config.FollowRedirects = false
+	config.Middleware.FollowRedirects = false
 	client, err := httpc.New(config)
 	if err != nil {
 		log.Fatal(err)

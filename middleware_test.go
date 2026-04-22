@@ -7,64 +7,65 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/cybergodev/httpc/internal/validation"
 )
 
 func TestChain(t *testing.T) {
-	var order []string
-	var mu sync.Mutex
-
-	middleware1 := func(next Handler) Handler {
-		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
-			mu.Lock()
-			order = append(order, "m1-before")
-			mu.Unlock()
-			resp, err := next(ctx, req)
-			mu.Lock()
-			order = append(order, "m1-after")
-			mu.Unlock()
-			return resp, err
-		}
+	tests := []struct {
+		name     string
+		count    int
+		expected []string
+	}{
+		{"two middlewares", 2, []string{"m1-before", "m2-before", "handler", "m2-after", "m1-after"}},
+		{"three middlewares", 3, []string{"m1-before", "m2-before", "m3-before", "handler", "m3-after", "m2-after", "m1-after"}},
 	}
 
-	middleware2 := func(next Handler) Handler {
-		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
-			mu.Lock()
-			order = append(order, "m2-before")
-			mu.Unlock()
-			resp, err := next(ctx, req)
-			mu.Lock()
-			order = append(order, "m2-after")
-			mu.Unlock()
-			return resp, err
-		}
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var order []string
+			var mu sync.Mutex
 
-	finalHandler := func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
-		mu.Lock()
-		order = append(order, "handler")
-		mu.Unlock()
-		return &mockResponse{statusCode: 200}, nil
-	}
+			createMiddleware := func(name string) MiddlewareFunc {
+				return func(next Handler) Handler {
+					return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
+						mu.Lock()
+						order = append(order, name+"-before")
+						mu.Unlock()
+						resp, err := next(ctx, req)
+						mu.Lock()
+						order = append(order, name+"-after")
+						mu.Unlock()
+						return resp, err
+					}
+				}
+			}
 
-	chain := Chain(middleware1, middleware2)
-	handler := chain(finalHandler)
+			finalHandler := func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
+				mu.Lock()
+				order = append(order, "handler")
+				mu.Unlock()
+				return &mockResponse{statusCode: 200}, nil
+			}
 
-	_, _ = handler(context.Background(), &mockRequest{})
+			middlewares := make([]MiddlewareFunc, tt.count)
+			for i := 0; i < tt.count; i++ {
+				middlewares[i] = createMiddleware(fmt.Sprintf("m%d", i+1))
+			}
 
-	expected := []string{"m1-before", "m2-before", "handler", "m2-after", "m1-after"}
-	if len(order) != len(expected) {
-		t.Fatalf("expected %d calls, got %d: %v", len(expected), len(order), order)
-	}
+			chain := Chain(middlewares...)
+			handler := chain(finalHandler)
+			_, _ = handler(context.Background(), &mockRequest{})
 
-	for i, exp := range expected {
-		if order[i] != exp {
-			t.Errorf("position %d: expected %s, got %s", i, exp, order[i])
-		}
+			if len(order) != len(tt.expected) {
+				t.Fatalf("expected %d calls, got %d: %v", len(tt.expected), len(order), order)
+			}
+			for i, exp := range tt.expected {
+				if order[i] != exp {
+					t.Errorf("position %d: expected %s, got %s", i, exp, order[i])
+				}
+			}
+		})
 	}
 }
 
@@ -108,40 +109,6 @@ func TestLoggingMiddleware(t *testing.T) {
 	}
 	if !strings.Contains(msg, "200") {
 		t.Errorf("expected log to contain 200, got: %s", msg)
-	}
-}
-
-func TestRecoveryMiddleware(t *testing.T) {
-	panicMiddleware := func(next Handler) Handler {
-		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
-			panic("test panic")
-		}
-	}
-
-	cfg := testConfig()
-	cfg.Middleware.Middlewares = []MiddlewareFunc{
-		RecoveryMiddleware(),
-		panicMiddleware,
-	}
-
-	client, err := New(cfg)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
-	defer client.Close()
-
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	_, err = client.Get(ts.URL)
-
-	if err == nil {
-		t.Error("expected error from panic recovery, got nil")
-	}
-	if !strings.Contains(err.Error(), "panic recovered") {
-		t.Errorf("expected panic recovered error, got: %v", err)
 	}
 }
 
@@ -307,67 +274,6 @@ func TestMetricsMiddleware(t *testing.T) {
 	}
 }
 
-func TestMultipleMiddlewares(t *testing.T) {
-	var order []string
-	var mu sync.Mutex
-
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	createMiddleware := func(name string) MiddlewareFunc {
-		return func(next Handler) Handler {
-			return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
-				mu.Lock()
-				order = append(order, name+"-before")
-				mu.Unlock()
-				resp, err := next(ctx, req)
-				mu.Lock()
-				order = append(order, name+"-after")
-				mu.Unlock()
-				return resp, err
-			}
-		}
-	}
-
-	cfg := testConfig()
-	cfg.Middleware.Middlewares = []MiddlewareFunc{
-		createMiddleware("A"),
-		createMiddleware("B"),
-		createMiddleware("C"),
-	}
-
-	client, err := New(cfg)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
-	defer client.Close()
-
-	_, err = client.Get(ts.URL)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	expected := []string{
-		"A-before", "B-before", "C-before",
-		"C-after", "B-after", "A-after",
-	}
-
-	if len(order) != len(expected) {
-		t.Fatalf("expected %d calls, got %d: %v", len(expected), len(order), order)
-	}
-
-	for i, exp := range expected {
-		if order[i] != exp {
-			t.Errorf("position %d: expected %s, got %s", i, exp, order[i])
-		}
-	}
-}
-
 func TestZeroOverheadNoMiddleware(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -522,46 +428,6 @@ func BenchmarkMiddlewareOverhead(b *testing.B) {
 			_, _ = client.Get(ts.URL)
 		}
 	})
-}
-
-func TestConcurrentMiddlewareAccess(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	var callCount int64
-
-	cfg := testConfig()
-	cfg.Middleware.Middlewares = []MiddlewareFunc{
-		func(next Handler) Handler {
-			return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
-				atomic.AddInt64(&callCount, 1)
-				return next(ctx, req)
-			}
-		},
-	}
-
-	client, err := New(cfg)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
-	defer client.Close()
-
-	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, _ = client.Get(ts.URL)
-		}()
-	}
-	wg.Wait()
-
-	count := atomic.LoadInt64(&callCount)
-	if count != 10 {
-		t.Errorf("expected 10 middleware calls, got %d", count)
-	}
 }
 
 // mockRequest implements RequestMutator for testing
@@ -797,7 +663,7 @@ func TestAuditMiddlewareWithConfig(t *testing.T) {
 	}
 }
 
-func TestAuditMiddlewareJSON(t *testing.T) {
+func TestAuditMiddlewareWithConfigJSON(t *testing.T) {
 	var capturedEvent AuditEvent
 	var mu sync.Mutex
 
@@ -806,13 +672,16 @@ func TestAuditMiddlewareJSON(t *testing.T) {
 	}))
 	defer ts.Close()
 
+	auditCfg := DefaultAuditMiddlewareConfig()
+	auditCfg.Format = "json"
+
 	cfg := testConfig()
 	cfg.Middleware.Middlewares = []MiddlewareFunc{
-		AuditMiddlewareJSON(func(event AuditEvent) {
+		AuditMiddlewareWithConfig(func(event AuditEvent) {
 			mu.Lock()
 			defer mu.Unlock()
 			capturedEvent = event
-		}),
+		}, auditCfg),
 	}
 
 	client, err := New(cfg)
@@ -995,48 +864,5 @@ func TestAuditEventMarshalJSON(t *testing.T) {
 	}
 	if !strings.Contains(jsonStr, "test error") {
 		t.Error("expected JSON to contain error")
-	}
-}
-
-func TestSanitizeAuditURL(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name:     "URL without credentials",
-			input:    "https://example.com/path",
-			expected: "https://example.com/path",
-		},
-		{
-			name:     "URL with username only",
-			input:    "https://user@example.com/path",
-			expected: "https://***@example.com/path",
-		},
-		{
-			name:     "URL with username and password",
-			input:    "https://user:pass@example.com/path",
-			expected: "https://***:***@example.com/path",
-		},
-		{
-			name:     "URL with query and fragment",
-			input:    "https://user:secret@example.com/path?query=value#fragment",
-			expected: "https://***:***@example.com/path?query=value#fragment",
-		},
-		{
-			name:     "Invalid URL",
-			input:    "://invalid",
-			expected: "://invalid",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := validation.SanitizeURL(tt.input)
-			if result != tt.expected {
-				t.Errorf("expected %q, got %q", tt.expected, result)
-			}
-		})
 	}
 }

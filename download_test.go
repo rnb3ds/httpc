@@ -1,6 +1,7 @@
 package httpc
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -666,5 +667,71 @@ func TestIsSystemPath(t *testing.T) {
 				t.Errorf("isSystemPath(%q) = %v, want %v", tt.path, result, tt.isSystem)
 			}
 		})
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Package-Level Download Functions
+// ----------------------------------------------------------------------------
+
+func TestPackageLevel_DownloadFileWithContext(t *testing.T) {
+	config := DefaultConfig()
+	config.Security.AllowPrivateIPs = true
+	client, _ := New(config)
+	_ = SetDefaultClient(client)
+	defer CloseDefaultClient()
+
+	content := []byte("download with context test")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write(content)
+	}))
+	defer server.Close()
+
+	filePath := filepath.Join(t.TempDir(), "ctx_test.txt")
+	result, err := DownloadFileWithContext(context.Background(), server.URL, filePath)
+	if err != nil {
+		t.Fatalf("DownloadFileWithContext failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result should not be nil")
+	}
+
+	data, _ := os.ReadFile(filePath)
+	if string(data) != string(content) {
+		t.Errorf("file content mismatch")
+	}
+}
+
+func TestPackageLevel_DownloadWithOptionsWithContext(t *testing.T) {
+	config := DefaultConfig()
+	config.Security.AllowPrivateIPs = true
+	client, _ := New(config)
+	_ = SetDefaultClient(client)
+	defer CloseDefaultClient()
+
+	content := []byte("download with options and context test")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write(content)
+	}))
+	defer server.Close()
+
+	filePath := filepath.Join(t.TempDir(), "ctx_opts_test.txt")
+	opts := DefaultDownloadConfig()
+	opts.FilePath = filePath
+
+	result, err := DownloadWithOptionsWithContext(context.Background(), server.URL, opts)
+	if err != nil {
+		t.Fatalf("DownloadWithOptionsWithContext failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result should not be nil")
+	}
+}
+
+func TestCalculateSpeed_ZeroDuration(t *testing.T) {
+	if calculateSpeed(100, 0) != 0 {
+		t.Error("calculateSpeed with zero duration should return 0")
 	}
 }

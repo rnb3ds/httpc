@@ -157,7 +157,7 @@ Check that cookie jar is working correctly:
 
 ```go
 config := httpc.DefaultConfig()
-config.EnableCookies = true
+config.Connection.EnableCookies = true
 client, _ := httpc.New(config)
 
 // First request - server sets cookie

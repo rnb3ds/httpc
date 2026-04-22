@@ -77,6 +77,7 @@ func NewDomain(baseURL string, config ...*Config) (DomainClienter, error) {
 
 	session, err := NewSessionManager()
 	if err != nil {
+		_ = client.Close() // best-effort cleanup
 		return nil, fmt.Errorf("failed to create session: %w", err)
 	}
 
@@ -207,9 +208,9 @@ func (dc *DomainClient) DownloadWithOptionsWithContext(ctx context.Context, path
 
 // prepareSessionOptions merges session state (headers, cookies) with user-provided options.
 func (dc *DomainClient) prepareSessionOptions(options []RequestOption) []RequestOption {
-	managedOptions := dc.session.PrepareOptions()
+	managedOptions := dc.session.prepareOptions()
 	allOptions := append(managedOptions, options...)
-	dc.session.CaptureFromOptions(options)
+	dc.session.captureFromOptions(options)
 	return allOptions
 }
 
@@ -245,14 +246,9 @@ func (dc *DomainClient) buildURL(pathStr string) (string, error) {
 		}
 	}
 
-	// Use cached parsed URL for efficiency
+	// Use cached parsed URL (initialized in NewDomain, read-only here)
 	if dc.parsedURL == nil {
-		// Fallback: should not happen if NewDomain was used
-		baseURL, err := url.Parse(dc.baseURL)
-		if err != nil {
-			return "", fmt.Errorf("failed to parse base URL: %w", err)
-		}
-		dc.parsedURL = baseURL
+		return "", fmt.Errorf("base URL was not properly initialized")
 	}
 
 	// Clone the cached URL to avoid modifying the original

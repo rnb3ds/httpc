@@ -112,40 +112,22 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 		return nil, fmt.Errorf("DoH resolver is closed")
 	}
 
-	// Check cache first - TOCTOU safe: return cached data if valid, don't delete in read path
-	if cached, ok := r.cache.Load(host); ok {
-		// Safe type assertion to prevent potential panic from corrupted cache
+	// Check cache first using single LoadAndDelete to avoid TOCTOU race.
+	// If the entry is valid, we re-store it; if expired or invalid, it stays deleted.
+	if cached, loaded := r.cache.LoadAndDelete(host); loaded {
 		entry, ok := cached.(*CacheEntry)
 		if !ok || entry == nil {
-			// Invalid cache entry type - use LoadAndDelete for atomic delete+check
-			// This prevents race conditions where multiple goroutines try to delete the same entry
-			actual, loaded := r.cache.LoadAndDelete(host)
-			if loaded {
-				// Only decrement if we actually removed something
-				// Check if the removed value was also invalid (defensive)
-				if actualEntry, ok := actual.(*CacheEntry); !ok || actualEntry == nil {
-					r.cacheSize.Add(-1)
-				}
-			}
+			// Invalid entry type — decrement counter and fall through to lookup
+			r.cacheSize.Add(-1)
 		} else if time.Now().Before(entry.Expires) {
-			// Return a copy to prevent caller from modifying cached data
+			// Valid and not expired — re-store the same entry and return a copy
+			r.cache.Store(host, entry)
 			ips := make([]net.IPAddr, len(entry.IPs))
 			copy(ips, entry.IPs)
 			return ips, nil
 		} else {
-			// Entry expired - use LoadAndDelete for atomic delete
-			// SECURITY: Simplified approach - LoadAndDelete is atomic, so only one goroutine
-			// will successfully delete the entry. This eliminates the TOCTOU race condition
-			// between the decrement CAS and the actual deletion.
-			actual, loaded := r.cache.LoadAndDelete(host)
-			if loaded {
-				// Only decrement if the deleted entry is the one we found (same pointer)
-				// This handles the case where another goroutine replaced the entry between
-				// our Load() and LoadAndDelete() calls
-				if actualEntry, ok := actual.(*CacheEntry); ok && actualEntry == entry {
-					r.cacheSize.Add(-1)
-				}
-			}
+			// Expired — decrement counter, entry stays deleted
+			r.cacheSize.Add(-1)
 		}
 	}
 

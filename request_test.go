@@ -1,10 +1,15 @@
 package httpc
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // ============================================================================
@@ -632,4 +637,274 @@ func TestRequest_CombinedOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)
 	}
+}
+
+// ----------------------------------------------------------------------------
+// WithFile
+// ----------------------------------------------------------------------------
+
+func TestWithFile(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty field name", func(t *testing.T) {
+		opt := WithFile("", "test.txt", []byte("data"))
+		err := opt(nil)
+		if err == nil {
+			t.Error("expected error for empty field name")
+		}
+	})
+
+	t.Run("empty filename", func(t *testing.T) {
+		opt := WithFile("file", "", []byte("data"))
+		err := opt(nil)
+		if err == nil {
+			t.Error("expected error for empty filename")
+		}
+	})
+
+	t.Run("path traversal rejected", func(t *testing.T) {
+		// Filename with path traversal should be rejected by validation
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Post("http://example.com", WithFile("file", "../etc/passwd", []byte("data")))
+		if err == nil {
+			t.Error("expected error for path traversal filename")
+		}
+	})
+
+	t.Run("success", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+				t.Error("expected multipart content type")
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Post(server.URL, WithFile("upload", "test.txt", []byte("file content")))
+		if err != nil {
+			t.Fatalf("WithFile failed: %v", err)
+		}
+	})
+}
+
+// ----------------------------------------------------------------------------
+// WithContext
+// ----------------------------------------------------------------------------
+
+func TestWithContext(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil context error", func(t *testing.T) {
+		opt := WithContext(nil)
+		err := opt(nil)
+		if err == nil {
+			t.Error("expected error for nil context")
+		}
+	})
+
+	t.Run("valid context", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		ctx := context.Background()
+		_, err := client.Get(server.URL, WithContext(ctx))
+		if err != nil {
+			t.Fatalf("Request with context failed: %v", err)
+		}
+	})
+}
+
+// ----------------------------------------------------------------------------
+// WithSecureCookie
+// ----------------------------------------------------------------------------
+
+func TestWithSecureCookie(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil config", func(t *testing.T) {
+		opt := WithSecureCookie(nil)
+		err := opt(nil)
+		if err == nil {
+			t.Error("expected error for nil config")
+		}
+	})
+
+	t.Run("insecure cookie rejected", func(t *testing.T) {
+		client, _ := newTestClient()
+		defer client.Close()
+
+		securityConfig := &validation.CookieSecurityConfig{
+			RequireSecure: true,
+		}
+
+		_, err := client.Get("http://example.com",
+			WithCookie(http.Cookie{Name: "test", Value: "val"}),
+			WithSecureCookie(securityConfig),
+		)
+		if err == nil {
+			t.Error("expected error for insecure cookie with strict config")
+		}
+	})
+}
+
+// ----------------------------------------------------------------------------
+// WithTimeout Boundaries
+// ----------------------------------------------------------------------------
+
+func TestWithTimeout_Boundaries(t *testing.T) {
+	t.Parallel()
+
+	t.Run("negative timeout", func(t *testing.T) {
+		opt := WithTimeout(-1 * time.Second)
+		err := opt(nil)
+		if err == nil {
+			t.Error("expected error for negative timeout")
+		}
+	})
+
+	t.Run("exceeds max timeout", func(t *testing.T) {
+		opt := WithTimeout(31 * time.Minute)
+		err := opt(nil)
+		if err == nil {
+			t.Error("expected error for exceeding max timeout")
+		}
+	})
+
+	t.Run("valid timeout", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Get(server.URL, WithTimeout(5*time.Second))
+		if err != nil {
+			t.Fatalf("valid timeout should work: %v", err)
+		}
+	})
+}
+
+// ----------------------------------------------------------------------------
+// queryValueLength type coverage
+// ----------------------------------------------------------------------------
+
+func TestQueryValueLength(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		value  any
+		minLen int
+	}{
+		{"string", "hello", 5},
+		{"int", 42, 2},
+		{"int64", int64(42), 2},
+		{"int32", int32(42), 2},
+		{"uint", uint(42), 2},
+		{"uint64", uint64(42), 2},
+		{"uint32", uint32(42), 2},
+		{"float64", 3.14, 1},
+		{"float32", float32(3.14), 1},
+		{"bool true", true, 4},
+		{"bool false", false, 5},
+		{"negative int64", int64(-42), 3},
+		{"default type", struct{}{}, 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := queryValueLength(tt.value)
+			if got < tt.minLen {
+				t.Errorf("queryValueLength(%v) = %d, expected >= %d", tt.value, got, tt.minLen)
+			}
+		})
+	}
+}
+
+// ----------------------------------------------------------------------------
+// convertToBinary edge cases
+// ----------------------------------------------------------------------------
+
+func TestConvertToBinary(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil byte slice", func(t *testing.T) {
+		_, err := convertToBinary([]byte(nil))
+		if err == nil {
+			t.Error("expected error for nil byte slice")
+		}
+	})
+
+	t.Run("empty string", func(t *testing.T) {
+		_, err := convertToBinary("")
+		if err == nil {
+			t.Error("expected error for empty string")
+		}
+	})
+
+	t.Run("wrong type", func(t *testing.T) {
+		_, err := convertToBinary(42)
+		if err == nil {
+			t.Error("expected error for wrong type")
+		}
+	})
+
+	t.Run("valid bytes", func(t *testing.T) {
+		got, err := convertToBinary([]byte("data"))
+		if err != nil || string(got) != "data" {
+			t.Errorf("expected 'data', got %q, err=%v", got, err)
+		}
+	})
+
+	t.Run("valid string", func(t *testing.T) {
+		got, err := convertToBinary("hello")
+		if err != nil || string(got) != "hello" {
+			t.Errorf("expected 'hello', got %q, err=%v", got, err)
+		}
+	})
+}
+
+// ----------------------------------------------------------------------------
+// convertToForm edge cases
+// ----------------------------------------------------------------------------
+
+func TestConvertToForm(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil url.Values", func(t *testing.T) {
+		_, err := convertToForm(url.Values(nil))
+		if err == nil {
+			t.Error("expected error for nil url.Values")
+		}
+	})
+
+	t.Run("wrong type", func(t *testing.T) {
+		_, err := convertToForm(42)
+		if err == nil {
+			t.Error("expected error for wrong type")
+		}
+	})
+
+	t.Run("valid url.Values", func(t *testing.T) {
+		v := url.Values{"k": {"v"}}
+		got, err := convertToForm(v)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "k=v" {
+			t.Errorf("expected 'k=v', got %q", got)
+		}
+	})
 }

@@ -39,6 +39,10 @@ func demonstrateBasicUsage() {
 	}
 	defer client.Close()
 
+	// Access base URL and domain info
+	fmt.Printf("Base URL: %s\n", client.URL())
+	fmt.Printf("Domain:   %s\n", client.Domain())
+
 	// Set persistent headers (sent with every request)
 	err = client.SetHeader("User-Agent", "httpc-domain-client/1.0")
 	if err != nil {
@@ -83,19 +87,27 @@ func demonstrateStateManagement() {
 	defer client.Close()
 
 	// Set persistent headers
-	client.SetHeader("X-API-Version", "v1")
-	client.SetHeader("X-Client-ID", "client-123")
+	if err := client.SetHeader("X-API-Version", "v1"); err != nil {
+		log.Fatal(err)
+	}
+	if err := client.SetHeader("X-Client-ID", "client-123"); err != nil {
+		log.Fatal(err)
+	}
 	fmt.Printf("✓ Set %d headers\n", len(client.GetHeaders()))
 
 	// Add cookies manually
-	client.SetCookie(&http.Cookie{
+	if err := client.SetCookie(&http.Cookie{
 		Name:  "session",
 		Value: "abc123",
-	})
-	client.SetCookie(&http.Cookie{
+	}); err != nil {
+		log.Fatal(err)
+	}
+	if err := client.SetCookie(&http.Cookie{
 		Name:  "preferences",
 		Value: "dark_mode",
-	})
+	}); err != nil {
+		log.Fatal(err)
+	}
 	fmt.Printf("✓ Set %d cookies\n", len(client.GetCookies()))
 
 	// Make request - all state automatically sent
@@ -123,6 +135,11 @@ func demonstrateStateManagement() {
 
 	client.ClearHeaders()
 	fmt.Printf("✓ Cleared headers: %d remaining\n\n", len(client.GetHeaders()))
+
+	// Access underlying SessionManager
+	session := client.Session()
+	fmt.Printf("Session headers: %d\n", len(session.GetHeaders()))
+	fmt.Printf("Session cookies: %d\n\n", len(session.GetCookies()))
 }
 
 // demonstrateRelativePaths shows relative path usage
@@ -152,6 +169,6 @@ func demonstrateRelativePaths() {
 		}
 	}
 
-	fmt.Println("\n💡 Best Practice: Use relative paths for domain-scoped requests")
-	fmt.Println("   Example: client.Get(\"/api/users\") instead of full URLs")
+	fmt.Println("\nTip: Use relative paths for domain-scoped requests")
+	fmt.Println("  Example: client.Get(\"/api/users\") instead of full URLs")
 }

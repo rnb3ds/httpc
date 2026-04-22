@@ -1,8 +1,8 @@
 package validation
 
 import (
-	"fmt"
 	"net/url"
+	"strings"
 )
 
 // SanitizeURL removes credentials from a URL for safe logging.
@@ -36,16 +36,27 @@ func SanitizeURL(urlStr string) string {
 	_, hasPassword := parsedURL.User.Password()
 	parsedURL.User = nil
 
-	path := parsedURL.Path
+	// Estimate size: scheme (8) + ://***:***@ (10) + host + path + query + fragment
+	estimatedLen := 18 + len(parsedURL.Scheme) + len(parsedURL.Host) + len(parsedURL.Path) + len(parsedURL.RawQuery) + len(parsedURL.Fragment)
+	var b strings.Builder
+	b.Grow(estimatedLen)
+	b.WriteString(parsedURL.Scheme)
+	b.WriteString("://")
+	if hasPassword {
+		b.WriteString("***:***")
+	} else {
+		b.WriteString("***")
+	}
+	b.WriteByte('@')
+	b.WriteString(parsedURL.Host)
+	b.WriteString(parsedURL.Path)
 	if parsedURL.RawQuery != "" {
-		path += "?" + parsedURL.RawQuery
+		b.WriteByte('?')
+		b.WriteString(parsedURL.RawQuery)
 	}
 	if parsedURL.Fragment != "" {
-		path += "#" + parsedURL.Fragment
+		b.WriteByte('#')
+		b.WriteString(parsedURL.Fragment)
 	}
-
-	if hasPassword {
-		return fmt.Sprintf("%s://***:***@%s%s", parsedURL.Scheme, parsedURL.Host, path)
-	}
-	return fmt.Sprintf("%s://***@%s%s", parsedURL.Scheme, parsedURL.Host, path)
+	return b.String()
 }

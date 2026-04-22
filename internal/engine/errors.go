@@ -216,14 +216,14 @@ func isRetryableSyscallError(errno syscall.Errno) bool {
 }
 
 // isRetryableNetworkMessage checks if an error message indicates a retryable network condition.
+// Uses containsFold for zero-allocation case-insensitive matching.
 func isRetryableNetworkMessage(errMsg string) bool {
-	msg := strings.ToLower(errMsg)
-	return strings.Contains(msg, "connection reset") ||
-		strings.Contains(msg, "eof") ||
-		strings.Contains(msg, "connection closed") ||
-		strings.Contains(msg, "broken pipe") ||
-		strings.Contains(msg, "network error") ||
-		strings.Contains(msg, "transport failed")
+	return containsFold(errMsg, "connection reset") ||
+		containsFold(errMsg, "eof") ||
+		containsFold(errMsg, "connection closed") ||
+		containsFold(errMsg, "broken pipe") ||
+		containsFold(errMsg, "network error") ||
+		containsFold(errMsg, "transport failed")
 }
 
 // isRetryableResponseReadError determines if a response read error is retryable.
@@ -235,8 +235,8 @@ func (e *ClientError) isRetryableResponseReadError() bool {
 	if errors.As(e.Cause, &netErr) {
 		return true
 	}
-	errMsg := strings.ToLower(e.Cause.Error())
-	return strings.Contains(errMsg, "eof") || strings.Contains(errMsg, "connection") || strings.Contains(errMsg, "timeout")
+	errMsg := e.Cause.Error()
+	return containsFold(errMsg, "eof") || containsFold(errMsg, "connection") || containsFold(errMsg, "timeout")
 }
 
 // isRetryableHTTPStatus checks if HTTP status code indicates a retryable condition.
@@ -435,14 +435,17 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 }
 
 // extractStatusCode extracts a 3-digit HTTP status code from an error message.
+// Uses direct byte comparison instead of strings.ToLower to avoid allocation.
 func extractStatusCode(msg string) int {
-	lower := strings.ToLower(msg)
-	for i := 0; i <= len(lower)-3; i++ {
-		if lower[i] >= '4' && lower[i] <= '5' && isDigit(lower[i+1]) && isDigit(lower[i+2]) {
-			code := int(lower[i]-'0')*100 + int(lower[i+1]-'0')*10 + int(lower[i+2]-'0')
+	for i := 0; i <= len(msg)-3; i++ {
+		c := msg[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 32
+		}
+		if c >= '4' && c <= '5' && isDigit(msg[i+1]) && isDigit(msg[i+2]) {
+			code := int(c-'0')*100 + int(msg[i+1]-'0')*10 + int(msg[i+2]-'0')
 			if code >= 400 && code <= 599 {
-				// Verify it looks like an HTTP status, not arbitrary digits
-				if i > 0 && lower[i-1] == ' ' {
+				if i > 0 && msg[i-1] == ' ' {
 					return code
 				}
 			}

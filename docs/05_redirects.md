@@ -56,8 +56,8 @@ Configure redirect behavior when creating the client:
 
 ```go
 config := httpc.DefaultConfig()
-config.FollowRedirects = true  // Enable automatic following (default)
-config.MaxRedirects = 5        // Limit to 5 redirects (default: 10)
+config.Middleware.FollowRedirects = true  // Enable automatic following (default)
+config.Middleware.MaxRedirects = 5        // Limit to 5 redirects (default: 10)
 
 client, err := httpc.New(config)
 if err != nil {
@@ -72,7 +72,7 @@ To receive redirect responses without following them:
 
 ```go
 config := httpc.DefaultConfig()
-config.FollowRedirects = false
+config.Middleware.FollowRedirects = false
 
 client, err := httpc.New(config)
 if err != nil {
@@ -98,11 +98,11 @@ fmt.Printf("Redirect to: %s\n", result.Response.Headers.Get("Location"))
 
 ```go
 config := httpc.DefaultConfig()
-config.MaxRedirects = 50  // Maximum allowed
+config.Middleware.MaxRedirects = 50  // Maximum allowed
 
 // Invalid values will fail validation
-config.MaxRedirects = -1  // Error: cannot be negative
-config.MaxRedirects = 51  // Error: exceeds maximum of 50
+config.Middleware.MaxRedirects = -1  // Error: cannot be negative
+config.Middleware.MaxRedirects = 51  // Error: exceeds maximum of 50
 ```
 
 ## Per-Request Control
@@ -232,7 +232,7 @@ For complete control, disable automatic redirects and handle them manually:
 
 ```go
 config := httpc.DefaultConfig()
-config.FollowRedirects = false
+config.Middleware.FollowRedirects = false
 client, err := httpc.New(config)
 if err != nil {
     log.Fatal(err)
@@ -304,7 +304,7 @@ Go's `http.Client` handles method preservation automatically according to HTTP s
 
 ```go
 config := httpc.DefaultConfig()
-config.MaxRedirects = 10  // Prevent infinite redirect loops
+config.Middleware.MaxRedirects = 10  // Prevent infinite redirect loops
 
 client, err := httpc.New(config)
 ```
@@ -363,7 +363,7 @@ if redirectURL.Scheme != "http" && redirectURL.Scheme != "https" {
 ```go
 // Good: Configure at client level for consistent behavior
 config := httpc.DefaultConfig()
-config.MaxRedirects = 5
+config.Middleware.MaxRedirects = 5
 client, err := httpc.New(config)
 
 // Use per-request overrides only when necessary
@@ -390,7 +390,7 @@ if len(result.Meta.RedirectChain) > 0 {
 
 ```go
 config := httpc.DefaultConfig()
-config.MaxRedirects = 3
+config.Middleware.MaxRedirects = 3
 client, err := httpc.New(config)
 if err != nil {
     log.Fatal(err)

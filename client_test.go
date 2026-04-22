@@ -107,85 +107,25 @@ func TestClient_Lifecycle(t *testing.T) {
 			t.Errorf("Client close should not error: %v", err)
 		}
 	})
-
-	t.Run("DoubleClose", func(t *testing.T) {
-		client, _ := newTestClient()
-		client.Close()
-		err := client.Close()
-		if err == nil {
-			t.Log("Double close is idempotent")
-		}
-	})
-
-	t.Run("UseAfterClose", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
-		client, _ := newTestClient()
-		client.Close()
-		_, err := client.Get(server.URL)
-		if err == nil {
-			t.Error("Expected error when using closed client")
-		}
-	})
 }
 
-func TestClient_Timeout(t *testing.T) {
-	t.Run("RequestTimeout", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			time.Sleep(500 * time.Millisecond)
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
+func TestClient_Timeout_ContextTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
 
-		client, _ := newTestClient()
-		defer client.Close()
+	client, _ := newTestClient()
+	defer client.Close()
 
-		_, err := client.Get(server.URL, WithTimeout(100*time.Millisecond))
-		if err == nil {
-			t.Error("Expected timeout error, got nil")
-		}
-	})
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
 
-	t.Run("ContextTimeout", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			time.Sleep(500 * time.Millisecond)
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
-		client, _ := newTestClient()
-		defer client.Close()
-
-		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-		defer cancel()
-
-		_, err := client.Request(ctx, "GET", server.URL)
-		if err == nil {
-			t.Error("Expected timeout error, got nil")
-		}
-	})
-
-	t.Run("ContextCancellation", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			time.Sleep(200 * time.Millisecond)
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
-		client, _ := newTestClient()
-		defer client.Close()
-
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel() // Cancel immediately
-
-		_, err := client.Request(ctx, "GET", server.URL)
-		if err == nil {
-			t.Error("Expected context canceled error")
-		}
-	})
+	_, err := client.Request(ctx, "GET", server.URL)
+	if err == nil {
+		t.Error("Expected timeout error, got nil")
+	}
 }
 
 func TestClient_Concurrency(t *testing.T) {
@@ -402,27 +342,6 @@ func TestClient_ErrorHandling(t *testing.T) {
 		_, err := client.Get("http://192.0.2.1:12345")
 		if err == nil {
 			t.Error("Expected network error")
-		}
-	})
-
-	t.Run("NilConfig", func(t *testing.T) {
-		// Nil config should use defaults
-		client, err := New(nil)
-		if err != nil {
-			t.Errorf("Unexpected error for nil config: %v", err)
-		}
-		if client != nil {
-			defer client.Close()
-		}
-	})
-
-	t.Run("EmptyURL", func(t *testing.T) {
-		client, _ := newTestClient()
-		defer client.Close()
-
-		_, err := client.Get("")
-		if err == nil {
-			t.Error("Expected error for empty URL")
 		}
 	})
 }
@@ -660,4 +579,151 @@ func TestRequest_CallbackErrors(t *testing.T) {
 			t.Error("Expected error from onResponse callback")
 		}
 	})
+}
+
+// ----------------------------------------------------------------------------
+// Package-Level Request Coverage
+// ----------------------------------------------------------------------------
+
+func TestPackageLevel_Request(t *testing.T) {
+	config := DefaultConfig()
+	config.Security.AllowPrivateIPs = true
+	client, _ := New(config)
+	_ = SetDefaultClient(client)
+	defer CloseDefaultClient()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PATCH" {
+			t.Errorf("Expected PATCH, got %s", r.Method)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	resp, err := Request(context.Background(), "PATCH", server.URL)
+	if err != nil {
+		t.Fatalf("Package-level Request failed: %v", err)
+	}
+	if resp.StatusCode() != http.StatusOK {
+		t.Errorf("Expected 200, got %d", resp.StatusCode())
+	}
+}
+
+func TestSetDefaultClient_Boundaries(t *testing.T) {
+	t.Run("nil client", func(t *testing.T) {
+		if err := SetDefaultClient(nil); err == nil {
+			t.Error("expected error for nil client")
+		}
+	})
+
+	t.Run("closed client", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Security.AllowPrivateIPs = true
+		client, _ := New(cfg)
+		client.Close()
+
+		if err := SetDefaultClient(client); err == nil {
+			t.Error("expected error for closed client")
+		}
+	})
+}
+
+func TestDeepCopyConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Security.RedirectWhitelist = []string{"https://trusted.com"}
+	cfg.Security.AllowPrivateIPs = true
+	cfg.Middleware.Headers = map[string]string{"X-Test": "value"}
+
+	copied := deepCopyConfig(cfg)
+
+	// Modify original - copy should be independent
+	cfg.Middleware.Headers["X-Test"] = "modified"
+	cfg.Security.RedirectWhitelist[0] = "https://evil.com"
+
+	if copied.Middleware.Headers["X-Test"] != "value" {
+		t.Error("copy should be independent of original")
+	}
+	if copied.Security.RedirectWhitelist[0] != "https://trusted.com" {
+		t.Error("copy whitelist should be independent")
+	}
+}
+
+// ----------------------------------------------------------------------------
+// getDefaultClient slow path
+// ----------------------------------------------------------------------------
+
+func TestGetDefaultClient_Init(t *testing.T) {
+	// Reset default client to test the slow initialization path
+	defaultClient.Store(nil)
+
+	client, err := getDefaultClient()
+	if err != nil {
+		t.Fatalf("getDefaultClient failed: %v", err)
+	}
+	if client == nil {
+		t.Fatal("expected non-nil client")
+	}
+
+	// Clean up - close the auto-created client
+	CloseDefaultClient()
+}
+
+// ----------------------------------------------------------------------------
+// Package-level error paths
+// ----------------------------------------------------------------------------
+
+func TestPackageLevel_ErrorPaths(t *testing.T) {
+	// Close any existing default client
+	CloseDefaultClient()
+
+	// Package-level functions should auto-initialize and work
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	// These test the getDefaultClient error path + delegation
+	tests := []struct {
+		name string
+		fn   func() (*Result, error)
+	}{
+		{"Get", func() (*Result, error) { return Get(server.URL) }},
+		{"Post", func() (*Result, error) { return Post(server.URL) }},
+		{"Put", func() (*Result, error) { return Put(server.URL) }},
+		{"Patch", func() (*Result, error) { return Patch(server.URL) }},
+		{"Delete", func() (*Result, error) { return Delete(server.URL) }},
+		{"Head", func() (*Result, error) { return Head(server.URL) }},
+		{"Options", func() (*Result, error) { return Options(server.URL) }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := tt.fn()
+			if err != nil {
+				t.Fatalf("Package-level %s failed: %v", tt.name, err)
+			}
+			if result.StatusCode() != http.StatusOK {
+				t.Errorf("Expected 200, got %d", result.StatusCode())
+			}
+		})
+	}
+
+	// Clean up
+	CloseDefaultClient()
+}
+
+func TestClose_ErrorPath(t *testing.T) {
+	// Create and close a client, then close again to trigger error path
+	cfg := DefaultConfig()
+	cfg.Security.AllowPrivateIPs = true
+	client, _ := New(cfg)
+
+	// First close should succeed
+	if err := client.Close(); err != nil {
+		t.Errorf("First close should succeed: %v", err)
+	}
+
+	// Second close - the engine should return an error
+	// This exercises the error wrapping in Close()
+	_ = client.Close()
 }

@@ -504,9 +504,9 @@ func TestParseRetryAfterHeader(t *testing.T) {
 			expectDelay: 0, // strconv.Atoi fails on negative in this implementation
 		},
 		{
-			name:        "Delta-seconds large value",
+			name:        "Delta-seconds large value capped at 60s",
 			headers:     http.Header{"Retry-After": {"3600"}},
-			expectDelay: 3600 * time.Second,
+			expectDelay: 60 * time.Second,
 		},
 		{
 			name:        "Invalid number format",
@@ -612,12 +612,12 @@ func TestParseRetryAfterHeader_EdgeCases(t *testing.T) {
 		}
 	})
 
-	t.Run("Very large seconds value", func(t *testing.T) {
+	t.Run("Very large seconds value capped at 60s", func(t *testing.T) {
 		headers := http.Header{"Retry-After": {"86400"}} // 24 hours
 		delay := parseRetryAfterHeader(headers)
 
-		if delay != 86400*time.Second {
-			t.Errorf("Expected 86400s delay, got %v", delay)
+		if delay != 60*time.Second {
+			t.Errorf("Expected 60s capped delay, got %v", delay)
 		}
 	})
 }

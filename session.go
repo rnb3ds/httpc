@@ -227,9 +227,9 @@ func (s *SessionManager) GetCookie(name string) *http.Cookie {
 	return nil
 }
 
-// PrepareOptions creates RequestOptions from the current session state.
-// This is used to apply session cookies and headers to outgoing requests.
-func (s *SessionManager) PrepareOptions() []RequestOption {
+// prepareOptions creates RequestOptions from the current session state.
+// This is used internally by DomainClient to apply session cookies and headers to outgoing requests.
+func (s *SessionManager) prepareOptions() []RequestOption {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -258,6 +258,7 @@ func (s *SessionManager) PrepareOptions() []RequestOption {
 }
 
 // UpdateFromResult updates session cookies from a Result.
+// If cookie security is configured, insecure cookies are silently skipped.
 func (s *SessionManager) UpdateFromResult(result *Result) {
 	if result == nil || result.Response == nil || len(result.Response.Cookies) == 0 {
 		return
@@ -268,12 +269,18 @@ func (s *SessionManager) UpdateFromResult(result *Result) {
 
 	for _, cookie := range result.Response.Cookies {
 		if cookie != nil {
+			if s.cookieSecurity != nil {
+				if err := validation.ValidateCookieSecurity(cookie, s.cookieSecurity); err != nil {
+					continue
+				}
+			}
 			s.cookies[cookie.Name] = cookie
 		}
 	}
 }
 
 // UpdateFromCookies updates session cookies from a slice of http.Cookie.
+// If cookie security is configured, insecure cookies are silently skipped.
 func (s *SessionManager) UpdateFromCookies(cookies []*http.Cookie) {
 	if len(cookies) == 0 {
 		return
@@ -284,14 +291,19 @@ func (s *SessionManager) UpdateFromCookies(cookies []*http.Cookie) {
 
 	for _, cookie := range cookies {
 		if cookie != nil {
+			if s.cookieSecurity != nil {
+				if err := validation.ValidateCookieSecurity(cookie, s.cookieSecurity); err != nil {
+					continue
+				}
+			}
 			s.cookies[cookie.Name] = cookie
 		}
 	}
 }
 
-// CaptureFromOptions extracts cookies and headers from RequestOptions
+// captureFromOptions extracts cookies and headers from RequestOptions
 // and stores them in the session.
-func (s *SessionManager) CaptureFromOptions(options []RequestOption) {
+func (s *SessionManager) captureFromOptions(options []RequestOption) {
 	if len(options) == 0 {
 		return
 	}

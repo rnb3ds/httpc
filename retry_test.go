@@ -269,7 +269,7 @@ func TestRetry_Backoff(t *testing.T) {
 		expectedMax := time.Duration(float64(expectedDelays[i-1]) * 1.1)
 
 		if delay < expectedMin || delay > expectedMax {
-			t.Logf("Delay %d: %v (expected ~%v)", i, delay, expectedDelays[i-1])
+			t.Errorf("Delay %d: %v (expected ~%v)", i, delay, expectedDelays[i-1])
 		}
 	}
 }

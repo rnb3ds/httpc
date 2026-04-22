@@ -189,8 +189,11 @@ func (p *ResponseProcessor) Process(httpResp *http.Response) (*Response, error) 
 	resp.SetStatusCode(httpResp.StatusCode)
 	resp.SetStatus(httpResp.Status)
 	resp.SetHeaders(httpResp.Header)
-	resp.SetBody(string(body))
+	// Zero-copy conversion: body is freshly allocated by readBody (not from pool),
+	// so bytesToString safely shares memory between RawBody and Body.
+	// This eliminates one full copy of the response body per request.
 	resp.SetRawBody(body)
+	resp.SetBody(bytesToString(body))
 	resp.SetContentLength(contentLength)
 	resp.SetProto(httpResp.Proto)
 	resp.SetCookies(httpResp.Cookies())
@@ -405,6 +408,17 @@ func (r *pooledFlateReader) Close() error {
 	}
 	r.reader = nil
 	return nil
+}
+
+// ReleaseResponse returns a Response to the pool for reuse.
+// Call this when the Response data has been consumed and copied elsewhere.
+// After calling this, the Response must not be used.
+func ReleaseResponse(r *Response) {
+	if r == nil {
+		return
+	}
+	*r = Response{}
+	responsePool.Put(r)
 }
 
 // ClearResponsePools clears all sync.Pool instances used by the response package.

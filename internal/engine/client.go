@@ -318,20 +318,11 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 
 	startTime := time.Now()
 
-	// Get Request from pool and reset fields
+	// Get Request from pool (already zeroed by putRequest via *req = Request{})
 	req := c.getRequest()
 	req.SetMethod(method)
 	req.SetURL(url)
 	req.SetContext(ctx)
-	// Reset other fields to zero values
-	req.SetHeaders(nil)
-	req.SetQueryParams(nil)
-	req.SetBody(nil)
-	req.SetTimeout(0)
-	req.SetMaxRetries(0)
-	req.SetCookies(nil)
-	req.SetFollowRedirects(nil)
-	req.SetMaxRedirects(nil)
 
 	// Ensure request is returned to pool after processing
 	defer c.putRequest(req)
@@ -386,19 +377,7 @@ func (c *Client) getRequest() *Request {
 
 // putRequest returns a Request object to the pool
 func (c *Client) putRequest(req *Request) {
-	req.method = ""
-	req.url = ""
-	req.headers = nil
-	req.queryParams = nil
-	req.body = nil
-	req.timeout = 0
-	req.maxRetries = 0
-	req.context = nil
-	req.cookies = nil
-	req.followRedirects = nil
-	req.maxRedirects = nil
-	req.onRequest = nil
-	req.onResponse = nil
+	*req = Request{}
 	c.requestPool.Put(req)
 }
 
@@ -416,12 +395,7 @@ func (c *Client) putSecurityRequest(req *security.Request) {
 	if req == nil {
 		return
 	}
-	// Clear fields to prevent memory leaks
-	req.Method = ""
-	req.URL = ""
-	req.Headers = nil
-	req.QueryParams = nil
-	req.Body = nil
+	*req = security.Request{}
 	c.securityRequestPool.Put(req)
 }
 
@@ -437,20 +411,7 @@ func (c *Client) getExecRequest() *Request {
 
 // putExecRequest returns a Request object to the exec pool
 func (c *Client) putExecRequest(req *Request) {
-	// Clear all fields to prevent memory leaks
-	req.method = ""
-	req.url = ""
-	req.headers = nil
-	req.queryParams = nil
-	req.body = nil
-	req.timeout = 0
-	req.maxRetries = 0
-	req.context = nil
-	req.cookies = nil
-	req.followRedirects = nil
-	req.maxRedirects = nil
-	req.onRequest = nil
-	req.onResponse = nil
+	*req = Request{}
 	c.execRequestPool.Put(req)
 }
 
@@ -519,15 +480,32 @@ func (c *Client) sleepWithContext(ctx context.Context, duration time.Duration) e
 // executeWithRetry executes a request with intelligent retry logic.
 // Optimized for performance with minimal allocations and efficient error handling.
 func (c *Client) executeWithRetry(req *Request) (*Response, error) {
-	// Determine which retry policy to use
+	// Determine max retries from request override or config
+	maxRetries := req.MaxRetries()
+	if maxRetries <= 0 {
+		if c.config.CustomRetryPolicy != nil {
+			maxRetries = c.config.CustomRetryPolicy.MaxRetries()
+		} else {
+			maxRetries = c.retryEngine.MaxRetries()
+		}
+	}
+
+	// Fast path: no retries configured (most common case)
+	if maxRetries == 0 {
+		resp, err := c.executeRequest(req)
+		if err != nil {
+			return nil, ClassifyError(err, req.URL(), req.Method(), 1)
+		}
+		if resp != nil {
+			resp.SetAttempts(1)
+		}
+		return resp, nil
+	}
+
+	// Slow path: retry loop
 	policy := types.RetryPolicy(c.retryEngine)
 	if c.config.CustomRetryPolicy != nil {
 		policy = c.config.CustomRetryPolicy
-	}
-
-	maxRetries := policy.MaxRetries()
-	if req.MaxRetries() > 0 {
-		maxRetries = req.MaxRetries()
 	}
 
 	var lastErr error
@@ -561,6 +539,10 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 		}
 
 		if resp != nil {
+			// Release previous intermediate response to prevent pool leak
+			if lastResp != nil && lastResp != resp {
+				ReleaseResponse(lastResp)
+			}
 			lastResp = resp
 
 			// Check if response status is retryable using policy
@@ -656,21 +638,10 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 	default:
 	}
 
-	// Get a pooled Request copy and populate it
+	// Get a pooled Request copy — single struct copy + override context
 	reqCopy := c.getExecRequest()
-	reqCopy.method = req.method
-	reqCopy.url = req.url
-	reqCopy.headers = req.headers
-	reqCopy.queryParams = req.queryParams
-	reqCopy.body = req.body
-	reqCopy.timeout = req.timeout
-	reqCopy.maxRetries = req.maxRetries
+	*reqCopy = *req
 	reqCopy.context = execCtx
-	reqCopy.cookies = req.cookies
-	reqCopy.followRedirects = req.followRedirects
-	reqCopy.maxRedirects = req.maxRedirects
-	reqCopy.onRequest = req.onRequest
-	reqCopy.onResponse = req.onResponse
 
 	// Ensure request copy is returned to pool after processing
 	defer c.putExecRequest(reqCopy)

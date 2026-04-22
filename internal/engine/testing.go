@@ -49,8 +49,8 @@ func (m *MockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // SetRedirectPolicy implements TransportManager.
-func (m *MockTransport) SetRedirectPolicy(ctx context.Context, followRedirects bool, maxRedirects int) context.Context {
-	return ctx
+func (m *MockTransport) SetRedirectPolicy(ctx context.Context, followRedirects bool, maxRedirects int) (context.Context, func()) {
+	return ctx, func() {}
 }
 
 // GetRedirectChain implements TransportManager.

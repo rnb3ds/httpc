@@ -271,14 +271,14 @@ func TestSessionManager_ClearHeaders(t *testing.T) {
 	}
 }
 
-func TestSessionManager_PrepareOptions(t *testing.T) {
+func TestSessionManager_prepareOptions(t *testing.T) {
 	session, err := NewSessionManager()
 	if err != nil {
 		t.Fatalf("NewSessionManager error: %v", err)
 	}
 
 	// Test empty session
-	options := session.PrepareOptions()
+	options := session.prepareOptions()
 	if options != nil {
 		t.Error("Expected nil options for empty session")
 	}
@@ -287,7 +287,7 @@ func TestSessionManager_PrepareOptions(t *testing.T) {
 	_ = session.SetCookie(&http.Cookie{Name: "session", Value: "abc123"})
 	_ = session.SetHeader("Authorization", "Bearer token")
 
-	options = session.PrepareOptions()
+	options = session.prepareOptions()
 	if len(options) < 2 {
 		t.Errorf("Expected at least 2 options, got %d", len(options))
 	}
@@ -344,5 +344,47 @@ func TestSessionManager_SecurityValidation(t *testing.T) {
 	err = session.SetCookie(insecureCookie)
 	if err == nil {
 		t.Error("Expected error for insecure cookie with RequireSecure=true")
+	}
+}
+
+// ----------------------------------------------------------------------------
+// UpdateFromCookies / SetCookies edge cases
+// ----------------------------------------------------------------------------
+
+func TestSessionManager_UpdateFromCookies(t *testing.T) {
+	session, err := NewSessionManager()
+	if err != nil {
+		t.Fatalf("NewSessionManager error: %v", err)
+	}
+
+	t.Run("empty slice", func(t *testing.T) {
+		session.UpdateFromCookies([]*http.Cookie{})
+	})
+
+	t.Run("nil cookie skipped", func(t *testing.T) {
+		session.UpdateFromCookies([]*http.Cookie{
+			nil,
+			{Name: "test", Value: "val"},
+		})
+		c := session.GetCookie("test")
+		if c == nil || c.Value != "val" {
+			t.Error("should have stored non-nil cookie")
+		}
+	})
+}
+
+func TestSessionManager_SetCookies_NilElement(t *testing.T) {
+	session, err := NewSessionManager()
+	if err != nil {
+		t.Fatalf("NewSessionManager error: %v", err)
+	}
+
+	// Slice with nil element at index > 0 should return error
+	err = session.SetCookies([]*http.Cookie{
+		{Name: "a", Value: "1"},
+		nil,
+	})
+	if err == nil {
+		t.Error("expected error for nil cookie element")
 	}
 }

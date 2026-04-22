@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1480,4 +1481,91 @@ func TestDomainClient_DownloadWithOptions_Resume(t *testing.T) {
 	if len(data) != len(fullContent) {
 		t.Errorf("Expected %d bytes, got %d", len(fullContent), len(data))
 	}
+}
+
+// ----------------------------------------------------------------------------
+// Accessor Tests
+// ----------------------------------------------------------------------------
+
+func TestDomainClient_Accessors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	dc, err := httpc.NewDomain(server.URL)
+	if err != nil {
+		t.Fatalf("NewDomain failed: %v", err)
+	}
+	defer dc.Close()
+
+	t.Run("URL", func(t *testing.T) {
+		if dc.URL() != server.URL {
+			t.Errorf("URL() = %q, want %q", dc.URL(), server.URL)
+		}
+	})
+
+	t.Run("Domain", func(t *testing.T) {
+		u, _ := url.Parse(server.URL)
+		if dc.Domain() != u.Hostname() {
+			t.Errorf("Domain() = %q, want %q", dc.Domain(), u.Hostname())
+		}
+	})
+
+	t.Run("Session", func(t *testing.T) {
+		if dc.Session() == nil {
+			t.Error("Session() should not be nil")
+		}
+	})
+}
+
+// ----------------------------------------------------------------------------
+// buildURL edge cases
+// ----------------------------------------------------------------------------
+
+func TestDomainClient_BuildURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	dc, err := httpc.NewDomain(server.URL)
+	if err != nil {
+		t.Fatalf("NewDomain failed: %v", err)
+	}
+	defer dc.Close()
+
+	t.Run("empty path returns base URL", func(t *testing.T) {
+		dc2, _ := httpc.NewDomain(server.URL + "/api")
+		defer dc2.Close()
+		// Empty path should return base URL with /api
+		resp, err := dc2.Get("")
+		if err != nil {
+			t.Fatalf("empty path request failed: %v", err)
+		}
+		if resp.StatusCode() != 200 {
+			t.Errorf("Expected 200, got %d", resp.StatusCode())
+		}
+	})
+
+	t.Run("path with query string", func(t *testing.T) {
+		sawQuery := false
+		qs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			sawQuery = r.URL.Query().Get("q") == "test"
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer qs.Close()
+
+		dc2, _ := httpc.NewDomain(qs.URL)
+		defer dc2.Close()
+
+		resp, err := dc2.Get("/search?q=test")
+		if err != nil {
+			t.Fatalf("query path request failed: %v", err)
+		}
+		if !sawQuery {
+			t.Error("query string not preserved")
+		}
+		_ = resp
+	})
 }

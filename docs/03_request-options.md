@@ -63,7 +63,7 @@ headers := map[string]string{
 }
 
 resp, err := client.Get(url,
-    httpc.WithHeaders(headers),
+    httpc.WithHeaderMap(headers),
 )
 ```
 
@@ -138,7 +138,7 @@ resp, err := client.Get(url,
 ### Query Map
 
 ```go
-params := map[string]interface{}{
+params := map[string]any{
     "page":   1,
     "limit":  20,
     "sort":   "name",
@@ -153,16 +153,11 @@ resp, err := client.Get(url,
 ### Complex Query Parameters
 
 ```go
-// Arrays/slices
+// Multiple query parameters
 resp, err := client.Get(url,
-    httpc.WithQuery("tags", []string{"go", "http"}),
-)
-
-// Multiple values for same key
-resp, err := client.Get(url,
-    httpc.WithQuery("id", 1),
-    httpc.WithQuery("id", 2),
-    httpc.WithQuery("id", 3),
+    httpc.WithQuery("category", "books"),
+    httpc.WithQuery("sort", "price"),
+    httpc.WithQuery("order", "desc"),
 )
 ```
 
@@ -224,8 +219,14 @@ resp, err := client.Post(url,
 ```go
 imageData, _ := os.ReadFile("image.png")
 
+// With explicit content type
 resp, err := client.Post(url,
     httpc.WithBinary(imageData, "image/png"),
+)
+
+// With default content type (application/octet-stream)
+resp, err := client.Post(url,
+    httpc.WithBinary(imageData),
 )
 ```
 
@@ -392,6 +393,23 @@ resp, err := client.Get(url,
 )
 ```
 
+### Cookie Security Validation
+
+Validate cookie security attributes (Secure, HttpOnly, SameSite):
+
+```go
+import "github.com/cybergodev/httpc/internal/validation"
+
+resp, err := client.Get(url,
+    httpc.WithCookie(http.Cookie{Name: "session", Value: "abc123"}),
+    httpc.WithSecureCookie(&validation.CookieSecurityConfig{
+        RequireSecure:   true,
+        RequireHttpOnly: true,
+        RequireSameSite: "Strict",
+    }),
+)
+```
+
 ## Request Callbacks
 
 ### Pre-Request Callback
@@ -457,7 +475,7 @@ result, err := client.Post(url,
 ```
 
 **Auto-detection rules:**
-- `string` → text/plain
+- `string` → text/plain; charset=utf-8
 - `[]byte` → application/octet-stream
 - `map[string]string` → application/x-www-form-urlencoded
 - `*FormData` → multipart/form-data
@@ -480,7 +498,7 @@ result, err := client.Post(url,
 | `WithJSON(data)`                 | JSON body            | `WithJSON(struct{...})`                 |
 | `WithXML(data)`                  | XML body             | `WithXML(struct{...})`                  |
 | `WithForm(data)`                 | Form data            | `WithForm(map[string]string{...})`      |
-| `WithBinary(data, ct)`           | Binary data          | `WithBinary([]byte{...}, "image/png")`  |
+| `WithBinary(data, ct...)`        | Binary data          | `WithBinary([]byte{...}, "image/png")`  |
 | `WithBody(data)`          | Auto-detect body     | `WithBody(data)`                 |
 | `WithBody(data, kind)`    | Body with type hint  | `WithBody(data, httpc.BodyJSON)` |
 | `WithFile(field, name, content)` | Single file          | `WithFile("file", "doc.pdf", data)`     |

@@ -276,9 +276,9 @@ HTTPC automatically retries failed requests based on the configuration. The retr
 ```go
 // Client-level retry configuration
 config := httpc.DefaultConfig()
-config.MaxRetries = 3
-config.RetryDelay = 1 * time.Second
-config.BackoffFactor = 2.0
+config.Retry.MaxRetries = 3
+config.Retry.Delay = 1 * time.Second
+config.Retry.BackoffFactor = 2.0
 
 client, err := httpc.New(config)
 if err != nil {
@@ -452,7 +452,7 @@ func fetchWithNetworkRetry(client httpc.Client, url string) ([]byte, error) {
    ```go
    var clientErr *httpc.ClientError
    if errors.As(err, &clientErr) {
-       switch clientErr.Code() {
+       switch clientErr.Type {
        case httpc.ErrorTypeTimeout:
            // Handle timeout specifically
        case httpc.ErrorTypeNetwork:

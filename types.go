@@ -334,8 +334,8 @@ func DefaultConfig() *Config {
 	}
 }
 
-// NewCookieJar creates a new cookie jar for cookie management.
-func NewCookieJar() (http.CookieJar, error) {
+// newCookieJar creates a new cookie jar for cookie management.
+func newCookieJar() (http.CookieJar, error) {
 	return cookiejar.New(&cookiejar.Options{
 		PublicSuffixList: nil,
 	})

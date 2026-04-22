@@ -704,7 +704,7 @@ func TestPoolManager_ValidateAddressBeforeDial(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := pm.validateAddressBeforeDial(tt.address)
+			_, err := pm.resolveAndValidateAddress(tt.address)
 			if tt.expectError && err == nil {
 				t.Errorf("Expected error for address %s, got nil", tt.address)
 			}
@@ -1087,7 +1087,7 @@ func TestPoolManager_ValidateAddress_DomainResolution(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := pm.validateAddressBeforeDial(tt.address)
+			_, err := pm.resolveAndValidateAddress(tt.address)
 			if tt.expectError && err == nil {
 				t.Errorf("Expected error for address %s, got nil", tt.address)
 			}

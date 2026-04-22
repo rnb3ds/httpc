@@ -193,10 +193,12 @@ client, err := httpc.New(httpc.SecureConfig())
 ```
 - TLS 1.2+ enforced
 - Certificate verification required
-- Private IPs blocked
+- Private IPs blocked (SSRF protection)
 - Strict validation enabled
+- Redirects disabled
 - Conservative resource limits
 - **Use for:** Production, external APIs, financial services, healthcare
+- **Note:** For TLS 1.3-only, set `cfg.Security.MinTLSVersion = tls.VersionTLS13`
 
 ### DefaultConfig() - Balanced Security
 ```go
@@ -204,10 +206,11 @@ client, err := httpc.New(httpc.DefaultConfig())
 ```
 - TLS 1.2-1.3 supported
 - Certificate verification enabled
-- Private IPs blocked
+- **Private IPs allowed** (for VPN/proxy/corporate network compatibility)
 - Full validation enabled
 - Reasonable resource limits
 - **Use for:** Most applications, microservices, web services
+- **⚠️ If making requests to user-provided URLs, set `Security.AllowPrivateIPs = false` or use `SecureConfig()`**
 
 ### TestingConfig() - Development Only
 ```go

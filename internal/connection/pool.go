@@ -251,12 +251,16 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 		}
 
 		// Standard path without DoH
-		// Perform SSRF protection check before dialing if enabled
+		// SECURITY: Resolve DNS, validate all IPs, then dial the validated IP directly
+		// to prevent DNS rebinding TOCTOU attacks where an attacker-controlled DNS
+		// server returns a different IP between validation and actual connection.
 		if !pm.config.AllowPrivateIPs {
-			if err := pm.validateAddressBeforeDial(address); err != nil {
+			validatedAddr, err := pm.resolveAndValidateAddress(address)
+			if err != nil {
 				atomic.AddInt64(&pm.rejectedConns, 1)
 				return nil, fmt.Errorf("SSRF protection: %w", err)
 			}
+			address = validatedAddr
 		}
 
 		conn, err := dialer.DialContext(ctx, network, address)
@@ -279,40 +283,43 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 	}
 }
 
-// validateAddressBeforeDial performs address validation before dialing to prevent SSRF attacks.
-// This method validates both IP addresses and domain names to ensure they don't point
-// to private, reserved, or local addresses when SSRF protection is enabled.
+// resolveAndValidateAddress resolves the given address and validates all resulting IPs
+// against SSRF protection rules. It returns a validated "ip:port" string that should be
+// dialed directly to prevent DNS rebinding TOCTOU attacks.
 //
-// SECURITY: DNS resolution failures result in connection blocking to prevent
-// DNS-based SSRF bypass attacks where an attacker controls DNS responses.
-func (pm *PoolManager) validateAddressBeforeDial(address string) error {
-	host, _, err := net.SplitHostPort(address)
+// SECURITY: By resolving DNS once and dialing the validated IP directly (instead of
+// the original hostname), we eliminate the window where an attacker-controlled DNS
+// server could return a different (private) IP on the second resolution.
+func (pm *PoolManager) resolveAndValidateAddress(address string) (string, error) {
+	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		host = address
+		port = "443"
 	}
 
 	// If the address is already an IP, validate it directly
 	if ip := net.ParseIP(host); ip != nil {
-		return validation.ValidateIP(ip)
+		if err := validation.ValidateIP(ip); err != nil {
+			return "", err
+		}
+		return address, nil
 	}
 
-	// For domain names, we need to resolve them first to check all potential IPs
-	// This provides defense in depth against DNS rebinding attacks
+	// For domain names, resolve and validate all IPs
 	ips, err := net.LookupIP(host)
 	if err != nil {
-		// SECURITY: Block on DNS resolution failure instead of allowing connection
-		// This prevents attackers from using DNS failures to bypass SSRF protection
-		return fmt.Errorf("DNS resolution failed for SSRF validation of %s: %w", host, err)
+		return "", fmt.Errorf("DNS resolution failed for SSRF validation of %s: %w", host, err)
 	}
 
-	// Check all resolved IPs - if any point to a private/reserved address, block it
+	// Check all resolved IPs — if any point to a private/reserved address, block it
 	for _, ip := range ips {
 		if err := validation.ValidateIP(ip); err != nil {
-			return fmt.Errorf("domain %s resolves to blocked address: %w", host, err)
+			return "", fmt.Errorf("domain %s resolves to blocked address: %w", host, err)
 		}
 	}
 
-	return nil
+	// Return the first validated IP for direct dialing to prevent DNS rebinding
+	return net.JoinHostPort(ips[0].String(), port), nil
 }
 
 func (pm *PoolManager) createTLSConfig() *tls.Config {

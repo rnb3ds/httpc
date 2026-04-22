@@ -180,10 +180,10 @@ func demonstrateConcurrentWithErrors() {
 	}
 
 	tasks := []task{
-		{1, "https://echo.hoppscotch.io/status/200"},
-		{2, "https://echo.hoppscotch.io/status/404"},
-		{3, "https://echo.hoppscotch.io/status/500"},
-		{4, "https://echo.hoppscotch.io/delay/1"},
+		{1, "https://httpbin.org/status/200"},
+		{2, "https://httpbin.org/status/404"},
+		{3, "https://httpbin.org/status/500"},
+		{4, "https://httpbin.org/delay/1"},
 	}
 
 	results := make(chan taskResult, len(tasks))

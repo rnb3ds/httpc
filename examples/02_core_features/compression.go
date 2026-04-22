@@ -30,8 +30,7 @@ func main() {
 	fmt.Printf("   Decompressed body length: %d bytes\n", len(resp.Body()))
 	fmt.Printf("   Body preview: %.200s...\n\n", resp.Body())
 
-	// Example 2: Deflate decompression
-	// Note: Some servers may not properly support deflate encoding
+	// Example 2: Gzip response from a different server
 	fmt.Println("2. Testing with another gzip endpoint:")
 	resp2, err := httpc.Get("https://www.github.com", httpc.WithHeaderMap(headers))
 	if err != nil {

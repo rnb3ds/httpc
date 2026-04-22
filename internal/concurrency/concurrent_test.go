@@ -179,7 +179,6 @@ func TestConcurrentSessionManager(t *testing.T) {
 				_ = sm.GetHeaders()
 				_ = sm.GetCookies()
 				_ = sm.GetCookie(fmt.Sprintf("cookie-%d", id))
-				_ = sm.PrepareOptions()
 
 				// Delete operations
 				sm.DeleteHeader(fmt.Sprintf("X-Header-%d", id))

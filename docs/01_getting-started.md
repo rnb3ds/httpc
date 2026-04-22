@@ -6,7 +6,7 @@ This guide will help you get started with HTTPC in just a few minutes.
 
 ### Requirements
 
-- Go 1.24 or higher
+- Go 1.25 or higher
 - Internet connection (for downloading dependencies)
 
 ### Install via go get
@@ -258,8 +258,8 @@ defer client.Close()  // Always close to release resources
 
 ```go
 config := httpc.DefaultConfig()
-config.Timeout = 30 * time.Second
-config.UserAgent = "MyApp/1.0"
+config.Timeouts.Request = 30 * time.Second
+config.Middleware.UserAgent = "MyApp/1.0"
 
 client, err := httpc.New(config)
 if err != nil {
@@ -291,7 +291,7 @@ if err != nil {
 // Check HTTP status (HTTPC returns Result for all status codes)
 if !result.IsSuccess() {
     // 4xx or 5xx status
-    log.Printf("API error: %d - %s", result.StatusCode(), result.Status())
+    log.Printf("API error: %d - %s", result.StatusCode(), result.Response.Status)
     return fmt.Errorf("request failed with status %d", result.StatusCode())
 }
 
@@ -428,6 +428,7 @@ Now that you understand the basics, explore these guides:
 
 - **[Request Options](03_request-options.md)** - Complete reference for all request options
 - **[Configuration](02_configuration.md)** - Client configuration and presets
+- **[Domain Client](../examples/03_advanced/domain_client.go)** - Domain-specific client with session management
 - **[Error Handling](04_error-handling.md)** - Advanced error handling patterns
 - **[Redirects](05_redirects.md)** - Handle HTTP redirects
 - **[Cookie Management](06_cookie-api.md)** - Automatic and manual cookie handling
@@ -442,7 +443,7 @@ Now that you understand the basics, explore these guides:
 ### Using Defaults
 
 ```go
-// Uses secure defaults (TLS 1.2+, 60s timeout, 2 retries)
+// Uses secure defaults (TLS 1.2+, 30s timeout, 3 retries)
 client, err := httpc.New()
 ```
 
@@ -457,6 +458,12 @@ client, err := httpc.New(httpc.DefaultConfig())
 
 // High Security - Strict settings
 client, err := httpc.New(httpc.SecureConfig())
+
+// High Throughput - Large connection pools, longer timeouts
+client, err := httpc.New(httpc.PerformanceConfig())
+
+// Minimal - No retries, no redirects, lightweight
+client, err := httpc.New(httpc.MinimalConfig())
 ```
 
 **See also:** [Configuration Guide](02_configuration.md) for detailed configuration options.

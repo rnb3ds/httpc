@@ -573,3 +573,87 @@ func TestMaskProxyURL(t *testing.T) {
 		})
 	}
 }
+
+// ----------------------------------------------------------------------------
+// ValidateConfig additional boundary cases
+// ----------------------------------------------------------------------------
+
+func TestValidateConfig_AdditionalBoundaries(t *testing.T) {
+	t.Run("nil config", func(t *testing.T) {
+		if err := ValidateConfig(nil); err == nil {
+			t.Error("expected error for nil config")
+		}
+	})
+
+	t.Run("negative dial timeout", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Timeouts.Dial = -1 * time.Second
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected error for negative dial timeout")
+		}
+	})
+
+	t.Run("negative TLS handshake timeout", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Timeouts.TLSHandshake = -1 * time.Second
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected error for negative TLS handshake timeout")
+		}
+	})
+
+	t.Run("negative response header timeout", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Timeouts.ResponseHeader = -1 * time.Second
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected error for negative response header timeout")
+		}
+	})
+
+	t.Run("negative idle conn timeout", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Timeouts.IdleConn = -1 * time.Second
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected error for negative idle conn timeout")
+		}
+	})
+
+	t.Run("negative max idle conns", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Connection.MaxIdleConns = -1
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected error for negative max idle conns")
+		}
+	})
+
+	t.Run("negative max conns per host", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Connection.MaxConnsPerHost = -1
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected error for negative max conns per host")
+		}
+	})
+
+	t.Run("negative max response body size", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Security.MaxResponseBodySize = -1
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected error for negative max response body size")
+		}
+	})
+
+	t.Run("negative retry delay", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Retry.Delay = -1 * time.Second
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected error for negative retry delay")
+		}
+	})
+
+	t.Run("invalid middleware headers", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Middleware.Headers = map[string]string{"X-Bad": "value\r\nevil"}
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected error for CRLF in middleware header value")
+		}
+	})
+}

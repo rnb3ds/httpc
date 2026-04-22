@@ -296,7 +296,7 @@ func queryEscape(s string) string {
 
 	result := string(buf)
 	// Return buffer to pool only if not too large
-	if cap(buf) <= 256 {
+	if cap(buf) <= 1024 {
 		*bufPtr = buf
 		queryEscapePool.Put(bufPtr)
 	}

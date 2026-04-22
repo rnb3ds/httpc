@@ -246,6 +246,16 @@ result, err := client.DownloadWithOptions(url, opts)
 - `ResumeDownload` (bool) - Resume partial downloads (default: false)
 - `ProgressCallback` (func) - Progress tracking callback (optional)
 
+**DownloadResult Fields:**
+- `FilePath` (string) - Path where the file was saved
+- `BytesWritten` (int64) - Total bytes written to disk
+- `Duration` (time.Duration) - Time taken for the download
+- `AverageSpeed` (float64) - Average download speed in bytes/second
+- `StatusCode` (int) - HTTP status code from the response
+- `ContentLength` (int64) - Content-Length from the response header
+- `Resumed` (bool) - Whether the download was resumed from a partial file
+- `ResponseCookies` ([]*http.Cookie) - Cookies returned by the server
+
 ### Save Response to File
 
 Alternative method for small files:
@@ -264,22 +274,19 @@ if err != nil {
 }
 ```
 
-### Manual File Saving
+### Context-Aware Downloads
 
-For simple file saving from response:
+For downloads that need cancellation or timeout control at the call site:
 
 ```go
-// Make a regular GET request
-result, err := client.Get("https://example.com/data.json")
-if err != nil {
-    log.Fatal(err)
-}
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+defer cancel()
 
-// Save response to file
-err = result.SaveToFile("data.json")
-if err != nil {
-    log.Fatal(err)
-}
+// Package-level function with context
+result, err := httpc.DownloadFileWithContext(ctx, url, filePath)
+
+// Client method with context and custom options
+result, err := client.DownloadWithOptionsWithContext(ctx, url, opts)
 ```
 
 ## Implementation Notes
