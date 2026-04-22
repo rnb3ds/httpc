@@ -90,6 +90,16 @@ func parseRetryAfterHeader(headers http.Header) time.Duration {
 		}
 	}
 
+	// Try RFC1123 with numeric timezone (e.g., "Mon, 02 Jan 2006 15:04:05 -0700")
+	if retryTime, err := time.Parse(time.RFC1123Z, retryAfter); err == nil {
+		if delay := time.Until(retryTime); delay > 0 {
+			if delay > maxRetryAfterDelay {
+				delay = maxRetryAfterDelay
+			}
+			return delay
+		}
+	}
+
 	return 0
 }
 

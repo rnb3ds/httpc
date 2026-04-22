@@ -84,6 +84,10 @@ func (e *ClientError) Error() string {
 		baseMsg = e.Message
 	}
 
+	if e.Cause != nil {
+		baseMsg = fmt.Sprintf("%s: %v", baseMsg, e.Cause)
+	}
+
 	if e.Attempts > 0 {
 		return fmt.Sprintf("%s (attempt %d)", baseMsg, e.Attempts)
 	}
@@ -93,6 +97,12 @@ func (e *ClientError) Error() string {
 
 func (e *ClientError) Unwrap() error {
 	return e.Cause
+}
+
+// WithType returns a copy of the error with the specified type set.
+func (e *ClientError) WithType(t ErrorType) *ClientError {
+	e.Type = t
+	return e
 }
 
 // IsRetryable determines if the error is retryable based on its type and cause.
@@ -158,10 +168,13 @@ func (e *ClientError) isRetryableNetworkError() bool {
 		return e.isRetryableOpError(opErr)
 	}
 
-	// Check for generic net.Error
+	// Check for generic net.Error — network errors with net.Error causes
+	// are retryable by default (transient network failures like server
+	// connection close, EOF, etc.). Context errors are handled by the
+	// isContextError check in IsRetryable().
 	var netErr net.Error
 	if errors.As(e.Cause, &netErr) {
-		return netErr.Timeout()
+		return true
 	}
 
 	// Check error message patterns
@@ -242,13 +255,13 @@ func (e *ClientError) isRetryableResponseReadError() bool {
 // isRetryableHTTPStatus checks if HTTP status code indicates a retryable condition.
 func (e *ClientError) isRetryableHTTPStatus() bool {
 	switch e.StatusCode {
-	case 429, 500, 502, 503, 504:
+	case 408, 429, 500, 502, 503, 504:
 		return true
 	}
 	// Fallback: extract status code from message when StatusCode is not set
 	if e.StatusCode == 0 {
 		msg := e.Message
-		for _, prefix := range []string{"HTTP 429", "HTTP 500", "HTTP 502", "HTTP 503", "HTTP 504"} {
+		for _, prefix := range []string{"HTTP 408", "HTTP 429", "HTTP 500", "HTTP 502", "HTTP 503", "HTTP 504"} {
 			if strings.Contains(msg, prefix) {
 				return true
 			}
@@ -301,6 +314,17 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 		Attempts: attempts,
 	}
 
+	// Early return for already-classified errors (prevents double-classification)
+	var existingErr *ClientError
+	if errors.As(err, &existingErr) {
+		existingErr.URL = sanitizedURL
+		existingErr.Method = method
+		if attempts > 0 {
+			existingErr.Attempts = attempts
+		}
+		return existingErr
+	}
+
 	if errors.Is(err, context.Canceled) {
 		clientErr.Type = ErrorTypeContextCanceled
 		clientErr.Message = "request was canceled"
@@ -325,6 +349,13 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 			clientErr.Type = ErrorTypeValidation
 			clientErr.Message = "URL validation failed"
 			return clientErr
+		}
+		// Unwrap *url.Error to classify the actual underlying error.
+		// *url.Error implements net.Error, which would match the net.Error
+		// check below and produce a generic "network error occurred" message.
+		// By unwrapping here, we get to the real error type.
+		if urlErr.Err != nil {
+			err = urlErr.Err
 		}
 	}
 
@@ -429,6 +460,16 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 			clientErr.Type = ErrorTypeTimeout
 			clientErr.Message = "operation timed out"
 		}
+	}
+
+	// Fallback: if we unwrapped a *url.Error but the inner error didn't match
+	// any specific type or string pattern, classify as network error.
+	// This handles cases like io.EOF from server connection close where
+	// the inner error is not a typed net error but the outer *url.Error
+	// (which implements net.Error) indicates a network-level failure.
+	if clientErr.Type == ErrorTypeUnknown && urlErr != nil {
+		clientErr.Type = ErrorTypeNetwork
+		clientErr.Message = "network error occurred"
 	}
 
 	return clientErr

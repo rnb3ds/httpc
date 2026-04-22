@@ -7,8 +7,8 @@ import (
 	"net/url"
 )
 
-// detectOther handles proxy detection for unsupported platforms
-func (d *Detector) detectOther() func(*http.Request) (*url.URL, error) {
+// detectPlatform handles proxy detection for unsupported platforms
+func (d *Detector) detectPlatform() func(*http.Request) (*url.URL, error) {
 	// For unsupported platforms, just use environment variables
 	return d.detectFromEnvironment()
 }

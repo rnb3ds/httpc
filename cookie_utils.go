@@ -2,6 +2,7 @@ package httpc
 
 import (
 	"net/http"
+	"strings"
 	"sync"
 )
 
@@ -108,10 +109,5 @@ func isWhitespace(c byte) bool {
 
 // findEqual finds the first '=' byte in s, returning -1 if not found.
 func findEqual(s string) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == '=' {
-			return i
-		}
-	}
-	return -1
+	return strings.IndexByte(s, '=')
 }

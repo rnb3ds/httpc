@@ -1,7 +1,7 @@
 package httpc
 
 // Package httpc provides a high-performance HTTP client library with enterprise-grade
-// security, zero external dependencies, and production-ready defaults.
+// security and production-ready defaults.
 //
 // # Key Features
 //
@@ -42,16 +42,18 @@ package httpc
 //
 // # SSRF Protection
 //
-// By default, AllowPrivateIPs is true for maximum compatibility with VPNs, proxies,
-// and corporate networks. If your application makes requests to user-provided URLs,
-// enable SSRF protection to block connections to private/reserved IP addresses:
+// By default, AllowPrivateIPs is false, blocking connections to private/reserved
+// IP addresses (127.0.0.1, 10.x, 192.168.x, 169.254.x, etc.). This protects
+// against Server-Side Request Forgery attacks.
 //
-//	// Enable SSRF protection
+// Set AllowPrivateIPs to true only when connecting to internal services:
+//
+//	// Allow internal service access (VPNs, proxies, corporate networks)
 //	cfg := httpc.DefaultConfig()
-//	cfg.Security.AllowPrivateIPs = false
+//	cfg.Security.AllowPrivateIPs = true
 //	client, err := httpc.New(cfg)
 //
-//	// Or use the secure preset (has SSRF protection enabled)
+//	// Or use the secure preset (SSRF protection already enabled)
 //	client, err := httpc.New(httpc.SecureConfig())
 //
 // # Request Options
@@ -769,12 +771,17 @@ func ReleaseResult(r *Result) {
 		return
 	}
 	// Sanitize sensitive body data before returning to pool.
-	// Skip zeroing for large bodies (>64KB) since the struct zeroing below
-	// drops the reference anyway, allowing GC to reclaim the backing array.
-	if len(r.Response.RawBody) <= 64*1024 {
-		for i := range r.Response.RawBody {
-			r.Response.RawBody[i] = 0
+	// Always clear up to 64KB and nil the slice for large bodies.
+	body := r.Response.RawBody
+	if len(body) > 0 {
+		clearLen := len(body)
+		if clearLen > 64*1024 {
+			clearLen = 64 * 1024
 		}
+		for i := range body[:clearLen] {
+			body[i] = 0
+		}
+		r.Response.RawBody = nil
 	}
 	*r.Request = RequestInfo{}
 	*r.Response = ResponseInfo{}

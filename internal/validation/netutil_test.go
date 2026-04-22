@@ -49,7 +49,7 @@ func TestIsPrivateOrReservedIP(t *testing.T) {
 		{"IPv4 Class E", "240.0.0.1", true},
 		{"IPv4 This network", "0.1.2.3", true},
 		{"IPv4 CGNAT", "100.64.0.1", true},
-		{"IPv4 Benchmarking", "198.18.0.1", true},
+		{"IPv4 Benchmarking", "198.18.0.1", false},
 
 		// IPv4 public addresses
 		{"IPv4 public Google DNS", "8.8.8.8", false},

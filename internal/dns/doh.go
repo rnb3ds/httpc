@@ -3,6 +3,7 @@ package dns
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -37,8 +38,8 @@ type DoHProvider struct {
 	Priority int
 }
 
-// CacheEntry holds cached DNS resolution results
-type CacheEntry struct {
+// cacheEntry holds cached DNS resolution results
+type cacheEntry struct {
 	IPs     []net.IPAddr
 	Expires time.Time
 }
@@ -112,22 +113,22 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 		return nil, fmt.Errorf("DoH resolver is closed")
 	}
 
-	// Check cache first using single LoadAndDelete to avoid TOCTOU race.
-	// If the entry is valid, we re-store it; if expired or invalid, it stays deleted.
-	if cached, loaded := r.cache.LoadAndDelete(host); loaded {
-		entry, ok := cached.(*CacheEntry)
-		if !ok || entry == nil {
-			// Invalid entry type — decrement counter and fall through to lookup
-			r.cacheSize.Add(-1)
-		} else if time.Now().Before(entry.Expires) {
-			// Valid and not expired — re-store the same entry and return a copy
-			r.cache.Store(host, entry)
-			ips := make([]net.IPAddr, len(entry.IPs))
-			copy(ips, entry.IPs)
-			return ips, nil
-		} else {
-			// Expired — decrement counter, entry stays deleted
-			r.cacheSize.Add(-1)
+	// Check cache — Load is safe since cacheEntry is read-only after creation.
+	if cached, ok := r.cache.Load(host); ok {
+		if entry, typeOk := cached.(*cacheEntry); typeOk && entry != nil {
+			if time.Now().Before(entry.Expires) {
+				// Deep copy to prevent caller mutations from affecting cached data
+				ips := make([]net.IPAddr, len(entry.IPs))
+				for i, addr := range entry.IPs {
+					ips[i] = net.IPAddr{IP: make(net.IP, len(addr.IP)), Zone: addr.Zone}
+					copy(ips[i].IP, addr.IP)
+				}
+				return ips, nil
+			}
+			// Expired — atomically delete and decrement counter only if we win the race
+			if _, deleted := r.cache.LoadAndDelete(host); deleted {
+				r.cacheSize.Add(-1)
+			}
 		}
 	}
 
@@ -137,22 +138,31 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 		ips, err := r.lookupWithProvider(ctx, provider, host)
 		if err == nil && len(ips) > 0 {
 			// SECURITY: Use CAS to atomically reserve cache slot before storing
-			// This prevents TOCTOU race where multiple goroutines could exceed cache limit
 			for {
 				current := r.cacheSize.Load()
 				if current >= maxDoHCacheSize {
 					break // Cache full, don't store but still return result
 				}
 				if r.cacheSize.CompareAndSwap(current, current+1) {
-					// Successfully reserved slot, now store the entry
 					cacheTTL := time.Duration(r.cacheTTL.Load())
-					r.cache.Store(host, &CacheEntry{
-						IPs:     ips,
+					// Deep copy IPs for cache isolation
+					cachedIPs := make([]net.IPAddr, len(ips))
+					for j, addr := range ips {
+						cachedIPs[j] = net.IPAddr{IP: make(net.IP, len(addr.IP)), Zone: addr.Zone}
+						copy(cachedIPs[j].IP, addr.IP)
+					}
+					newEntry := &cacheEntry{
+						IPs:     cachedIPs,
 						Expires: time.Now().Add(cacheTTL),
-					})
+					}
+					// Use LoadOrStore to detect concurrent stores and prevent counter drift.
+					// If another goroutine already stored an entry for this host,
+					// revert our counter increment since no new slot was consumed.
+					if _, exists := r.cache.LoadOrStore(host, newEntry); exists {
+						r.cacheSize.Add(-1)
+					}
 					break
 				}
-				// CAS failed due to contention, retry
 			}
 			return ips, nil
 		}
@@ -171,7 +181,7 @@ func (r *DoHResolver) CacheSize() int64 {
 // lookupWithProvider performs DNS lookup using a specific DoH provider
 func (r *DoHResolver) lookupWithProvider(ctx context.Context, provider *DoHProvider, host string) ([]net.IPAddr, error) {
 	// Build request URL
-	requestURL := fmt.Sprintf(provider.Template, url.PathEscape(host))
+	requestURL := strings.Replace(provider.Template, "{name}", url.PathEscape(host), 1)
 
 	// Create HTTP request
 	req, err := http.NewRequestWithContext(ctx, "GET", requestURL, nil)
@@ -283,7 +293,8 @@ func (r *DoHResolver) parseWireFormatResponse(body []byte, host string) ([]net.I
 	// Parse question section
 	qdCount, _ := getUint16(body[4:6])
 	for i := 0; i < int(qdCount); i++ {
-		_, offset, err := parseDomain(body, offset, 0)
+		var err error
+		_, offset, err = parseDomain(body, offset, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -315,11 +326,15 @@ func (r *DoHResolver) parseWireFormatResponse(body []byte, host string) ([]net.I
 		}
 
 		// Type 1 = A record (IPv4), Type 28 = AAAA record (IPv6)
+		// Copy IP bytes to avoid aliasing the response body slice,
+		// which would corrupt IP data if the body is GC'd or reused.
 		if recordType == 1 && rdLength == 4 {
-			ip := net.IP(body[offset : offset+4])
+			ip := make(net.IP, 4)
+			copy(ip, body[offset:offset+4])
 			ips = append(ips, net.IPAddr{IP: ip, Zone: ""})
 		} else if recordType == 28 && rdLength == 16 {
-			ip := net.IP(body[offset : offset+16])
+			ip := make(net.IP, 16)
+			copy(ip, body[offset:offset+16])
 			ips = append(ips, net.IPAddr{IP: ip, Zone: ""})
 		}
 
@@ -416,7 +431,7 @@ func (r *DoHResolver) fallbackLookup(ctx context.Context, host string, lastErr e
 	systemResolver := net.DefaultResolver
 	ips, err := systemResolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return nil, fmt.Errorf("DoH and system lookup both failed: %w (last DoH error: %w)", err, lastErr)
+		return nil, fmt.Errorf("DoH and system lookup both failed: %w", errors.Join(err, lastErr))
 	}
 	return ips, nil
 }

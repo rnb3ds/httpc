@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/cybergodev/httpc/internal/types"
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // stringsReaderPool reduces allocations for strings.Reader used in request bodies
@@ -175,31 +176,6 @@ var globalURLCache = &urlCache{
 	maxSize: 1024,
 }
 
-// sensitiveQueryParamNames contains query parameter names that should be excluded
-// from cache keys to prevent credential leakage in logs and cache dumps.
-// SECURITY: This list covers common sensitive parameter names but may not be exhaustive.
-// Applications handling highly sensitive data should implement additional filtering.
-var sensitiveQueryParamNames = map[string]bool{
-	// OAuth and authentication tokens
-	"token": true, "access_token": true, "refresh_token": true,
-	"id_token": true, "idtoken": true, "bearer": true,
-	// API keys and secrets
-	"api_key": true, "apikey": true, "key": true,
-	"secret": true, "secret_key": true, "client_secret": true,
-	"private_key": true, "privatekey": true, "private-key": true,
-	// Passwords and credentials
-	"password": true, "passwd": true, "pass": true, "pwd": true,
-	"credential": true, "credentials": true,
-	// Authentication headers
-	"auth": true, "authorization": true,
-	// Session identifiers
-	"session_id": true, "sessionid": true, "session": true,
-	// JWT and signatures
-	"jwt": true, "signature": true, "sign": true, "sig": true,
-	// OAuth authorization codes
-	"code": true,
-}
-
 // sanitizeCacheKey creates a cache-safe version of the URL by removing sensitive
 // query parameters. This prevents credentials from being stored in cache keys.
 func sanitizeCacheKey(rawURL string) string {
@@ -217,7 +193,7 @@ func sanitizeCacheKey(rawURL string) string {
 	query := parsed.Query()
 	hasSensitive := false
 	for key := range query {
-		if sensitiveQueryParamNames[strings.ToLower(key)] {
+		if validation.IsSensitiveQueryParam(key) {
 			hasSensitive = true
 			break
 		}
@@ -231,7 +207,7 @@ func sanitizeCacheKey(rawURL string) string {
 	cloned := cloneURL(parsed)
 	newQuery := cloned.Query()
 	for key := range newQuery {
-		if sensitiveQueryParamNames[strings.ToLower(key)] {
+		if validation.IsSensitiveQueryParam(key) {
 			newQuery.Set(key, "[REDACTED]")
 		}
 	}
@@ -275,6 +251,13 @@ func (c *urlCache) Get(rawURL string) (*url.URL, error) {
 		oldestKey := c.keys[0]
 		delete(c.entries, oldestKey)
 		c.keys = c.keys[1:]
+		// Compact backing array when capacity is significantly larger than length
+		// to prevent unbounded memory growth under sustained unique URL traffic
+		if cap(c.keys) > len(c.keys)*2 {
+			newKeys := make([]string, len(c.keys), len(c.keys)*2)
+			copy(newKeys, c.keys)
+			c.keys = newKeys
+		}
 	}
 
 	// Store the parsed URL directly — callers always receive a clone
@@ -290,10 +273,9 @@ func cloneURL(u *url.URL) *url.URL {
 	if u == nil {
 		return nil
 	}
-	return &url.URL{
+	clone := &url.URL{
 		Scheme:      u.Scheme,
 		Opaque:      u.Opaque,
-		User:        u.User,
 		Host:        u.Host,
 		Path:        u.Path,
 		RawPath:     u.RawPath,
@@ -303,19 +285,29 @@ func cloneURL(u *url.URL) *url.URL {
 		Fragment:    u.Fragment,
 		RawFragment: u.RawFragment,
 	}
+	if u.User != nil {
+		username := u.User.Username()
+		password, hasPassword := u.User.Password()
+		if hasPassword {
+			clone.User = url.UserPassword(username, password)
+		} else {
+			clone.User = url.User(username)
+		}
+	}
+	return clone
 }
 
-// ClearURLCache clears the global URL cache to release memory.
+// clearURLCache clears the global URL cache to release memory.
 // This is useful for long-running applications that want to free memory
 // when the URL patterns change or during low-activity periods.
 // Thread-safe: can be called concurrently with cache operations.
-func ClearURLCache() {
+func clearURLCache() {
 	globalURLCache.clear()
 }
 
-// GetURLCacheSize returns the current number of entries in the URL cache.
+// getURLCacheSize returns the current number of entries in the URL cache.
 // Useful for monitoring cache usage in production environments.
-func GetURLCacheSize() int {
+func getURLCacheSize() int {
 	return globalURLCache.size()
 }
 
@@ -417,29 +409,6 @@ func (r *pooledJSONBuffer) Read(p []byte) (n int, err error) {
 	return n, err
 }
 
-// ClearRequestPools clears all sync.Pool instances used by the request package.
-// This is primarily useful for testing and debugging to ensure a clean state.
-// Note: sync.Pool is automatically managed by the GC, so this is typically not needed
-// in production code. The pools will be repopulated on next use.
-func ClearRequestPools() {
-	stringsReaderPool = sync.Pool{
-		New: func() any { return &strings.Reader{} },
-	}
-	bytesReaderPool = sync.Pool{
-		New: func() any { return &bytes.Reader{} },
-	}
-	stringBuilderPool = sync.Pool{
-		New: func() any {
-			sb := &strings.Builder{}
-			return sb
-		},
-	}
-	multipartBufferPool = sync.Pool{
-		New: func() any {
-			return bytes.NewBuffer(make([]byte, 0, 8*1024))
-		},
-	}
-}
 
 type RequestProcessor struct {
 	config *Config
@@ -468,7 +437,7 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 
 	if len(req.QueryParams()) > 0 {
 		// parsedURL is already a clone from the cache, safe to modify directly.
-		parsedURL.RawQuery = AppendQueryParams(parsedURL.RawQuery, req.QueryParams())
+		parsedURL.RawQuery = appendQueryParams(parsedURL.RawQuery, req.QueryParams())
 	}
 
 	var body io.Reader
@@ -519,8 +488,8 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 
 					if fileData.ContentType != "" {
 						h := getMIMEHeader()
-						sb, _ := stringBuilderPool.Get().(*strings.Builder)
-						if sb == nil {
+						sb, ok := stringBuilderPool.Get().(*strings.Builder)
+						if !ok || sb == nil {
 							sb = &strings.Builder{}
 						}
 						sb.Reset()

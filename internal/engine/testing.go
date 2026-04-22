@@ -2,7 +2,9 @@ package engine
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"strings"
 	"sync"
 )
 
@@ -27,7 +29,7 @@ func NewMockTransport(statusCode int, body string) *MockTransport {
 			StatusCode: statusCode,
 			Status:     http.StatusText(statusCode),
 			Header:     make(http.Header),
-			Body:       http.NoBody,
+			Body:       io.NopCloser(strings.NewReader(body)),
 		},
 	}
 }
@@ -77,7 +79,7 @@ func (m *MockTransport) SetResponse(statusCode int, body string) {
 		StatusCode: statusCode,
 		Status:     http.StatusText(statusCode),
 		Header:     make(http.Header),
-		Body:       http.NoBody,
+		Body:       io.NopCloser(strings.NewReader(body)),
 	}
 }
 

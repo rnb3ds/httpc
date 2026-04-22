@@ -18,23 +18,23 @@ import (
 func Test_SSRF_DefaultProtection(t *testing.T) {
 	cfg := DefaultConfig()
 
-	// AllowPrivateIPs is true by default for compatibility
-	// Users can set AllowPrivateIPs = false to enable SSRF protection
-	if !cfg.Security.AllowPrivateIPs {
-		t.Error("AllowPrivateIPs should be true by default for compatibility")
+	// AllowPrivateIPs is false by default (SSRF protection enabled)
+	if cfg.Security.AllowPrivateIPs {
+		t.Error("AllowPrivateIPs should be false by default (SSRF protection)")
 	}
 
-	// Verify SSRF protection can be enabled
-	cfg.Security.AllowPrivateIPs = false
-	if cfg.Security.AllowPrivateIPs {
-		t.Error("AllowPrivateIPs should be configurable to false for SSRF protection")
+	// Verify SSRF protection can be disabled for internal services
+	cfg.Security.AllowPrivateIPs = true
+	if !cfg.Security.AllowPrivateIPs {
+		t.Error("AllowPrivateIPs should be configurable to true for internal services")
 	}
 }
 
 // Test_SSRF_ExplicitOptIn verifies that SSRF protection can be disabled (default behavior)
 func Test_SSRF_ExplicitOptIn(t *testing.T) {
 	cfg := DefaultConfig()
-	// AllowPrivateIPs is true by default - no need to set it
+	// AllowPrivateIPs must be explicitly enabled for internal services
+	cfg.Security.AllowPrivateIPs = true
 
 	client, err := New(cfg)
 	if err != nil {
@@ -47,7 +47,7 @@ func Test_SSRF_ExplicitOptIn(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Should work with default config (AllowPrivateIPs = true)
+	// Should work with AllowPrivateIPs enabled for test server
 	result, err := client.Get(server.URL, WithTimeout(5*time.Second))
 	if err != nil {
 		t.Errorf("Expected request to succeed with default config, got: %v", err)

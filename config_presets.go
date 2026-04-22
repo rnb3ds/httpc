@@ -19,7 +19,7 @@ func isTestEnvironment() bool {
 		return true
 	}
 	// Check for Go test environment
-	if os.Getenv("GO_TEST") != "" || strings.Contains(os.Getenv("GOTEST"), "1") {
+	if os.Getenv("GO_TEST") != "" || os.Getenv("GOTEST") == "1" {
 		return true
 	}
 	return false

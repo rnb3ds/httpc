@@ -453,3 +453,273 @@ func TestClient_OnRequestOnResponse(t *testing.T) {
 		t.Error("OnResponse callback was not called")
 	}
 }
+
+// TestClient_ResponseProcessing validates response handling for various server responses.
+func TestClient_ResponseProcessing(t *testing.T) {
+	tests := []struct {
+		name           string
+		serverResponse func(w http.ResponseWriter, r *http.Request)
+		validate       func(*testing.T, *Response)
+	}{
+		{
+			name: "JSON response",
+			serverResponse: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"message":"success","code":200}`))
+			},
+			validate: func(t *testing.T, resp *Response) {
+				if resp.StatusCode() != 200 {
+					t.Errorf("Expected status 200, got %d", resp.StatusCode())
+				}
+				if !strings.Contains(resp.Body(), "success") {
+					t.Error("Response body doesn't contain expected content")
+				}
+				if len(resp.RawBody()) == 0 {
+					t.Error("RawBody should not be empty")
+				}
+			},
+		},
+		{
+			name: "Error response",
+			serverResponse: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"invalid request"}`))
+			},
+			validate: func(t *testing.T, resp *Response) {
+				if resp.StatusCode() != 400 {
+					t.Errorf("Expected status 400, got %d", resp.StatusCode())
+				}
+				if !strings.Contains(resp.Body(), "error") {
+					t.Error("Response body doesn't contain error message")
+				}
+			},
+		},
+		{
+			name: "Large response",
+			serverResponse: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/plain")
+				w.WriteHeader(http.StatusOK)
+				// Write large amount of data
+				data := strings.Repeat("A", 1024*1024) // 1MB
+				_, _ = w.Write([]byte(data))
+			},
+			validate: func(t *testing.T, resp *Response) {
+				if resp.StatusCode() != 200 {
+					t.Errorf("Expected status 200, got %d", resp.StatusCode())
+				}
+				if len(resp.RawBody()) < 1024*1024 {
+					t.Error("Large response not handled correctly")
+				}
+			},
+		},
+		{
+			name: "Response with cookies",
+			serverResponse: func(w http.ResponseWriter, r *http.Request) {
+				http.SetCookie(w, &http.Cookie{
+					Name:  "session_id",
+					Value: "abc123",
+					Path:  "/",
+				})
+				http.SetCookie(w, &http.Cookie{
+					Name:  "user_pref",
+					Value: "dark_mode",
+					Path:  "/",
+				})
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("OK"))
+			},
+			validate: func(t *testing.T, resp *Response) {
+				cookies := resp.Cookies()
+				if len(cookies) != 2 {
+					t.Errorf("Expected 2 cookies, got %d", len(cookies))
+				}
+
+				foundSession := false
+				foundPref := false
+				for _, cookie := range cookies {
+					if cookie.Name == "session_id" && cookie.Value == "abc123" {
+						foundSession = true
+					}
+					if cookie.Name == "user_pref" && cookie.Value == "dark_mode" {
+						foundPref = true
+					}
+				}
+
+				if !foundSession {
+					t.Error("Session cookie not found")
+				}
+				if !foundPref {
+					t.Error("Preference cookie not found")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(tt.serverResponse))
+			defer server.Close()
+
+			config := &Config{
+				Timeout: 60 * time.Second,
+
+				ValidateURL:     true,
+				ValidateHeaders: true,
+				AllowPrivateIPs: true, // Allow test server access
+			}
+
+			client, err := NewClient(config)
+			if err != nil {
+				t.Fatalf("Failed to create client: %v", err)
+			}
+			defer client.Close()
+
+			resp, err := client.Get(server.URL)
+			if err != nil {
+				t.Fatalf("Request failed: %v", err)
+			}
+
+			tt.validate(t, resp)
+		})
+	}
+}
+
+// TestClient_ErrorHandling validates error handling for various failure scenarios.
+func TestClient_ErrorHandling(t *testing.T) {
+	tests := []struct {
+		name        string
+		setupServer func() *httptest.Server
+		expectError bool
+		errorCheck  func(*testing.T, error)
+	}{
+		{
+			name: "Connection refused",
+			setupServer: func() *httptest.Server {
+				// Return a closed server
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				}))
+				server.Close() // Close immediately
+				return server
+			},
+			expectError: true,
+			errorCheck: func(t *testing.T, err error) {
+				if err == nil {
+					t.Error("Expected connection error, got nil")
+				}
+			},
+		},
+		{
+			name: "Server timeout",
+			setupServer: func() *httptest.Server {
+				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					time.Sleep(2 * time.Second) // Exceed client timeout
+					w.WriteHeader(http.StatusOK)
+				}))
+			},
+			expectError: true,
+			errorCheck: func(t *testing.T, err error) {
+				if err == nil {
+					t.Error("Expected timeout error, got nil")
+				}
+			},
+		},
+		{
+			name: "Invalid response",
+			setupServer: func() *httptest.Server {
+				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					// Send invalid HTTP response
+					w.Header().Set("Content-Length", "100")
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("short")) // Content length mismatch
+				}))
+			},
+			expectError: true, // Our enhanced security now detects this
+			errorCheck: func(t *testing.T, err error) {
+				if err == nil {
+					t.Error("Expected content-length mismatch error, got nil")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := tt.setupServer()
+			if server != nil {
+				defer server.Close()
+			}
+
+			config := &Config{
+				Timeout: 1 * time.Second, // Short timeout for testing
+
+				ValidateURL:         true,
+				ValidateHeaders:     true,
+				AllowPrivateIPs:     true, // Allow test server access
+				StrictContentLength: true, // Enable strict content-length validation
+			}
+
+			client, err := NewClient(config)
+			if err != nil {
+				t.Fatalf("Failed to create client: %v", err)
+			}
+			defer client.Close()
+
+			_, err = client.Get(server.URL)
+
+			if tt.expectError && err == nil {
+				t.Error("Expected error, got nil")
+			}
+
+			if !tt.expectError && err != nil {
+				t.Errorf("Unexpected error: %v", err)
+			}
+
+			if tt.errorCheck != nil {
+				tt.errorCheck(t, err)
+			}
+		})
+	}
+}
+
+// TestClient_ContextCancellation validates that context cancellation aborts requests promptly.
+func TestClient_ContextCancellation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second) // Long processing time
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	config := &Config{
+		Timeout: 30 * time.Second,
+
+		ValidateURL:     true,
+		ValidateHeaders: true,
+		AllowPrivateIPs: true, // Allow test server access
+	}
+
+	client, err := NewClient(config)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err = client.Request(ctx, "GET", server.URL)
+	duration := time.Since(start)
+
+	if err == nil {
+		t.Error("Expected context cancellation error, got nil")
+	}
+
+	if duration > 1*time.Second {
+		t.Errorf("Request took too long to cancel: %v", duration)
+	}
+
+	t.Logf("Context cancellation worked correctly in %v", duration)
+}

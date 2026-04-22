@@ -1529,14 +1529,16 @@ func TestDomainClient_BuildURL(t *testing.T) {
 	}))
 	defer server.Close()
 
-	dc, err := httpc.NewDomain(server.URL)
+	cfg := httpc.DefaultConfig()
+	cfg.Security.AllowPrivateIPs = true
+	dc, err := httpc.NewDomain(server.URL, cfg)
 	if err != nil {
 		t.Fatalf("NewDomain failed: %v", err)
 	}
 	defer dc.Close()
 
 	t.Run("empty path returns base URL", func(t *testing.T) {
-		dc2, _ := httpc.NewDomain(server.URL + "/api")
+		dc2, _ := httpc.NewDomain(server.URL+"/api", cfg)
 		defer dc2.Close()
 		// Empty path should return base URL with /api
 		resp, err := dc2.Get("")
@@ -1556,7 +1558,7 @@ func TestDomainClient_BuildURL(t *testing.T) {
 		}))
 		defer qs.Close()
 
-		dc2, _ := httpc.NewDomain(qs.URL)
+		dc2, _ := httpc.NewDomain(qs.URL, cfg)
 		defer dc2.Close()
 
 		resp, err := dc2.Get("/search?q=test")

@@ -3,20 +3,19 @@ package httpc
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/cybergodev/httpc/internal/engine"
 )
 
 // DownloadProgressCallback is called during file download to report progress.
 // Parameters: downloaded bytes, total bytes, current speed in bytes/second.
-// Note: the current implementation buffers the entire response body in memory
-// before writing to disk, so this callback is invoked only once after the
-// download completes. For large file downloads, consider using a streaming
-// approach outside this API.
 type DownloadProgressCallback func(downloaded, total int64, speed float64)
 
 // DownloadConfig configures file download behavior.
@@ -147,17 +146,31 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 		}
 	}
 
-	resp, err := c.Request(ctx, "GET", url, options...)
+	// Use streaming mode to avoid buffering the entire response body into memory.
+	// The body is streamed directly from the network to the file via io.Copy.
+	streamOptions := make([]RequestOption, len(options)+1)
+	copy(streamOptions, options)
+	streamOptions[len(options)] = WithStreamBody(true)
+
+	engResp, err := c.engine.Request(ctx, "GET", url, streamOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("download request failed: %w", err)
 	}
-	defer ReleaseResult(resp)
+	defer engine.ReleaseResponse(engResp)
 
-	statusCode := resp.Response.StatusCode
-	rawBody := resp.Response.RawBody
-	contentLength := resp.Response.ContentLength
-	duration := resp.Meta.Duration
-	responseCookies := resp.Response.Cookies
+	bodyReader := engResp.RawBodyReader()
+	if bodyReader != nil {
+		defer func() { _ = bodyReader.Close() }()
+	}
+
+	if engResp == nil {
+		return nil, fmt.Errorf("download request returned nil response")
+	}
+
+	statusCode := engResp.StatusCode()
+	contentLength := engResp.ContentLength()
+	duration := engResp.Duration()
+	responseCookies := engResp.Cookies()
 
 	resumed := resumeOffset > 0 && statusCode == http.StatusPartialContent
 	if resumeOffset > 0 && statusCode == http.StatusRequestedRangeNotSatisfiable {
@@ -177,6 +190,10 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 		return nil, fmt.Errorf("unexpected status code: %d", statusCode)
 	}
 
+	if bodyReader == nil {
+		return nil, fmt.Errorf("download response has no body reader")
+	}
+
 	var file *os.File
 	if resumed {
 		file, err = os.OpenFile(opts.FilePath, os.O_WRONLY|os.O_APPEND, filePermissions)
@@ -192,8 +209,9 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 		}
 	}()
 
-	bytesWritten := int64(len(rawBody))
-	if _, err = file.Write(rawBody); err != nil {
+	// Stream body directly from network to file — no full-body buffering.
+	bytesWritten, err := io.Copy(file, bodyReader)
+	if err != nil {
 		return nil, fmt.Errorf("failed to write file: %w", err)
 	}
 

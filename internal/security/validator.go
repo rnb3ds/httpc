@@ -14,11 +14,11 @@ type Validator struct {
 	config *Config
 }
 
-// Compile-time interface check for RequestValidator
-var _ RequestValidator = (*Validator)(nil)
+// Compile-time interface check for requestValidator
+var _ requestValidator = (*Validator)(nil)
 
-// RequestValidator defines the interface for request validation.
-type RequestValidator interface {
+// requestValidator defines the interface for request validation.
+type requestValidator interface {
 	ValidateRequest(req *Request) error
 }
 
@@ -91,7 +91,10 @@ func (v *Validator) validateURL(urlStr string) error {
 	}
 
 	// Parse URL for host validation (already validated above)
-	parsedURL, _ := url.Parse(urlStr)
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return fmt.Errorf("URL parse failed: %w", err)
+	}
 	return v.validateHost(parsedURL.Host)
 }
 

@@ -683,6 +683,15 @@ func TestPackageLevel_ErrorPaths(t *testing.T) {
 	defer server.Close()
 
 	// These test the getDefaultClient error path + delegation
+	// Set AllowPrivateIPs=true for test server on localhost
+	cfg := DefaultConfig()
+	cfg.Security.AllowPrivateIPs = true
+	client, err := New(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	SetDefaultClient(client)
+	defer CloseDefaultClient()
 	tests := []struct {
 		name string
 		fn   func() (*Result, error)

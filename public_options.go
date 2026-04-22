@@ -466,6 +466,16 @@ func WithFollowRedirects(follow bool) RequestOption {
 	}
 }
 
+// WithStreamBody enables streaming mode where the response body is not buffered
+// into memory. The caller reads the body directly via the engine Response's
+// RawBodyReader. Used internally for file downloads to avoid buffering large files.
+func WithStreamBody(stream bool) RequestOption {
+	return func(r *engine.Request) error {
+		r.SetStreamBody(stream)
+		return nil
+	}
+}
+
 // WithMaxRedirects sets the maximum number of redirects to follow for this request.
 func WithMaxRedirects(maxRedirects int) RequestOption {
 	return func(r *engine.Request) error {

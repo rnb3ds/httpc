@@ -189,11 +189,8 @@ func (p *ResponseProcessor) Process(httpResp *http.Response) (*Response, error) 
 	resp.SetStatusCode(httpResp.StatusCode)
 	resp.SetStatus(httpResp.Status)
 	resp.SetHeaders(httpResp.Header)
-	// Zero-copy conversion: body is freshly allocated by readBody (not from pool),
-	// so bytesToString safely shares memory between RawBody and Body.
-	// This eliminates one full copy of the response body per request.
 	resp.SetRawBody(body)
-	resp.SetBody(bytesToString(body))
+	resp.SetBody(string(body))
 	resp.SetContentLength(contentLength)
 	resp.SetProto(httpResp.Proto)
 	resp.SetCookies(httpResp.Cookies())
@@ -206,11 +203,8 @@ func (p *ResponseProcessor) Process(httpResp *http.Response) (*Response, error) 
 //
 // # SECURITY CONTRACT
 //
-// This function MUST return a freshly allocated []byte that is safe for use with
-// bytesToString(). The returned slice:
-//   - Must NOT be from a sync.Pool (must be a new allocation or stolen backing array)
-//   - Must NOT be retained by any other reference
-//   - Must NOT be modified after being passed to bytesToString()
+// This function MUST return a freshly allocated []byte.
+// The returned slice must not be retained by any other reference (pool or shared buffer).
 //
 // SECURITY: Implements protection against decompression bomb attacks.
 func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
@@ -286,9 +280,11 @@ func (p *ResponseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 
 	body := buf.Bytes()
 
-	// SECURITY: Check compressed size limit for zip bomb protection
-	if isCompressed && len(body) > maxCompressedSize {
-		return nil, fmt.Errorf("compressed response body exceeds security limit of %d bytes (potential zip bomb)", maxCompressedSize)
+	// SECURITY: After decompression, check body size for zip bomb protection.
+	// The compressed input is already limited by compressedLr above.
+	// This catches cases where small compressed payloads decompress to excessively large output.
+	if isCompressed && int64(len(body)) > maxCompressedSize {
+		return nil, fmt.Errorf("decompressed response body exceeds security limit of %d bytes (potential zip bomb)", maxCompressedSize)
 	}
 
 	// Check decompressed size limit (uses same maxSize calculation as limit reader above)

@@ -10,6 +10,11 @@ import (
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
+// tempReqPool reuses engine.Request objects in captureFromOptions to reduce allocations.
+var tempReqPool = sync.Pool{
+	New: func() any { return &engine.Request{} },
+}
+
 // SessionConfig configures SessionManager behavior.
 // Use DefaultSessionConfig() to get a configuration with sensible defaults.
 type SessionConfig struct {
@@ -257,6 +262,15 @@ func (s *SessionManager) prepareOptions() []RequestOption {
 	return options
 }
 
+// validateCookieSecurity checks cookie against the session's security config.
+// Returns nil if no security config is set or if the cookie passes validation.
+func (s *SessionManager) validateCookieSecurity(cookie *http.Cookie) error {
+	if s.cookieSecurity == nil {
+		return nil
+	}
+	return validation.ValidateCookieSecurity(cookie, s.cookieSecurity)
+}
+
 // UpdateFromResult updates session cookies from a Result.
 // If cookie security is configured, insecure cookies are silently skipped.
 func (s *SessionManager) UpdateFromResult(result *Result) {
@@ -269,10 +283,8 @@ func (s *SessionManager) UpdateFromResult(result *Result) {
 
 	for _, cookie := range result.Response.Cookies {
 		if cookie != nil {
-			if s.cookieSecurity != nil {
-				if err := validation.ValidateCookieSecurity(cookie, s.cookieSecurity); err != nil {
-					continue
-				}
+			if err := s.validateCookieSecurity(cookie); err != nil {
+				continue
 			}
 			s.cookies[cookie.Name] = cookie
 		}
@@ -291,10 +303,8 @@ func (s *SessionManager) UpdateFromCookies(cookies []*http.Cookie) {
 
 	for _, cookie := range cookies {
 		if cookie != nil {
-			if s.cookieSecurity != nil {
-				if err := validation.ValidateCookieSecurity(cookie, s.cookieSecurity); err != nil {
-					continue
-				}
+			if err := s.validateCookieSecurity(cookie); err != nil {
+				continue
 			}
 			s.cookies[cookie.Name] = cookie
 		}
@@ -308,8 +318,12 @@ func (s *SessionManager) captureFromOptions(options []RequestOption) {
 		return
 	}
 
-	// Use engine.Request which implements RequestMutator
-	tempReq := &engine.Request{}
+	// Use pooled engine.Request to reduce allocations on hot path
+	tempReq := tempReqPool.Get().(*engine.Request)
+	defer func() {
+		*tempReq = engine.Request{}
+		tempReqPool.Put(tempReq)
+	}()
 
 	for _, opt := range options {
 		if opt != nil {

@@ -21,7 +21,7 @@ const (
 
 	MaxHeaderKeyLen   = 256
 	MaxHeaderValueLen = 8192
-	MaxURLLen         = 2048 // Maximum URL length
+	maxURLLen         = 2048 // Maximum URL length
 )
 
 // dangerousChars contains characters that may be used for injection attacks.
@@ -29,8 +29,8 @@ const (
 // XSS, and other attack vectors.
 const dangerousChars = `"'<>&;` + "`|" + `$\{}[]^~`
 
-// ValidateInputString performs common string validation to prevent injection attacks.
-func ValidateInputString(input string, maxLen int, name string, additionalChecks func(rune) error) error {
+// validateInputString performs common string validation to prevent injection attacks.
+func validateInputString(input string, maxLen int, name string, additionalChecks func(rune) error) error {
 	inputLen := len(input)
 	if inputLen == 0 {
 		return fmt.Errorf("%s cannot be empty", name)
@@ -55,7 +55,7 @@ func ValidateInputString(input string, maxLen int, name string, additionalChecks
 
 // ValidateCredential validates credentials for Basic Auth.
 func ValidateCredential(cred string, maxLen int, checkColon bool, credType string) error {
-	return ValidateInputString(cred, maxLen, credType, func(r rune) error {
+	return validateInputString(cred, maxLen, credType, func(r rune) error {
 		if checkColon && r == ':' {
 			return fmt.Errorf("username cannot contain colon")
 		}
@@ -65,7 +65,7 @@ func ValidateCredential(cred string, maxLen int, checkColon bool, credType strin
 
 // ValidateToken validates bearer tokens according to RFC 6750.
 func ValidateToken(token string) error {
-	return ValidateInputString(token, MaxTokenLen, "token", func(r rune) error {
+	return validateInputString(token, MaxTokenLen, "token", func(r rune) error {
 		if r == ' ' {
 			return fmt.Errorf("token cannot contain spaces")
 		}
@@ -121,7 +121,7 @@ func ValidateTokenStrict(token string) error {
 
 // ValidateQueryKey validates query parameter keys.
 func ValidateQueryKey(key string) error {
-	return ValidateInputString(key, MaxKeyLen, "query key", func(r rune) error {
+	return validateInputString(key, MaxKeyLen, "query key", func(r rune) error {
 		if r == '&' || r == '=' || r == '#' || r == '?' {
 			return fmt.Errorf("query key contains reserved characters")
 		}
@@ -138,7 +138,7 @@ func ValidateFieldName(name string, fieldType string) error {
 		return fmt.Errorf("field contains path traversal characters")
 	}
 
-	return ValidateInputString(name, MaxFilenameLen, fieldType, func(r rune) error {
+	return validateInputString(name, MaxFilenameLen, fieldType, func(r rune) error {
 		if r == '"' || r == '\'' || r == '<' || r == '>' || r == '&' {
 			return fmt.Errorf("field contains dangerous characters")
 		}
@@ -148,7 +148,7 @@ func ValidateFieldName(name string, fieldType string) error {
 
 // ValidateHeaderKeyValue validates HTTP header keys and values.
 func ValidateHeaderKeyValue(key, value string) error {
-	if err := ValidateInputString(key, MaxHeaderKeyLen, "header key", func(r rune) error {
+	if err := validateInputString(key, MaxHeaderKeyLen, "header key", func(r rune) error {
 		if !IsValidHeaderChar(r) {
 			return fmt.Errorf("invalid character in header key")
 		}
@@ -225,7 +225,7 @@ func IsValidHeaderString(s string) bool {
 
 // ValidateCookieName validates HTTP cookie names.
 func ValidateCookieName(name string) error {
-	return ValidateInputString(name, MaxCookieNameLen, "cookie name", func(r rune) error {
+	return validateInputString(name, MaxCookieNameLen, "cookie name", func(r rune) error {
 		if r == ';' || r == ',' {
 			return fmt.Errorf("cookie name contains invalid characters")
 		}

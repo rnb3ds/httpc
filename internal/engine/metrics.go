@@ -1,7 +1,7 @@
 package engine
 
 import (
-	"runtime"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -27,74 +27,65 @@ type HealthStatus struct {
 // Metrics collects and tracks HTTP client performance metrics.
 // All methods are safe for concurrent use.
 type Metrics struct {
-	totalRequests      int64
-	successfulRequests int64
-	failedRequests     int64
-	averageLatency     int64 // stored as nanoseconds for atomic operations
+	totalRequests      atomic.Int64
+	successfulRequests atomic.Int64
+	failedRequests     atomic.Int64
+	latencyMu          sync.Mutex
+	averageLatency     int64 // stored as nanoseconds
 }
 
 // RecordRequest records the result of a single request.
 // It updates the request counters and rolling average latency.
 func (m *Metrics) RecordRequest(latencyNs int64, success bool) {
-	atomic.AddInt64(&m.totalRequests, 1)
+	m.totalRequests.Add(1)
 	if success {
-		atomic.AddInt64(&m.successfulRequests, 1)
+		m.successfulRequests.Add(1)
 	} else {
-		atomic.AddInt64(&m.failedRequests, 1)
+		m.failedRequests.Add(1)
 	}
-	m.updateLatencyMetrics(latencyNs)
+	m.updateLatency(latencyNs)
 }
 
-// updateLatencyMetrics updates the rolling average latency using lock-free atomic operations.
-// Includes backoff strategy to prevent CPU spinning under high contention.
-func (m *Metrics) updateLatencyMetrics(latency int64) {
-	const maxRetries = 100
-	for i := 0; i < maxRetries; i++ {
-		current := atomic.LoadInt64(&m.averageLatency)
-		// BUGFIX: Handle initial case where current is 0
-		// First measurement should be the actual latency, not latency/10
-		var newAvg int64
-		if current == 0 {
-			newAvg = latency
-		} else {
-			newAvg = (current*9 + latency) / 10
-		}
-		if atomic.CompareAndSwapInt64(&m.averageLatency, current, newAvg) {
-			return
-		}
-		// Backoff: yield CPU after several failed attempts to reduce contention
-		if i > 10 {
-			runtime.Gosched()
-		}
+// updateLatency updates the rolling average latency.
+func (m *Metrics) updateLatency(latency int64) {
+	m.latencyMu.Lock()
+	current := m.averageLatency
+	if current == 0 {
+		m.averageLatency = latency
+	} else {
+		m.averageLatency = (current*9 + latency) / 10
 	}
-	// If we exhausted retries, the update is skipped (acceptable for metrics)
+	m.latencyMu.Unlock()
 }
 
 // Snapshot returns a point-in-time copy of the current metrics.
+// The snapshot is atomic — all fields are consistent at the same instant.
 func (m *Metrics) Snapshot() MetricsSnapshot {
 	return MetricsSnapshot{
-		TotalRequests:      atomic.LoadInt64(&m.totalRequests),
-		SuccessfulRequests: atomic.LoadInt64(&m.successfulRequests),
-		FailedRequests:     atomic.LoadInt64(&m.failedRequests),
-		AverageLatency:     time.Duration(atomic.LoadInt64(&m.averageLatency)),
+		TotalRequests:      m.totalRequests.Load(),
+		SuccessfulRequests: m.successfulRequests.Load(),
+		FailedRequests:     m.failedRequests.Load(),
+		AverageLatency:     time.Duration(m.getAverageLatency()),
 	}
 }
 
 // Reset resets all metrics to zero.
 func (m *Metrics) Reset() {
-	atomic.StoreInt64(&m.totalRequests, 0)
-	atomic.StoreInt64(&m.successfulRequests, 0)
-	atomic.StoreInt64(&m.failedRequests, 0)
-	atomic.StoreInt64(&m.averageLatency, 0)
+	m.totalRequests.Store(0)
+	m.successfulRequests.Store(0)
+	m.failedRequests.Store(0)
+	m.latencyMu.Lock()
+	m.averageLatency = 0
+	m.latencyMu.Unlock()
 }
 
 // GetHealthStatus returns the current health status of the client.
 // A client is considered healthy if its error rate is below 10%.
 func (m *Metrics) GetHealthStatus() HealthStatus {
-	total := atomic.LoadInt64(&m.totalRequests)
-	success := atomic.LoadInt64(&m.successfulRequests)
-	failed := atomic.LoadInt64(&m.failedRequests)
-	avgLatNs := atomic.LoadInt64(&m.averageLatency)
+	total := m.totalRequests.Load()
+	failed := m.failedRequests.Load()
+	success := m.successfulRequests.Load()
+	avgLatNs := m.getAverageLatency()
 
 	var errorRate float64
 	if total > 0 {
@@ -116,4 +107,11 @@ func (m *Metrics) GetHealthStatus() HealthStatus {
 // IsHealthy returns true if the client is healthy (error rate < 10%).
 func (m *Metrics) IsHealthy() bool {
 	return m.GetHealthStatus().Healthy
+}
+
+// getAverageLatency returns the current average latency in nanoseconds.
+func (m *Metrics) getAverageLatency() int64 {
+	m.latencyMu.Lock()
+	defer m.latencyMu.Unlock()
+	return m.averageLatency
 }

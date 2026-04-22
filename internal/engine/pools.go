@@ -11,8 +11,6 @@ const (
 	// maxPooledHeaderSize limits the number of headers that will be pooled
 	// to prevent memory bloat from large header sets
 	maxPooledHeaderSize = 32
-	// maxPooledValuesSize limits the number of values per header that will be pooled
-	maxPooledValuesSize = 16
 )
 
 // headerPool reduces allocations for http.Header objects
@@ -23,17 +21,9 @@ var headerPool = sync.Pool{
 	},
 }
 
-// headerValuesPool reduces allocations for header value slices
-var headerValuesPool = sync.Pool{
-	New: func() any {
-		s := make([]string, 0, 4)
-		return &s
-	},
-}
-
-// GetHeader retrieves an http.Header from the pool.
+// getHeader retrieves an http.Header from the pool.
 // The returned header is cleared and ready for use.
-func GetHeader() *http.Header {
+func getHeader() *http.Header {
 	h, ok := headerPool.Get().(*http.Header)
 	if !ok || h == nil {
 		tmp := make(http.Header, 8)
@@ -46,14 +36,17 @@ func GetHeader() *http.Header {
 	return h
 }
 
-// PutHeader returns an http.Header to the pool.
+// putHeader returns an http.Header to the pool.
 // Headers with too many entries are discarded to prevent memory bloat.
 // SECURITY: Always clears all header values to prevent sensitive data leakage,
 // regardless of whether the header is pooled or discarded.
-func PutHeader(h *http.Header) {
+func putHeader(h *http.Header) {
 	if h == nil {
 		return
 	}
+
+	// Record size before clearing — check must happen while entries exist
+	oversized := len(*h) > maxPooledHeaderSize
 
 	// SECURITY: Always clear all values to prevent sensitive data leakage
 	for k, v := range *h {
@@ -66,42 +59,18 @@ func PutHeader(h *http.Header) {
 	}
 
 	// Only pool headers within size limits
-	if len(*h) > maxPooledHeaderSize {
+	if oversized {
 		return // Don't pool large headers (already cleared above)
 	}
 
 	headerPool.Put(h)
 }
 
-// GetHeaderValues retrieves a string slice from the pool for header values.
-func GetHeaderValues() *[]string {
-	v, ok := headerValuesPool.Get().(*[]string)
-	if !ok || v == nil {
-		tmp := make([]string, 0, 4)
-		return &tmp
-	}
-	*v = (*v)[:0]
-	return v
-}
-
-// PutHeaderValues returns a string slice to the pool.
-func PutHeaderValues(v *[]string) {
-	if v == nil || cap(*v) > maxPooledValuesSize*4 {
-		return // Don't pool large slices
-	}
-	// Clear strings to allow GC
-	for i := range *v {
-		(*v)[i] = ""
-	}
-	*v = (*v)[:0]
-	headerValuesPool.Put(v)
-}
-
-// CopyHeader efficiently copies headers from src to dst using batch allocation.
+// copyHeader efficiently copies headers from src to dst using batch allocation.
 // SECURITY: Allocates new slices for values because dst may hold long-term references.
 // Using pooled slices here would cause memory leaks as the pool expects objects to be returned.
 // OPTIMIZATION: Uses batch allocation to reduce N allocations (one per header) to 1 allocation.
-func CopyHeader(dst, src http.Header) {
+func copyHeader(dst, src http.Header) {
 	if src == nil || dst == nil {
 		return
 	}
@@ -134,17 +103,17 @@ func CopyHeader(dst, src http.Header) {
 	}
 }
 
-// CloneHeader creates a deep copy of headers using batch allocation.
+// cloneHeader creates a deep copy of headers using batch allocation.
 // Returns a newly allocated header map that can be safely modified.
 // SECURITY: Always allocates new slices to prevent data leakage between requests.
 // The header map itself uses pooled allocation, but values are always copied.
 // OPTIMIZATION: Uses batch allocation to reduce N allocations (one per header) to 1 allocation.
-func CloneHeader(src http.Header) http.Header {
+func cloneHeader(src http.Header) http.Header {
 	if src == nil {
 		return nil
 	}
 
-	dst := *GetHeader()
+	dst := *getHeader()
 
 	// Count total values for batch allocation
 	totalValues := 0
@@ -174,23 +143,6 @@ func CloneHeader(src http.Header) http.Header {
 		valueIdx = endIdx
 	}
 	return dst
-}
-
-// ClearHeaderPools clears all sync.Pool instances used for header operations.
-// This is primarily useful for testing and debugging.
-func ClearHeaderPools() {
-	headerPool = sync.Pool{
-		New: func() any {
-			h := make(http.Header, 8)
-			return &h
-		},
-	}
-	headerValuesPool = sync.Pool{
-		New: func() any {
-			s := make([]string, 0, 4)
-			return &s
-		},
-	}
 }
 
 // queryBuilderPool reduces allocations for building query strings
@@ -295,18 +247,20 @@ func queryEscape(s string) string {
 	}
 
 	result := string(buf)
-	// Return buffer to pool only if not too large
+	// Always return bufPtr to pool; detach large buffers to prevent bloat.
 	if cap(buf) <= 1024 {
 		*bufPtr = buf
-		queryEscapePool.Put(bufPtr)
+	} else {
+		*bufPtr = nil
 	}
+	queryEscapePool.Put(bufPtr)
 	return result
 }
 
-// EncodeQueryParams efficiently encodes query parameters without allocating url.Values.
+// encodeQueryParams efficiently encodes query parameters without allocating url.Values.
 // This avoids the intermediate map allocation and uses pooled strings.Builder.
 // Returns an empty string if params is nil or empty.
-func EncodeQueryParams(params map[string]any) string {
+func encodeQueryParams(params map[string]any) string {
 	if len(params) == 0 {
 		return ""
 	}
@@ -339,9 +293,9 @@ func EncodeQueryParams(params map[string]any) string {
 	return result
 }
 
-// AppendQueryParams appends query parameters to an existing raw query string.
+// appendQueryParams appends query parameters to an existing raw query string.
 // This is more efficient than creating url.Values when you have an existing query.
-func AppendQueryParams(existingQuery string, params map[string]any) string {
+func appendQueryParams(existingQuery string, params map[string]any) string {
 	if len(params) == 0 {
 		return existingQuery
 	}

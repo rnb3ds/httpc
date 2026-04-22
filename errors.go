@@ -22,19 +22,6 @@ type ClientError = engine.ClientError
 // ErrorType represents the classification of an error.
 type ErrorType = engine.ErrorType
 
-// ClassifyError classifies an error into a ClientError with context.
-// This is useful for custom error handling and logging.
-//
-// Example:
-//
-//	var clientErr *httpc.ClientError
-//	if errors.As(err, &clientErr) {
-//	    if clientErr.IsRetryable() {
-//	        // Retry the request
-//	    }
-//	}
-var ClassifyError = engine.ClassifyError
-
 // Error type constants for error classification.
 const (
 	// ErrorTypeUnknown indicates an unknown or unclassified error.
@@ -66,7 +53,8 @@ const (
 var (
 	// ErrClientClosed is returned when attempting to use a closed client.
 	// This occurs after calling Close() on a client instance.
-	ErrClientClosed = errors.New("client is closed")
+	// Use errors.Is(err, httpc.ErrClientClosed) to detect this condition.
+	ErrClientClosed = engine.ErrClientClosed
 
 	// ErrNilConfig is returned when a nil configuration is provided.
 	// Always provide a valid Config or use DefaultConfig().

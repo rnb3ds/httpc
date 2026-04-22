@@ -5,8 +5,39 @@ import (
 	"strings"
 )
 
-// SanitizeURL removes credentials from a URL for safe logging.
-// URLs with credentials are transformed from user:pass@host to ***:***@host.
+// SensitiveQueryParamNames contains query parameter names whose values should be
+// redacted when sanitizing URLs for logging and error messages.
+// Shared across packages to avoid duplicate definitions.
+var SensitiveQueryParamNames = map[string]bool{
+	// OAuth and authentication tokens
+	"token": true, "access_token": true, "refresh_token": true,
+	"id_token": true, "idtoken": true, "bearer": true,
+	// API keys and secrets
+	"api_key": true, "apikey": true,
+	"secret": true, "secret_key": true, "client_secret": true,
+	"private_key": true, "privatekey": true, "private-key": true,
+	// Passwords and credentials
+	"password": true, "passwd": true, "pass": true, "pwd": true,
+	"credential": true, "credentials": true,
+	// Session identifiers
+	"session_id": true, "sessionid": true,
+	// JWT and signatures
+	"jwt": true, "signature": true, "sign": true, "sig": true,
+	// OAuth authorization codes
+	"code": true,
+}
+
+// IsSensitiveQueryParam reports whether the given query parameter name is
+// considered sensitive and should be redacted from logs and cache keys.
+func IsSensitiveQueryParam(name string) bool {
+	return SensitiveQueryParamNames[strings.ToLower(name)]
+}
+
+// SanitizeURL removes credentials and redacts sensitive query parameters from a URL
+// for safe logging. URLs with credentials are transformed from user:pass@host to
+// ***:***@host. Sensitive query parameters (token, api_key, password, etc.) have
+// their values replaced with [REDACTED].
+//
 // Returns the original string if the URL cannot be parsed.
 //
 // This function is used to prevent credential leakage in:
@@ -17,8 +48,8 @@ import (
 //
 // Example:
 //
-//	SanitizeURL("https://user:pass@example.com/path") // Returns "https://***:***@example.com/path"
-//	SanitizeURL("https://example.com/path")           // Returns "https://example.com/path"
+//	SanitizeURL("https://user:pass@example.com/path?token=secret")
+//	// Returns "https://***:***@example.com/path?token=[REDACTED]"
 func SanitizeURL(urlStr string) string {
 	if urlStr == "" {
 		return ""
@@ -27,6 +58,21 @@ func SanitizeURL(urlStr string) string {
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
 		return urlStr
+	}
+
+	// Redact sensitive query parameters
+	if parsedURL.RawQuery != "" {
+		query := parsedURL.Query()
+		redacted := false
+		for key := range query {
+			if SensitiveQueryParamNames[strings.ToLower(key)] {
+				query.Set(key, "[REDACTED]")
+				redacted = true
+			}
+		}
+		if redacted {
+			parsedURL.RawQuery = query.Encode()
+		}
 	}
 
 	if parsedURL.User == nil {

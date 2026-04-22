@@ -324,7 +324,6 @@ func TestConcurrentConnectionPool(t *testing.T) {
 			for j := 0; j < opsPerGoroutine; j++ {
 				// Concurrent metrics access (atomic)
 				_ = pm.GetMetrics()
-				_ = pm.IsHealthy()
 
 				// Concurrent transport access (read-only after creation)
 				transport := pm.GetTransport()

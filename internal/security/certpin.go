@@ -30,9 +30,8 @@ type PublicKeyPinner struct {
 
 // NewPublicKeyPinner creates a new pinner from raw public keys.
 // Each public key should be in DER-encoded PKIX format (as used in x509 certificates).
-// If no valid keys are provided, the returned pinner will have nil inner and
-// VerifyPeerCertificate will be a no-op (accept all).
-func NewPublicKeyPinner(publicKeys ...[]byte) *PublicKeyPinner {
+// Returns an error if no valid keys are provided.
+func NewPublicKeyPinner(publicKeys ...[]byte) (*PublicKeyPinner, error) {
 	hashes := make([]string, 0, len(publicKeys))
 	for _, pk := range publicKeys {
 		if len(pk) > 0 {
@@ -40,17 +39,22 @@ func NewPublicKeyPinner(publicKeys ...[]byte) *PublicKeyPinner {
 			hashes = append(hashes, base64.StdEncoding.EncodeToString(hash[:]))
 		}
 	}
-	inner, _ := NewSPKIHashPinner(hashes...)
-	return &PublicKeyPinner{inner: inner}
+	inner, err := NewSPKIHashPinner(hashes...)
+	if err != nil {
+		return nil, fmt.Errorf("no valid public keys provided: %w", err)
+	}
+	return &PublicKeyPinner{inner: inner}, nil
 }
 
 // NewPublicKeyPinnerFromBase64 creates a new pinner from base64-encoded public key hashes.
 // Each hash should be the SHA-256 hash of the DER-encoded public key, base64-encoded.
-// If no valid hashes are provided, the returned pinner will have nil inner and
-// VerifyPeerCertificate will be a no-op (accept all).
-func NewPublicKeyPinnerFromBase64(hashes ...string) *PublicKeyPinner {
-	inner, _ := NewSPKIHashPinner(hashes...)
-	return &PublicKeyPinner{inner: inner}
+// Returns an error if no valid hashes are provided.
+func NewPublicKeyPinnerFromBase64(hashes ...string) (*PublicKeyPinner, error) {
+	inner, err := NewSPKIHashPinner(hashes...)
+	if err != nil {
+		return nil, fmt.Errorf("no valid SPKI hashes provided: %w", err)
+	}
+	return &PublicKeyPinner{inner: inner}, nil
 }
 
 // Pin returns a description of the pinned public keys.
@@ -156,20 +160,20 @@ func (p *SPKIHashPinner) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Ce
 	return fmt.Errorf("certificate pinning failed: no matching SPKI hash found")
 }
 
-// CertificatePinnerChain combines multiple pinners.
+// certificatePinnerChain combines multiple pinners.
 // A certificate is considered valid if ANY of the pinners accepts it.
-type CertificatePinnerChain struct {
+type certificatePinnerChain struct {
 	pinners []CertificatePinner
 }
 
-// NewCertificatePinnerChain creates a new chain of pinners.
+// newCertificatePinnerChain creates a new chain of pinners.
 // A certificate is valid if ANY pinner accepts it.
-func NewCertificatePinnerChain(pinners ...CertificatePinner) *CertificatePinnerChain {
-	return &CertificatePinnerChain{pinners: pinners}
+func newCertificatePinnerChain(pinners ...CertificatePinner) *certificatePinnerChain {
+	return &certificatePinnerChain{pinners: pinners}
 }
 
 // Pin returns a description of all pinners in the chain.
-func (c *CertificatePinnerChain) Pin() string {
+func (c *certificatePinnerChain) Pin() string {
 	if c == nil || len(c.pinners) == 0 {
 		return "no-pins"
 	}
@@ -183,7 +187,7 @@ func (c *CertificatePinnerChain) Pin() string {
 
 // VerifyPeerCertificate verifies the certificate against all pinners.
 // Returns nil if ANY pinner accepts the certificate.
-func (c *CertificatePinnerChain) VerifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+func (c *certificatePinnerChain) VerifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 	if c == nil || len(c.pinners) == 0 {
 		return nil // No pinners means no pinning
 	}
@@ -203,16 +207,16 @@ func (c *CertificatePinnerChain) VerifyPeerCertificate(rawCerts [][]byte, verifi
 	return fmt.Errorf("certificate pinning failed: no pinner matched")
 }
 
-// NoOpPinner is a pinner that accepts all certificates.
-// Useful for disabling pinning while keeping the interface.
-type NoOpPinner struct{}
+// noOpPinner is a pinner that accepts all certificates.
+// Exported for testing.
+type noOpPinner struct{}
 
 // Pin returns "no-op" to indicate no pinning.
-func (n *NoOpPinner) Pin() string {
+func (n *noOpPinner) Pin() string {
 	return "no-op"
 }
 
 // VerifyPeerCertificate always returns nil, accepting all certificates.
-func (n *NoOpPinner) VerifyPeerCertificate(_ [][]byte, _ [][]*x509.Certificate) error {
+func (n *noOpPinner) VerifyPeerCertificate(_ [][]byte, _ [][]*x509.Certificate) error {
 	return nil
 }

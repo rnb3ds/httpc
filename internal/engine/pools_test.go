@@ -8,131 +8,32 @@ import (
 
 func TestGetPutHeader(t *testing.T) {
 	t.Run("GetAndReturn", func(t *testing.T) {
-		h := GetHeader()
+		h := getHeader()
 		if h == nil {
-			t.Fatal("GetHeader returned nil")
+			t.Fatal("getHeader returned nil")
 		}
 		h.Set("Content-Type", "application/json")
 		h.Set("X-Custom", "value")
 
-		PutHeader(h)
+		putHeader(h)
 
 		// Get again - should be cleared
-		h2 := GetHeader()
+		h2 := getHeader()
 		if len(*h2) != 0 {
 			t.Errorf("Pooled header should be cleared, got %d entries", len(*h2))
 		}
-		PutHeader(h2)
+		putHeader(h2)
 	})
 
 	t.Run("PutNil", func(t *testing.T) {
-		PutHeader(nil) // should not panic
+		putHeader(nil) // should not panic
 	})
-
-	t.Run("OversizeNotPooled", func(t *testing.T) {
-		ClearHeaderPools()
-		h := GetHeader()
-		for i := 0; i < maxPooledHeaderSize+1; i++ {
-			h.Set(http.CanonicalHeaderKey(strings.Repeat("x", 10)+strings.Repeat(string(rune('0'+i%10)), 5)), "v")
-		}
-		PutHeader(h) // should discard, not pool
-	})
-}
-
-func TestGetPutHeaderValues(t *testing.T) {
-	t.Run("GetAndReturn", func(t *testing.T) {
-		v := GetHeaderValues()
-		if v == nil {
-			t.Fatal("GetHeaderValues returned nil")
-		}
-		*v = append(*v, "value1", "value2")
-
-		PutHeaderValues(v)
-
-		v2 := GetHeaderValues()
-		if len(*v2) != 0 {
-			t.Errorf("Pooled values should be cleared, got %d entries", len(*v2))
-		}
-		PutHeaderValues(v2)
-	})
-
-	t.Run("PutNil", func(t *testing.T) {
-		PutHeaderValues(nil)
-	})
-
-	t.Run("OversizeNotPooled", func(t *testing.T) {
-		v := GetHeaderValues()
-		// Make it too large
-		*v = make([]string, 0, maxPooledValuesSize*4+1)
-		PutHeaderValues(v) // should discard
-	})
-}
-
-func TestCopyHeader(t *testing.T) {
-	tests := []struct {
-		name   string
-		src    http.Header
-		dst    http.Header
-		expect http.Header
-	}{
-		{
-			name:   "NilSrc",
-			src:    nil,
-			dst:    make(http.Header),
-			expect: http.Header{},
-		},
-		{
-			name:   "NilDst",
-			src:    http.Header{"A": {"1"}},
-			dst:    nil,
-			expect: nil,
-		},
-		{
-			name:   "EmptySrc",
-			src:    http.Header{},
-			dst:    make(http.Header),
-			expect: http.Header{},
-		},
-		{
-			name:   "SingleValue",
-			src:    http.Header{"Content-Type": {"application/json"}},
-			dst:    make(http.Header),
-			expect: http.Header{"Content-Type": {"application/json"}},
-		},
-		{
-			name:   "MultipleHeaders",
-			src:    http.Header{"A": {"1"}, "B": {"2", "3"}},
-			dst:    make(http.Header),
-			expect: http.Header{"A": {"1"}, "B": {"2", "3"}},
-		},
-		{
-			name:   "EmptyValuesSkipped",
-			src:    http.Header{"A": {}, "B": {"1"}},
-			dst:    make(http.Header),
-			expect: http.Header{"A": {}, "B": {"1"}},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			CopyHeader(tt.dst, tt.src)
-			if tt.expect == nil {
-				return
-			}
-			for k, v := range tt.expect {
-				got := tt.dst[k]
-				if len(got) != len(v) {
-					t.Errorf("header %q: got %v, want %v", k, got, v)
-				}
-			}
-		})
-	}
 }
 
 func TestCloneHeader(t *testing.T) {
 	t.Run("Nil", func(t *testing.T) {
-		if CloneHeader(nil) != nil {
-			t.Error("CloneHeader(nil) should return nil")
+		if cloneHeader(nil) != nil {
+			t.Error("cloneHeader(nil) should return nil")
 		}
 	})
 
@@ -141,7 +42,7 @@ func TestCloneHeader(t *testing.T) {
 			"Content-Type": {"application/json"},
 			"Accept":       {"text/html", "application/xml"},
 		}
-		dst := CloneHeader(src)
+		dst := cloneHeader(src)
 
 		// Modify source - should not affect clone
 		src["Content-Type"][0] = "text/plain"
@@ -157,30 +58,15 @@ func TestCloneHeader(t *testing.T) {
 
 	t.Run("EmptyValueSliceNotCopied", func(t *testing.T) {
 		src := http.Header{"A": {}}
-		dst := CloneHeader(src)
+		dst := cloneHeader(src)
 		if dst == nil {
-			t.Fatal("CloneHeader should not return nil for non-nil src")
+			t.Fatal("cloneHeader should not return nil for non-nil src")
 		}
 		// Keys with empty value slices are not copied (totalValues == 0 fast path)
 		if len(dst) != 0 {
 			t.Logf("Empty value slice keys not preserved (expected behavior): got %d keys", len(dst))
 		}
 	})
-}
-
-func TestClearHeaderPools(t *testing.T) {
-	h := GetHeader()
-	h.Set("X-Test", "value")
-	PutHeader(h)
-
-	ClearHeaderPools()
-
-	// Should work fine after clearing
-	h2 := GetHeader()
-	if len(*h2) != 0 {
-		t.Error("Header from cleared pool should be empty")
-	}
-	PutHeader(h2)
 }
 
 func TestQueryBuilder(t *testing.T) {
@@ -252,7 +138,7 @@ func TestEncodeQueryParams(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := EncodeQueryParams(tt.params)
+			got := encodeQueryParams(tt.params)
 			if tt.want == "" && len(tt.params) > 1 {
 				// Multiple params - just check it's non-empty
 				if got == "" {
@@ -261,7 +147,7 @@ func TestEncodeQueryParams(t *testing.T) {
 				return
 			}
 			if got != tt.want {
-				t.Errorf("EncodeQueryParams() = %q, want %q", got, tt.want)
+				t.Errorf("encodeQueryParams() = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -282,9 +168,9 @@ func TestAppendQueryParams(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := AppendQueryParams(tt.existing, tt.params)
+			got := appendQueryParams(tt.existing, tt.params)
 			if tt.want != "" && got != tt.want {
-				t.Errorf("AppendQueryParams() = %q, want %q", got, tt.want)
+				t.Errorf("appendQueryParams() = %q, want %q", got, tt.want)
 			}
 			if tt.want == "" && len(tt.params) > 0 {
 				if !strings.Contains(got, tt.existing) {

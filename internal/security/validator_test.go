@@ -2,9 +2,11 @@ package security
 
 import (
 	"net"
+	"net/url"
 	"strings"
 	"testing"
 
+	"github.com/cybergodev/httpc/internal/types"
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
@@ -360,6 +362,114 @@ func TestValidator_ValidateRequestSize(t *testing.T) {
 	}
 }
 
+// TestValidator_ValidateRequestSize_BodyTypes tests the size validation for url.Values
+// and *types.FormData body types, plus the MaxResponseBodySize<=0 early return path.
+func TestValidator_ValidateRequestSize_BodyTypes(t *testing.T) {
+	t.Run("url.Values small", func(t *testing.T) {
+		validator := NewValidator()
+		validator.config.MaxResponseBodySize = 1024
+
+		values := url.Values{"key": {"value"}}
+		req := &Request{Method: "POST", URL: "http://example.com", Body: values}
+
+		err := validator.ValidateRequest(req)
+		if err != nil {
+			t.Errorf("unexpected error for small url.Values: %v", err)
+		}
+	})
+
+	t.Run("url.Values too large", func(t *testing.T) {
+		validator := NewValidator()
+		validator.config.MaxResponseBodySize = 10
+
+		values := url.Values{"key": {strings.Repeat("a", 50)}}
+		req := &Request{Method: "POST", URL: "http://example.com", Body: values}
+
+		err := validator.ValidateRequest(req)
+		if err == nil {
+			t.Error("expected error for oversized url.Values")
+		}
+	})
+
+	t.Run("FormData small", func(t *testing.T) {
+		validator := NewValidator()
+		validator.config.MaxResponseBodySize = 1024
+
+		form := &types.FormData{
+			Fields: map[string]string{"username": "john"},
+			Files:  map[string]*types.FileData{"avatar": {Filename: "a.txt", Content: []byte("hello")}},
+		}
+		req := &Request{Method: "POST", URL: "http://example.com", Body: form}
+
+		err := validator.ValidateRequest(req)
+		if err != nil {
+			t.Errorf("unexpected error for small FormData: %v", err)
+		}
+	})
+
+	t.Run("FormData too large", func(t *testing.T) {
+		validator := NewValidator()
+		validator.config.MaxResponseBodySize = 5
+
+		form := &types.FormData{
+			Fields: map[string]string{"data": strings.Repeat("x", 100)},
+		}
+		req := &Request{Method: "POST", URL: "http://example.com", Body: form}
+
+		err := validator.ValidateRequest(req)
+		if err == nil {
+			t.Error("expected error for oversized FormData fields")
+		}
+	})
+
+	t.Run("FormData files too large", func(t *testing.T) {
+		validator := NewValidator()
+		validator.config.MaxResponseBodySize = 10
+
+		form := &types.FormData{
+			Files: map[string]*types.FileData{"big": {Content: make([]byte, 100)}},
+		}
+		req := &Request{Method: "POST", URL: "http://example.com", Body: form}
+
+		err := validator.ValidateRequest(req)
+		if err == nil {
+			t.Error("expected error for oversized FormData files")
+		}
+	})
+
+	t.Run("MaxResponseBodySize zero skips validation", func(t *testing.T) {
+		validator := NewValidator()
+		validator.config.MaxResponseBodySize = 0
+
+		req := &Request{
+			Method: "POST",
+			URL:    "http://example.com",
+			Body:   strings.Repeat("a", 100000),
+		}
+
+		err := validator.ValidateRequest(req)
+		if err != nil {
+			t.Errorf("expected no error when MaxResponseBodySize is zero, got: %v", err)
+		}
+	})
+
+	t.Run("MaxResponseBodySize negative skips validation", func(t *testing.T) {
+		validator := NewValidator()
+		validator.config.MaxResponseBodySize = -1
+
+		req := &Request{
+			Method: "POST",
+			URL:    "http://example.com",
+			Body:   strings.Repeat("a", 100000),
+		}
+
+		err := validator.ValidateRequest(req)
+		if err != nil {
+			t.Errorf("expected no error when MaxResponseBodySize is negative, got: %v", err)
+		}
+	})
+}
+
 func TestValidator_DisabledValidation(t *testing.T) {
 	validator := NewValidator()
 	// Disable validation for testing
@@ -489,6 +599,53 @@ func TestValidateHost_EdgeCases(t *testing.T) {
 			err := validator.validateHost(tt.host)
 			if (err != nil) != tt.shouldErr {
 				t.Errorf("validateHost(%s) error = %v, shouldErr = %v", tt.host, err, tt.shouldErr)
+			}
+		})
+	}
+}
+
+// TestValidator_ValidateCommonHeaderValue tests the Connection and Transfer-Encoding
+// header value validation logic for allowed and disallowed values.
+func TestValidator_ValidateCommonHeaderValue(t *testing.T) {
+	tests := []struct {
+		name        string
+		key         string
+		value       string
+		expectError bool
+	}{
+		// Connection header - valid values
+		{"Connection keep-alive", "Connection", "keep-alive", false},
+		{"Connection close", "Connection", "close", false},
+		{"Connection upgrade", "Connection", "upgrade", false},
+		{"Connection Keep-Alive case insensitive", "connection", "Keep-Alive", false},
+		{"Connection CLOSE case insensitive", "CONNECTION", "CLOSE", false},
+		// Connection header - invalid values
+		{"Connection invalid", "Connection", "invalid-value", true},
+		{"Connection empty", "Connection", "", true},
+		// Transfer-Encoding header - valid values
+		{"Transfer-Encoding chunked", "Transfer-Encoding", "chunked", false},
+		{"Transfer-Encoding gzip", "Transfer-Encoding", "gzip", false},
+		{"Transfer-Encoding deflate", "Transfer-Encoding", "deflate", false},
+		{"Transfer-Encoding compress", "Transfer-Encoding", "compress", false},
+		{"Transfer-Encoding identity", "Transfer-Encoding", "identity", false},
+		{"Transfer-Encoding Chunked case insensitive", "transfer-encoding", "Chunked", false},
+		// Transfer-Encoding - invalid
+		{"Transfer-Encoding invalid", "Transfer-Encoding", "invalid", true},
+		{"Transfer-Encoding empty", "Transfer-Encoding", "", true},
+		// Other headers should pass through without error
+		{"Content-Type passes through", "Content-Type", "application/json", false},
+		{"X-Custom passes through", "X-Custom", "anything", false},
+		{"Authorization passes through", "Authorization", "Bearer token", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateCommonHeaderValue(tt.key, tt.value)
+			if tt.expectError && err == nil {
+				t.Errorf("validateCommonHeaderValue(%q, %q) expected error, got nil", tt.key, tt.value)
+			}
+			if !tt.expectError && err != nil {
+				t.Errorf("validateCommonHeaderValue(%q, %q) unexpected error: %v", tt.key, tt.value, err)
 			}
 		})
 	}

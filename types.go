@@ -105,7 +105,8 @@ type SecurityConfig struct {
 	MaxResponseBodySize int64
 
 	// AllowPrivateIPs permits connections to private IP addresses.
-	// Default: true. Set to false to enable SSRF protection.
+	// Default: false (SSRF protection enabled). Set to true only when
+	// connecting to internal services (VPNs, proxies, corporate networks).
 	AllowPrivateIPs bool
 
 	// ValidateURL enables URL validation. Default: true.
@@ -173,7 +174,6 @@ type MiddlewareConfig struct {
 //	cfg.Timeouts.Request = 60 * time.Second
 //	cfg.Retry.MaxRetries = 5
 //	cfg.Connection.ProxyURL = "http://proxy:8080"
-//	cfg.Security.AllowPrivateIPs = true
 //	client, err := httpc.New(cfg)
 type Config struct {
 	Timeouts   TimeoutConfig
@@ -277,16 +277,10 @@ const (
 // DefaultConfig returns a Config with production-ready defaults.
 // The returned config is safe for modification.
 //
-// SSRF Protection Note:
-// By default, AllowPrivateIPs is true for maximum compatibility with VPNs,
-// proxies, and corporate networks. If you need SSRF (Server-Side Request Forgery)
-// protection, set AllowPrivateIPs = false or use SecureConfig() preset:
-//
-//	// For SSRF protection:
-//	cfg := httpc.DefaultConfig()
-//	cfg.Security.AllowPrivateIPs = false
-//	// OR use the secure preset:
-//	cfg := httpc.SecureConfig()
+// SSRF Protection:
+// AllowPrivateIPs defaults to false, blocking connections to private/reserved IPs
+// (127.0.0.1, 10.x, 192.168.x, 169.254.x, etc.). Set to true only when connecting
+// to internal services that use private IP addresses.
 func DefaultConfig() *Config {
 	return &Config{
 		Timeouts: TimeoutConfig{
@@ -312,7 +306,7 @@ func DefaultConfig() *Config {
 			MaxTLSVersion:       tls.VersionTLS13,
 			InsecureSkipVerify:  false,
 			MaxResponseBodySize: 10 * 1024 * 1024, // 10MB
-			AllowPrivateIPs:     true,
+			AllowPrivateIPs:     false,
 			ValidateURL:         true,
 			ValidateHeaders:     true,
 			StrictContentLength: true,

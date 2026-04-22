@@ -99,11 +99,11 @@ type Config struct {
 	CertificatePinner security.CertificatePinner
 }
 
-// RequestCallback is a callback function invoked before a request is sent.
-type RequestCallback func(req *Request) error
+// requestCallback is a callback function invoked before a request is sent.
+type requestCallback func(req *Request) error
 
-// ResponseCallback is a callback function invoked after a response is received.
-type ResponseCallback func(resp *Response) error
+// responseCallback is a callback function invoked after a response is received.
+type responseCallback func(resp *Response) error
 
 type Request struct {
 	method          string
@@ -117,8 +117,9 @@ type Request struct {
 	cookies         []http.Cookie
 	followRedirects *bool
 	maxRedirects    *int
-	onRequest       RequestCallback
-	onResponse      ResponseCallback
+	onRequest       requestCallback
+	onResponse      responseCallback
+	streamBody      bool // When true, skip buffering response body; caller reads via RawBodyReader
 }
 
 // Compile-time interface check
@@ -155,12 +156,14 @@ func (r *Request) SetContext(v context.Context)    { r.context = v }
 func (r *Request) SetCookies(v []http.Cookie)      { r.cookies = v }
 func (r *Request) SetFollowRedirects(v *bool)      { r.followRedirects = v }
 func (r *Request) SetMaxRedirects(v *int)          { r.maxRedirects = v }
+func (r *Request) StreamBody() bool                { return r.streamBody }
+func (r *Request) SetStreamBody(v bool)            { r.streamBody = v }
 
 // Callback accessors
-func (r *Request) OnRequest() RequestCallback        { return r.onRequest }
-func (r *Request) OnResponse() ResponseCallback      { return r.onResponse }
-func (r *Request) SetOnRequest(cb RequestCallback)   { r.onRequest = cb }
-func (r *Request) SetOnResponse(cb ResponseCallback) { r.onResponse = cb }
+func (r *Request) OnRequest() requestCallback        { return r.onRequest }
+func (r *Request) OnResponse() responseCallback      { return r.onResponse }
+func (r *Request) SetOnRequest(cb requestCallback)   { r.onRequest = cb }
+func (r *Request) SetOnResponse(cb responseCallback) { r.onResponse = cb }
 
 // Response represents an HTTP response.
 // Response objects are safe to read from multiple goroutines after they are returned.
@@ -170,6 +173,7 @@ type Response struct {
 	headers        http.Header
 	body           string
 	rawBody        []byte
+	rawBodyReader  io.ReadCloser // Set when streamBody=true; caller must close
 	contentLength  int64
 	proto          string
 	duration       time.Duration
@@ -201,6 +205,7 @@ func (r *Response) RedirectCount() int          { return r.redirectCount }
 func (r *Response) RequestHeaders() http.Header { return r.requestHeaders }
 func (r *Response) RequestURL() string          { return r.requestURL }
 func (r *Response) RequestMethod() string       { return r.requestMethod }
+func (r *Response) RawBodyReader() io.ReadCloser { return r.rawBodyReader }
 
 // Mutators (implement ResponseMutator)
 func (r *Response) SetStatusCode(v int)             { r.statusCode = v }
@@ -227,7 +232,7 @@ func (r *Response) SetHeader(key string, values ...string) {
 	r.headers[key] = values
 }
 
-func NewClient(config *Config, opts ...ClientOption) (*Client, error) {
+func NewClient(config *Config, opts ...clientOption) (*Client, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
@@ -243,12 +248,12 @@ func NewClient(config *Config, opts ...ClientOption) (*Client, error) {
 		metrics: &Metrics{},
 		requestPool: sync.Pool{
 			New: func() any {
-				return &Request{}
+				return &Request{maxRetries: -1}
 			},
 		},
 		execRequestPool: sync.Pool{
 			New: func() any {
-				return &Request{}
+				return &Request{maxRetries: -1}
 			},
 		},
 		securityRequestPool: sync.Pool{
@@ -311,9 +316,12 @@ func NewClient(config *Config, opts ...ClientOption) (*Client, error) {
 	return client, nil
 }
 
+// ErrClientClosed is returned when attempting to use a closed client.
+var ErrClientClosed = errors.New("client is closed")
+
 func (c *Client) Request(ctx context.Context, method, url string, options ...RequestOption) (*Response, error) {
 	if atomic.LoadInt32(&c.closed) == 1 {
-		return nil, fmt.Errorf("client is closed")
+		return nil, fmt.Errorf("%w", ErrClientClosed)
 	}
 
 	startTime := time.Now()
@@ -370,14 +378,14 @@ func (c *Client) getRequest() *Request {
 	req, ok := c.requestPool.Get().(*Request)
 	if !ok || req == nil {
 		// Fallback to new allocation if pool returns wrong type (defensive)
-		return &Request{}
+		return &Request{maxRetries: -1}
 	}
 	return req
 }
 
 // putRequest returns a Request object to the pool
 func (c *Client) putRequest(req *Request) {
-	*req = Request{}
+	*req = Request{maxRetries: -1}
 	c.requestPool.Put(req)
 }
 
@@ -404,7 +412,7 @@ func (c *Client) getExecRequest() *Request {
 	req, ok := c.execRequestPool.Get().(*Request)
 	if !ok || req == nil {
 		// Fallback to new allocation if pool returns wrong type (defensive)
-		return &Request{}
+		return &Request{maxRetries: -1}
 	}
 	return req
 }
@@ -480,9 +488,9 @@ func (c *Client) sleepWithContext(ctx context.Context, duration time.Duration) e
 // executeWithRetry executes a request with intelligent retry logic.
 // Optimized for performance with minimal allocations and efficient error handling.
 func (c *Client) executeWithRetry(req *Request) (*Response, error) {
-	// Determine max retries from request override or config
+	// Determine max retries: -1 = not set (use config default), 0 = explicitly disabled
 	maxRetries := req.MaxRetries()
-	if maxRetries <= 0 {
+	if maxRetries < 0 {
 		if c.config.CustomRetryPolicy != nil {
 			maxRetries = c.config.CustomRetryPolicy.MaxRetries()
 		} else {
@@ -518,14 +526,16 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 			clientErr := ClassifyError(err, req.URL(), req.Method(), attempt+1)
 			lastErr = clientErr
 
-			// Fast path: non-retryable errors
+			// Fast path: non-retryable errors or max retries reached
 			if !clientErr.IsRetryable() || attempt >= maxRetries {
+				releaseLastResp(&lastResp)
 				clientErr.Attempts = attempt + 1
 				return nil, clientErr
 			}
 
 			// Check retry policy
 			if !policy.ShouldRetry(nil, err, attempt) {
+				releaseLastResp(&lastResp)
 				clientErr.Attempts = attempt + 1
 				return nil, clientErr
 			}
@@ -533,6 +543,7 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 			// Calculate delay and sleep
 			delay := policy.GetDelay(attempt)
 			if sleepErr := c.sleepWithContext(req.Context(), delay); sleepErr != nil {
+				releaseLastResp(&lastResp)
 				return nil, ClassifyError(sleepErr, req.URL(), req.Method(), attempt+1)
 			}
 			continue
@@ -578,12 +589,23 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 	if lastErr != nil {
 		if clientErr, ok := lastErr.(*ClientError); ok {
 			clientErr.Attempts = maxRetries + 1
+			clientErr.WithType(ErrorTypeRetryExhausted)
 			return nil, clientErr
 		}
 		return nil, fmt.Errorf("request failed after %d attempts: %w", maxRetries+1, lastErr)
 	}
 
 	return nil, fmt.Errorf("request failed after %d attempts", maxRetries+1)
+}
+
+// releaseLastResp releases the intermediate response object back to the pool.
+// Takes a pointer to the caller's lastResp so it can nil the reference after release,
+// preventing double-release in deferred cleanup paths.
+func releaseLastResp(lastResp **Response) {
+	if *lastResp != nil {
+		ReleaseResponse(*lastResp)
+		*lastResp = nil
+	}
 }
 
 const (
@@ -622,12 +644,18 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 			// No existing deadline - create one
 			var cancel context.CancelFunc
 			execCtx, cancel = context.WithTimeout(execCtx, timeout)
-			defer cancel()
+			if !req.StreamBody() {
+				defer cancel()
+			}
+			_ = cancel
 		} else if timeUntil := time.Until(existingDeadline); timeUntil > timeout {
 			// Existing deadline is further than our timeout - create tighter one
 			var cancel context.CancelFunc
 			execCtx, cancel = context.WithTimeout(execCtx, timeout)
-			defer cancel()
+			if !req.StreamBody() {
+				defer cancel()
+			}
+			_ = cancel
 		}
 		// else: existing deadline is within our timeout - reuse it
 	}
@@ -683,6 +711,31 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 		return nil, ClassifyError(fmt.Errorf("transport failed: %w", err), req.URL(), req.Method(), 0)
 	}
 
+	// Streaming mode: skip body buffering, hand raw reader to caller.
+	// Caller is responsible for closing the body reader.
+	if reqCopy.StreamBody() {
+		resp := getResponse()
+		resp.SetStatusCode(httpResp.StatusCode)
+		resp.SetStatus(httpResp.Status)
+		resp.SetHeaders(httpResp.Header)
+		resp.SetContentLength(httpResp.ContentLength)
+		resp.SetProto(httpResp.Proto)
+		resp.SetCookies(httpResp.Cookies())
+		resp.rawBodyReader = httpResp.Body
+
+		if httpResp.Request != nil {
+			if len(httpResp.Request.Header) > 0 {
+				resp.SetRequestHeaders(cloneHeader(httpResp.Request.Header))
+			}
+			if httpResp.Request.URL != nil {
+				resp.SetRequestURL(httpResp.Request.URL.String())
+			}
+			resp.SetRequestMethod(httpResp.Request.Method)
+		}
+		resp.SetDuration(duration)
+		return resp, nil
+	}
+
 	defer func() {
 		if httpResp.Body != nil {
 			maxDrain := defaultMaxDrain
@@ -707,7 +760,7 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 	if httpResp.Request != nil {
 		// Copy headers using optimized pooled allocation
 		if len(httpResp.Request.Header) > 0 {
-			requestHeaders := CloneHeader(httpResp.Request.Header)
+			requestHeaders := cloneHeader(httpResp.Request.Header)
 			resp.SetRequestHeaders(requestHeaders)
 		}
 		// Set the actual request URL and method
@@ -768,8 +821,8 @@ func (c *Client) Close() error {
 
 type RequestOption func(*Request) error
 
-// ClientOption is a functional option for configuring the Client.
-type ClientOption func(*clientOptions)
+// clientOption is a functional option for configuring the Client.
+type clientOption func(*clientOptions)
 
 type clientOptions struct {
 	customTransport TransportManager

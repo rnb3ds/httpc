@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -11,6 +12,62 @@ import (
 	"testing"
 	"time"
 )
+
+// ============================================================================
+// REQUEST BUILDER TEST HELPERS
+// ============================================================================
+
+// testRequestBuilder creates a Request with the given parameters using setters.
+// This helper function is used because Request fields are now private.
+func testRequestBuilder() *testRequest {
+	return &testRequest{}
+}
+
+type testRequest struct {
+	method          string
+	url             string
+	headers         map[string]string
+	queryParams     map[string]any
+	body            any
+	timeout         time.Duration
+	maxRetries      int
+	ctx             context.Context
+	cookies         []http.Cookie
+	followRedirects *bool
+	maxRedirects    *int
+}
+
+func (tr *testRequest) Method(v string) *testRequest              { tr.method = v; return tr }
+func (tr *testRequest) URL(v string) *testRequest                 { tr.url = v; return tr }
+func (tr *testRequest) Headers(v map[string]string) *testRequest  { tr.headers = v; return tr }
+func (tr *testRequest) QueryParams(v map[string]any) *testRequest { tr.queryParams = v; return tr }
+func (tr *testRequest) Body(v any) *testRequest                   { tr.body = v; return tr }
+func (tr *testRequest) Timeout(v time.Duration) *testRequest      { tr.timeout = v; return tr }
+func (tr *testRequest) MaxRetries(v int) *testRequest             { tr.maxRetries = v; return tr }
+func (tr *testRequest) Context(v context.Context) *testRequest    { tr.ctx = v; return tr }
+func (tr *testRequest) Cookies(v []http.Cookie) *testRequest      { tr.cookies = v; return tr }
+func (tr *testRequest) FollowRedirects(v *bool) *testRequest      { tr.followRedirects = v; return tr }
+func (tr *testRequest) MaxRedirects(v *int) *testRequest          { tr.maxRedirects = v; return tr }
+
+func (tr *testRequest) Build() *Request {
+	req := &Request{}
+	req.SetMethod(tr.method)
+	req.SetURL(tr.url)
+	if tr.headers != nil {
+		req.SetHeaders(tr.headers)
+	}
+	if tr.queryParams != nil {
+		req.SetQueryParams(tr.queryParams)
+	}
+	req.SetBody(tr.body)
+	req.SetTimeout(tr.timeout)
+	req.SetMaxRetries(tr.maxRetries)
+	req.SetContext(tr.ctx)
+	req.SetCookies(tr.cookies)
+	req.SetFollowRedirects(tr.followRedirects)
+	req.SetMaxRedirects(tr.maxRedirects)
+	return req
+}
 
 // ============================================================================
 // REQUEST PROCESSOR TESTS
@@ -153,6 +210,20 @@ func TestRequestProcessor_Build(t *testing.T) {
 				}
 				if !foundPref {
 					t.Error("Preference cookie not found")
+				}
+			},
+		},
+		{
+			name: "Request with timeout",
+			request: testRequestBuilder().
+				Method("GET").
+				URL("https://api.example.com/users").
+				Context(context.Background()).
+				Timeout(15 * time.Second).
+				Build(),
+			validate: func(t *testing.T, req *http.Request) {
+				if req.Context() == nil {
+					t.Error("Expected context to be set")
 				}
 			},
 		},
@@ -520,4 +591,84 @@ func TestRequestProcessor_QueryParameterHandling(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ============================================================================
+// REQUEST PROCESSOR EDGE CASE TESTS
+// ============================================================================
+
+func TestRequestProcessor_EdgeCases(t *testing.T) {
+	config := &Config{
+		Timeout: 30 * time.Second,
+
+		MaxResponseBodySize: 50 * 1024 * 1024,
+	}
+
+	processor := NewRequestProcessor(config)
+
+	t.Run("Very long URL", func(t *testing.T) {
+		longPath := strings.Repeat("a", 2000)
+		request := testRequestBuilder().
+			Method("GET").
+			URL("https://api.example.com/" + longPath).
+			Context(context.Background()).
+			Build()
+
+		_, err := processor.Build(request)
+		// Should be able to handle long URLs (within reasonable limits)
+		if err != nil {
+			t.Errorf("Unexpected error for long URL: %v", err)
+		}
+	})
+
+	t.Run("Many query parameters", func(t *testing.T) {
+		params := make(map[string]any)
+		for i := 0; i < 100; i++ {
+			params[fmt.Sprintf("param%d", i)] = fmt.Sprintf("value%d", i)
+		}
+
+		request := testRequestBuilder().
+			Method("GET").
+			URL("https://api.example.com/test").
+			Context(context.Background()).
+			QueryParams(params).
+			Build()
+
+		httpReq, err := processor.Build(request)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		query := httpReq.URL.Query()
+		if len(query) != 100 {
+			t.Errorf("Expected 100 query parameters, got %d", len(query))
+		}
+	})
+
+	t.Run("Many headers", func(t *testing.T) {
+		headers := make(map[string]string)
+		for i := 0; i < 50; i++ {
+			headers[fmt.Sprintf("X-Header-%d", i)] = fmt.Sprintf("value-%d", i)
+		}
+
+		request := testRequestBuilder().
+			Method("GET").
+			URL("https://api.example.com/test").
+			Context(context.Background()).
+			Headers(headers).
+			Build()
+
+		httpReq, err := processor.Build(request)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		// Check that all headers are set
+		for key, expectedValue := range headers {
+			actualValue := httpReq.Header.Get(key)
+			if actualValue != expectedValue {
+				t.Errorf("Expected header %s=%s, got %s", key, expectedValue, actualValue)
+			}
+		}
+	})
 }

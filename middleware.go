@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"runtime/debug"
 	"time"
 
 	"github.com/cybergodev/httpc/internal/validation"
@@ -127,10 +128,11 @@ func RecoveryMiddleware() MiddlewareFunc {
 		return func(ctx context.Context, req RequestMutator) (resp ResponseMutator, err error) {
 			defer func() {
 				if r := recover(); r != nil {
+					stack := debug.Stack()
 					if e, ok := r.(error); ok {
-						err = fmt.Errorf("panic recovered: %w", e)
+						err = fmt.Errorf("panic recovered: %w\n%s", e, stack)
 					} else {
-						err = fmt.Errorf("panic recovered: %v", r)
+						err = fmt.Errorf("panic recovered: %v\n%s", r, stack)
 					}
 				}
 			}()
@@ -224,12 +226,13 @@ func MetricsMiddleware(onMetrics func(method, url string, statusCode int, durati
 			resp, err := next(ctx, req)
 			duration := time.Since(start)
 
-			statusCode := 0
-			if resp != nil {
-				statusCode = resp.StatusCode()
+			if onMetrics != nil {
+				statusCode := 0
+				if resp != nil {
+					statusCode = resp.StatusCode()
+				}
+				onMetrics(req.Method(), req.URL(), statusCode, duration, err)
 			}
-
-			onMetrics(req.Method(), req.URL(), statusCode, duration, err)
 
 			return resp, err
 		}
@@ -308,7 +311,9 @@ func AuditMiddlewareWithConfig(onAudit func(event AuditEvent), config *AuditMidd
 				event.Error = fmt.Errorf("[sanitized]")
 			}
 
-			onAudit(event)
+			if onAudit != nil {
+				onAudit(event)
+			}
 
 			return resp, err
 		}
