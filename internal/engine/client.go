@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -385,12 +386,19 @@ func (c *Client) getRequest() *Request {
 
 // putRequest returns a Request object to the pool
 func (c *Client) putRequest(req *Request) {
-	// Clear sensitive data and callbacks before returning to pool
-	// to prevent memory leaks from callback closures
-	req.SetContext(context.Background())
-	req.SetBody(nil)
-	req.SetOnRequest(nil)
-	req.SetOnResponse(nil)
+	req.method = ""
+	req.url = ""
+	req.headers = nil
+	req.queryParams = nil
+	req.body = nil
+	req.timeout = 0
+	req.maxRetries = 0
+	req.context = nil
+	req.cookies = nil
+	req.followRedirects = nil
+	req.maxRedirects = nil
+	req.onRequest = nil
+	req.onResponse = nil
 	c.requestPool.Put(req)
 }
 
@@ -556,14 +564,19 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 			lastResp = resp
 
 			// Check if response status is retryable using policy
-			if c.retryEngine.isRetryableStatus(resp.StatusCode()) && attempt < maxRetries {
-				if policy.ShouldRetry(resp, nil, attempt) {
-					delay := c.retryEngine.GetDelayWithResponse(attempt, resp)
-					if sleepErr := c.sleepWithContext(req.Context(), delay); sleepErr != nil {
-						return nil, ClassifyError(sleepErr, req.URL(), req.Method(), attempt+1)
-					}
-					continue
+			if policy.ShouldRetry(resp, nil, attempt) && attempt < maxRetries {
+				// Use built-in engine delay for Retry-After header support,
+				// otherwise delegate to the policy's GetDelay
+				var delay time.Duration
+				if engPolicy, ok := policy.(*RetryEngine); ok {
+					delay = engPolicy.GetDelayWithResponse(attempt, resp)
+				} else {
+					delay = policy.GetDelay(attempt)
 				}
+				if sleepErr := c.sleepWithContext(req.Context(), delay); sleepErr != nil {
+					return nil, ClassifyError(sleepErr, req.URL(), req.Method(), attempt+1)
+				}
+				continue
 			}
 
 			// Success - set attempt count and return
@@ -755,6 +768,11 @@ func (c *Client) IsHealthy() bool {
 	return c.metrics.IsHealthy()
 }
 
+// IsClosed returns true if the client has been closed.
+func (c *Client) IsClosed() bool {
+	return atomic.LoadInt32(&c.closed) == 1
+}
+
 func (c *Client) Close() error {
 	var closeErr error
 
@@ -763,13 +781,13 @@ func (c *Client) Close() error {
 
 		if c.connectionPool != nil {
 			if err := c.connectionPool.Close(); err != nil {
-				closeErr = fmt.Errorf("failed to close connection pool: %w", err)
+				closeErr = errors.Join(closeErr, fmt.Errorf("failed to close connection pool: %w", err))
 			}
 		}
 
 		if c.transport != nil {
 			if err := c.transport.Close(); err != nil {
-				closeErr = fmt.Errorf("failed to close transport: %w", err)
+				closeErr = errors.Join(closeErr, fmt.Errorf("failed to close transport: %w", err))
 			}
 		}
 	})

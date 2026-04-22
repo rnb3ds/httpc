@@ -307,7 +307,7 @@ func TestClassifyError_MessagePatterns(t *testing.T) {
 		{
 			name:         "No such host",
 			errMsg:       "no such host",
-			expectedType: ErrorTypeNetwork,
+			expectedType: ErrorTypeDNS,
 		},
 		{
 			name:         "Timeout",
@@ -422,5 +422,222 @@ func TestErrorType_String(t *testing.T) {
 			t.Errorf("Duplicate ErrorType value: %v", et)
 		}
 		seen[et] = true
+	}
+}
+
+func TestClientError_Code(t *testing.T) {
+	tests := []struct {
+		name       string
+		errorType  ErrorType
+		expectCode string
+	}{
+		{"Network", ErrorTypeNetwork, "NETWORK_ERROR"},
+		{"Timeout", ErrorTypeTimeout, "TIMEOUT"},
+		{"ContextCanceled", ErrorTypeContextCanceled, "CONTEXT_CANCELED"},
+		{"ResponseRead", ErrorTypeResponseRead, "RESPONSE_READ_ERROR"},
+		{"Transport", ErrorTypeTransport, "TRANSPORT_ERROR"},
+		{"RetryExhausted", ErrorTypeRetryExhausted, "RETRY_EXHAUSTED"},
+		{"TLS", ErrorTypeTLS, "TLS_ERROR"},
+		{"Certificate", ErrorTypeCertificate, "CERTIFICATE_ERROR"},
+		{"DNS", ErrorTypeDNS, "DNS_ERROR"},
+		{"Validation", ErrorTypeValidation, "VALIDATION_ERROR"},
+		{"HTTP", ErrorTypeHTTP, "HTTP_ERROR"},
+		{"Unknown", ErrorTypeUnknown, "UNKNOWN_ERROR"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := &ClientError{Type: tt.errorType}
+			if got := err.Code(); got != tt.expectCode {
+				t.Errorf("Code() = %q, want %q", got, tt.expectCode)
+			}
+		})
+	}
+}
+
+func TestContainsFold(t *testing.T) {
+	tests := []struct {
+		s, substr string
+		want      bool
+	}{
+		{"Hello World", "world", true},
+		{"hello world", "WORLD", true},
+		{"Hello", "ello", true},
+		{"Hello", "xyz", false},
+		{"", "", true},
+		{"abc", "", true},
+		{"", "a", false},
+		{"ab", "abc", false},
+		{"HTTP/2 invalid", "INVALID", true},
+		{"connection refused", "REFUSED", true},
+	}
+
+	for _, tt := range tests {
+		got := containsFold(tt.s, tt.substr)
+		if got != tt.want {
+			t.Errorf("containsFold(%q, %q) = %v, want %v", tt.s, tt.substr, got, tt.want)
+		}
+	}
+}
+
+func TestClassifyError_AdditionalPatterns(t *testing.T) {
+	tests := []struct {
+		name         string
+		errMsg       string
+		expectedType ErrorType
+	}{
+		{"ConnectionReset", "connection reset by peer", ErrorTypeNetwork},
+		{"ConnectionClosed", "connection closed by peer", ErrorTypeNetwork},
+		{"PeerClosed", "peer closed connection", ErrorTypeNetwork},
+		{"BrokenPipe", "broken pipe error", ErrorTypeNetwork},
+		{"NetworkUnreachable", "network unreachable", ErrorTypeNetwork},
+		{"HostUnreachable", "host unreachable", ErrorTypeNetwork},
+		{"TLSHandshake", "TLS handshake failure", ErrorTypeTLS},
+		{"SSLHandshake", "SSL handshake error", ErrorTypeTLS},
+		{"Certificate", "certificate verify failed", ErrorTypeCertificate},
+		{"X509", "x509 certificate error", ErrorTypeCertificate},
+		{"Transport", "transport error occurred", ErrorTypeTransport},
+		{"ProtocolError", "protocol error in response", ErrorTypeTransport},
+		{"ResponseReadBody", "failed to read response body", ErrorTypeResponseRead},
+		{"UnexpectedEOF", "unexpected eof in response", ErrorTypeResponseRead},
+		{"ValidationFailed", "validation failed for input", ErrorTypeValidation},
+		{"InvalidURL", "invalid url format", ErrorTypeValidation},
+		{"MissingProtocol", "missing protocol scheme", ErrorTypeValidation},
+		{"HTTP4xx", "HTTP 403 forbidden", ErrorTypeHTTP},
+		{"HTTP5xx", "HTTP 503 unavailable", ErrorTypeHTTP},
+		{"Timeout", "connection timeout", ErrorTypeTimeout},
+		{"TimedOut", "request timed out", ErrorTypeTimeout},
+		{"ContextCanceled", "request context canceled", ErrorTypeContextCanceled},
+		{"ContextDeadlineExceeded", "context deadline exceeded", ErrorTypeTimeout},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ClassifyError(errors.New(tt.errMsg), "https://example.com", "GET", 1)
+			if result.Type != tt.expectedType {
+				t.Errorf("ClassifyError(%q) type = %v, want %v", tt.errMsg, result.Type, tt.expectedType)
+			}
+		})
+	}
+}
+
+func TestClientError_IsRetryable_Additional(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       *ClientError
+		wantRetry bool
+	}{
+		{
+			name:      "DNS temp error is retryable",
+			err:       &ClientError{Type: ErrorTypeDNS, Cause: &net.DNSError{IsTemporary: true}},
+			wantRetry: true,
+		},
+		{
+			name:      "DNS timeout is retryable",
+			err:       &ClientError{Type: ErrorTypeDNS, Cause: &net.DNSError{IsTimeout: true}},
+			wantRetry: true,
+		},
+		{
+			name:      "DNS permanent is not retryable",
+			err:       &ClientError{Type: ErrorTypeDNS, Cause: &net.DNSError{}},
+			wantRetry: false,
+		},
+		{
+			name:      "HTTP 429 is retryable",
+			err:       &ClientError{Type: ErrorTypeHTTP, StatusCode: 429},
+			wantRetry: true,
+		},
+		{
+			name:      "HTTP 500 is retryable",
+			err:       &ClientError{Type: ErrorTypeHTTP, StatusCode: 500},
+			wantRetry: true,
+		},
+		{
+			name:      "HTTP 503 is retryable",
+			err:       &ClientError{Type: ErrorTypeHTTP, StatusCode: 503},
+			wantRetry: true,
+		},
+		{
+			name:      "HTTP 404 is not retryable",
+			err:       &ClientError{Type: ErrorTypeHTTP, StatusCode: 404},
+			wantRetry: false,
+		},
+		{
+			name:      "HTTP status 0 with retryable message",
+			err:       &ClientError{Type: ErrorTypeHTTP, StatusCode: 0, Message: "HTTP 503 unavailable"},
+			wantRetry: true,
+		},
+		{
+			name:      "TLS error is not retryable",
+			err:       &ClientError{Type: ErrorTypeTLS},
+			wantRetry: false,
+		},
+		{
+			name:      "Certificate error is not retryable",
+			err:       &ClientError{Type: ErrorTypeCertificate},
+			wantRetry: false,
+		},
+		{
+			name:      "Validation error is not retryable",
+			err:       &ClientError{Type: ErrorTypeValidation},
+			wantRetry: false,
+		},
+		{
+			name:      "Network error with connection reset message",
+			err:       &ClientError{Type: ErrorTypeNetwork, Cause: errors.New("connection reset by peer")},
+			wantRetry: true,
+		},
+		{
+			name:      "Network error with EOF message",
+			err:       &ClientError{Type: ErrorTypeNetwork, Cause: errors.New("unexpected EOF")},
+			wantRetry: true,
+		},
+		{
+			name:      "Response read nil cause is retryable",
+			err:       &ClientError{Type: ErrorTypeResponseRead, Cause: nil},
+			wantRetry: true,
+		},
+		{
+			name:      "Context canceled via cause is not retryable",
+			err:       &ClientError{Type: ErrorTypeNetwork, Cause: context.Canceled},
+			wantRetry: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.err.IsRetryable()
+			if got != tt.wantRetry {
+				t.Errorf("IsRetryable() = %v, want %v", got, tt.wantRetry)
+			}
+		})
+	}
+}
+
+func TestClientError_ErrorWithAttempts(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      *ClientError
+		contains string
+	}{
+		{
+			name:     "With attempts",
+			err:      &ClientError{Type: ErrorTypeNetwork, Message: "failed", Method: "GET", URL: "https://example.com", Attempts: 3},
+			contains: "attempt 3",
+		},
+		{
+			name:     "Zero attempts no suffix",
+			err:      &ClientError{Type: ErrorTypeNetwork, Message: "failed", Method: "GET", URL: "https://example.com"},
+			contains: "failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.err.Error()
+			if !containsFold(got, tt.contains) {
+				t.Errorf("Error() = %q, want to contain %q", got, tt.contains)
+			}
+		})
 	}
 }

@@ -317,6 +317,11 @@ func (c *clientImpl) buildMiddlewareChain(middlewares []MiddlewareFunc) Handler 
 				r.SetCookies(req.Cookies())
 				r.SetFollowRedirects(req.FollowRedirects())
 				r.SetMaxRedirects(req.MaxRedirects())
+				// Forward callbacks via type assertion
+				if engReq, ok := req.(*engine.Request); ok {
+					r.SetOnRequest(engReq.OnRequest())
+					r.SetOnResponse(engReq.OnResponse())
+				}
 				return nil
 			})
 		if err != nil {
@@ -567,6 +572,10 @@ func SetDefaultClient(client Client) error {
 		return fmt.Errorf("only clients created by this package are supported")
 	}
 
+	if impl.engine.IsClosed() {
+		return fmt.Errorf("cannot set a closed client as default")
+	}
+
 	// Atomically swap the old client with the new one
 	var closeErr error
 	for {
@@ -735,29 +744,9 @@ func ReleaseResult(r *Result) {
 	if r == nil {
 		return
 	}
-	// Clear all fields to prevent data leakage and ensure clean state for reuse
-	// Request fields
-	r.Request.URL = ""
-	r.Request.Method = ""
-	r.Request.Headers = nil
-	r.Request.Cookies = nil
-
-	// Response fields - clear all including sensitive data
-	r.Response.StatusCode = 0
-	r.Response.Status = ""
-	r.Response.Proto = ""
-	r.Response.Headers = nil
-	r.Response.Body = ""
-	r.Response.RawBody = nil
-	r.Response.ContentLength = 0
-	r.Response.Cookies = nil
-
-	// Meta fields
-	r.Meta.Duration = 0
-	r.Meta.Attempts = 0
-	r.Meta.RedirectChain = nil
-	r.Meta.RedirectCount = 0
-
+	*r.Request = RequestInfo{}
+	*r.Response = ResponseInfo{}
+	*r.Meta = RequestMeta{}
 	resultPool.Put(r)
 }
 

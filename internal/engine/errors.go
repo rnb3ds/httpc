@@ -380,7 +380,7 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 		clientErr.Type = ErrorTypeNetwork
 		clientErr.Message = "connection refused by server"
 	case containsFold(errMsg, "no such host"):
-		clientErr.Type = ErrorTypeNetwork
+		clientErr.Type = ErrorTypeDNS
 		clientErr.Message = "DNS resolution failed"
 	case containsFold(errMsg, "connection reset"):
 		clientErr.Type = ErrorTypeNetwork

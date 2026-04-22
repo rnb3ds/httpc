@@ -51,13 +51,6 @@ var mimeHeaderPool = sync.Pool{
 	},
 }
 
-// urlPool reduces allocations for url.URL objects during cloning
-var urlPool = sync.Pool{
-	New: func() any {
-		return &url.URL{}
-	},
-}
-
 // getMIMEHeader retrieves a textproto.MIMEHeader from the pool
 func getMIMEHeader() *textproto.MIMEHeader {
 	h, ok := mimeHeaderPool.Get().(*textproto.MIMEHeader)
@@ -294,28 +287,25 @@ func (c *urlCache) Get(rawURL string) (*url.URL, error) {
 	return cloneURL(cloned), nil
 }
 
-// cloneURL creates a deep copy of a URL using pooled allocation
+// cloneURL creates a deep copy of a URL
 // to ensure cached entries remain immutable
 func cloneURL(u *url.URL) *url.URL {
 	if u == nil {
 		return nil
 	}
-	cloned, ok := urlPool.Get().(*url.URL)
-	if !ok || cloned == nil {
-		cloned = &url.URL{}
+	return &url.URL{
+		Scheme:      u.Scheme,
+		Opaque:      u.Opaque,
+		User:        u.User,
+		Host:        u.Host,
+		Path:        u.Path,
+		RawPath:     u.RawPath,
+		OmitHost:    u.OmitHost,
+		ForceQuery:  u.ForceQuery,
+		RawQuery:    u.RawQuery,
+		Fragment:    u.Fragment,
+		RawFragment: u.RawFragment,
 	}
-	cloned.Scheme = u.Scheme
-	cloned.Opaque = u.Opaque
-	cloned.User = u.User // Userinfo is immutable, safe to share
-	cloned.Host = u.Host
-	cloned.Path = u.Path
-	cloned.RawPath = u.RawPath
-	cloned.OmitHost = u.OmitHost
-	cloned.ForceQuery = u.ForceQuery
-	cloned.RawQuery = u.RawQuery
-	cloned.Fragment = u.Fragment
-	cloned.RawFragment = u.RawFragment
-	return cloned
 }
 
 // ClearURLCache clears the global URL cache to release memory.

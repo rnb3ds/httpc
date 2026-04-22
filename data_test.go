@@ -27,7 +27,7 @@ type TestData struct {
 // ----------------------------------------------------------------------------
 
 func TestData_JSON(t *testing.T) {
-	t.Run("SendJSON", func(t *testing.T) {
+	t.Run("SendReceiveJSON", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("Content-Type") != "application/json" {
 				t.Error("Expected Content-Type: application/json")
@@ -40,22 +40,7 @@ func TestData_JSON(t *testing.T) {
 			if data.Message != "test" {
 				t.Errorf("Expected message=test, got %s", data.Message)
 			}
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
-		client, _ := newTestClient()
-		defer client.Close()
-
-		data := TestData{Message: "test", Code: 200}
-		_, err := client.Post(server.URL, WithJSON(data))
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-	})
-
-	t.Run("ReceiveJSON", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Echo back
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(TestData{Message: "response", Code: 200})
@@ -65,17 +50,18 @@ func TestData_JSON(t *testing.T) {
 		client, _ := newTestClient()
 		defer client.Close()
 
-		resp, err := client.Get(server.URL)
+		data := TestData{Message: "test", Code: 200}
+		resp, err := client.Post(server.URL, WithJSON(data))
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
 
-		var data TestData
-		if err := resp.Unmarshal(&data); err != nil {
-			t.Fatalf("Failed to parse JSON: %v", err)
+		var respData TestData
+		if err := resp.Unmarshal(&respData); err != nil {
+			t.Fatalf("Failed to parse response JSON: %v", err)
 		}
-		if data.Message != "response" {
-			t.Errorf("Expected message=response, got %s", data.Message)
+		if respData.Message != "response" {
+			t.Errorf("Expected message=response, got %s", respData.Message)
 		}
 	})
 

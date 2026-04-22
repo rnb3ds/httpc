@@ -11,11 +11,11 @@ import (
 func testConfig() *Config {
 	return &Config{
 		Timeouts: TimeoutConfig{
-			Request:         60 * time.Second,
-			Dial:            10 * time.Second,
-			TLSHandshake:    10 * time.Second,
-			ResponseHeader:  30 * time.Second,
-			IdleConn:        90 * time.Second,
+			Request:        60 * time.Second,
+			Dial:           10 * time.Second,
+			TLSHandshake:   10 * time.Second,
+			ResponseHeader: 30 * time.Second,
+			IdleConn:       90 * time.Second,
 		},
 		Connection: ConnectionConfig{
 			MaxIdleConns:    200,

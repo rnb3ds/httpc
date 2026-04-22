@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"sync"
-	"unsafe"
 )
 
 // gzipReaderPool pools gzip.Reader objects to reduce allocations during decompression.
@@ -190,46 +189,13 @@ func (p *ResponseProcessor) Process(httpResp *http.Response) (*Response, error) 
 	resp.SetStatusCode(httpResp.StatusCode)
 	resp.SetStatus(httpResp.Status)
 	resp.SetHeaders(httpResp.Header)
-	// SECURITY: readBody returns a freshly allocated copy (not pooled buffer),
-	// so zero-copy string conversion is safe here.
-	// Copy body for RawBody so the string from bytesToString is safe from mutation.
-	rawBody := make([]byte, len(body))
-	copy(rawBody, body)
-	resp.SetBody(bytesToString(body))
-	resp.SetRawBody(rawBody)
+	resp.SetBody(string(body))
+	resp.SetRawBody(body)
 	resp.SetContentLength(contentLength)
 	resp.SetProto(httpResp.Proto)
 	resp.SetCookies(httpResp.Cookies())
 
 	return resp, nil
-}
-
-// bytesToString performs a zero-allocation conversion from []byte to string.
-//
-// # Safety Guarantee
-//
-// This function is safe ONLY when the following conditions are met:
-//  1. The input slice is a freshly allocated copy (not from a pool)
-//  2. The input slice will not be modified after this function returns
-//  3. The caller does not retain a reference to the underlying bytes
-//
-// In this file, readBody() guarantees these conditions by:
-//   - Returning a freshly allocated byte slice (not a pooled buffer)
-//   - Never reusing the returned slice
-//
-// # SECURITY CONTRACT
-//
-// This function MUST NOT be used anywhere else in the codebase without explicit
-// security review. Violating the above conditions will cause undefined behavior
-// including memory corruption and data leakage.
-//
-// IMPORTANT: Do not use this function elsewhere without understanding these guarantees.
-func bytesToString(b []byte) string {
-	// len(nil) == 0, so this handles both nil and empty slices safely
-	if len(b) == 0 {
-		return ""
-	}
-	return unsafe.String(&b[0], len(b))
 }
 
 // readBody reads and optionally decompresses the response body with size limits.

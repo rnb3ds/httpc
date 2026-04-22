@@ -13,6 +13,10 @@ import (
 
 // DownloadProgressCallback is called during file download to report progress.
 // Parameters: downloaded bytes, total bytes, current speed in bytes/second.
+// Note: the current implementation buffers the entire response body in memory
+// before writing to disk, so this callback is invoked only once after the
+// download completes. For large file downloads, consider using a streaming
+// approach outside this API.
 type DownloadProgressCallback func(downloaded, total int64, speed float64)
 
 // DownloadConfig configures file download behavior.
@@ -43,14 +47,14 @@ func DefaultDownloadConfig() *DownloadConfig {
 
 // DownloadResult contains information about a completed download.
 type DownloadResult struct {
-	FilePath         string
-	BytesWritten     int64
-	Duration         time.Duration
-	AverageSpeed     float64
-	StatusCode       int
-	ContentLength    int64
-	Resumed          bool
-	ResponseCookies  []*http.Cookie
+	FilePath        string
+	BytesWritten    int64
+	Duration        time.Duration
+	AverageSpeed    float64
+	StatusCode      int
+	ContentLength   int64
+	Resumed         bool
+	ResponseCookies []*http.Cookie
 }
 
 // DownloadFile downloads a file from the given URL to the specified file path using the default client.
@@ -155,14 +159,14 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	resumed := resumeOffset > 0 && statusCode == http.StatusPartialContent
 	if resumeOffset > 0 && statusCode == http.StatusRequestedRangeNotSatisfiable {
 		return &DownloadResult{
-			FilePath:         opts.FilePath,
-			BytesWritten:     0,
-			Duration:         duration,
-			AverageSpeed:     0,
-			StatusCode:       statusCode,
-			ContentLength:    resumeOffset,
-			Resumed:          false,
-			ResponseCookies:  responseCookies,
+			FilePath:        opts.FilePath,
+			BytesWritten:    0,
+			Duration:        duration,
+			AverageSpeed:    0,
+			StatusCode:      statusCode,
+			ContentLength:   resumeOffset,
+			Resumed:         false,
+			ResponseCookies: responseCookies,
 		}, nil
 	}
 
@@ -201,14 +205,14 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	}
 
 	return &DownloadResult{
-		FilePath:         opts.FilePath,
-		BytesWritten:     bytesWritten,
-		Duration:         duration,
-		AverageSpeed:     avgSpeed,
-		StatusCode:       statusCode,
-		ContentLength:    contentLength,
-		Resumed:          resumed,
-		ResponseCookies:  responseCookies,
+		FilePath:        opts.FilePath,
+		BytesWritten:    bytesWritten,
+		Duration:        duration,
+		AverageSpeed:    avgSpeed,
+		StatusCode:      statusCode,
+		ContentLength:   contentLength,
+		Resumed:         resumed,
+		ResponseCookies: responseCookies,
 	}, nil
 }
 

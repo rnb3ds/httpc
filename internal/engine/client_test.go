@@ -321,3 +321,135 @@ func TestClient_LargeResponse(t *testing.T) {
 		t.Errorf("Expected response size %d, got %d", len(largeContent), len(resp.RawBody()))
 	}
 }
+
+func TestClient_ConvenienceMethods(t *testing.T) {
+	methods := []struct {
+		name   string
+		method string
+		fn     func(*Client, string, ...RequestOption) (*Response, error)
+	}{
+		{"Post", "POST", (*Client).Post},
+		{"Put", "PUT", (*Client).Put},
+		{"Patch", "PATCH", (*Client).Patch},
+		{"Delete", "DELETE", (*Client).Delete},
+		{"Head", "HEAD", (*Client).Head},
+		{"Options", "OPTIONS", (*Client).Options},
+	}
+
+	for _, tt := range methods {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotMethod string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotMethod = r.Method
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+
+			config := &Config{
+				Timeout:         30 * time.Second,
+				AllowPrivateIPs: true,
+				MaxRetries:      0,
+				UserAgent:       "test/1.0",
+			}
+			client, err := NewClient(config)
+			if err != nil {
+				t.Fatalf("NewClient failed: %v", err)
+			}
+			defer client.Close()
+
+			resp, err := tt.fn(client, server.URL)
+			if err != nil {
+				t.Fatalf("%s failed: %v", tt.name, err)
+			}
+			if resp.StatusCode() != http.StatusOK {
+				t.Errorf("Status = %d, want 200", resp.StatusCode())
+			}
+			if gotMethod != tt.method {
+				t.Errorf("Method = %q, want %q", gotMethod, tt.method)
+			}
+		})
+	}
+}
+
+func TestClient_IsHealthy(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	config := &Config{
+		Timeout:         30 * time.Second,
+		AllowPrivateIPs: true,
+		MaxRetries:      0,
+		UserAgent:       "test/1.0",
+	}
+	client, err := NewClient(config)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	// Make a successful request
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, _ = client.Request(ctx, "GET", server.URL)
+
+	if !client.IsHealthy() {
+		t.Error("Client should be healthy after successful request")
+	}
+
+	status := client.GetHealthStatus()
+	if status.TotalRequests < 1 {
+		t.Errorf("TotalRequests = %d, want >= 1", status.TotalRequests)
+	}
+}
+
+func TestClient_OnRequestOnResponse(t *testing.T) {
+	var onRequestVal, onResponseVal bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	config := &Config{
+		Timeout:         30 * time.Second,
+		AllowPrivateIPs: true,
+		MaxRetries:      0,
+		UserAgent:       "test/1.0",
+	}
+	client, err := NewClient(config)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	onReqOption := func(req *Request) error {
+		req.SetOnRequest(func(r *Request) error {
+			onRequestVal = true
+			return nil
+		})
+		return nil
+	}
+	onRespOption := func(req *Request) error {
+		req.SetOnResponse(func(r *Response) error {
+			onResponseVal = true
+			return nil
+		})
+		return nil
+	}
+
+	_, err = client.Request(ctx, "GET", server.URL, onReqOption, onRespOption)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+
+	if !onRequestVal {
+		t.Error("OnRequest callback was not called")
+	}
+	if !onResponseVal {
+		t.Error("OnResponse callback was not called")
+	}
+}

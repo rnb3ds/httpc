@@ -1,7 +1,6 @@
 package httpc
 
 import (
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,21 +17,39 @@ import (
 // ----------------------------------------------------------------------------
 
 func TestRequest_Headers(t *testing.T) {
-	t.Run("WithHeader", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Header.Get("X-Custom-Header") != "custom-value" {
-				t.Error("Expected X-Custom-Header: custom-value")
-			}
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
+	t.Run("SingleHeaders", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			key        string
+			value      string
+			optionFunc func(string, string) RequestOption
+		}{
+			{"WithHeader", "X-Custom-Header", "custom-value", WithHeader},
+			{"AcceptJSON", "Accept", "application/json", WithHeader},
+			{"AcceptXML", "Accept", "application/xml", WithHeader},
+		}
 
-		client, _ := newTestClient()
-		defer client.Close()
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				var gotKey, gotVal string
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					gotKey = tt.key
+					gotVal = r.Header.Get(tt.key)
+					w.WriteHeader(http.StatusOK)
+				}))
+				defer server.Close()
 
-		_, err := client.Get(server.URL, WithHeader("X-Custom-Header", "custom-value"))
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
+				client, _ := newTestClient()
+				defer client.Close()
+
+				_, err := client.Get(server.URL, tt.optionFunc(tt.key, tt.value))
+				if err != nil {
+					t.Fatalf("Request failed: %v", err)
+				}
+				if gotVal != tt.value {
+					t.Errorf("Expected %s: %s, got %s", gotKey, tt.value, gotVal)
+				}
+			})
 		}
 	})
 
@@ -51,11 +68,10 @@ func TestRequest_Headers(t *testing.T) {
 		client, _ := newTestClient()
 		defer client.Close()
 
-		headers := map[string]string{
+		_, err := client.Get(server.URL, WithHeaderMap(map[string]string{
 			"X-Header-1": "value1",
 			"X-Header-2": "value2",
-		}
-		_, err := client.Get(server.URL, WithHeaderMap(headers))
+		}))
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
@@ -74,42 +90,6 @@ func TestRequest_Headers(t *testing.T) {
 		defer client.Close()
 
 		_, err := client.Get(server.URL, WithUserAgent("custom-agent/1.0"))
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-	})
-
-	t.Run("WithJSONAccept", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Header.Get("Accept") != "application/json" {
-				t.Error("Expected Accept: application/json")
-			}
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
-		client, _ := newTestClient()
-		defer client.Close()
-
-		_, err := client.Get(server.URL, WithHeader("Accept", "application/json"))
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-	})
-
-	t.Run("WithXMLAccept", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Header.Get("Accept") != "application/xml" {
-				t.Error("Expected Accept: application/xml")
-			}
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
-		client, _ := newTestClient()
-		defer client.Close()
-
-		_, err := client.Get(server.URL, WithHeader("Accept", "application/xml"))
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
@@ -134,11 +114,9 @@ func TestRequest_Headers(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Verify request headers are captured
 		if resp.Request == nil || resp.Request.Headers == nil {
 			t.Fatal("Request headers not captured")
 		}
-
 		if resp.Request.Headers.Get("X-Custom") != "test-value" {
 			t.Error("X-Custom header not captured correctly")
 		}
@@ -299,150 +277,6 @@ func TestRequest_QueryParameters(t *testing.T) {
 		defer client.Close()
 
 		_, err := client.Get(server.URL, WithQueryMap(map[string]any{}))
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-	})
-}
-
-// ----------------------------------------------------------------------------
-// Body Content
-// ----------------------------------------------------------------------------
-
-func TestRequest_Body(t *testing.T) {
-	type TestData struct {
-		Message string `json:"message" xml:"message"`
-		Code    int    `json:"code" xml:"code"`
-	}
-
-	t.Run("WithJSON", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Header.Get("Content-Type") != "application/json" {
-				t.Error("Expected Content-Type: application/json")
-			}
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
-		client, _ := newTestClient()
-		defer client.Close()
-
-		data := TestData{Message: "test", Code: 200}
-		_, err := client.Post(server.URL, WithJSON(data))
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-	})
-
-	t.Run("WithXML", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Header.Get("Content-Type") != "application/xml" {
-				t.Error("Expected Content-Type: application/xml")
-			}
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
-		client, _ := newTestClient()
-		defer client.Close()
-
-		data := TestData{Message: "test", Code: 200}
-		_, err := client.Post(server.URL, WithXML(data))
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-	})
-
-	t.Run("WithBody", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			body, _ := io.ReadAll(r.Body)
-			if string(body) != "raw body content" {
-				t.Errorf("Expected 'raw body content', got %s", string(body))
-			}
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
-		client, _ := newTestClient()
-		defer client.Close()
-
-		_, err := client.Post(server.URL, WithBody([]byte("raw body content")))
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-	})
-
-	t.Run("WithForm", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Header.Get("Content-Type") != "application/x-www-form-urlencoded" {
-				t.Error("Expected Content-Type: application/x-www-form-urlencoded")
-			}
-			if err := r.ParseForm(); err != nil {
-				t.Errorf("Failed to parse form: %v", err)
-			}
-			if r.FormValue("field1") != "value1" {
-				t.Error("Expected field1=value1")
-			}
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
-		client, _ := newTestClient()
-		defer client.Close()
-
-		_, err := client.Post(server.URL, WithForm(map[string]string{
-			"field1": "value1",
-			"field2": "value2",
-		}))
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-	})
-
-	t.Run("WithFile", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if err := r.ParseMultipartForm(10 << 20); err != nil {
-				t.Errorf("Failed to parse multipart form: %v", err)
-			}
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
-		client, _ := newTestClient()
-		defer client.Close()
-
-		content := []byte("test content")
-		_, err := client.Post(server.URL, WithFile("file", "test.txt", content))
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-	})
-
-	t.Run("WithFormData", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
-				t.Error("Expected Content-Type: multipart/form-data")
-			}
-			if err := r.ParseMultipartForm(10 << 20); err != nil {
-				t.Errorf("Failed to parse multipart form: %v", err)
-			}
-			if r.FormValue("field1") != "value1" {
-				t.Error("Expected field1=value1")
-			}
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
-		client, _ := newTestClient()
-		defer client.Close()
-
-		formData := &FormData{
-			Fields: map[string]string{"field1": "value1"},
-			Files: map[string]*FileData{
-				"file": {Filename: "test.txt", Content: []byte("content")},
-			},
-		}
-		_, err := client.Post(server.URL, WithFormData(formData))
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -421,6 +421,7 @@ func WithFile(fieldName, filename string, content []byte) RequestOption {
 	}
 }
 
+// WithTimeout sets a per-request timeout that overrides the client's default timeout.
 func WithTimeout(timeout time.Duration) RequestOption {
 	return func(r *engine.Request) error {
 		if timeout < 0 {
@@ -444,6 +445,7 @@ func WithContext(ctx context.Context) RequestOption {
 	}
 }
 
+// WithMaxRetries sets the maximum number of retry attempts for this request.
 func WithMaxRetries(maxRetries int) RequestOption {
 	return func(r *engine.Request) error {
 		if maxRetries < 0 || maxRetries > 10 {
@@ -454,6 +456,7 @@ func WithMaxRetries(maxRetries int) RequestOption {
 	}
 }
 
+// WithFollowRedirects controls whether HTTP redirects are followed for this request.
 func WithFollowRedirects(follow bool) RequestOption {
 	return func(r *engine.Request) error {
 		r.SetFollowRedirects(&follow)
@@ -461,6 +464,7 @@ func WithFollowRedirects(follow bool) RequestOption {
 	}
 }
 
+// WithMaxRedirects sets the maximum number of redirects to follow for this request.
 func WithMaxRedirects(maxRedirects int) RequestOption {
 	return func(r *engine.Request) error {
 		if maxRedirects < 0 {
@@ -474,6 +478,7 @@ func WithMaxRedirects(maxRedirects int) RequestOption {
 	}
 }
 
+// WithBinary sets binary data as the request body with an optional content type.
 func WithBinary(data []byte, contentType ...string) RequestOption {
 	return func(r *engine.Request) error {
 		if data == nil {
@@ -491,6 +496,7 @@ func WithBinary(data []byte, contentType ...string) RequestOption {
 	}
 }
 
+// WithCookie adds a cookie to the request after validation.
 func WithCookie(cookie http.Cookie) RequestOption {
 	return func(r *engine.Request) error {
 		if err := validation.ValidateCookie(&cookie); err != nil {
@@ -549,6 +555,7 @@ func WithCookieMap(cookies map[string]string) RequestOption {
 	}
 }
 
+// WithCookieString adds cookies from a raw Cookie header string to the request.
 func WithCookieString(cookieString string) RequestOption {
 	return func(r *engine.Request) error {
 		if cookieString == "" {

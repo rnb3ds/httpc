@@ -475,9 +475,9 @@ func TestConfig_String(t *testing.T) {
 	t.Run("Config with all fields", func(t *testing.T) {
 		config := &Config{
 			Timeouts: TimeoutConfig{
-				Request:         30 * time.Second,
-				Dial:            5 * time.Second,
-				TLSHandshake:    5 * time.Second,
+				Request:      30 * time.Second,
+				Dial:         5 * time.Second,
+				TLSHandshake: 5 * time.Second,
 			},
 			Connection: ConnectionConfig{
 				MaxIdleConns:    100,

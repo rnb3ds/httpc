@@ -503,44 +503,33 @@ func TestReleaseResult(t *testing.T) {
 	client, _ := newTestClient()
 	defer client.Close()
 
-	// Get a result
-	result, err := client.Get(server.URL)
-	if err != nil {
-		t.Fatalf("Request failed: %v", err)
-	}
-
-	// Verify result has data
-	if result.StatusCode() != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", result.StatusCode())
-	}
-	if result.Body() == "" {
-		t.Error("Expected non-empty body")
-	}
-
-	// Release the result back to the pool
-	ReleaseResult(result)
-
-	// Release nil should not panic
-	ReleaseResult(nil)
-}
-
-func TestReleaseResult_Multiple(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	client, _ := newTestClient()
-	defer client.Close()
-
-	// Make multiple requests and release them
-	for i := 0; i < 10; i++ {
+	t.Run("ReleaseAndReuse", func(t *testing.T) {
 		result, err := client.Get(server.URL)
 		if err != nil {
-			t.Fatalf("Request %d failed: %v", i, err)
+			t.Fatalf("Request failed: %v", err)
+		}
+		if result.StatusCode() != http.StatusOK {
+			t.Errorf("Expected status 200, got %d", result.StatusCode())
+		}
+		if result.Body() == "" {
+			t.Error("Expected non-empty body")
 		}
 		ReleaseResult(result)
-	}
+	})
+
+	t.Run("ReleaseNil", func(t *testing.T) {
+		ReleaseResult(nil) // should not panic
+	})
+
+	t.Run("MultipleReleaseCycle", func(t *testing.T) {
+		for i := 0; i < 10; i++ {
+			result, err := client.Get(server.URL)
+			if err != nil {
+				t.Fatalf("Request %d failed: %v", i, err)
+			}
+			ReleaseResult(result)
+		}
+	})
 }
 
 // ----------------------------------------------------------------------------

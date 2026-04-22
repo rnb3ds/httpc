@@ -2,9 +2,9 @@ package engine
 
 import (
 	"math"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
-	"sync/atomic"
 	"time"
 
 	"github.com/cybergodev/httpc/internal/types"
@@ -12,10 +12,6 @@ import (
 
 type RetryEngine struct {
 	config *Config
-	// counter provides pseudo-random jitter variation via atomic increment.
-	// Combined with timestamp, it generates deterministic-looking but varied
-	// delays to prevent thundering herd problems without requiring crypto/rand.
-	counter int64
 }
 
 // Compile-time interface check
@@ -23,17 +19,12 @@ var _ types.RetryPolicy = (*RetryEngine)(nil)
 
 func NewRetryEngine(config *Config) *RetryEngine {
 	return &RetryEngine{
-		config:  config,
-		counter: time.Now().UnixNano(),
+		config: config,
 	}
 }
 
 // ShouldRetry implements types.RetryPolicy interface.
 func (r *RetryEngine) ShouldRetry(resp types.ResponseReader, err error, attempt int) bool {
-	if attempt >= r.config.MaxRetries {
-		return false
-	}
-
 	if err != nil {
 		return r.isRetryableError(err)
 	}
@@ -145,26 +136,13 @@ func (r *RetryEngine) isRetryableError(err error) bool {
 	return clientErr.IsRetryable()
 }
 
-// getJitter generates pseudo-random jitter for retry delays using a combination
-// of atomic counter and timestamp. This is NOT cryptographically secure but is
-// sufficient for retry delay randomization to avoid thundering herd problems.
+// getJitter generates pseudo-random jitter for retry delays.
+// Uses math/rand/v2 for high-quality randomness without security concerns.
 func (r *RetryEngine) getJitter(maxJitter time.Duration) time.Duration {
 	if maxJitter <= 0 {
 		return 0
 	}
-
-	count := atomic.AddInt64(&r.counter, 1)
-	nanos := time.Now().UnixNano()
-
-	// Use XOR mixing and multiplication with overflow-safe arithmetic
-	// The constant 1103515245 is from LCG (Linear Congruential Generator)
-	mixed := uint64(count) ^ uint64(nanos)
-	mixed = mixed * 1103515245
-
-	// Use unsigned modulo to avoid negative results
-	jitter := mixed % uint64(maxJitter)
-
-	return time.Duration(jitter)
+	return time.Duration(rand.Int64N(int64(maxJitter)))
 }
 
 func (r *RetryEngine) isRetryableStatus(statusCode int) bool {
