@@ -493,6 +493,20 @@ client.Session() // Underlying SessionManager
 result, _ := client.DownloadFile("/files/data.csv", "data.csv")
 result, _ := client.DownloadWithOptions("/files/large.zip", downloadOpts)
 result, _ := client.DownloadFileWithContext(ctx, "/files/data.csv", "data.csv")
+result, _ := client.DownloadWithOptionsWithContext(ctx, "/files/large.zip", downloadOpts)
+```
+
+### All HTTP Methods
+
+```go
+result, _ := client.Get("/users")
+result, _ := client.Post("/users", httpc.WithJSON(data))
+result, _ := client.Put("/users/1", httpc.WithJSON(data))
+result, _ := client.Patch("/users/1", httpc.WithJSON(data))
+result, _ := client.Delete("/users/1")
+result, _ := client.Head("/users")
+result, _ := client.Options("/users")
+result, _ := client.Request(ctx, "PROPFIND", "/resource")
 ```
 
 ---
@@ -507,7 +521,7 @@ sm, _ := httpc.NewSessionManager()
 
 // Or with cookie security validation
 cfg := httpc.DefaultSessionConfig()
-cfg.CookieSecurity = validation.StrictCookieSecurityConfig()
+cfg.CookieSecurity = httpc.StrictCookieSecurityConfig()
 sm, _ := httpc.NewSessionManager(cfg)
 
 // Manage cookies
@@ -530,7 +544,7 @@ sm.UpdateFromResult(result)
 sm.UpdateFromCookies(responseCookies)
 
 // Cookie security
-sm.SetCookieSecurity(validation.StrictCookieSecurityConfig())
+sm.SetCookieSecurity(httpc.StrictCookieSecurityConfig())
 ```
 
 ---
@@ -582,7 +596,7 @@ config := &httpc.Config{
         MinTLSVersion:       tls.VersionTLS12,
         MaxTLSVersion:       tls.VersionTLS13,
         MaxResponseBodySize: 50 * 1024 * 1024, // 50 MB
-        AllowPrivateIPs:     true,
+        AllowPrivateIPs:     false,
     },
 
     // Retry
@@ -628,12 +642,14 @@ client, _ := httpc.New(config)
 | `Security.MaxTLSVersion` | `uint16` | `TLS 1.3` | Maximum TLS version |
 | `Security.InsecureSkipVerify` | `bool` | `false` | Skip TLS verification (testing only!) |
 | `Security.MaxResponseBodySize` | `int64` | `10MB` | Max response body size |
-| `Security.AllowPrivateIPs` | `bool` | `true` | Allow private IPs (SSRF) |
+| `Security.AllowPrivateIPs` | `bool` | `false` | Allow private IPs (SSRF protection enabled by default) |
 | `Security.ValidateURL` | `bool` | `true` | Enable URL validation |
 | `Security.ValidateHeaders` | `bool` | `true` | Enable header validation |
 | `Security.StrictContentLength` | `bool` | `true` | Strict content-length check |
 | `Security.RedirectWhitelist` | `[]string` | `nil` | Allowed redirect domains |
-| `Security.CookieSecurity` | `*validation.CookieSecurityConfig` | `nil` | Cookie security validation rules |
+| `Security.MaxDecompressedBodySize` | `int64` | `100MB` | Max decompressed body size (zip bomb protection) |
+| `Security.SSRFExemptCIDRs` | `[]string` | `nil` | CIDR ranges exempted from SSRF blocking |
+| `Security.CookieSecurity` | `*httpc.CookieSecurityConfig` | `nil` | Cookie security validation rules |
 | **Retry** (nested: `Retry: httpc.RetryConfig{...}`) ||||
 | `Retry.MaxRetries` | `int` | `3` | Max retry attempts |
 | `Retry.Delay` | `time.Duration` | `1s` | Initial retry delay |
@@ -683,8 +699,11 @@ httpc.AuditMiddleware(func(a httpc.AuditEvent) {
 
 // Audit with custom config
 auditCfg := httpc.DefaultAuditMiddlewareConfig()
-auditCfg.LogBody = true
-httpc.AuditMiddlewareWithConfig(auditCfg)(next)
+auditCfg.IncludeHeaders = true
+auditCfg.Format = "json"
+httpc.AuditMiddlewareWithConfig(func(a httpc.AuditEvent) {
+    log.Printf("[AUDIT] %v", a)
+}, auditCfg)
 ```
 
 ### Chain Multiple Middleware
@@ -755,16 +774,21 @@ config.Security.RedirectWhitelist = []string{"api.example.com", "secure.example.
 
 ### SSRF Protection
 
-By default, `AllowPrivateIPs` is `true` for compatibility. Enable SSRF protection when making requests to user-provided URLs:
+By default, `AllowPrivateIPs` is `false` (SSRF protection enabled), blocking connections to private/reserved IP addresses. Set to `true` only when connecting to internal services:
 
 ```go
-// Enable SSRF protection
+// SSRF protection is enabled by default
+client, _ := httpc.New(httpc.DefaultConfig())
+
+// Allow private IPs for internal service access
 cfg := httpc.DefaultConfig()
-cfg.Security.AllowPrivateIPs = false
+cfg.Security.AllowPrivateIPs = true
 client, _ := httpc.New(cfg)
 
-// Or use the secure preset
-client, _ := httpc.New(httpc.SecureConfig())
+// Or exempt specific CIDRs (e.g., VPN/VPC ranges)
+cfg := httpc.DefaultConfig()
+cfg.Security.SSRFExemptCIDRs = []string{"10.0.0.0/8", "100.64.0.0/10"}
+client, _ := httpc.New(cfg)
 ```
 
 ---
@@ -824,15 +848,18 @@ const (
 
 ```go
 var (
-    ErrClientClosed      // Client has been closed
-    ErrNilConfig         // Nil configuration provided
-    ErrInvalidURL        // URL validation failed
-    ErrInvalidHeader     // Header validation failed
-    ErrInvalidTimeout    // Timeout is negative or exceeds limits
-    ErrInvalidRetry      // Retry configuration is invalid
-    ErrEmptyFilePath     // File path is empty
-    ErrFileExists        // File already exists (and Overwrite is false)
-    ErrResponseBodyEmpty // Response body is empty
+    ErrClientClosed         // Client has been closed
+    ErrNilConfig            // Nil configuration provided
+    ErrInvalidURL           // URL validation failed
+    ErrInvalidHeader        // Header validation failed
+    ErrInvalidTimeout       // Timeout is negative or exceeds limits
+    ErrInvalidRetry         // Retry configuration is invalid
+    ErrInvalidConnection    // Connection configuration is invalid
+    ErrInvalidSecurity      // Security configuration is invalid
+    ErrInvalidMiddleware    // Middleware configuration is invalid
+    ErrEmptyFilePath        // File path is empty
+    ErrFileExists           // File already exists (and Overwrite is false)
+    ErrResponseBodyEmpty    // Response body is empty
     ErrResponseBodyTooLarge // Response body exceeds size limit
 )
 ```
@@ -840,9 +867,11 @@ var (
 ### Error Classification
 
 ```go
-// Classify any error into a ClientError
-clientErr := httpc.ClassifyError(err)
-fmt.Printf("Type: %s, Retryable: %v\n", clientErr.Code(), clientErr.IsRetryable())
+// Check error type using errors.As
+var clientErr *httpc.ClientError
+if errors.As(err, &clientErr) {
+    fmt.Printf("Type: %s, Retryable: %v\n", clientErr.Code(), clientErr.IsRetryable())
+}
 ```
 
 ---

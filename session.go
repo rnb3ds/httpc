@@ -319,7 +319,10 @@ func (s *SessionManager) captureFromOptions(options []RequestOption) {
 	}
 
 	// Use pooled engine.Request to reduce allocations on hot path
-	tempReq := tempReqPool.Get().(*engine.Request)
+	tempReq, ok := tempReqPool.Get().(*engine.Request)
+	if !ok || tempReq == nil {
+		tempReq = &engine.Request{}
+	}
 	defer func() {
 		*tempReq = engine.Request{}
 		tempReqPool.Put(tempReq)

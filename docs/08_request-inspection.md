@@ -249,6 +249,61 @@ func main() {
 - Helper functions handle parsing and whitespace trimming
 - Works with both manual cookies and cookie jar
 
+## Result Struct Reference
+
+### RequestInfo Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `URL` | `string` | The request URL |
+| `Method` | `string` | HTTP method (GET, POST, etc.) |
+| `Headers` | `http.Header` | All request headers sent |
+| `Cookies` | `[]*http.Cookie` | All cookies sent in the request |
+
+### ResponseInfo Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `StatusCode` | `int` | HTTP status code |
+| `Status` | `string` | HTTP status text (e.g., "200 OK") |
+| `Proto` | `string` | HTTP protocol (e.g., "HTTP/1.1") |
+| `Headers` | `http.Header` | Response headers |
+| `Body` | `string` | Response body as string |
+| `RawBody` | `[]byte` | Response body as raw bytes |
+| `ContentLength` | `int64` | Content-Length from response |
+| `Cookies` | `[]*http.Cookie` | Cookies from Set-Cookie headers |
+
+### RequestMeta Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Duration` | `time.Duration` | Total request duration |
+| `Attempts` | `int` | Number of attempts (including retries) |
+| `RedirectChain` | `[]string` | URLs visited during redirects |
+| `RedirectCount` | `int` | Number of redirects followed |
+
+### Result Convenience Methods
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `Body()` | `string` | Response body as string |
+| `RawBody()` | `[]byte` | Response body as raw bytes |
+| `StatusCode()` | `int` | HTTP status code |
+| `Proto()` | `string` | HTTP protocol version |
+| `IsSuccess()` | `bool` | True for 2xx status codes |
+| `IsRedirect()` | `bool` | True for 3xx status codes |
+| `IsClientError()` | `bool` | True for 4xx status codes |
+| `IsServerError()` | `bool` | True for 5xx status codes |
+| `Unmarshal(v any)` | `error` | Parse JSON/XML response into struct |
+| `GetCookie(name)` | `*http.Cookie` | Get response cookie by name |
+| `HasCookie(name)` | `bool` | Check if response cookie exists |
+| `GetRequestCookie(name)` | `*http.Cookie` | Get request cookie by name |
+| `HasRequestCookie(name)` | `bool` | Check if request cookie was sent |
+| `RequestCookies()` | `[]*http.Cookie` | All request cookies |
+| `ResponseCookies()` | `[]*http.Cookie` | All response cookies |
+| `SaveToFile(path)` | `error` | Save response body to file |
+| `String()` | `string` | Safe string representation (masks sensitive headers) |
+
 ## See Also
 
 - [Cookie API Reference](./06_cookie-api.md) - Cookie handling documentation

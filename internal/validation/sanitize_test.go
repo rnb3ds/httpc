@@ -30,7 +30,7 @@ func TestSanitizeURL(t *testing.T) {
 		{
 			name:     "No credentials with fragment",
 			input:    "https://example.com/path#section",
-			expected: "https://example.com/path#section",
+			expected: "https://example.com/path",
 		},
 
 		// Username only
@@ -64,7 +64,7 @@ func TestSanitizeURL(t *testing.T) {
 		{
 			name:     "Credentials with query and fragment",
 			input:    "https://user:pass@example.com/path?q=1#section",
-			expected: "https://***:***@example.com/path?q=1#section",
+			expected: "https://***:***@example.com/path?q=1",
 		},
 		{
 			name:     "Credentials with port",

@@ -20,10 +20,10 @@ import (
 type Client struct {
 	config *Config
 
-	transport         TransportManager
-	requestProcessor  *RequestProcessor
-	responseProcessor *ResponseProcessor
-	retryEngine       *RetryEngine
+	transport         transportManager
+	requestProcessor  *requestProcessor
+	responseProcessor *responseProcessor
+	retryEngine       *retryEngine
 	validator         *security.Validator
 
 	connectionPool *connection.PoolManager
@@ -64,7 +64,8 @@ type Config struct {
 	MinTLSVersion       uint16
 	MaxTLSVersion       uint16
 	InsecureSkipVerify  bool
-	MaxResponseBodySize int64
+	MaxResponseBodySize      int64
+	MaxDecompressedBodySize int64
 	ValidateURL         bool
 	ValidateHeaders     bool
 	AllowPrivateIPs     bool
@@ -175,7 +176,9 @@ type Response struct {
 	headers        http.Header
 	body           string
 	rawBody        []byte
-	rawBodyReader  io.ReadCloser // Set when streamBody=true; caller must close
+	bodyOnce       sync.Once // Ensures body string is computed exactly once
+	rawBodyReader  io.ReadCloser      // Set when streamBody=true; caller must close
+	cancelFunc     context.CancelFunc // Stored for streaming mode cleanup
 	contentLength  int64
 	proto          string
 	duration       time.Duration
@@ -192,28 +195,35 @@ type Response struct {
 var _ types.ResponseMutator = (*Response)(nil)
 
 // Accessors (implement ResponseAccessor)
-func (r *Response) StatusCode() int             { return r.statusCode }
-func (r *Response) Status() string              { return r.status }
-func (r *Response) Headers() http.Header        { return r.headers }
-func (r *Response) Body() string                { return r.body }
-func (r *Response) RawBody() []byte             { return r.rawBody }
-func (r *Response) ContentLength() int64        { return r.contentLength }
-func (r *Response) Proto() string               { return r.proto }
-func (r *Response) Duration() time.Duration     { return r.duration }
-func (r *Response) Attempts() int               { return r.attempts }
-func (r *Response) Cookies() []*http.Cookie     { return r.cookies }
-func (r *Response) RedirectChain() []string     { return r.redirectChain }
-func (r *Response) RedirectCount() int          { return r.redirectCount }
-func (r *Response) RequestHeaders() http.Header { return r.requestHeaders }
-func (r *Response) RequestURL() string          { return r.requestURL }
-func (r *Response) RequestMethod() string       { return r.requestMethod }
+func (r *Response) StatusCode() int              { return r.statusCode }
+func (r *Response) Status() string               { return r.status }
+func (r *Response) Headers() http.Header         { return r.headers }
+func (r *Response) Body() string {
+	r.bodyOnce.Do(func() {
+		if r.rawBody != nil {
+			r.body = string(r.rawBody)
+		}
+	})
+	return r.body
+}
+func (r *Response) RawBody() []byte              { return r.rawBody }
+func (r *Response) ContentLength() int64         { return r.contentLength }
+func (r *Response) Proto() string                { return r.proto }
+func (r *Response) Duration() time.Duration      { return r.duration }
+func (r *Response) Attempts() int                { return r.attempts }
+func (r *Response) Cookies() []*http.Cookie      { return r.cookies }
+func (r *Response) RedirectChain() []string      { return r.redirectChain }
+func (r *Response) RedirectCount() int           { return r.redirectCount }
+func (r *Response) RequestHeaders() http.Header  { return r.requestHeaders }
+func (r *Response) RequestURL() string           { return r.requestURL }
+func (r *Response) RequestMethod() string        { return r.requestMethod }
 func (r *Response) RawBodyReader() io.ReadCloser { return r.rawBodyReader }
 
 // Mutators (implement ResponseMutator)
 func (r *Response) SetStatusCode(v int)             { r.statusCode = v }
 func (r *Response) SetStatus(v string)              { r.status = v }
 func (r *Response) SetHeaders(v http.Header)        { r.headers = v }
-func (r *Response) SetBody(v string)                { r.body = v }
+func (r *Response) SetBody(v string) { r.body = v; r.bodyOnce.Do(func() {}) }
 func (r *Response) SetRawBody(v []byte)             { r.rawBody = v }
 func (r *Response) SetContentLength(v int64)        { r.contentLength = v }
 func (r *Response) SetProto(v string)               { r.proto = v }
@@ -293,20 +303,24 @@ func NewClient(config *Config, opts ...clientOption) (*Client, error) {
 		connConfig.EnableDoH = config.EnableDoH
 		connConfig.DoHCacheTTL = config.DoHCacheTTL
 
+		if config.CertificatePinner != nil {
+			connConfig.SetCertPinner(config.CertificatePinner)
+		}
+
 		client.connectionPool, err = connection.NewPoolManager(connConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create connection pool: %w", err)
 		}
 
-		client.transport, err = NewTransport(config, client.connectionPool)
+		client.transport, err = newTransport(config, client.connectionPool)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create transport: %w", err)
 		}
 	}
 
-	client.requestProcessor = NewRequestProcessor(config)
-	client.responseProcessor = NewResponseProcessor(config)
-	client.retryEngine = NewRetryEngine(config)
+	client.requestProcessor = newRequestProcessor(config)
+	client.responseProcessor = newResponseProcessor(config)
+	client.retryEngine = newRetryEngine(config)
 
 	validatorConfig := &security.Config{
 		ValidateURL:         config.ValidateURL,
@@ -423,7 +437,7 @@ func (c *Client) getExecRequest() *Request {
 
 // putExecRequest returns a Request object to the exec pool
 func (c *Client) putExecRequest(req *Request) {
-	*req = Request{}
+	*req = Request{maxRetries: -1}
 	c.execRequestPool.Put(req)
 }
 
@@ -479,12 +493,13 @@ func (c *Client) sleepWithContext(ctx context.Context, duration time.Duration) e
 		return nil
 	}
 
-	// Use time.After instead of time.NewTimer for better performance
-	// time.After doesn't allocate a timer struct, reducing GC pressure
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-time.After(duration):
+	case <-timer.C:
 		return nil
 	}
 }
@@ -503,10 +518,12 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 	}
 
 	// Fast path: no retries configured (most common case)
+	// Skip deep copy since request is only executed once — original req
+	// is returned to pool by caller's defer putRequest regardless.
 	if maxRetries == 0 {
-		resp, err := c.executeRequest(req)
+		resp, err := c.executeRequest(req, true)
 		if err != nil {
-			return nil, ClassifyError(err, req.URL(), req.Method(), 1)
+			return nil, classifyError(err, req.URL(), req.Method(), 1)
 		}
 		if resp != nil {
 			resp.SetAttempts(1)
@@ -524,10 +541,10 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 	var lastResp *Response
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
-		resp, err := c.executeRequest(req)
+		resp, err := c.executeRequest(req, false)
 
 		if err != nil {
-			clientErr := ClassifyError(err, req.URL(), req.Method(), attempt+1)
+			clientErr := classifyError(err, req.URL(), req.Method(), attempt+1)
 			lastErr = clientErr
 
 			// Fast path: non-retryable errors or max retries reached
@@ -548,7 +565,7 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 			delay := policy.GetDelay(attempt)
 			if sleepErr := c.sleepWithContext(req.Context(), delay); sleepErr != nil {
 				releaseLastResp(&lastResp)
-				return nil, ClassifyError(sleepErr, req.URL(), req.Method(), attempt+1)
+				return nil, classifyError(sleepErr, req.URL(), req.Method(), attempt+1)
 			}
 			continue
 		}
@@ -565,13 +582,14 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 				// Use built-in engine delay for Retry-After header support,
 				// otherwise delegate to the policy's GetDelay
 				var delay time.Duration
-				if engPolicy, ok := policy.(*RetryEngine); ok {
+				if engPolicy, ok := policy.(*retryEngine); ok {
 					delay = engPolicy.GetDelayWithResponse(attempt, resp)
 				} else {
 					delay = policy.GetDelay(attempt)
 				}
 				if sleepErr := c.sleepWithContext(req.Context(), delay); sleepErr != nil {
-					return nil, ClassifyError(sleepErr, req.URL(), req.Method(), attempt+1)
+					releaseLastResp(&lastResp)
+					return nil, classifyError(sleepErr, req.URL(), req.Method(), attempt+1)
 				}
 				continue
 			}
@@ -593,7 +611,7 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 	if lastErr != nil {
 		if clientErr, ok := lastErr.(*ClientError); ok {
 			clientErr.Attempts = maxRetries + 1
-			clientErr.WithType(ErrorTypeRetryExhausted)
+			_ = clientErr.WithType(ErrorTypeRetryExhausted)
 			return nil, clientErr
 		}
 		return nil, fmt.Errorf("request failed after %d attempts: %w", maxRetries+1, lastErr)
@@ -630,7 +648,9 @@ const (
 var backgroundCtx = context.Background()
 
 // executeRequest executes a single HTTP request with comprehensive error handling.
-func (c *Client) executeRequest(req *Request) (*Response, error) {
+// When skipCopy is true, the request is used directly without deep copy (safe when
+// the caller guarantees single-use, i.e., no retries).
+func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) {
 	// Context setup with timeout handling
 	execCtx := req.Context()
 	if execCtx == nil {
@@ -643,40 +663,55 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 	}
 
 	// Optimized: only create new context if absolutely necessary
+	var streamCancel context.CancelFunc
 	if timeout > 0 {
 		if existingDeadline, hasDeadline := execCtx.Deadline(); !hasDeadline {
-			// No existing deadline - create one
-			var cancel context.CancelFunc
-			execCtx, cancel = context.WithTimeout(execCtx, timeout)
-			if !req.StreamBody() {
-				defer cancel()
-			}
-			_ = cancel
+			execCtx, streamCancel = context.WithTimeout(execCtx, timeout)
 		} else if timeUntil := time.Until(existingDeadline); timeUntil > timeout {
-			// Existing deadline is further than our timeout - create tighter one
-			var cancel context.CancelFunc
-			execCtx, cancel = context.WithTimeout(execCtx, timeout)
-			if !req.StreamBody() {
-				defer cancel()
-			}
-			_ = cancel
+			execCtx, streamCancel = context.WithTimeout(execCtx, timeout)
 		}
-		// else: existing deadline is within our timeout - reuse it
+	}
+	// For non-streaming requests, ensure cancel is always called on exit.
+	// For streaming requests, cancelFunc is stored in the Response and called on Release.
+	if streamCancel != nil && !req.StreamBody() {
+		defer streamCancel()
 	}
 
 	select {
 	case <-execCtx.Done():
-		return nil, ClassifyError(execCtx.Err(), req.URL(), req.Method(), 0)
+		return nil, classifyError(execCtx.Err(), req.URL(), req.Method(), 0)
 	default:
 	}
 
-	// Get a pooled Request copy — single struct copy + override context
-	reqCopy := c.getExecRequest()
-	*reqCopy = *req
-	reqCopy.context = execCtx
-
-	// Ensure request copy is returned to pool after processing
-	defer c.putExecRequest(reqCopy)
+	// Get a pooled Request copy — deep copy reference types to prevent cross-retry mutation
+	// Optimization: skip deep copy in no-retry fast path (skipCopy=true) to avoid
+	// unnecessary map/slice allocations for headers, query params, and cookies.
+	var reqCopy *Request
+	if skipCopy {
+		req.context = execCtx
+		reqCopy = req
+	} else {
+		reqCopy = c.getExecRequest()
+		*reqCopy = *req
+		reqCopy.context = execCtx
+		if req.headers != nil {
+			reqCopy.headers = make(map[string]string, len(req.headers))
+			for k, v := range req.headers {
+				reqCopy.headers[k] = v
+			}
+		}
+		if req.queryParams != nil {
+			reqCopy.queryParams = make(map[string]any, len(req.queryParams))
+			for k, v := range req.queryParams {
+				reqCopy.queryParams[k] = v
+			}
+		}
+		if len(req.cookies) > 0 {
+			reqCopy.cookies = make([]http.Cookie, len(req.cookies))
+			copy(reqCopy.cookies, req.cookies)
+		}
+		defer c.putExecRequest(reqCopy)
+	}
 
 	followRedirects := c.config.FollowRedirects
 	if req.FollowRedirects() != nil {
@@ -698,13 +733,13 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 	// Invoke OnRequest callback before building the HTTP request
 	if reqCopy.onRequest != nil {
 		if err := reqCopy.onRequest(reqCopy); err != nil {
-			return nil, ClassifyError(fmt.Errorf("onRequest callback failed: %w", err), req.URL(), req.Method(), 0)
+			return nil, classifyError(fmt.Errorf("onRequest callback failed: %w", err), req.URL(), req.Method(), 0)
 		}
 	}
 
 	httpReq, err := c.requestProcessor.Build(reqCopy)
 	if err != nil {
-		return nil, ClassifyError(fmt.Errorf("build request failed: %w", err), req.URL(), req.Method(), 0)
+		return nil, classifyError(fmt.Errorf("build request failed: %w", err), req.URL(), req.Method(), 0)
 	}
 
 	start := time.Now()
@@ -712,7 +747,7 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 	duration := time.Since(start)
 
 	if err != nil {
-		return nil, ClassifyError(fmt.Errorf("transport failed: %w", err), req.URL(), req.Method(), 0)
+		return nil, classifyError(fmt.Errorf("transport failed: %w", err), req.URL(), req.Method(), 0)
 	}
 
 	// Streaming mode: skip body buffering, hand raw reader to caller.
@@ -726,6 +761,7 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 		resp.SetProto(httpResp.Proto)
 		resp.SetCookies(httpResp.Cookies())
 		resp.rawBodyReader = httpResp.Body
+		resp.cancelFunc = streamCancel
 
 		if httpResp.Request != nil {
 			if len(httpResp.Request.Header) > 0 {
@@ -753,7 +789,7 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 
 	resp, err := c.responseProcessor.Process(httpResp)
 	if err != nil {
-		return nil, ClassifyError(fmt.Errorf("process response failed: %w", err), req.URL(), req.Method(), 0)
+		return nil, classifyError(fmt.Errorf("process response failed: %w", err), req.URL(), req.Method(), 0)
 	}
 
 	if redirectChain := c.transport.GetRedirectChain(reqCopy.context); len(redirectChain) > 0 {
@@ -779,7 +815,7 @@ func (c *Client) executeRequest(req *Request) (*Response, error) {
 	// Invoke OnResponse callback after response processing
 	if reqCopy.onResponse != nil {
 		if err := reqCopy.onResponse(resp); err != nil {
-			return nil, ClassifyError(fmt.Errorf("onResponse callback failed: %w", err), req.URL(), req.Method(), 0)
+			return nil, classifyError(fmt.Errorf("onResponse callback failed: %w", err), req.URL(), req.Method(), 0)
 		}
 	}
 
@@ -829,5 +865,5 @@ type RequestOption func(*Request) error
 type clientOption func(*clientOptions)
 
 type clientOptions struct {
-	customTransport TransportManager
+	customTransport transportManager
 }

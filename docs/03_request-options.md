@@ -398,15 +398,21 @@ resp, err := client.Get(url,
 Validate cookie security attributes (Secure, HttpOnly, SameSite):
 
 ```go
-import "github.com/cybergodev/httpc/internal/validation"
+// Cookie security validation is configured via SecurityConfig at the client level
+config := httpc.DefaultConfig()
+config.Security.CookieSecurity = httpc.StrictCookieSecurityConfig()
+// Or customize individually:
+// config.Security.CookieSecurity = httpc.DefaultCookieSecurityConfig()
+// config.Security.CookieSecurity.RequireSecure = true
 
-resp, err := client.Get(url,
+client, err := httpc.New(config)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Cookies sent through this client will be validated against the security config
+result, err := client.Get(url,
     httpc.WithCookie(http.Cookie{Name: "session", Value: "abc123"}),
-    httpc.WithSecureCookie(&validation.CookieSecurityConfig{
-        RequireSecure:   true,
-        RequireHttpOnly: true,
-        RequireSameSite: "Strict",
-    }),
 )
 ```
 
@@ -467,10 +473,12 @@ result, err := client.Post(url,
 
 // Explicit body type
 result, err := client.Post(url,
-    httpc.WithBody(data, httpc.BodyJSON),  // Force JSON
-    httpc.WithBody(data, httpc.BodyXML),   // Force XML
-    httpc.WithBody(data, httpc.BodyForm),  // Force form
-    httpc.WithBody(data, httpc.BodyBinary), // Force binary
+    httpc.WithBody(data, httpc.BodyAuto),      // Auto-detect (default)
+    httpc.WithBody(data, httpc.BodyJSON),       // Force JSON
+    httpc.WithBody(data, httpc.BodyXML),        // Force XML
+    httpc.WithBody(data, httpc.BodyForm),       // Force form
+    httpc.WithBody(data, httpc.BodyBinary),     // Force binary
+    httpc.WithBody(data, httpc.BodyMultipart),  // Force multipart
 )
 ```
 
@@ -509,9 +517,10 @@ result, err := client.Post(url,
 | `WithCookie(cookie)`             | Add cookie           | `WithCookie(http.Cookie{Name: "n", Value: "v"})` |
 | `WithCookieMap(cookies)`         | Add multiple cookies | `WithCookieMap(map[string]string{...})` |
 | `WithCookieString(cookieStr)`    | Parse cookie string  | `WithCookieString("a=1; b=2")`          |
-| `WithSecureCookie(cfg)`          | Cookie security      | `WithSecureCookie(&validation.CookieSecurityConfig{...})` |
+| `WithSecureCookie(cfg)`          | Cookie security      | `WithSecureCookie(httpc.StrictCookieSecurityConfig())` |
 | `WithFollowRedirects(follow)`    | Redirect policy      | `WithFollowRedirects(false)`            |
 | `WithMaxRedirects(n)`            | Max redirects        | `WithMaxRedirects(5)`                   |
+| `WithStreamBody(stream)`         | Stream response body | `WithStreamBody(true)`                  |
 | `WithOnRequest(callback)`        | Pre-request callback | `WithOnRequest(func(req) error { ... })` |
 | `WithOnResponse(callback)`       | Post-response callback | `WithOnResponse(func(resp) error { ... })` |
 

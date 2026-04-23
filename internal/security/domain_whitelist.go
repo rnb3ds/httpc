@@ -69,10 +69,7 @@ func normalizeDomain(domain string) string {
 //
 //	whitelist := security.NewDomainWhitelist("example.com", "*.trusted.org")
 func NewDomainWhitelist(domains ...string) *DomainWhitelist {
-	// Pre-allocate based on input size
 	n := len(domains)
-	exactCap := n          // Most domains are exact matches
-	wildcardCap := n/4 + 1 // Estimate ~25% wildcards (minimum 1)
 
 	// Count wildcards for accurate pre-allocation
 	wildcardCount := 0
@@ -81,10 +78,11 @@ func NewDomainWhitelist(domains ...string) *DomainWhitelist {
 			wildcardCount++
 		}
 	}
-	if wildcardCount > wildcardCap {
-		wildcardCap = wildcardCount
+	exactCap := n - wildcardCount
+	wildcardCap := wildcardCount
+	if wildcardCap == 0 {
+		wildcardCap = 1 // minimum capacity 1
 	}
-	exactCap = n - wildcardCount
 
 	dw := &DomainWhitelist{
 		exact:     make(map[string]bool, exactCap),

@@ -3,6 +3,7 @@ package httpc
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -312,6 +313,22 @@ func TestCookie_StringParsing(t *testing.T) {
 				"empty": "",
 			},
 		},
+		{
+			name:          "duplicate names",
+			cookieString:  "name=val1; name=val2",
+			expectedCount: 1,
+			expectedCookies: map[string]string{
+				"name": "val2",
+			},
+		},
+		{
+			name:          "long value",
+			cookieString:  "data=" + strings.Repeat("x", 1024),
+			expectedCount: 1,
+			expectedCookies: map[string]string{
+				"data": strings.Repeat("x", 1024),
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -401,7 +418,12 @@ func TestCookie_StringParsingErrors(t *testing.T) {
 func TestCookie_AutoDomain(t *testing.T) {
 	t.Parallel()
 
+	cookieReceived := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := r.Cookie("test")
+		if err == nil && c.Value == "value" {
+			cookieReceived = true
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -420,8 +442,9 @@ func TestCookie_AutoDomain(t *testing.T) {
 		t.Fatalf("Request failed: %v", err)
 	}
 
-	// Cookie should have been sent successfully
-	// The domain is automatically handled by the HTTP client
+	if !cookieReceived {
+		t.Error("Cookie was not received by server")
+	}
 }
 
 // ----------------------------------------------------------------------------
@@ -547,7 +570,11 @@ func TestCookie_ResponseOperations(t *testing.T) {
 func TestCookie_Inspection(t *testing.T) {
 	t.Parallel()
 
+	var receivedCookies []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, c := range r.Cookies() {
+			receivedCookies = append(receivedCookies, c.Name+"="+c.Value)
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -563,6 +590,19 @@ func TestCookie_Inspection(t *testing.T) {
 		t.Fatalf("Request failed: %v", err)
 	}
 
-	// Cookies should be sent successfully
-	// The actual inspection happens on the server side in the handler
+	if len(receivedCookies) != 2 {
+		t.Fatalf("Expected 2 cookies, got %d", len(receivedCookies))
+	}
+	found1, found2 := false, false
+	for _, c := range receivedCookies {
+		if c == "cookie1=value1" {
+			found1 = true
+		}
+		if c == "cookie2=value2" {
+			found2 = true
+		}
+	}
+	if !found1 || !found2 {
+		t.Errorf("Missing cookies: cookie1=%v cookie2=%v, received=%v", found1, found2, receivedCookies)
+	}
 }

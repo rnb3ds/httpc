@@ -29,6 +29,9 @@ func main() {
 	// Example 5: Disable retries
 	demonstrateNoRetry()
 
+	// Example 6: Custom retry policy
+	demonstrateCustomRetryPolicy()
+
 	fmt.Println("\n=== All Examples Completed ===")
 }
 
@@ -167,4 +170,40 @@ func demonstrateNoRetry() {
 	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Printf("Attempts: %d (no retries)\n", resp.Meta.Attempts)
 	fmt.Printf("Duration: %v\n\n", resp.Meta.Duration)
+}
+
+// demonstrateCustomRetryPolicy shows retry configuration tuning
+func demonstrateCustomRetryPolicy() {
+	fmt.Println("--- Example 6: Custom Retry Configuration ---")
+
+	// Fine-tune retry behavior via config fields
+	config := httpc.DefaultConfig()
+	config.Retry.MaxRetries = 5
+	config.Retry.Delay = 200 * time.Millisecond
+	config.Retry.BackoffFactor = 2.0
+	config.Retry.EnableJitter = true
+
+	client, err := httpc.New(config)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer client.Close()
+
+	resp, err := client.Get("https://echo.hoppscotch.io",
+		httpc.WithTimeout(15*time.Second),
+	)
+	if err != nil {
+		log.Printf("Error: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Status: %d\n", resp.StatusCode())
+	fmt.Printf("Attempts: %d\n", resp.Meta.Attempts)
+	fmt.Printf("Duration: %v\n\n", resp.Meta.Duration)
+
+	fmt.Println("Custom retry settings:")
+	fmt.Println("  - MaxRetries: 5")
+	fmt.Println("  - Base delay: 200ms")
+	fmt.Println("  - Backoff factor: 2.0 (200ms, 400ms, 800ms, 1.6s, 3.2s)")
+	fmt.Println("  - Jitter enabled: prevents retry storms")
 }

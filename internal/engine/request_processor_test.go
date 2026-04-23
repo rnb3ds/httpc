@@ -82,7 +82,7 @@ func TestRequestProcessor_Build(t *testing.T) {
 		UserAgent:       "TestClient/1.0",
 	}
 
-	processor := NewRequestProcessor(config)
+	processor := newRequestProcessor(config)
 
 	tests := []struct {
 		name     string
@@ -302,7 +302,7 @@ func TestRequestProcessor_BuildErrors(t *testing.T) {
 		ValidateHeaders: true,
 	}
 
-	processor := NewRequestProcessor(config)
+	processor := newRequestProcessor(config)
 
 	tests := []struct {
 		name        string
@@ -360,7 +360,7 @@ func TestRequestProcessor_BodySerialization(t *testing.T) {
 		ValidateHeaders: true,
 	}
 
-	processor := NewRequestProcessor(config)
+	processor := newRequestProcessor(config)
 
 	tests := []struct {
 		name         string
@@ -470,7 +470,7 @@ func TestRequestProcessor_HeaderHandling(t *testing.T) {
 		},
 	}
 
-	processor := NewRequestProcessor(config)
+	processor := newRequestProcessor(config)
 
 	request := testRequestBuilder().
 		Method("GET").
@@ -515,7 +515,7 @@ func TestRequestProcessor_QueryParameterHandling(t *testing.T) {
 		ValidateHeaders: true,
 	}
 
-	processor := NewRequestProcessor(config)
+	processor := newRequestProcessor(config)
 
 	tests := []struct {
 		name        string
@@ -604,7 +604,7 @@ func TestRequestProcessor_EdgeCases(t *testing.T) {
 		MaxResponseBodySize: 50 * 1024 * 1024,
 	}
 
-	processor := NewRequestProcessor(config)
+	processor := newRequestProcessor(config)
 
 	t.Run("Very long URL", func(t *testing.T) {
 		longPath := strings.Repeat("a", 2000)

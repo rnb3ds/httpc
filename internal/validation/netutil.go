@@ -33,7 +33,8 @@ func IsPrivateOrReservedIP(ip net.IP) bool {
 			(ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 2) || // Documentation TEST-NET-1 (192.0.2.0/24)
 			(ip4[0] == 192 && ip4[1] == 88 && ip4[2] == 99) || // 6to4 Relay Anycast (192.88.99.0/24)
 			(ip4[0] == 198 && ip4[1] == 51 && ip4[2] == 100) || // Documentation TEST-NET-2 (198.51.100.0/24)
-			(ip4[0] == 203 && ip4[1] == 0 && ip4[2] == 113) { // Documentation TEST-NET-3 (203.0.113.0/24)
+			(ip4[0] == 203 && ip4[1] == 0 && ip4[2] == 113) || // Documentation TEST-NET-3 (203.0.113.0/24)
+			(ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127) { // CGNAT Shared (100.64.0.0/10) RFC 6598
 			return true
 		}
 		return false

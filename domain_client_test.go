@@ -44,6 +44,11 @@ func TestNewDomain(t *testing.T) {
 			baseURL: "ht!tp://invalid",
 			wantErr: true,
 		},
+		{
+			name:    "trailing slash",
+			baseURL: "https://api.example.com/",
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {

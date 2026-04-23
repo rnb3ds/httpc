@@ -66,19 +66,19 @@ func DefaultAuditMiddlewareConfig() *AuditMiddlewareConfig {
 	return &AuditMiddlewareConfig{
 		Format:         "text",
 		IncludeHeaders: false,
-		MaskHeaders:    []string{"Authorization", "Cookie", "Set-Cookie", "X-API-Key"},
+		MaskHeaders:    sensitiveHeaderNames(),
 		SanitizeError:  true,
 	}
 }
 
-// AuditContextKey is the type for context keys used in audit middleware.
-type AuditContextKey string
+// auditContextKey is the type for context keys used in audit middleware.
+type auditContextKey string
 
 const (
 	// SourceIPKey is the context key for source IP address in audit events.
-	SourceIPKey AuditContextKey = "source_ip"
+	SourceIPKey auditContextKey = "source_ip"
 	// UserIDKey is the context key for user identifier in audit events.
-	UserIDKey AuditContextKey = "user_id"
+	UserIDKey auditContextKey = "user_id"
 )
 
 // Chain combines multiple middlewares into a single middleware.
@@ -194,8 +194,14 @@ func TimeoutMiddleware(timeout time.Duration) MiddlewareFunc {
 // Existing headers with the same keys will be overwritten.
 // Headers are validated for security (CRLF injection prevention) before being set.
 func HeaderMiddleware(headers map[string]string) MiddlewareFunc {
-	// Pre-validate all headers at middleware creation time
+	// Defensive copy to prevent concurrent mutation by caller
+	copied := make(map[string]string, len(headers))
 	for key, value := range headers {
+		copied[key] = value
+	}
+
+	// Pre-validate all headers at middleware creation time
+	for key, value := range copied {
 		if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
 			// Return a middleware that always returns the validation error
 			return func(next Handler) Handler {
@@ -208,7 +214,7 @@ func HeaderMiddleware(headers map[string]string) MiddlewareFunc {
 
 	return func(next Handler) Handler {
 		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
-			for key, value := range headers {
+			for key, value := range copied {
 				req.SetHeader(key, value)
 			}
 

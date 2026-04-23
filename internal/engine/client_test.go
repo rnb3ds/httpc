@@ -73,12 +73,17 @@ func TestNewClient_InvalidConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client, err := NewClient(tt.config)
-			// Should handle gracefully or return error
 			if client != nil {
-				_ = client.Close()
+				defer func() { _ = client.Close() }()
 			}
-			// We don't expect specific error behavior, just that it doesn't panic
-			_ = err
+			if tt.config == nil {
+				if err == nil {
+					t.Error("expected error for nil config")
+				}
+				if client != nil {
+					t.Error("expected nil client for nil config")
+				}
+			}
 		})
 	}
 }

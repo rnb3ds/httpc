@@ -70,22 +70,22 @@ func demonstrateSecureConfig() {
 	}
 	defer client.Close()
 
-	// Note: If you're in a network environment that uses RFC 2544 benchmark testing
-	// network (198.18.0.0/15) or other reserved IP ranges, the SSRF protection in
-	// SecureConfig will block connections. In such cases, use DefaultConfig() or
-	// create a custom config with AllowPrivateIPs: true.
+	// Note: If you're in a network environment that uses VPN (e.g., Tailscale with
+	// 100.64.0.0/10) or other reserved IP ranges, the SSRF protection in SecureConfig
+	// will block connections. In such cases, configure SSRFExemptCIDRs or use
+	// AllowPrivateIPs: true.
 	//
 	// Example of custom config for such environments:
 	// config := httpc.SecureConfig()
-	// config.Security.AllowPrivateIPs = true
+	// config.Security.SSRFExemptCIDRs = []string{"100.64.0.0/10"} // Exempt Tailscale
 	// client, _ := httpc.New(config)
 
 	resp, err := client.Get("https://httpbin.org/get")
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		fmt.Println("\nNote: This error may occur if you're in a network environment")
-		fmt.Println("that uses reserved IP ranges (e.g., RFC 2544 benchmark network).")
-		fmt.Println("For such environments, consider using DefaultConfig() or setting")
+		fmt.Println("that uses reserved IP ranges (e.g., VPN networks using CGNAT).")
+		fmt.Println("For such environments, configure SSRFExemptCIDRs or set")
 		fmt.Println("AllowPrivateIPs: true in your configuration.\n ")
 		return
 	}
@@ -218,14 +218,14 @@ func demonstrateConfigComparison() {
 	fmt.Println("  High connection limits, optimized pooling")
 	fmt.Println("  Use case: Web scraping, bulk operations\n ")
 
-	// Scenario 7: Special network environments (e.g., RFC 2544 benchmark testing)
+	// Scenario 7: Special network environments (e.g., VPN with CGNAT addresses)
 	fmt.Println("Scenario 7: Special Network Environments")
-	fmt.Println("For networks using reserved IP ranges (e.g., 198.18.0.0/15):")
+	fmt.Println("For networks using reserved IP ranges (e.g., Tailscale 100.64.0.0/10):")
 	specialConfig := httpc.SecureConfig()
-	specialConfig.Security.AllowPrivateIPs = true // Enable for private/reserved networks
+	specialConfig.Security.SSRFExemptCIDRs = []string{"100.64.0.0/10"} // Exempt specific VPN range
 	fmt.Println("  Start with SecureConfig()")
-	fmt.Println("  Set AllowPrivateIPs: true")
-	fmt.Println("  Use case: Corporate intranets, testing environments, VPN networks\n ")
+	fmt.Println("  Set SSRFExemptCIDRs for specific ranges, or AllowPrivateIPs: true for all")
+	fmt.Println("  Use case: Corporate intranets, Tailscale, VPN networks\n ")
 
 	// Scenario 8: Minimal configuration
 	fmt.Println("Scenario 8: Minimal Configuration")

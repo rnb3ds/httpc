@@ -118,7 +118,7 @@ func ValidateCookieSecurity(cookie *http.Cookie, config *CookieSecurityConfig) e
 
 	// Check SameSite requirement
 	if config.RequireSameSite != "" {
-		if err := validateSameSite(cookie, config.RequireSameSite, false); err != nil {
+		if err := validateSameSite(cookie, config.RequireSameSite, config.AllowSameSiteNone); err != nil {
 			errors = append(errors, err.Error())
 		}
 	}

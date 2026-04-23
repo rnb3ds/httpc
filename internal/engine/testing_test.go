@@ -12,11 +12,11 @@ import (
 // MOCK TRANSPORT TESTS
 // ============================================================================
 
-func TestNewMockTransport(t *testing.T) {
-	mock := NewMockTransport(http.StatusOK, "test body")
+func TestMockTransport_New(t *testing.T) {
+	mock := newMockTransport(http.StatusOK, "test body")
 
 	if mock == nil {
-		t.Fatal("Expected non-nil MockTransport")
+		t.Fatal("expected non-nil mockTransport")
 	}
 	if mock.Response == nil {
 		t.Fatal("Expected non-nil Response")
@@ -28,7 +28,7 @@ func TestNewMockTransport(t *testing.T) {
 
 func TestMockTransport_RoundTrip(t *testing.T) {
 	t.Run("Success", func(t *testing.T) {
-		mock := NewMockTransport(http.StatusOK, "success")
+		mock := newMockTransport(http.StatusOK, "success")
 		req, _ := http.NewRequest("GET", "http://example.com", nil)
 
 		resp, err := mock.RoundTrip(req)
@@ -47,7 +47,7 @@ func TestMockTransport_RoundTrip(t *testing.T) {
 	})
 
 	t.Run("Error", func(t *testing.T) {
-		mock := NewMockTransport(http.StatusOK, "")
+		mock := newMockTransport(http.StatusOK, "")
 		expectedErr := errors.New("network error")
 		mock.SetError(expectedErr)
 
@@ -63,7 +63,7 @@ func TestMockTransport_RoundTrip(t *testing.T) {
 	})
 
 	t.Run("MultipleCalls", func(t *testing.T) {
-		mock := NewMockTransport(http.StatusOK, "")
+		mock := newMockTransport(http.StatusOK, "")
 
 		for i := 0; i < 5; i++ {
 			req, _ := http.NewRequest("GET", "http://example.com", nil)
@@ -80,7 +80,7 @@ func TestMockTransport_RoundTrip(t *testing.T) {
 }
 
 func TestMockTransport_SetRedirectPolicy(t *testing.T) {
-	mock := NewMockTransport(http.StatusOK, "")
+	mock := newMockTransport(http.StatusOK, "")
 	ctx := context.Background()
 
 	// Should return context unchanged
@@ -93,7 +93,7 @@ func TestMockTransport_SetRedirectPolicy(t *testing.T) {
 
 func TestMockTransport_GetRedirectChain(t *testing.T) {
 	t.Run("Empty", func(t *testing.T) {
-		mock := NewMockTransport(http.StatusOK, "")
+		mock := newMockTransport(http.StatusOK, "")
 		chain := mock.GetRedirectChain(context.Background())
 
 		if len(chain) != 0 {
@@ -102,7 +102,7 @@ func TestMockTransport_GetRedirectChain(t *testing.T) {
 	})
 
 	t.Run("WithRedirects", func(t *testing.T) {
-		mock := NewMockTransport(http.StatusOK, "")
+		mock := newMockTransport(http.StatusOK, "")
 		mock.RedirectChain = []string{"http://a.com", "http://b.com", "http://c.com"}
 
 		chain := mock.GetRedirectChain(context.Background())
@@ -113,7 +113,7 @@ func TestMockTransport_GetRedirectChain(t *testing.T) {
 }
 
 func TestMockTransport_Close(t *testing.T) {
-	mock := NewMockTransport(http.StatusOK, "")
+	mock := newMockTransport(http.StatusOK, "")
 
 	err := mock.Close()
 	if err != nil {
@@ -122,7 +122,7 @@ func TestMockTransport_Close(t *testing.T) {
 }
 
 func TestMockTransport_SetResponse(t *testing.T) {
-	mock := NewMockTransport(http.StatusOK, "initial")
+	mock := newMockTransport(http.StatusOK, "initial")
 
 	// Change response
 	mock.SetResponse(http.StatusNotFound, "not found")
@@ -133,7 +133,7 @@ func TestMockTransport_SetResponse(t *testing.T) {
 }
 
 func TestMockTransport_SetError(t *testing.T) {
-	mock := NewMockTransport(http.StatusOK, "")
+	mock := newMockTransport(http.StatusOK, "")
 
 	expectedErr := errors.New("test error")
 	mock.SetError(expectedErr)
@@ -147,7 +147,7 @@ func TestMockTransport_SetError(t *testing.T) {
 }
 
 func TestMockTransport_GetCallCount(t *testing.T) {
-	mock := NewMockTransport(http.StatusOK, "")
+	mock := newMockTransport(http.StatusOK, "")
 
 	// Initial count
 	if mock.GetCallCount() != 0 {
@@ -167,7 +167,7 @@ func TestMockTransport_GetCallCount(t *testing.T) {
 
 func TestMockTransport_GetLastRequest(t *testing.T) {
 	t.Run("NoRequests", func(t *testing.T) {
-		mock := NewMockTransport(http.StatusOK, "")
+		mock := newMockTransport(http.StatusOK, "")
 		req := mock.GetLastRequest()
 
 		if req != nil {
@@ -176,7 +176,7 @@ func TestMockTransport_GetLastRequest(t *testing.T) {
 	})
 
 	t.Run("WithRequests", func(t *testing.T) {
-		mock := NewMockTransport(http.StatusOK, "")
+		mock := newMockTransport(http.StatusOK, "")
 
 		urls := []string{"http://a.com", "http://b.com", "http://c.com"}
 		for _, url := range urls {
@@ -195,7 +195,7 @@ func TestMockTransport_GetLastRequest(t *testing.T) {
 }
 
 func TestMockTransport_Reset(t *testing.T) {
-	mock := NewMockTransport(http.StatusOK, "")
+	mock := newMockTransport(http.StatusOK, "")
 
 	// Make some calls and set error
 	req, _ := http.NewRequest("GET", "http://example.com", nil)
@@ -220,7 +220,7 @@ func TestMockTransport_Reset(t *testing.T) {
 }
 
 func TestMockTransport_ConcurrentAccess(t *testing.T) {
-	mock := NewMockTransport(http.StatusOK, "")
+	mock := newMockTransport(http.StatusOK, "")
 
 	// Concurrent reads and writes
 	done := make(chan bool)

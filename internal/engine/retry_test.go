@@ -13,14 +13,14 @@ import (
 // RETRY ENGINE UNIT TESTS
 // ============================================================================
 
-func TestNewRetryEngine(t *testing.T) {
+func TestRetryEngine_New(t *testing.T) {
 	config := &Config{
 		MaxRetries:    3,
 		RetryDelay:    100 * time.Millisecond,
 		BackoffFactor: 2.0,
 	}
 
-	engine := NewRetryEngine(config)
+	engine := newRetryEngine(config)
 
 	if engine == nil {
 		t.Fatal("Expected non-nil retry engine")
@@ -36,7 +36,7 @@ func TestRetryEngine_MaxRetries(t *testing.T) {
 		MaxRetries: 5,
 	}
 
-	engine := NewRetryEngine(config)
+	engine := newRetryEngine(config)
 
 	if engine.MaxRetries() != 5 {
 		t.Errorf("Expected MaxRetries 5, got %d", engine.MaxRetries())
@@ -48,7 +48,7 @@ func TestRetryEngine_ShouldRetry_MaxAttemptsExceeded(t *testing.T) {
 		MaxRetries: 3,
 	}
 
-	engine := NewRetryEngine(config)
+	engine := newRetryEngine(config)
 
 	// Attempt 3 (0-indexed, so this is the 4th attempt)
 	shouldRetry := engine.ShouldRetry(nil, errors.New("network error"), 3)
@@ -63,7 +63,7 @@ func TestRetryEngine_ShouldRetry_NetworkErrors(t *testing.T) {
 		MaxRetries: 3,
 	}
 
-	engine := NewRetryEngine(config)
+	engine := newRetryEngine(config)
 
 	tests := []struct {
 		name     string
@@ -129,7 +129,7 @@ func TestRetryEngine_ShouldRetry_StatusCodes(t *testing.T) {
 		MaxRetries: 3,
 	}
 
-	engine := NewRetryEngine(config)
+	engine := newRetryEngine(config)
 
 	tests := []struct {
 		name       string
@@ -203,7 +203,7 @@ func TestRetryEngine_GetDelay_ExponentialBackoff(t *testing.T) {
 		Jitter:        false, // Disable jitter for predictable testing
 	}
 
-	engine := NewRetryEngine(config)
+	engine := newRetryEngine(config)
 
 	tests := []struct {
 		attempt     int
@@ -251,7 +251,7 @@ func TestRetryEngine_GetDelay_WithJitter(t *testing.T) {
 		Jitter:        true,
 	}
 
-	engine := NewRetryEngine(config)
+	engine := newRetryEngine(config)
 
 	// With jitter, delays should vary
 	delays := make([]time.Duration, 10)
@@ -294,7 +294,7 @@ func TestRetryEngine_GetDelay_MaxRetryDelay(t *testing.T) {
 		Jitter:        false,
 	}
 
-	engine := NewRetryEngine(config)
+	engine := newRetryEngine(config)
 
 	// Attempt 3 would normally be 800ms, but should be capped at 500ms
 	delay := engine.GetDelay(3)
@@ -316,7 +316,7 @@ func TestRetryEngine_GetDelay_DefaultValues(t *testing.T) {
 			Jitter:        false,
 		}
 
-		engine := NewRetryEngine(config)
+		engine := newRetryEngine(config)
 		delay := engine.GetDelay(0)
 
 		// Should use default 1 second
@@ -332,7 +332,7 @@ func TestRetryEngine_GetDelay_DefaultValues(t *testing.T) {
 			Jitter:        false,
 		}
 
-		engine := NewRetryEngine(config)
+		engine := newRetryEngine(config)
 		delay := engine.GetDelay(1)
 
 		// Should use default backoff factor of 2.0
@@ -348,7 +348,7 @@ func TestRetryEngine_IsRetryableError(t *testing.T) {
 		MaxRetries: 3,
 	}
 
-	engine := NewRetryEngine(config)
+	engine := newRetryEngine(config)
 
 	tests := []struct {
 		name     string
@@ -433,7 +433,7 @@ func TestRetryEngine_IsRetryableError(t *testing.T) {
 
 func TestRetryEngine_GetJitter(t *testing.T) {
 	config := &Config{}
-	engine := NewRetryEngine(config)
+	engine := newRetryEngine(config)
 
 	maxJitter := 100 * time.Millisecond
 
@@ -453,7 +453,7 @@ func TestRetryEngine_GetJitter(t *testing.T) {
 
 func TestRetryEngine_GetJitter_ZeroMax(t *testing.T) {
 	config := &Config{}
-	engine := NewRetryEngine(config)
+	engine := newRetryEngine(config)
 
 	jitter := engine.getJitter(0)
 
@@ -629,7 +629,7 @@ func TestRetryEngine_GetDelayWithResponse(t *testing.T) {
 		Jitter:        false,
 	}
 
-	engine := NewRetryEngine(config)
+	engine := newRetryEngine(config)
 
 	t.Run("Uses Retry-After header when present", func(t *testing.T) {
 		resp := &Response{}

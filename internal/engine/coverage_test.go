@@ -576,14 +576,14 @@ func TestReleaseResponse(t *testing.T) {
 	})
 }
 
-// TestClearResponsePools validates that ClearResponsePools does not panic.
+// TestClearResponsePools validates that clearResponsePools does not panic.
 func TestClearResponsePools(t *testing.T) {
-	ClearResponsePools()
+	clearResponsePools()
 
 	// Verify pools still work after clearing
 	buf := getBuffer()
 	if buf == nil {
-		t.Error("getBuffer returned nil after ClearResponsePools")
+		t.Error("getBuffer returned nil after clearResponsePools")
 	}
 	putBuffer(buf)
 }
@@ -761,7 +761,7 @@ func TestPooledBytesReader(t *testing.T) {
 // TestBuild_NilBody validates that nil body is handled without error.
 func TestBuild_NilBody(t *testing.T) {
 	config := &Config{Timeout: 30 * time.Second}
-	processor := NewRequestProcessor(config)
+	processor := newRequestProcessor(config)
 
 	req := testRequestBuilder().
 		Method("GET").
@@ -781,7 +781,7 @@ func TestBuild_NilBody(t *testing.T) {
 // TestBuild_IOReaderBody validates that io.Reader body passes through directly.
 func TestBuild_IOReaderBody(t *testing.T) {
 	config := &Config{Timeout: 30 * time.Second}
-	processor := NewRequestProcessor(config)
+	processor := newRequestProcessor(config)
 
 	req := testRequestBuilder().
 		Method("POST").
@@ -803,7 +803,7 @@ func TestBuild_IOReaderBody(t *testing.T) {
 // TestBuild_XMLBody validates XML body serialization.
 func TestBuild_XMLBody(t *testing.T) {
 	config := &Config{Timeout: 30 * time.Second}
-	processor := NewRequestProcessor(config)
+	processor := newRequestProcessor(config)
 
 	type xmlRequest struct {
 		XMLName struct{} `xml:"request"`
@@ -894,7 +894,7 @@ func TestPooledLimitReader(t *testing.T) {
 // TestResponseProcessor_NilResponse validates nil response handling.
 func TestResponseProcessor_NilResponse(t *testing.T) {
 	config := &Config{Timeout: 30 * time.Second}
-	processor := NewResponseProcessor(config)
+	processor := newResponseProcessor(config)
 
 	_, err := processor.Process(nil)
 	if err == nil {
@@ -909,7 +909,7 @@ func TestResponseProcessor_NilResponse(t *testing.T) {
 // TestBuild_MultipartFormData validates multipart form data with fields and files.
 func TestBuild_MultipartFormData(t *testing.T) {
 	config := &Config{Timeout: 30 * time.Second}
-	processor := NewRequestProcessor(config)
+	processor := newRequestProcessor(config)
 
 	t.Run("Fields only", func(t *testing.T) {
 		formData := formDataHelper(map[string]string{"username": "john"}, nil)
@@ -1079,7 +1079,7 @@ func TestURLCache_Get(t *testing.T) {
 // TestCreateDecompressor validates decompressor creation for various encodings.
 func TestCreateDecompressor(t *testing.T) {
 	config := &Config{Timeout: 30 * time.Second}
-	processor := NewResponseProcessor(config)
+	processor := newResponseProcessor(config)
 
 	tests := []struct {
 		name        string
@@ -1146,9 +1146,9 @@ func TestResponseDecompression(t *testing.T) {
 // CLEAR POOLS TEST
 // ============================================================================
 
-// TestClearPools validates that ClearPools does not panic.
+// TestClearPools validates that clearPools does not panic.
 func TestClearPools(t *testing.T) {
-	ClearPools()
+	clearPools()
 }
 
 // ============================================================================
@@ -1163,15 +1163,15 @@ func TestIsRetryableSyscallError(t *testing.T) {
 		expected bool
 	}{
 		// We can't easily create syscall.Errno values portably,
-		// so test the ClassifyError path that triggers it
+		// so test the classifyError path that triggers it
 		{"Always false for non-syscall", nil, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Just exercise the path through ClassifyError
+			// Just exercise the path through classifyError
 			err := fmt.Errorf("connection refused by peer")
-			result := ClassifyError(err, "https://example.com", "GET", 1)
+			result := classifyError(err, "https://example.com", "GET", 1)
 			if result == nil {
 				t.Error("Expected non-nil result")
 			}
@@ -1556,7 +1556,7 @@ func TestClient_ZeroTimeout(t *testing.T) {
 // TestBuild_MultipartSpecialChars validates multipart with filenames needing escaping.
 func TestBuild_MultipartSpecialChars(t *testing.T) {
 	config := &Config{Timeout: 30 * time.Second}
-	processor := NewRequestProcessor(config)
+	processor := newRequestProcessor(config)
 
 	files := map[string]*fileDataHelper{
 		"file": {Filename: `test "file".txt`, Content: []byte("data"), ContentType: "text/plain"},
@@ -1928,7 +1928,7 @@ func TestClient_RequestTimeoutOverride(t *testing.T) {
 // TestCreateDecompressor_GzipAndDeflate validates gzip and deflate decompressor creation.
 func TestCreateDecompressor_GzipAndDeflate(t *testing.T) {
 	config := &Config{Timeout: 30 * time.Second}
-	processor := NewResponseProcessor(config)
+	processor := newResponseProcessor(config)
 
 	t.Run("Gzip decompression", func(t *testing.T) {
 		var buf bytes.Buffer
@@ -2375,7 +2375,7 @@ func TestClient_SSRSRedirectBlocked(t *testing.T) {
 // TestClient_MockTransportRetry validates retry behavior with mock transport.
 func TestClient_MockTransportRetry(t *testing.T) {
 	t.Run("Error then success", func(t *testing.T) {
-		mock := NewMockTransport(200, "OK")
+		mock := newMockTransport(200, "OK")
 		config := &Config{
 			Timeout:         30 * time.Second,
 			AllowPrivateIPs: true,
@@ -2414,7 +2414,7 @@ func TestClient_MockTransportRetry(t *testing.T) {
 	})
 
 	t.Run("Non-retryable error", func(t *testing.T) {
-		mock := NewMockTransport(200, "OK")
+		mock := newMockTransport(200, "OK")
 		config := &Config{
 			Timeout:         30 * time.Second,
 			AllowPrivateIPs: true,
@@ -2443,7 +2443,7 @@ func TestClient_MockTransportRetry(t *testing.T) {
 	})
 
 	t.Run("Success without retries", func(t *testing.T) {
-		mock := NewMockTransport(200, "success")
+		mock := newMockTransport(200, "success")
 		config := &Config{
 			Timeout:         30 * time.Second,
 			AllowPrivateIPs: true,

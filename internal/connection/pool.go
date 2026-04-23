@@ -84,6 +84,9 @@ type Config struct {
 	certPinner certPinner
 }
 
+// SetCertPinner sets the certificate pinner for TLS certificate verification.
+func (c *Config) SetCertPinner(p certPinner) { c.certPinner = p }
+
 // hostStats tracks per-host connection statistics
 type hostStats struct {
 	Host           string
@@ -200,6 +203,11 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 	}
 
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		// Enforce total connection limit
+		if pm.config.MaxTotalConns > 0 && atomic.LoadInt64(&pm.totalConns) >= int64(pm.config.MaxTotalConns) {
+			atomic.AddInt64(&pm.rejectedConns, 1)
+			return nil, fmt.Errorf("connection pool exhausted (max %d)", pm.config.MaxTotalConns)
+		}
 		startTime := time.Now()
 
 		// If DoH is enabled, resolve the address using DoH and dial the IP directly
@@ -280,8 +288,8 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 
 		return &trackedConn{
 			Conn:  conn,
-			pm:   pm,
-			host: address,
+			pm:    pm,
+			host:  address,
 			stats: stats,
 		}, nil
 	}
@@ -495,5 +503,12 @@ func (pm *PoolManager) Close() error {
 	if pm.transport != nil {
 		pm.transport.CloseIdleConnections()
 	}
+
+	// Clean up per-host connection tracking map to prevent memory leak
+	pm.hostConns.Range(func(key, _ interface{}) bool {
+		pm.hostConns.Delete(key)
+		return true
+	})
+
 	return nil
 }

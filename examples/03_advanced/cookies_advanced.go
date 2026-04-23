@@ -260,7 +260,7 @@ func demonstrateAdvancedScenarios() {
 
 	// Scenario 4: Secure cookie with validation
 	resp, err = client.Get("https://httpbin.org/cookies",
-		httpc.WithSecureCookie(nil),
+		httpc.WithSecureCookie(httpc.DefaultCookieSecurityConfig()),
 		httpc.WithCookie(http.Cookie{
 			Name:     "secure_session",
 			Value:    "encrypted_value",

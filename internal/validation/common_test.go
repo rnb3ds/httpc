@@ -568,9 +568,9 @@ func TestIsValidHeaderChar(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(string(tt.char), func(t *testing.T) {
-			result := IsValidHeaderChar(tt.char)
+			result := isValidHeaderChar(tt.char)
 			if result != tt.valid {
-				t.Errorf("IsValidHeaderChar(%q) = %v, want %v", tt.char, result, tt.valid)
+				t.Errorf("isValidHeaderChar(%q) = %v, want %v", tt.char, result, tt.valid)
 			}
 		})
 	}
@@ -820,18 +820,18 @@ func TestValidateCredentialStrict(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateCredentialStrict(tt.cred, tt.maxLen, tt.checkColon, tt.credType)
+			err := validateCredentialStrict(tt.cred, tt.maxLen, tt.checkColon, tt.credType)
 			if tt.wantErr {
 				if err == nil {
-					t.Errorf("ValidateCredentialStrict() expected error, got nil")
+					t.Errorf("validateCredentialStrict() expected error, got nil")
 					return
 				}
 				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
-					t.Errorf("ValidateCredentialStrict() error = %v, want to contain %v", err, tt.errContains)
+					t.Errorf("validateCredentialStrict() error = %v, want to contain %v", err, tt.errContains)
 				}
 			} else {
 				if err != nil {
-					t.Errorf("ValidateCredentialStrict() unexpected error = %v", err)
+					t.Errorf("validateCredentialStrict() unexpected error = %v", err)
 				}
 			}
 		})
@@ -869,9 +869,9 @@ func TestIsValidHeaderChar_Boundaries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := IsValidHeaderChar(tt.char)
+			got := isValidHeaderChar(tt.char)
 			if got != tt.want {
-				t.Errorf("IsValidHeaderChar(%d/%q) = %v, want %v", tt.char, tt.char, got, tt.want)
+				t.Errorf("isValidHeaderChar(%d/%q) = %v, want %v", tt.char, tt.char, got, tt.want)
 			}
 		})
 	}
@@ -1023,18 +1023,18 @@ func TestValidateTokenStrict(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateTokenStrict(tt.token)
+			err := validateTokenStrict(tt.token)
 			if tt.wantErr {
 				if err == nil {
-					t.Errorf("ValidateTokenStrict() expected error, got nil")
+					t.Errorf("validateTokenStrict() expected error, got nil")
 					return
 				}
 				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
-					t.Errorf("ValidateTokenStrict() error = %v, want to contain %v", err, tt.errContains)
+					t.Errorf("validateTokenStrict() error = %v, want to contain %v", err, tt.errContains)
 				}
 			} else {
 				if err != nil {
-					t.Errorf("ValidateTokenStrict() unexpected error = %v", err)
+					t.Errorf("validateTokenStrict() unexpected error = %v", err)
 				}
 			}
 		})

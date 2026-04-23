@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -33,6 +34,9 @@ func main() {
 
 	// File Download Examples
 	demonstrateFileDownload(client)
+
+	// Context-aware download
+	demonstrateContextDownload(client)
 
 	fmt.Println("\n=== All Examples Completed ===")
 }
@@ -221,4 +225,40 @@ func demonstrateFileDownload(client httpc.Client) {
 			fmt.Printf("✓ Complete download: %s (no resume needed)\n", result.FilePath)
 		}
 	}
+}
+
+// demonstrateContextDownload shows context-aware download with cancellation
+func demonstrateContextDownload(client httpc.Client) {
+	fmt.Println("--- Context-Aware Download ---")
+
+	// Download with a context that has a timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	opts := &httpc.DownloadConfig{
+		FilePath:  "downloads/context-download.txt",
+		Overwrite: true,
+	}
+
+	result, err := client.DownloadWithOptionsWithContext(ctx,
+		"https://httpbin.org/get",
+		opts,
+		httpc.WithBearerToken("test-token"),
+	)
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			log.Printf("Download timed out: %v\n", err)
+		} else {
+			log.Printf("Download error: %v\n", err)
+		}
+		return
+	}
+
+	fmt.Printf("✓ Downloaded: %s (%s)\n",
+		result.FilePath,
+		httpc.FormatBytes(result.BytesWritten))
+	fmt.Println("\nUse WithContext variants for:")
+	fmt.Println("  - Download timeouts independent of client config")
+	fmt.Println("  - User-initiated cancellation")
+	fmt.Println("  - Graceful shutdown in services")
 }

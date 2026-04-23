@@ -5,10 +5,10 @@ import (
 	"strings"
 )
 
-// SensitiveQueryParamNames contains query parameter names whose values should be
+// sensitiveQueryParamNames contains query parameter names whose values should be
 // redacted when sanitizing URLs for logging and error messages.
 // Shared across packages to avoid duplicate definitions.
-var SensitiveQueryParamNames = map[string]bool{
+var sensitiveQueryParamNames = map[string]bool{
 	// OAuth and authentication tokens
 	"token": true, "access_token": true, "refresh_token": true,
 	"id_token": true, "idtoken": true, "bearer": true,
@@ -23,14 +23,12 @@ var SensitiveQueryParamNames = map[string]bool{
 	"session_id": true, "sessionid": true,
 	// JWT and signatures
 	"jwt": true, "signature": true, "sign": true, "sig": true,
-	// OAuth authorization codes
-	"code": true,
 }
 
 // IsSensitiveQueryParam reports whether the given query parameter name is
 // considered sensitive and should be redacted from logs and cache keys.
 func IsSensitiveQueryParam(name string) bool {
-	return SensitiveQueryParamNames[strings.ToLower(name)]
+	return sensitiveQueryParamNames[strings.ToLower(name)]
 }
 
 // SanitizeURL removes credentials and redacts sensitive query parameters from a URL
@@ -55,6 +53,17 @@ func SanitizeURL(urlStr string) string {
 		return ""
 	}
 
+	// Fast path: skip parsing if URL has no credentials, query params, fragments,
+	// or characters that would be escaped by url.Parse (spaces).
+	// Most real URLs pass this check and avoid the expensive url.Parse call.
+	hasAt := strings.Contains(urlStr, "@")
+	hasQuery := strings.Contains(urlStr, "?")
+	hasFragment := strings.Contains(urlStr, "#")
+	hasSpace := strings.Contains(urlStr, " ")
+	if !hasAt && !hasQuery && !hasFragment && !hasSpace {
+		return urlStr
+	}
+
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
 		return urlStr
@@ -65,7 +74,7 @@ func SanitizeURL(urlStr string) string {
 		query := parsedURL.Query()
 		redacted := false
 		for key := range query {
-			if SensitiveQueryParamNames[strings.ToLower(key)] {
+			if sensitiveQueryParamNames[strings.ToLower(key)] {
 				query.Set(key, "[REDACTED]")
 				redacted = true
 			}
@@ -75,6 +84,9 @@ func SanitizeURL(urlStr string) string {
 		}
 	}
 
+	// Clear fragment to prevent credential leakage (e.g., OAuth implicit grants)
+	parsedURL.Fragment = ""
+	parsedURL.RawFragment = ""
 	if parsedURL.User == nil {
 		return parsedURL.String()
 	}

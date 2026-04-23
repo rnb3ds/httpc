@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/cookiejar"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -20,7 +21,8 @@ const (
 	maxTimeout          = 30 * time.Minute   // 30 minutes
 	maxIdleConns        = 1000               // Connection pool limit
 	maxConnsPerHost     = 1000               // Per-host connection limit
-	maxResponseBodySize = 1024 * 1024 * 1024 // 1GB
+	maxResponseBodySize      = 1024 * 1024 * 1024 // 1GB
+	maxDecompressedBodySize = 100 * 1024 * 1024  // 100MB default for decompressed bodies
 	maxRetries          = 10                 // Maximum retry attempts
 	minBackoffFactor    = 1.0                // Minimum backoff multiplier
 	maxBackoffFactor    = 10.0               // Maximum backoff multiplier
@@ -104,6 +106,12 @@ type SecurityConfig struct {
 
 	// MaxResponseBodySize limits response body size in bytes. Default: 10MB.
 	MaxResponseBodySize int64
+
+	// MaxDecompressedBodySize limits decompressed response body size in bytes.
+	// This prevents decompression bomb (zip bomb) attacks. Default: 100MB.
+	// Only applies when MaxResponseBodySize is not explicitly set; when set,
+	// MaxResponseBodySize takes precedence as the stricter limit.
+	MaxDecompressedBodySize int64
 
 	// AllowPrivateIPs permits connections to private IP addresses.
 	// Default: false (SSRF protection enabled). Set to true only when
@@ -197,6 +205,28 @@ type RequestOption = engine.RequestOption
 // RetryPolicy defines the interface for custom retry behavior.
 // This is a type alias to types.RetryPolicy for convenience.
 type RetryPolicy = types.RetryPolicy
+
+// CookieSecurityConfig configures cookie security attribute validation.
+// Use DefaultCookieSecurityConfig() or StrictCookieSecurityConfig() to create instances.
+//
+// Example:
+//
+//	cfg := httpc.DefaultCookieSecurityConfig()
+//	cfg.RequireSecure = true
+//	config.Security.CookieSecurity = cfg
+type CookieSecurityConfig = validation.CookieSecurityConfig
+
+// DefaultCookieSecurityConfig returns a CookieSecurityConfig with default settings.
+// By default, no security attributes are required.
+func DefaultCookieSecurityConfig() *CookieSecurityConfig {
+	return validation.DefaultCookieSecurityConfig()
+}
+
+// StrictCookieSecurityConfig returns a CookieSecurityConfig with strict security settings.
+// Requires Secure, HttpOnly, and SameSite=Strict attributes.
+func StrictCookieSecurityConfig() *CookieSecurityConfig {
+	return validation.StrictCookieSecurityConfig()
+}
 
 // FormData represents multipart form data for HTTP requests.
 // This is a type alias to types.FormData for backward compatibility.
@@ -308,15 +338,16 @@ func DefaultConfig() *Config {
 			DoHCacheTTL:       5 * time.Minute,
 		},
 		Security: SecurityConfig{
-			TLSConfig:           nil,
-			MinTLSVersion:       tls.VersionTLS12,
-			MaxTLSVersion:       tls.VersionTLS13,
-			InsecureSkipVerify:  false,
-			MaxResponseBodySize: 10 * 1024 * 1024, // 10MB
-			AllowPrivateIPs:     false,
-			ValidateURL:         true,
-			ValidateHeaders:     true,
-			StrictContentLength: true,
+			TLSConfig:              nil,
+			MinTLSVersion:          tls.VersionTLS12,
+			MaxTLSVersion:          tls.VersionTLS13,
+			InsecureSkipVerify:     false,
+			MaxResponseBodySize:    10 * 1024 * 1024,          // 10MB
+			MaxDecompressedBodySize: 100 * 1024 * 1024,        // 100MB
+			AllowPrivateIPs:        false,
+			ValidateURL:            true,
+			ValidateHeaders:        true,
+			StrictContentLength:    true,
 		},
 		Retry: RetryConfig{
 			MaxRetries:    3,
@@ -368,15 +399,33 @@ func ValidateConfig(cfg *Config) error {
 
 	// Validate connection settings
 	if cfg.Connection.MaxIdleConns < 0 || cfg.Connection.MaxIdleConns > maxIdleConns {
-		return fmt.Errorf("Connection.MaxIdleConns must be 0-%d, got %d", maxIdleConns, cfg.Connection.MaxIdleConns)
+		return fmt.Errorf("%w: Connection.MaxIdleConns must be 0-%d, got %d", ErrInvalidConnection, maxIdleConns, cfg.Connection.MaxIdleConns)
 	}
 	if cfg.Connection.MaxConnsPerHost < 0 || cfg.Connection.MaxConnsPerHost > maxConnsPerHost {
-		return fmt.Errorf("Connection.MaxConnsPerHost must be 0-%d, got %d", maxConnsPerHost, cfg.Connection.MaxConnsPerHost)
+		return fmt.Errorf("%w: Connection.MaxConnsPerHost must be 0-%d, got %d", ErrInvalidConnection, maxConnsPerHost, cfg.Connection.MaxConnsPerHost)
+	}
+	if cfg.Connection.ProxyURL != "" {
+		if _, err := url.Parse(cfg.Connection.ProxyURL); err != nil {
+			return fmt.Errorf("%w: Connection.ProxyURL invalid: %w", ErrInvalidConnection, err)
+		}
+	}
+	if cfg.Connection.DoHCacheTTL < 0 {
+		return fmt.Errorf("%w: Connection.DoHCacheTTL cannot be negative, got %v", ErrInvalidConnection, cfg.Connection.DoHCacheTTL)
 	}
 
 	// Validate security settings
 	if cfg.Security.MaxResponseBodySize < 0 || cfg.Security.MaxResponseBodySize > maxResponseBodySize {
-		return fmt.Errorf("Security.MaxResponseBodySize must be 0-1GB, got %d", cfg.Security.MaxResponseBodySize)
+		return fmt.Errorf("%w: Security.MaxResponseBodySize must be 0-1GB, got %d", ErrInvalidSecurity, cfg.Security.MaxResponseBodySize)
+	}
+	if cfg.Security.MaxDecompressedBodySize < 0 || cfg.Security.MaxDecompressedBodySize > maxDecompressedBodySize {
+		return fmt.Errorf("%w: Security.MaxDecompressedBodySize must be 0-100MB, got %d", ErrInvalidSecurity, cfg.Security.MaxDecompressedBodySize)
+	}
+
+	// Validate TLS version ordering
+	if cfg.Security.MinTLSVersion != 0 && cfg.Security.MaxTLSVersion != 0 {
+		if cfg.Security.MinTLSVersion > cfg.Security.MaxTLSVersion {
+			return fmt.Errorf("Security.MinTLSVersion (%d) must not exceed MaxTLSVersion (%d)", cfg.Security.MinTLSVersion, cfg.Security.MaxTLSVersion)
+		}
 	}
 
 	// Validate SSRF exempt CIDRs
@@ -399,10 +448,10 @@ func ValidateConfig(cfg *Config) error {
 
 	// Validate middleware settings
 	if cfg.Middleware.MaxRedirects < 0 || cfg.Middleware.MaxRedirects > 50 {
-		return fmt.Errorf("Middleware.MaxRedirects must be 0-50, got %d", cfg.Middleware.MaxRedirects)
+		return fmt.Errorf("%w: Middleware.MaxRedirects must be 0-50, got %d", ErrInvalidMiddleware, cfg.Middleware.MaxRedirects)
 	}
 	if len(cfg.Middleware.UserAgent) > maxUserAgentLen || !validation.IsValidHeaderString(cfg.Middleware.UserAgent) {
-		return fmt.Errorf("Middleware.UserAgent invalid: max %d chars, no control characters", maxUserAgentLen)
+		return fmt.Errorf("%w: Middleware.UserAgent invalid: max %d chars, no control characters", ErrInvalidMiddleware, maxUserAgentLen)
 	}
 
 	for key, value := range cfg.Middleware.Headers {

@@ -139,6 +139,13 @@ examples/
 - Default client management
 - Memory optimization techniques
 
+### Session Management
+**[03_advanced/session.go](03_advanced/session.go)**
+- SessionManager creation and usage
+- Persistent headers and cookies
+- Session with DomainClient
+- Session state lifecycle
+
 ## 🏃 Running Examples
 
 ### Run a specific example:
@@ -173,6 +180,7 @@ go run -tags examples examples/03_advanced/rest_api_client.go
 go run -tags examples examples/03_advanced/middleware.go
 go run -tags examples examples/03_advanced/proxy_configuration.go
 go run -tags examples examples/03_advanced/advanced_patterns.go
+go run -tags examples examples/03_advanced/session.go
 ```
 
 > **Note**: Each example file has its own `main()` function and must be run individually.
@@ -200,6 +208,7 @@ go run -tags examples examples/03_advanced/advanced_patterns.go
 14. ✅ **03_advanced/middleware.go** - Request middleware
 15. ✅ **03_advanced/proxy_configuration.go** - Proxy setup
 16. ✅ **03_advanced/advanced_patterns.go** - Callbacks & optimization
+17. ✅ **03_advanced/session.go** - Session management
 
 ## 🔗 Additional Resources
 

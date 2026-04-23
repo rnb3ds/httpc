@@ -175,12 +175,29 @@ resp3, _ := client.Post(url3, httpc.WithJSON(data))
 
 **Why close?** Closing the client releases resources like connection pools and goroutines.
 
+### Result Pooling
+
+For high-throughput scenarios, return Result objects to the pool:
+
+```go
+result, err := client.Get(url)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Process result...
+fmt.Println(result.Body())
+
+// Return to pool for reuse (reduces GC pressure)
+httpc.ReleaseResult(result)
+```
+
 ### Request Options
 
 Customize requests with options:
 
 ```go
-resp, err := client.Get(url,
+result, err := client.Get(url,
     httpc.WithTimeout(10*time.Second),
     httpc.WithHeader("X-Custom", "value"),
     httpc.WithBearerToken("your-token"),
@@ -188,6 +205,47 @@ resp, err := client.Get(url,
 ```
 
 **See also:** [Request Options Guide](03_request-options.md) for complete reference.
+
+### Other HTTP Methods
+
+HTTPC supports all standard HTTP methods:
+
+```go
+// Through client instance
+result, err := client.Put(url, httpc.WithJSON(data))
+result, err := client.Patch(url, httpc.WithJSON(data))
+result, err := client.Delete(url)
+result, err := client.Head(url)
+result, err := client.Options(url)
+
+// Low-level Request method with full control
+result, err := client.Request(ctx, "DELETE", url,
+    httpc.WithBearerToken(token),
+)
+
+// Package-level functions (use default client)
+result, err := httpc.Put(url, httpc.WithJSON(data))
+result, err := httpc.Delete(url)
+```
+
+### File Downloads
+
+```go
+// Simple download
+result, err := client.DownloadFile("https://example.com/file.zip", "downloads/file.zip")
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("Downloaded %s\n", httpc.FormatBytes(result.BytesWritten))
+
+// Download with options
+result, err := client.DownloadFile(url, filePath,
+    httpc.WithBearerToken(token),
+    httpc.WithTimeout(5*time.Minute),
+)
+```
+
+**See also:** [File Download Guide](07_file-download.md) for progress tracking and advanced options.
 
 ### Error Handling
 

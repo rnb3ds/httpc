@@ -1,6 +1,7 @@
 package httpc
 
 import (
+	"bytes"
 	"compress/flate"
 	"compress/gzip"
 	"encoding/json"
@@ -156,6 +157,34 @@ func TestData_XML(t *testing.T) {
 		_, err := client.Post(server.URL, WithXML(data))
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
+		}
+	})
+
+	t.Run("ReceiveXML", func(t *testing.T) {
+		xmlData := `<?xml version="1.0" encoding="UTF-8"?><TestData><message>hello</message><code>200</code></TestData>`
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(xmlData))
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		resp, err := client.Get(server.URL)
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+
+		var received TestData
+		if err := xml.Unmarshal(resp.RawBody(), &received); err != nil {
+			t.Fatalf("Failed to unmarshal XML response: %v", err)
+		}
+		if received.Message != "hello" {
+			t.Errorf("Expected message=hello, got %s", received.Message)
+		}
+		if received.Code != 200 {
+			t.Errorf("Expected code=200, got %d", received.Code)
 		}
 	})
 }
@@ -332,81 +361,72 @@ func TestData_FormURLEncoded(t *testing.T) {
 // ----------------------------------------------------------------------------
 
 func TestData_Compression(t *testing.T) {
-	t.Run("GzipResponse", func(t *testing.T) {
-		content := "This is compressed content"
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Encoding", "gzip")
-			w.Header().Set("Content-Type", "text/plain")
-			w.WriteHeader(http.StatusOK)
+	tests := []struct {
+		name            string
+		contentEncoding string
+		compress        func([]byte) []byte
+		content         string
+	}{
+		{
+			name:            "GzipResponse",
+			contentEncoding: "gzip",
+			compress: func(data []byte) []byte {
+				var buf bytes.Buffer
+				gw := gzip.NewWriter(&buf)
+				_, _ = gw.Write(data)
+				_ = gw.Close()
+				return buf.Bytes()
+			},
+			content: "This is compressed content",
+		},
+		{
+			name:            "DeflateResponse",
+			contentEncoding: "deflate",
+			compress: func(data []byte) []byte {
+				var buf bytes.Buffer
+				fw, _ := flate.NewWriter(&buf, flate.DefaultCompression)
+				_, _ = fw.Write(data)
+				_ = fw.Close()
+				return buf.Bytes()
+			},
+			content: "This is deflate compressed content",
+		},
+		{
+			name:            "NoCompression",
+			contentEncoding: "",
+			compress:        nil,
+			content:         "This is uncompressed content",
+		},
+	}
 
-			// Write gzip compressed content
-			gw := gzip.NewWriter(w)
-			_, _ = gw.Write([]byte(content))
-			_ = gw.Close()
-		}))
-		defer server.Close()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tt.contentEncoding != "" {
+					w.Header().Set("Content-Encoding", tt.contentEncoding)
+				}
+				w.Header().Set("Content-Type", "text/plain")
+				w.WriteHeader(http.StatusOK)
 
-		client, _ := newTestClient()
-		defer client.Close()
+				if tt.compress != nil {
+					_, _ = w.Write(tt.compress([]byte(tt.content)))
+				} else {
+					_, _ = w.Write([]byte(tt.content))
+				}
+			}))
+			defer server.Close()
 
-		resp, err := client.Get(server.URL)
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
+			client, _ := newTestClient()
+			defer client.Close()
 
-		// Response should be automatically decompressed
-		if resp.Body() != content {
-			t.Errorf("Expected decompressed content %q, got %q", content, resp.Body())
-		}
-	})
+			resp, err := client.Get(server.URL)
+			if err != nil {
+				t.Fatalf("Request failed: %v", err)
+			}
 
-	t.Run("DeflateResponse", func(t *testing.T) {
-		content := "This is deflate compressed content"
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Encoding", "deflate")
-			w.Header().Set("Content-Type", "text/plain")
-			w.WriteHeader(http.StatusOK)
-
-			// Write deflate compressed content
-			fw, _ := flate.NewWriter(w, flate.DefaultCompression)
-			_, _ = fw.Write([]byte(content))
-			_ = fw.Close()
-		}))
-		defer server.Close()
-
-		client, _ := newTestClient()
-		defer client.Close()
-
-		resp, err := client.Get(server.URL)
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-
-		// Response should be automatically decompressed
-		if resp.Body() != content {
-			t.Errorf("Expected decompressed content %q, got %q", content, resp.Body())
-		}
-	})
-
-	t.Run("NoCompression", func(t *testing.T) {
-		content := "This is uncompressed content"
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "text/plain")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(content))
-		}))
-		defer server.Close()
-
-		client, _ := newTestClient()
-		defer client.Close()
-
-		resp, err := client.Get(server.URL)
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-
-		if resp.Body() != content {
-			t.Errorf("Expected content %q, got %q", content, resp.Body())
-		}
-	})
+			if resp.Body() != tt.content {
+				t.Errorf("Expected content %q, got %q", tt.content, resp.Body())
+			}
+		})
+	}
 }

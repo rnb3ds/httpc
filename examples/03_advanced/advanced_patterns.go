@@ -226,24 +226,30 @@ func demonstrateDefaultClient() {
 func demonstrateMemoryOptimization() {
 	fmt.Println("--- Example 5: Memory Optimization Techniques ---")
 
-	var m1, m2 runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&m1)
-
 	client, err := httpc.New()
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer client.Close()
 
-	// Make requests without optimization
-	const numRequests = 100
+	// Use a reasonable request count to avoid rate-limiting
+	const numRequests = 10
+
+	var m1, m2 runtime.MemStats
+
+	// Make requests without pool optimization
+	runtime.GC()
+	runtime.ReadMemStats(&m1)
+
 	for i := 0; i < numRequests; i++ {
-		resp, err := client.Get("https://httpbin.org/get")
+		resp, err := client.Get("https://httpbin.org/get",
+			httpc.WithTimeout(10*time.Second),
+		)
 		if err != nil {
 			continue
 		}
 		_ = resp.Body()
-		// Don't release - let GC handle it
+		// Result will be garbage collected
 	}
 
 	runtime.GC()
@@ -253,17 +259,19 @@ func demonstrateMemoryOptimization() {
 	fmt.Printf("  Heap allocations: %d\n", m2.Mallocs-m1.Mallocs)
 	fmt.Printf("  GC cycles: %d\n", m2.NumGC-m1.NumGC)
 
-	// With pool optimization
+	// With pool optimization - Results are returned to sync.Pool
 	runtime.GC()
 	runtime.ReadMemStats(&m1)
 
 	for i := 0; i < numRequests; i++ {
-		resp, err := client.Get("https://httpbin.org/get")
+		resp, err := client.Get("https://httpbin.org/get",
+			httpc.WithTimeout(10*time.Second),
+		)
 		if err != nil {
 			continue
 		}
 		_ = resp.Body()
-		httpc.ReleaseResult(resp) // Return to pool
+		httpc.ReleaseResult(resp) // Return to pool for reuse
 	}
 
 	runtime.GC()
@@ -272,8 +280,6 @@ func demonstrateMemoryOptimization() {
 	fmt.Printf("\nMemory after %d requests (with pool):\n", numRequests)
 	fmt.Printf("  Heap allocations: %d\n", m2.Mallocs-m1.Mallocs)
 	fmt.Printf("  GC cycles: %d\n", m2.NumGC-m1.NumGC)
-
-	client.Close()
 
 	fmt.Println("\nOptimization tips:")
 	fmt.Println("  1. Reuse client instances (don't create new clients per request)")

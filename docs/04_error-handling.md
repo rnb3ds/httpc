@@ -268,7 +268,7 @@ func fetchWithFallback(client httpc.Client, primaryURL, fallbackURL string) ([]b
 
 HTTPC automatically retries failed requests based on the configuration. The retry logic handles:
 - Network errors (connection refused, timeout, DNS failures)
-- Retryable HTTP status codes (429, 500, 502, 503, 504)
+- Retryable HTTP status codes (408, 429, 500, 502, 503, 504)
 - Exponential backoff with jitter
 
 ### Configuring Retry Behavior
@@ -405,6 +405,67 @@ func fetchWithNetworkRetry(client httpc.Client, url string) ([]byte, error) {
     }
     
     return nil, fmt.Errorf("max attempts reached")
+}
+```
+
+## Error Type Reference
+
+### ErrorType Constants
+
+Use `clientErr.Type` to classify errors after using `errors.As`:
+
+| Constant | Description |
+|----------|-------------|
+| `httpc.ErrorTypeUnknown` | Unknown or unclassified error |
+| `httpc.ErrorTypeNetwork` | Network-level error (connection refused, DNS, etc.) |
+| `httpc.ErrorTypeTimeout` | Request or connection timeout |
+| `httpc.ErrorTypeContextCanceled` | Context was canceled by caller |
+| `httpc.ErrorTypeResponseRead` | Error reading response body |
+| `httpc.ErrorTypeTransport` | HTTP transport-level error |
+| `httpc.ErrorTypeRetryExhausted` | All retry attempts exhausted |
+| `httpc.ErrorTypeTLS` | TLS handshake or protocol error |
+| `httpc.ErrorTypeCertificate` | Certificate validation error |
+| `httpc.ErrorTypeDNS` | DNS resolution error |
+| `httpc.ErrorTypeValidation` | Input validation error (URL, headers, etc.) |
+| `httpc.ErrorTypeHTTP` | HTTP protocol error |
+
+### Sentinel Errors
+
+HTTPC defines sentinel errors for specific failure conditions:
+
+| Variable | Description |
+|----------|-------------|
+| `httpc.ErrClientClosed` | Client has been closed |
+| `httpc.ErrNilConfig` | Configuration is nil |
+| `httpc.ErrInvalidURL` | URL validation failed |
+| `httpc.ErrInvalidHeader` | Header validation failed |
+| `httpc.ErrInvalidTimeout` | Timeout configuration invalid |
+| `httpc.ErrInvalidRetry` | Retry configuration invalid |
+| `httpc.ErrInvalidConnection` | Connection configuration invalid |
+| `httpc.ErrInvalidSecurity` | Security configuration invalid |
+| `httpc.ErrInvalidMiddleware` | Middleware configuration invalid |
+| `httpc.ErrEmptyFilePath` | Download file path is empty |
+| `httpc.ErrFileExists` | File already exists (overwrite not enabled) |
+| `httpc.ErrResponseBodyEmpty` | Response body is empty |
+| `httpc.ErrResponseBodyTooLarge` | Response body exceeds size limit |
+
+### ClientError Fields
+
+The `ClientError` type provides structured error information:
+
+```go
+var clientErr *httpc.ClientError
+if errors.As(err, &clientErr) {
+    fmt.Printf("Type: %s\n", clientErr.Type)            // ErrorType constant
+    fmt.Printf("Message: %s\n", clientErr.Message)      // Human-readable message
+    fmt.Printf("Cause: %v\n", clientErr.Cause)          // Underlying error (use with errors.Is/As)
+    fmt.Printf("URL: %s\n", clientErr.URL)              // Request URL (sanitized)
+    fmt.Printf("Method: %s\n", clientErr.Method)        // HTTP method
+    fmt.Printf("Host: %s\n", clientErr.Host)            // Target host
+    fmt.Printf("Attempts: %d\n", clientErr.Attempts)    // Retry attempts made
+    fmt.Printf("StatusCode: %d\n", clientErr.StatusCode) // HTTP status (if applicable)
+    fmt.Printf("Retryable: %v\n", clientErr.IsRetryable()) // Whether error is retryable
+    fmt.Printf("Code: %s\n", clientErr.Code())          // String error code (e.g., "TIMEOUT")
 }
 ```
 

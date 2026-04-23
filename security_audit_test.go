@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cybergodev/httpc/internal/engine"
 )
 
 // ============================================================================
@@ -110,6 +112,27 @@ func Test_SSRF_RedirectProtection(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "blocked") && !strings.Contains(err.Error(), "redirect") {
 		t.Errorf("Expected redirect blocking error, got: %v", err)
+	}
+}
+
+// Test_SSRF_BlocksIPv6Localhost verifies that IPv6 localhost addresses are also blocked
+func Test_SSRF_BlocksIPv6Localhost(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping IPv6 SSRF test in short mode")
+	}
+
+	cfg := DefaultConfig()
+	cfg.Security.AllowPrivateIPs = false
+
+	client, err := New(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	defer client.Close()
+
+	_, err = client.Get("http://[::1]:12345/", WithTimeout(2*time.Second))
+	if err == nil {
+		t.Error("SECURITY ISSUE: Expected error when requesting IPv6 localhost")
 	}
 }
 
@@ -337,14 +360,21 @@ func TestPanicSafety(t *testing.T) {
 			_ = session.SetCookies([]*http.Cookie{})
 		}},
 		{"RequestOptionError", func() {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+
 			cfg := testConfig()
 			client, err := New(cfg)
 			if err != nil {
 				return
 			}
 			defer client.Close()
-			// Just verify function definition doesn't panic
-			_ = func(r any) error { return fmt.Errorf("test error") }
+			// Apply a failing RequestOption and verify error propagation
+			_, _ = client.Get(server.URL, func(r *engine.Request) error {
+				return fmt.Errorf("test option error")
+			})
 		}},
 		{"ConcurrentAccess", func() {
 			cfg := testConfig()

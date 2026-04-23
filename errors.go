@@ -76,6 +76,18 @@ var (
 	// MaxRetries must be 0-10, BackoffFactor must be 1.0-10.0.
 	ErrInvalidRetry = errors.New("invalid retry configuration")
 
+	// ErrInvalidConnection is returned when connection configuration is invalid.
+	// MaxIdleConns and MaxConnsPerHost must be within allowed ranges.
+	ErrInvalidConnection = errors.New("invalid connection configuration")
+
+	// ErrInvalidSecurity is returned when security configuration is invalid.
+	// MaxResponseBodySize and MaxDecompressedBodySize must be within allowed ranges.
+	ErrInvalidSecurity = errors.New("invalid security configuration")
+
+	// ErrInvalidMiddleware is returned when middleware configuration is invalid.
+	// MaxRedirects must be 0-50, UserAgent must not exceed length limit.
+	ErrInvalidMiddleware = errors.New("invalid middleware configuration")
+
 	// ErrEmptyFilePath is returned when file path is empty.
 	// Provide a valid file path for download operations.
 	ErrEmptyFilePath = errors.New("file path cannot be empty")
@@ -85,7 +97,7 @@ var (
 	ErrFileExists = errors.New("file already exists")
 
 	// ErrResponseBodyEmpty is returned when attempting to parse empty response body.
-	// Check response.RawBody before calling JSON() or other parsing methods.
+	// Check response.RawBody before calling Unmarshal() or other parsing methods.
 	ErrResponseBodyEmpty = errors.New("response body is empty")
 
 	// ErrResponseBodyTooLarge is returned when response body exceeds size limit.

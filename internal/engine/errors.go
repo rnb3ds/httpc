@@ -12,6 +12,17 @@ import (
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
+// retryableStatusCodes is the single source of truth for HTTP status codes
+// that warrant automatic retry. Used by both retry.go and errors.go.
+var retryableStatusCodes = map[int]bool{
+	408: true, // Request Timeout
+	429: true, // Too Many Requests
+	500: true, // Internal Server Error
+	502: true, // Bad Gateway
+	503: true, // Service Unavailable
+	504: true, // Gateway Timeout
+}
+
 // containsFold reports whether substr is contained within s, case-insensitively.
 // This is more efficient than strings.Contains(strings.ToLower(s), substr)
 // because it performs ASCII-only case folding without allocating a new string.
@@ -254,15 +265,13 @@ func (e *ClientError) isRetryableResponseReadError() bool {
 
 // isRetryableHTTPStatus checks if HTTP status code indicates a retryable condition.
 func (e *ClientError) isRetryableHTTPStatus() bool {
-	switch e.StatusCode {
-	case 408, 429, 500, 502, 503, 504:
+	if retryableStatusCodes[e.StatusCode] {
 		return true
 	}
 	// Fallback: extract status code from message when StatusCode is not set
 	if e.StatusCode == 0 {
-		msg := e.Message
-		for _, prefix := range []string{"HTTP 408", "HTTP 429", "HTTP 500", "HTTP 502", "HTTP 503", "HTTP 504"} {
-			if strings.Contains(msg, prefix) {
+		for code := range retryableStatusCodes {
+			if strings.Contains(e.Message, fmt.Sprintf("HTTP %d", code)) {
 				return true
 			}
 		}
@@ -299,7 +308,7 @@ func (e *ClientError) Code() string {
 	}
 }
 
-func ClassifyError(err error, reqURL, method string, attempts int) *ClientError {
+func classifyError(err error, reqURL, method string, attempts int) *ClientError {
 	if err == nil {
 		return nil
 	}
@@ -314,15 +323,16 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 		Attempts: attempts,
 	}
 
-	// Early return for already-classified errors (prevents double-classification)
+	// Return a copy for already-classified errors to prevent shared-pointer mutation.
 	var existingErr *ClientError
 	if errors.As(err, &existingErr) {
-		existingErr.URL = sanitizedURL
-		existingErr.Method = method
+		cp := *existingErr
+		cp.URL = sanitizedURL
+		cp.Method = method
 		if attempts > 0 {
-			existingErr.Attempts = attempts
+			cp.Attempts = attempts
 		}
-		return existingErr
+		return &cp
 	}
 
 	if errors.Is(err, context.Canceled) {

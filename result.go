@@ -25,7 +25,8 @@ const (
 	truncationMarker = "...[truncated]"
 )
 
-// sensitiveHeaders contains header names that should be masked in String() output.
+// sensitiveHeaders contains header names that should be masked in String() and audit output.
+// Keys use http.CanonicalHeaderKey form (Title-Case).
 var sensitiveHeaders = map[string]bool{
 	"Authorization":       true,
 	"Cookie":              true,
@@ -33,6 +34,15 @@ var sensitiveHeaders = map[string]bool{
 	"X-Api-Key":           true,
 	"X-Auth-Token":        true,
 	"Proxy-Authorization": true,
+}
+
+// sensitiveHeaderNames returns the canonical list as a slice for AuditMiddlewareConfig defaults.
+func sensitiveHeaderNames() []string {
+	names := make([]string, 0, len(sensitiveHeaders))
+	for k := range sensitiveHeaders {
+		names = append(names, k)
+	}
+	return names
 }
 
 // Result wraps an HTTP response with request metadata and convenience methods.

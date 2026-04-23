@@ -5,9 +5,9 @@ import (
 	"net"
 )
 
-// Resolver defines the interface for DNS resolution.
+// resolver defines the interface for DNS resolution.
 // Implementations can provide different resolution strategies (DoH, system DNS, etc.)
-type Resolver interface {
+type resolver interface {
 	// LookupIPAddr resolves a host name to IP addresses.
 	// It returns a slice of net.IPAddr and any error encountered.
 	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)

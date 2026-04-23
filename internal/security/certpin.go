@@ -5,7 +5,9 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"fmt"
+	"os"
 	"strings"
+	"sync"
 )
 
 // CertificatePinner defines the interface for certificate pinning implementations.
@@ -21,17 +23,17 @@ type CertificatePinner interface {
 	VerifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error
 }
 
-// PublicKeyPinner pins one or more public keys by their SHA-256 hash.
+// publicKeyPinner pins one or more public keys by their SHA-256 hash.
 // The peer certificate's public key must match one of the pinned keys.
-// Internally delegates to SPKIHashPinner for verification.
-type PublicKeyPinner struct {
-	inner *SPKIHashPinner
+// Internally delegates to spkiHashPinner for verification.
+type publicKeyPinner struct {
+	inner *spkiHashPinner
 }
 
-// NewPublicKeyPinner creates a new pinner from raw public keys.
+// newPublicKeyPinner creates a new pinner from raw public keys.
 // Each public key should be in DER-encoded PKIX format (as used in x509 certificates).
 // Returns an error if no valid keys are provided.
-func NewPublicKeyPinner(publicKeys ...[]byte) (*PublicKeyPinner, error) {
+func newPublicKeyPinner(publicKeys ...[]byte) (*publicKeyPinner, error) {
 	hashes := make([]string, 0, len(publicKeys))
 	for _, pk := range publicKeys {
 		if len(pk) > 0 {
@@ -39,26 +41,26 @@ func NewPublicKeyPinner(publicKeys ...[]byte) (*PublicKeyPinner, error) {
 			hashes = append(hashes, base64.StdEncoding.EncodeToString(hash[:]))
 		}
 	}
-	inner, err := NewSPKIHashPinner(hashes...)
+	inner, err := newSPKIHashPinner(hashes...)
 	if err != nil {
 		return nil, fmt.Errorf("no valid public keys provided: %w", err)
 	}
-	return &PublicKeyPinner{inner: inner}, nil
+	return &publicKeyPinner{inner: inner}, nil
 }
 
-// NewPublicKeyPinnerFromBase64 creates a new pinner from base64-encoded public key hashes.
+// newPublicKeyPinnerFromBase64 creates a new pinner from base64-encoded public key hashes.
 // Each hash should be the SHA-256 hash of the DER-encoded public key, base64-encoded.
 // Returns an error if no valid hashes are provided.
-func NewPublicKeyPinnerFromBase64(hashes ...string) (*PublicKeyPinner, error) {
-	inner, err := NewSPKIHashPinner(hashes...)
+func newPublicKeyPinnerFromBase64(hashes ...string) (*publicKeyPinner, error) {
+	inner, err := newSPKIHashPinner(hashes...)
 	if err != nil {
 		return nil, fmt.Errorf("no valid SPKI hashes provided: %w", err)
 	}
-	return &PublicKeyPinner{inner: inner}, nil
+	return &publicKeyPinner{inner: inner}, nil
 }
 
 // Pin returns a description of the pinned public keys.
-func (p *PublicKeyPinner) Pin() string {
+func (p *publicKeyPinner) Pin() string {
 	if p == nil || p.inner == nil {
 		return "no-pins"
 	}
@@ -66,21 +68,21 @@ func (p *PublicKeyPinner) Pin() string {
 }
 
 // VerifyPeerCertificate verifies that one of the peer certificates matches a pinned public key.
-func (p *PublicKeyPinner) VerifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+func (p *publicKeyPinner) VerifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 	if p == nil || p.inner == nil {
 		return nil
 	}
 	return p.inner.VerifyPeerCertificate(rawCerts, verifiedChains)
 }
 
-// SPKIHashPinner pins certificates by their Subject Public Key Info (SPKI) hash.
+// spkiHashPinner pins certificates by their Subject Public Key Info (SPKI) hash.
 // This is the most common form of certificate pinning used in HTTP Public Key Pinning (HPKP)
 // and similar security mechanisms.
-type SPKIHashPinner struct {
+type spkiHashPinner struct {
 	hashes map[string]bool // Base64-encoded SHA-256 hashes of SPKI
 }
 
-// NewSPKIHashPinner creates a new SPKI pinner from base64-encoded SHA-256 hashes.
+// newSPKIHashPinner creates a new SPKI pinner from base64-encoded SHA-256 hashes.
 // Each hash should be the base64-encoded SHA-256 hash of the DER-encoded SPKI.
 //
 // Example hashes:
@@ -90,8 +92,8 @@ type SPKIHashPinner struct {
 // You can generate these hashes using:
 //
 //	openssl x509 -in cert.pem -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | openssl enc -base64
-func NewSPKIHashPinner(hashes ...string) (*SPKIHashPinner, error) {
-	p := &SPKIHashPinner{
+func newSPKIHashPinner(hashes ...string) (*spkiHashPinner, error) {
+	p := &spkiHashPinner{
 		hashes: make(map[string]bool),
 	}
 
@@ -117,7 +119,7 @@ func NewSPKIHashPinner(hashes ...string) (*SPKIHashPinner, error) {
 }
 
 // Pin returns a description of the pinned SPKI hashes.
-func (p *SPKIHashPinner) Pin() string {
+func (p *spkiHashPinner) Pin() string {
 	if p == nil || len(p.hashes) == 0 {
 		return "no-pins"
 	}
@@ -125,7 +127,7 @@ func (p *SPKIHashPinner) Pin() string {
 }
 
 // VerifyPeerCertificate verifies that one of the peer certificates matches a pinned SPKI hash.
-func (p *SPKIHashPinner) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+func (p *spkiHashPinner) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 	if p == nil || len(p.hashes) == 0 {
 		return nil // No pins configured
 	}
@@ -208,7 +210,7 @@ func (c *certificatePinnerChain) VerifyPeerCertificate(rawCerts [][]byte, verifi
 }
 
 // noOpPinner is a pinner that accepts all certificates.
-// Exported for testing.
+// Exported for testing only. Do NOT use in production.
 type noOpPinner struct{}
 
 // Pin returns "no-op" to indicate no pinning.
@@ -216,7 +218,17 @@ func (n *noOpPinner) Pin() string {
 	return "no-op"
 }
 
+// warnNoOpPinnerOnce ensures the production warning is printed at most once.
+var warnNoOpPinnerOnce sync.Once
+
 // VerifyPeerCertificate always returns nil, accepting all certificates.
 func (n *noOpPinner) VerifyPeerCertificate(_ [][]byte, _ [][]*x509.Certificate) error {
+	warnNoOpPinnerOnce.Do(func() {
+		executable := strings.TrimSuffix(strings.TrimSuffix(os.Args[0], ".exe"), ".test")
+		if !strings.Contains(os.Args[0], ".test") {
+			fmt.Fprintf(os.Stderr, "[SECURITY WARNING] noOpPinner used outside test environment - certificate pinning is DISABLED\n")
+			_ = executable
+		}
+	})
 	return nil
 }

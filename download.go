@@ -136,6 +136,8 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 		if !opts.Overwrite && !opts.ResumeDownload {
 			return nil, fmt.Errorf("%w: %s", ErrFileExists, opts.FilePath)
 		}
+		// ResumeDownload takes precedence over Overwrite when both are set:
+		// the existing file is extended rather than replaced.
 		if opts.ResumeDownload {
 			resumeOffset = fileInfo.Size()
 			rangeOption := WithHeader("Range", fmt.Sprintf("bytes=%d-", resumeOffset))
@@ -152,19 +154,22 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	copy(streamOptions, options)
 	streamOptions[len(options)] = WithStreamBody(true)
 
-	engResp, err := c.engine.Request(ctx, "GET", url, streamOptions...)
+	rawResp, err := c.executeRequest(ctx, "GET", url, streamOptions)
 	if err != nil {
 		return nil, fmt.Errorf("download request failed: %w", err)
+	}
+	if rawResp == nil {
+		return nil, fmt.Errorf("download request returned nil response")
+	}
+	engResp, ok := rawResp.(*engine.Response)
+	if !ok {
+		return nil, fmt.Errorf("unexpected response type from download request")
 	}
 	defer engine.ReleaseResponse(engResp)
 
 	bodyReader := engResp.RawBodyReader()
 	if bodyReader != nil {
 		defer func() { _ = bodyReader.Close() }()
-	}
-
-	if engResp == nil {
-		return nil, fmt.Errorf("download request returned nil response")
 	}
 
 	statusCode := engResp.StatusCode()
@@ -187,6 +192,9 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	}
 
 	if statusCode != http.StatusOK && statusCode != http.StatusPartialContent {
+		if bodyReader != nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(bodyReader, 1<<20))
+		}
 		return nil, fmt.Errorf("unexpected status code: %d", statusCode)
 	}
 
@@ -245,7 +253,7 @@ const (
 
 // getSystemPaths returns platform-specific system paths that should be protected.
 func getSystemPaths() []string {
-	switch getOS() {
+	switch runtime.GOOS {
 	case "windows":
 		return []string{
 			"c:\\windows\\", "c:\\system32\\",
@@ -275,12 +283,6 @@ func getSystemPaths() []string {
 			"/run/", "/var/run/", "/sys/fs/",
 		}
 	}
-}
-
-// getOS returns the current operating system.
-// Kept as a wrapper for testability - allows mocking in unit tests.
-func getOS() string {
-	return runtime.GOOS
 }
 
 func calculateSpeed(bytes int64, duration time.Duration) float64 {
@@ -314,7 +316,7 @@ func prepareFilePath(filePath string) error {
 	}
 
 	// Validate characters
-	for i := 0; i < filePathLen; i++ {
+	for i := range filePathLen {
 		c := filePath[i]
 		if c < 0x20 || c == 0x7F || c == 0 {
 			return fmt.Errorf("file path contains invalid characters at position %d", i)

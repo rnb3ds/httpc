@@ -246,10 +246,9 @@ func demonstrateHeaderMiddleware() {
 func demonstrateMiddlewareChain() {
 	fmt.Println("--- Example 7: Middleware Chain ---")
 
-	// Create client with multiple chained middlewares
+	// Approach 1: Configure via slice (order preserved)
 	config := httpc.DefaultConfig()
 	config.Middleware.Middlewares = []httpc.MiddlewareFunc{
-		// Order matters: first middleware runs first for request, last for response
 		httpc.RequestIDMiddleware("X-Correlation-ID", nil),
 		httpc.RecoveryMiddleware(),
 		httpc.LoggingMiddleware(log.Printf),
@@ -262,7 +261,6 @@ func demonstrateMiddlewareChain() {
 	}
 	defer client.Close()
 
-	// Make request through the chain
 	resp, err := client.Get("https://httpbin.org/get",
 		httpc.WithQuery("chained", "middlewares"),
 	)
@@ -271,10 +269,33 @@ func demonstrateMiddlewareChain() {
 		return
 	}
 
-	fmt.Printf("Request completed: Status %d\n", resp.StatusCode())
-	fmt.Println("\nMiddleware chain processed request:")
-	fmt.Println("  1. Request ID added unique ID")
-	fmt.Println("  2. Recovery middleware provided panic protection")
-	fmt.Println("  3. Logging middleware logged the request")
-	fmt.Println("  4. Timeout middleware enforced 30s limit")
+	fmt.Printf("Slice approach: Status %d\n", resp.StatusCode())
+
+	// Approach 2: Using httpc.Chain() to compose middlewares into one
+	// This is useful when you want to pass a single MiddlewareFunc
+	chain := httpc.Chain(
+		httpc.RequestIDMiddleware("X-Request-ID", nil),
+		httpc.RecoveryMiddleware(),
+		httpc.LoggingMiddleware(log.Printf),
+	)
+
+	config2 := httpc.DefaultConfig()
+	config2.Middleware.Middlewares = []httpc.MiddlewareFunc{chain}
+	client2, err := httpc.New(config2)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer client2.Close()
+
+	resp, err = client2.Get("https://httpbin.org/get",
+		httpc.WithQuery("chain", "composed"),
+	)
+	if err != nil {
+		log.Printf("Request failed: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Chain() approach: Status %d\n", resp.StatusCode())
+	fmt.Println("\nBoth approaches produce the same result.")
+	fmt.Println("Use Chain() when composing middleware dynamically or passing as a single argument.")
 }

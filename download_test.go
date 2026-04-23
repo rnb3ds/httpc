@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -56,6 +57,39 @@ func TestDownload_Basic(t *testing.T) {
 	}
 	if fileInfo.Size() != result.BytesWritten {
 		t.Errorf("File size mismatch: expected %d, got %d", result.BytesWritten, fileInfo.Size())
+	}
+}
+
+func TestDownload_EmptyFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Length", "0")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.Security.AllowPrivateIPs = true
+	client, _ := New(config)
+	defer client.Close()
+
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "empty.txt")
+
+	result, err := client.DownloadFile(server.URL, filePath)
+	if err != nil {
+		t.Fatalf("Download of empty file failed: %v", err)
+	}
+	if result.BytesWritten != 0 {
+		t.Errorf("Expected 0 bytes, got %d", result.BytesWritten)
+	}
+
+	fileInfo, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatalf("File not created: %v", err)
+	}
+	if fileInfo.Size() != 0 {
+		t.Errorf("File should be empty, got %d bytes", fileInfo.Size())
 	}
 }
 
@@ -656,8 +690,37 @@ func TestIsSystemPath(t *testing.T) {
 		path     string
 		isSystem bool
 	}{
-		// These tests are platform-dependent, so we check behavior not specific paths
 		{"Temp directory", os.TempDir(), false},
+		{"Relative path", "myapp/data/file.txt", false},
+		{"Dot path", "./config.yaml", false},
+	}
+
+	if runtime.GOOS == "windows" {
+		tests = append(tests,
+			[]struct {
+				name     string
+				path     string
+				isSystem bool
+			}{
+				{"Windows system32", `C:\Windows\System32\cmd.exe`, true},
+				{"Windows system dir", `C:\Windows\Fonts\arial.ttf`, true},
+				{"Windows user path", `C:\Users\user\file.txt`, false},
+				{"Windows program files", `C:\Program Files\App\app.exe`, true},
+			}...,
+		)
+	} else {
+		tests = append(tests,
+			[]struct {
+				name     string
+				path     string
+				isSystem bool
+			}{
+				{"Unix system bin", "/usr/bin/ls", true},
+				{"Unix system lib", "/lib/x86_64-linux-gnu/libc.so", true},
+				{"Unix user path", "/home/user/file.txt", false},
+				{"Unix etc", "/etc/hosts", true},
+			}...,
+		)
 	}
 
 	for _, tt := range tests {

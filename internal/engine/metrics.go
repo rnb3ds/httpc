@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// MetricsSnapshot represents a point-in-time snapshot of client metrics.
+// MetricsSnapshot represents a point-in-time snapshot of client Metrics.
 type MetricsSnapshot struct {
 	TotalRequests      int64
 	SuccessfulRequests int64
@@ -14,7 +14,7 @@ type MetricsSnapshot struct {
 	AverageLatency     time.Duration
 }
 
-// HealthStatus represents basic health metrics for the client.
+// HealthStatus represents basic health Metrics for the client.
 type HealthStatus struct {
 	Healthy            bool
 	TotalRequests      int64
@@ -24,7 +24,7 @@ type HealthStatus struct {
 	ErrorRate          float64
 }
 
-// Metrics collects and tracks HTTP client performance metrics.
+// Metrics collects and tracks HTTP client performance Metrics.
 // All methods are safe for concurrent use.
 type Metrics struct {
 	totalRequests      atomic.Int64
@@ -58,8 +58,9 @@ func (m *Metrics) updateLatency(latency int64) {
 	m.latencyMu.Unlock()
 }
 
-// Snapshot returns a point-in-time copy of the current metrics.
-// The snapshot is atomic — all fields are consistent at the same instant.
+// Snapshot returns a point-in-time copy of the current Metrics.
+// Each field is individually atomic, but the snapshot is not transactionally
+// consistent — concurrent calls may cause total != success + failed.
 func (m *Metrics) Snapshot() MetricsSnapshot {
 	return MetricsSnapshot{
 		TotalRequests:      m.totalRequests.Load(),
@@ -69,7 +70,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 	}
 }
 
-// Reset resets all metrics to zero.
+// Reset resets all Metrics to zero.
 func (m *Metrics) Reset() {
 	m.totalRequests.Store(0)
 	m.successfulRequests.Store(0)

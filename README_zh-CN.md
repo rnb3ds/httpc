@@ -493,6 +493,20 @@ client.Session() // 底层 SessionManager
 result, _ := client.DownloadFile("/files/data.csv", "data.csv")
 result, _ := client.DownloadWithOptions("/files/large.zip", downloadOpts)
 result, _ := client.DownloadFileWithContext(ctx, "/files/data.csv", "data.csv")
+result, _ := client.DownloadWithOptionsWithContext(ctx, "/files/large.zip", downloadOpts)
+```
+
+### 所有 HTTP 方法
+
+```go
+result, _ := client.Get("/users")
+result, _ := client.Post("/users", httpc.WithJSON(data))
+result, _ := client.Put("/users/1", httpc.WithJSON(data))
+result, _ := client.Patch("/users/1", httpc.WithJSON(data))
+result, _ := client.Delete("/users/1")
+result, _ := client.Head("/users")
+result, _ := client.Options("/users")
+result, _ := client.Request(ctx, "PROPFIND", "/resource")
 ```
 
 ---
@@ -507,7 +521,7 @@ sm, _ := httpc.NewSessionManager()
 
 // 或带 Cookie 安全验证
 cfg := httpc.DefaultSessionConfig()
-cfg.CookieSecurity = validation.StrictCookieSecurityConfig()
+cfg.CookieSecurity = httpc.StrictCookieSecurityConfig()
 sm, _ := httpc.NewSessionManager(cfg)
 
 // 管理 Cookie
@@ -530,7 +544,7 @@ sm.UpdateFromResult(result)
 sm.UpdateFromCookies(responseCookies)
 
 // Cookie 安全设置
-sm.SetCookieSecurity(validation.StrictCookieSecurityConfig())
+sm.SetCookieSecurity(httpc.StrictCookieSecurityConfig())
 ```
 
 ---
@@ -582,7 +596,7 @@ config := &httpc.Config{
         MinTLSVersion:       tls.VersionTLS12,
         MaxTLSVersion:       tls.VersionTLS13,
         MaxResponseBodySize: 50 * 1024 * 1024, // 50 MB
-        AllowPrivateIPs:     true,
+        AllowPrivateIPs:     false,
     },
 
     // 重试设置
@@ -628,12 +642,14 @@ client, _ := httpc.New(config)
 | `Security.MaxTLSVersion` | `uint16` | `TLS 1.3` | 最高 TLS 版本 |
 | `Security.InsecureSkipVerify` | `bool` | `false` | 跳过 TLS 验证 (仅限测试！) |
 | `Security.MaxResponseBodySize` | `int64` | `10MB` | 最大响应体大小 |
-| `Security.AllowPrivateIPs` | `bool` | `true` | 允许私有 IP (SSRF) |
+| `Security.AllowPrivateIPs` | `bool` | `false` | 允许私有 IP (默认启用 SSRF 防护) |
 | `Security.ValidateURL` | `bool` | `true` | 启用 URL 验证 |
 | `Security.ValidateHeaders` | `bool` | `true` | 启用请求头验证 |
 | `Security.StrictContentLength` | `bool` | `true` | 严格 Content-Length 检查 |
 | `Security.RedirectWhitelist` | `[]string` | `nil` | 允许的重定向域名 |
-| `Security.CookieSecurity` | `*validation.CookieSecurityConfig` | `nil` | Cookie 安全验证规则 |
+| `Security.MaxDecompressedBodySize` | `int64` | `100MB` | 最大解压响应体大小 (Zip 炸弹防护) |
+| `Security.SSRFExemptCIDRs` | `[]string` | `nil` | 豁免 SSRF 阻断的 CIDR 范围 |
+| `Security.CookieSecurity` | `*httpc.CookieSecurityConfig` | `nil` | Cookie 安全验证规则 |
 | **重试设置** (`Retry`) ||||
 | `Retry.MaxRetries` | `int` | `3` | 最大重试次数 |
 | `Retry.Delay` | `time.Duration` | `1s` | 初始重试延迟 |
@@ -683,8 +699,11 @@ httpc.AuditMiddleware(func(a httpc.AuditEvent) {
 
 // 带自定义配置的审计
 auditCfg := httpc.DefaultAuditMiddlewareConfig()
-auditCfg.LogBody = true
-httpc.AuditMiddlewareWithConfig(auditCfg)(next)
+auditCfg.IncludeHeaders = true
+auditCfg.Format = "json"
+httpc.AuditMiddlewareWithConfig(func(a httpc.AuditEvent) {
+    log.Printf("[AUDIT] %v", a)
+}, auditCfg)
 ```
 
 ### 链式中间件
@@ -755,16 +774,21 @@ config.Security.RedirectWhitelist = []string{"api.example.com", "secure.example.
 
 ### SSRF 防护
 
-默认情况下，`AllowPrivateIPs` 为 `true` 以保持兼容性。当请求用户提供的 URL 时，应启用 SSRF 防护：
+默认情况下，`AllowPrivateIPs` 为 `false`（SSRF 防护已启用），阻止连接到私有/保留 IP 地址。仅在连接内部服务时设为 `true`：
 
 ```go
-// 启用 SSRF 防护
+// SSRF 防护默认已启用
+client, _ := httpc.New(httpc.DefaultConfig())
+
+// 允许私有 IP 用于内部服务访问
 cfg := httpc.DefaultConfig()
-cfg.Security.AllowPrivateIPs = false
+cfg.Security.AllowPrivateIPs = true
 client, _ := httpc.New(cfg)
 
-// 或使用安全预设
-client, _ := httpc.New(httpc.SecureConfig())
+// 或豁免特定 CIDR 范围（如 VPN/VPC）
+cfg := httpc.DefaultConfig()
+cfg.Security.SSRFExemptCIDRs = []string{"10.0.0.0/8", "100.64.0.0/10"}
+client, _ := httpc.New(cfg)
 ```
 
 ---
@@ -824,15 +848,18 @@ const (
 
 ```go
 var (
-    ErrClientClosed      // 客户端已关闭
-    ErrNilConfig         // 提供了 nil 配置
-    ErrInvalidURL        // URL 验证失败
-    ErrInvalidHeader     // 请求头验证失败
-    ErrInvalidTimeout    // 超时为负数或超出限制
-    ErrInvalidRetry      // 重试配置无效
-    ErrEmptyFilePath     // 文件路径为空
-    ErrFileExists        // 文件已存在 (且 Overwrite 为 false)
-    ErrResponseBodyEmpty // 响应体为空
+    ErrClientClosed         // 客户端已关闭
+    ErrNilConfig            // 提供了 nil 配置
+    ErrInvalidURL           // URL 验证失败
+    ErrInvalidHeader        // 请求头验证失败
+    ErrInvalidTimeout       // 超时为负数或超出限制
+    ErrInvalidRetry         // 重试配置无效
+    ErrInvalidConnection    // 连接配置无效
+    ErrInvalidSecurity      // 安全配置无效
+    ErrInvalidMiddleware    // 中间件配置无效
+    ErrEmptyFilePath        // 文件路径为空
+    ErrFileExists           // 文件已存在 (且 Overwrite 为 false)
+    ErrResponseBodyEmpty    // 响应体为空
     ErrResponseBodyTooLarge // 响应体超过大小限制
 )
 ```
@@ -840,9 +867,11 @@ var (
 ### 错误分类
 
 ```go
-// 将任意错误分类为 ClientError
-clientErr := httpc.ClassifyError(err)
-fmt.Printf("类型: %s, 可重试: %v\n", clientErr.Code(), clientErr.IsRetryable())
+// 使用 errors.As 检查错误类型
+var clientErr *httpc.ClientError
+if errors.As(err, &clientErr) {
+    fmt.Printf("类型: %s, 可重试: %v\n", clientErr.Code(), clientErr.IsRetryable())
+}
 ```
 
 ---

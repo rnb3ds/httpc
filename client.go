@@ -58,7 +58,7 @@ package httpc
 //
 // # Request Options
 //
-// Core options (18 functions):
+// Core options (25+ functions):
 //
 //	// Headers
 //	httpc.WithHeader("Authorization", "Bearer token")
@@ -105,9 +105,6 @@ package httpc
 //	defer dc.Close()
 //
 //	dc.SetHeader("Authorization", "Bearer "+token)
-//
-//	// Headers automatically included
-//	result, err := dc.Request(ctx, "GET", "/users")
 //
 //	// Headers automatically included
 //	result, err := dc.Request(ctx, "GET", "/users")
@@ -392,18 +389,14 @@ func (c *clientImpl) doRequest(method, url string, options []RequestOption) (*Re
 // Request executes an HTTP request with the given context, method, URL, and options.
 // The context parameter allows for timeout and cancellation control.
 func (c *clientImpl) Request(ctx context.Context, method, url string, options ...RequestOption) (*Result, error) {
-	// Use middleware chain if configured
-	if c.hasMiddlewares {
-		return c.executeWithMiddleware(ctx, method, url, options)
-	}
-
-	// Direct path when no middlewares (zero overhead)
-	resp, err := c.engine.Request(ctx, method, url, options...)
+	resp, err := c.executeRequest(ctx, method, url, options)
 	if err != nil {
 		return nil, err
 	}
 	result := convertResponseToResult(resp)
-	engine.ReleaseResponse(resp)
+	if engineResp, ok := resp.(*engine.Response); ok {
+		engine.ReleaseResponse(engineResp)
+	}
 	return result, nil
 }
 
@@ -414,44 +407,38 @@ var middlewareRequestPool = sync.Pool{
 	},
 }
 
-// executeWithMiddleware executes a request through the middleware chain.
-func (c *clientImpl) executeWithMiddleware(ctx context.Context, method, url string, options []RequestOption) (*Result, error) {
-	// Use pooled engine.Request to avoid allocation on every middleware request
+// executeRequest executes an HTTP request through the middleware chain (if configured)
+// or directly via the engine. Returns the raw ResponseMutator; the caller must
+// release the response via engine.ReleaseResponse() or convert it via convertResponseToResult().
+func (c *clientImpl) executeRequest(ctx context.Context, method, url string, options []RequestOption) (ResponseMutator, error) {
+	if !c.hasMiddlewares {
+		return c.engine.Request(ctx, method, url, options...)
+	}
+
 	engineReq, ok := middlewareRequestPool.Get().(*engine.Request)
 	if !ok || engineReq == nil {
 		engineReq = &engine.Request{}
 	}
-	// Reset to zero state (fields may contain stale data from previous use)
+	defer middlewareRequestPool.Put(engineReq)
+
 	*engineReq = engine.Request{}
 	engineReq.SetMethod(method)
 	engineReq.SetURL(url)
 	engineReq.SetContext(ctx)
 
-	// Apply request options directly (no conversion needed with unified types)
 	for _, opt := range options {
 		if opt != nil {
 			if err := opt(engineReq); err != nil {
-				middlewareRequestPool.Put(engineReq)
 				return nil, fmt.Errorf("failed to apply request option: %w", err)
 			}
 		}
 	}
 
-	// Execute through middleware chain - engine.Request now implements RequestMutator
-	respAccessor, err := c.middlewareChain(ctx, engineReq)
-	if err != nil {
-		middlewareRequestPool.Put(engineReq)
-		return nil, err
-	}
-
-	result := convertResponseToResult(respAccessor)
-	if engineResp, ok := respAccessor.(*engine.Response); ok {
-		engine.ReleaseResponse(engineResp)
-	}
-	middlewareRequestPool.Put(engineReq)
-	return result, nil
+	return c.middlewareChain(ctx, engineReq)
 }
 
+// Close releases resources held by the client including connection pools and transport.
+// After calling Close, the client must not be used for further requests.
 func (c *clientImpl) Close() error {
 	// engine.Close() handles all resource cleanup including connection pool and transport
 	// If it fails, we wrap the error for better context
@@ -696,41 +683,51 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 	}
 
 	engineConfig := &engine.Config{
+		// Timeout settings
 		Timeout:               cfg.Timeouts.Request,
 		DialTimeout:           cfg.Timeouts.Dial,
 		KeepAlive:             30 * time.Second,
 		TLSHandshakeTimeout:   cfg.Timeouts.TLSHandshake,
 		ResponseHeaderTimeout: cfg.Timeouts.ResponseHeader,
 		IdleConnTimeout:       cfg.Timeouts.IdleConn,
-		MaxIdleConns:          cfg.Connection.MaxIdleConns,
-		MaxIdleConnsPerHost:   idleConnsPerHost,
-		MaxConnsPerHost:       cfg.Connection.MaxConnsPerHost,
-		ProxyURL:              cfg.Connection.ProxyURL,
-		EnableSystemProxy:     cfg.Connection.EnableSystemProxy,
-		TLSConfig:             cfg.Security.TLSConfig,
-		MinTLSVersion:         minTLSVersion,
-		MaxTLSVersion:         maxTLSVersion,
-		InsecureSkipVerify:    cfg.Security.InsecureSkipVerify,
-		MaxResponseBodySize:   cfg.Security.MaxResponseBodySize,
-		ValidateURL:           cfg.Security.ValidateURL,
-		ValidateHeaders:       cfg.Security.ValidateHeaders,
-		AllowPrivateIPs:       cfg.Security.AllowPrivateIPs,
-		StrictContentLength:   cfg.Security.StrictContentLength,
-		MaxRetries:            cfg.Retry.MaxRetries,
-		RetryDelay:            cfg.Retry.Delay,
-		MaxRetryDelay:         maxRetryDelay,
-		BackoffFactor:         cfg.Retry.BackoffFactor,
-		Jitter:                cfg.Retry.EnableJitter,
-		CustomRetryPolicy:     cfg.Retry.CustomPolicy,
-		UserAgent:             cfg.Middleware.UserAgent,
-		Headers:               cfg.Middleware.Headers,
-		FollowRedirects:       cfg.Middleware.FollowRedirects,
-		MaxRedirects:          cfg.Middleware.MaxRedirects,
-		EnableHTTP2:           cfg.Connection.EnableHTTP2,
-		CookieJar:             cookieJar,
-		EnableCookies:         cfg.Connection.EnableCookies,
-		EnableDoH:             cfg.Connection.EnableDoH,
-		DoHCacheTTL:           cfg.Connection.DoHCacheTTL,
+
+		// Connection settings
+		MaxIdleConns:        cfg.Connection.MaxIdleConns,
+		MaxIdleConnsPerHost: idleConnsPerHost,
+		MaxConnsPerHost:     cfg.Connection.MaxConnsPerHost,
+		ProxyURL:            cfg.Connection.ProxyURL,
+		EnableSystemProxy:   cfg.Connection.EnableSystemProxy,
+		EnableHTTP2:         cfg.Connection.EnableHTTP2,
+		CookieJar:           cookieJar,
+		EnableCookies:       cfg.Connection.EnableCookies,
+		EnableDoH:           cfg.Connection.EnableDoH,
+		DoHCacheTTL:         cfg.Connection.DoHCacheTTL,
+
+		// Security settings
+		TLSConfig:               cfg.Security.TLSConfig,
+		MinTLSVersion:           minTLSVersion,
+		MaxTLSVersion:           maxTLSVersion,
+		InsecureSkipVerify:      cfg.Security.InsecureSkipVerify,
+		MaxResponseBodySize:     cfg.Security.MaxResponseBodySize,
+		MaxDecompressedBodySize: cfg.Security.MaxDecompressedBodySize,
+		ValidateURL:             cfg.Security.ValidateURL,
+		ValidateHeaders:         cfg.Security.ValidateHeaders,
+		AllowPrivateIPs:         cfg.Security.AllowPrivateIPs,
+		StrictContentLength:     cfg.Security.StrictContentLength,
+
+		// Retry settings
+		MaxRetries:        cfg.Retry.MaxRetries,
+		RetryDelay:        cfg.Retry.Delay,
+		MaxRetryDelay:     maxRetryDelay,
+		BackoffFactor:     cfg.Retry.BackoffFactor,
+		Jitter:            cfg.Retry.EnableJitter,
+		CustomRetryPolicy: cfg.Retry.CustomPolicy,
+
+		// Middleware settings
+		UserAgent:       cfg.Middleware.UserAgent,
+		Headers:         cfg.Middleware.Headers,
+		FollowRedirects: cfg.Middleware.FollowRedirects,
+		MaxRedirects:    cfg.Middleware.MaxRedirects,
 	}
 
 	if len(cfg.Security.RedirectWhitelist) > 0 {
@@ -790,10 +787,7 @@ func ReleaseResult(r *Result) {
 	// Always clear up to 64KB and nil the slice for large bodies.
 	body := r.Response.RawBody
 	if len(body) > 0 {
-		clearLen := len(body)
-		if clearLen > 64*1024 {
-			clearLen = 64 * 1024
-		}
+		clearLen := min(len(body), 64*1024)
 		for i := range body[:clearLen] {
 			body[i] = 0
 		}
@@ -839,6 +833,7 @@ func extractRequestCookies(headers http.Header) []*http.Cookie {
 		return nil
 	}
 
+	// Fast path: avoid map lookup when no Cookie header exists
 	cookieHeader := headers.Get("Cookie")
 	if cookieHeader == "" {
 		return nil

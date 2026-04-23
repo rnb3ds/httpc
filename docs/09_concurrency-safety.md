@@ -249,9 +249,9 @@ HTTPC uses the following synchronization mechanisms internally:
 |-----------|-----------|---------|
 | Default Client | `sync.Mutex` + `atomic.Pointer` | Lazy initialization |
 | Connection Pool | `http.Transport` internal | Connection management |
-| Cookie Jar | `sync.RWMutex` | Cookie storage |
+| SessionManager | `sync.RWMutex` | Thread-safe cookie/header session storage |
 | Result Pool | `sync.Pool` | Memory optimization |
-| Config | Immutable after creation | Configuration safety |
+| Config | Immutable after creation (deep copy) | Configuration safety |
 
 ## Thread-Safe Operations Summary
 

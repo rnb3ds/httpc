@@ -29,7 +29,7 @@ type DoHResolver struct {
 }
 
 // Compile-time interface check
-var _ Resolver = (*DoHResolver)(nil)
+var _ resolver = (*DoHResolver)(nil)
 
 // DoHProvider represents a DoH service provider
 type DoHProvider struct {
@@ -196,7 +196,7 @@ func (r *DoHResolver) lookupWithProvider(ctx context.Context, provider *DoHProvi
 	if err != nil {
 		return nil, fmt.Errorf("DoH request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // best-effort cleanup
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("DoH request returned status %d", resp.StatusCode)
@@ -370,7 +370,6 @@ func parseDomain(msg []byte, offset int, depth int) (string, int, error) {
 
 	var labels []string
 	originalOffset := offset
-	compressed := false
 
 	for {
 		if offset >= len(msg) {
@@ -391,10 +390,6 @@ func parseDomain(msg []byte, offset int, depth int) (string, int, error) {
 			}
 			pointer := int(length&0x3F)<<8 | int(msg[offset])
 			offset++
-
-			if !compressed {
-				compressed = true
-			}
 
 			// SECURITY: Pass incremented depth to recursive call
 			compressedName, _, err := parseDomain(msg, pointer, depth+1)

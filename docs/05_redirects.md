@@ -92,17 +92,19 @@ fmt.Printf("Redirect to: %s\n", result.Response.Headers.Get("Location"))
 
 ### Configuration Limits
 
-- **MaxRedirects**: 0-50 (0 = use default of 10)
+- **MaxRedirects**: 0-50 (0 = use Go's default limit of 10 redirects)
 - **Default**: 10 redirects
 - **Validation**: Config validation ensures MaxRedirects is within valid range
+
+**Note:** Setting `MaxRedirects` to 0 does NOT disable redirects — it uses Go's built-in default of 10. To disable redirects entirely, set `FollowRedirects = false`.
 
 ```go
 config := httpc.DefaultConfig()
 config.Middleware.MaxRedirects = 50  // Maximum allowed
 
 // Invalid values will fail validation
-config.Middleware.MaxRedirects = -1  // Error: cannot be negative
-config.Middleware.MaxRedirects = 51  // Error: exceeds maximum of 50
+config.Middleware.MaxRedirects = -1  // Error: Middleware.MaxRedirects must be 0-50, got -1
+config.Middleware.MaxRedirects = 51  // Error: Middleware.MaxRedirects must be 0-50, got 51
 ```
 
 ## Per-Request Control
@@ -278,6 +280,27 @@ if redirectCount >= maxRedirects {
 - **Redirect analysis**: Inspect each redirect response before following
 - **Conditional following**: Follow redirects based on custom criteria
 - **Redirect logging**: Log each redirect for debugging or analytics
+
+## Redirect Whitelist
+
+Restrict redirect destinations to specific domains for security:
+
+```go
+config := httpc.DefaultConfig()
+config.Security.RedirectWhitelist = []string{
+    "api.example.com",
+    "cdn.example.com",
+}
+
+client, err := httpc.New(config)
+```
+
+When `RedirectWhitelist` is set, redirects to domains not in the list will be rejected. This prevents open redirect attacks and ensures redirects only go to trusted domains.
+
+**Use Cases:**
+- Preventing open redirect vulnerabilities
+- Restricting redirects to known CDN domains
+- Compliance with security policies
 
 ## Supported Status Codes
 

@@ -286,6 +286,21 @@ func TestRequest_QueryParameters(t *testing.T) {
 			t.Fatalf("Request failed: %v", err)
 		}
 	})
+
+	t.Run("WithQuery nil value", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Get(server.URL, WithQuery("key", nil))
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+	})
 }
 
 // ----------------------------------------------------------------------------
@@ -576,6 +591,29 @@ func TestRequest_WithBody(t *testing.T) {
 		_, err := client.Post("http://example.com", WithBody(formMap))
 		if err == nil {
 			t.Error("Expected error for nil form map")
+		}
+	})
+
+	t.Run("AutoDetect_UntaggedStruct", func(t *testing.T) {
+		type raw struct {
+			Name string
+			Age  int
+		}
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Content-Type") != "application/json" {
+				t.Errorf("Expected Content-Type: application/json, got %s", r.Header.Get("Content-Type"))
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer client.Close()
+
+		_, err := client.Post(server.URL, WithBody(raw{Name: "test", Age: 30}))
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
 		}
 	})
 }

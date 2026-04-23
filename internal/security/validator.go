@@ -56,8 +56,14 @@ func NewValidatorWithConfig(config *Config) *Validator {
 		return NewValidator()
 	}
 
+	cfg := *config
+	if config.ExemptNets != nil {
+		cfg.ExemptNets = make([]*net.IPNet, len(config.ExemptNets))
+		copy(cfg.ExemptNets, config.ExemptNets)
+	}
+
 	return &Validator{
-		config: config,
+		config: &cfg,
 	}
 }
 
@@ -77,7 +83,7 @@ func (v *Validator) ValidateRequest(req *Request) error {
 	}
 
 	if req.Body != nil {
-		if err := v.validateRequestSize(req.Body); err != nil {
+		if err := v.validateRequestBodySize(req.Body); err != nil {
 			return err
 		}
 	}
@@ -156,7 +162,9 @@ func validateCommonHeaderValue(key, value string) error {
 	return nil
 }
 
-func (v *Validator) validateRequestSize(body any) error {
+// validateRequestBodySize checks the request body against the configured size limit.
+// MaxResponseBodySize serves as a general body-size cap for both request and response payloads.
+func (v *Validator) validateRequestBodySize(body any) error {
 	if v.config.MaxResponseBodySize <= 0 {
 		return nil
 	}
@@ -183,7 +191,7 @@ func (v *Validator) validateRequestSize(body any) error {
 	}
 
 	if size > v.config.MaxResponseBodySize {
-		return fmt.Errorf("request body exceeds %d bytes", v.config.MaxResponseBodySize)
+		return fmt.Errorf("request body size %d exceeds limit %d bytes", size, v.config.MaxResponseBodySize)
 	}
 
 	return nil

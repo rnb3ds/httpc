@@ -223,21 +223,14 @@ func TestClient_Concurrency(t *testing.T) {
 // Package-Level Function Tests
 // ----------------------------------------------------------------------------
 
-func TestPackageLevel_Functions(t *testing.T) {
-	// Setup default client for package-level tests
-	config := DefaultConfig()
-	config.Security.AllowPrivateIPs = true
-	client, _ := New(config)
-	_ = SetDefaultClient(client)
-	defer CloseDefaultClient()
-
+func TestPackageLevel_AllMethods(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}))
 	defer server.Close()
 
-	tests := []struct {
+	methodTests := []struct {
 		name string
 		fn   func(string, ...RequestOption) (*Result, error)
 	}{
@@ -250,17 +243,57 @@ func TestPackageLevel_Functions(t *testing.T) {
 		{"Options", Options},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resp, err := tt.fn(server.URL)
-			if err != nil {
-				t.Fatalf("Package-level %s failed: %v", tt.name, err)
-			}
-			if resp.StatusCode() != http.StatusOK {
-				t.Errorf("Expected status 200, got %d", resp.StatusCode())
-			}
-		})
-	}
+	t.Run("ExplicitClient", func(t *testing.T) {
+		config := DefaultConfig()
+		config.Security.AllowPrivateIPs = true
+		client, err := New(config)
+		if err != nil {
+			t.Fatalf("Failed to create client: %v", err)
+		}
+		_ = SetDefaultClient(client)
+		defer CloseDefaultClient()
+
+		for _, tt := range methodTests {
+			t.Run(tt.name, func(t *testing.T) {
+				resp, err := tt.fn(server.URL)
+				if err != nil {
+					t.Fatalf("Package-level %s failed: %v", tt.name, err)
+				}
+				if resp.StatusCode() != http.StatusOK {
+					t.Errorf("Expected status 200, got %d", resp.StatusCode())
+				}
+			})
+		}
+	})
+
+	t.Run("AutoInit", func(t *testing.T) {
+		// Close explicit client, test auto-initialization path
+		CloseDefaultClient()
+
+		// Set up a new client for auto-init tests
+		cfg := DefaultConfig()
+		cfg.Security.AllowPrivateIPs = true
+		client, err := New(cfg)
+		if err != nil {
+			t.Fatalf("Failed to create client: %v", err)
+		}
+		SetDefaultClient(client)
+		defer CloseDefaultClient()
+
+		for _, tt := range methodTests {
+			t.Run(tt.name, func(t *testing.T) {
+				resp, err := tt.fn(server.URL)
+				if err != nil {
+					t.Fatalf("Auto-init %s failed: %v", tt.name, err)
+				}
+				if resp.StatusCode() != http.StatusOK {
+					t.Errorf("Expected 200, got %d", resp.StatusCode())
+				}
+			})
+		}
+
+		CloseDefaultClient()
+	})
 }
 
 // ----------------------------------------------------------------------------
@@ -665,59 +698,6 @@ func TestGetDefaultClient_Init(t *testing.T) {
 	}
 
 	// Clean up - close the auto-created client
-	CloseDefaultClient()
-}
-
-// ----------------------------------------------------------------------------
-// Package-level error paths
-// ----------------------------------------------------------------------------
-
-func TestPackageLevel_ErrorPaths(t *testing.T) {
-	// Close any existing default client
-	CloseDefaultClient()
-
-	// Package-level functions should auto-initialize and work
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	// These test the getDefaultClient error path + delegation
-	// Set AllowPrivateIPs=true for test server on localhost
-	cfg := DefaultConfig()
-	cfg.Security.AllowPrivateIPs = true
-	client, err := New(cfg)
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
-	SetDefaultClient(client)
-	defer CloseDefaultClient()
-	tests := []struct {
-		name string
-		fn   func() (*Result, error)
-	}{
-		{"Get", func() (*Result, error) { return Get(server.URL) }},
-		{"Post", func() (*Result, error) { return Post(server.URL) }},
-		{"Put", func() (*Result, error) { return Put(server.URL) }},
-		{"Patch", func() (*Result, error) { return Patch(server.URL) }},
-		{"Delete", func() (*Result, error) { return Delete(server.URL) }},
-		{"Head", func() (*Result, error) { return Head(server.URL) }},
-		{"Options", func() (*Result, error) { return Options(server.URL) }},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result, err := tt.fn()
-			if err != nil {
-				t.Fatalf("Package-level %s failed: %v", tt.name, err)
-			}
-			if result.StatusCode() != http.StatusOK {
-				t.Errorf("Expected 200, got %d", result.StatusCode())
-			}
-		})
-	}
-
-	// Clean up
 	CloseDefaultClient()
 }
 

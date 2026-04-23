@@ -2,6 +2,8 @@ package httpc
 
 import (
 	"crypto/tls"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -300,6 +302,7 @@ func TestConfig_TLSVersions(t *testing.T) {
 		}{
 			{"Valid: 1.2-1.3", tls.VersionTLS12, tls.VersionTLS13, false},
 			{"Valid: 1.2-1.2", tls.VersionTLS12, tls.VersionTLS12, false},
+				{"Invalid: Min>Max", tls.VersionTLS13, tls.VersionTLS12, true},
 		}
 
 		for _, tt := range tests {
@@ -340,6 +343,7 @@ func TestConfig_TLSVersions(t *testing.T) {
 
 func TestConfig_Modification(t *testing.T) {
 	config := DefaultConfig()
+	config.Security.AllowPrivateIPs = true
 	originalTimeout := config.Timeouts.Request
 
 	client, err := New(config)
@@ -349,12 +353,25 @@ func TestConfig_Modification(t *testing.T) {
 	defer client.Close()
 
 	// Modify config after client creation
-	config.Timeouts.Request = 1 * time.Second
+	config.Timeouts.Request = 1 * time.Nanosecond
 	config.Retry.MaxRetries = 10
 
-	// Original client should not be affected
+	// Sanity check: config was actually modified
 	if config.Timeouts.Request == originalTimeout {
-		t.Log("Config modification does not affect existing client")
+		t.Fatal("sanity check failed: config should have been modified")
+	}
+
+	// Verify client is unaffected: make a request that would time out
+	// if the client used the modified 1ns timeout.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(10 * time.Millisecond) // Small delay that 1ns timeout can't survive
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	_, err = client.Get(server.URL)
+	if err != nil {
+		t.Errorf("client should use original timeout, not modified 1ns: %v", err)
 	}
 }
 
@@ -371,10 +388,9 @@ func TestConfig_InternalHelpers(t *testing.T) {
 	})
 
 	t.Run("warnTestingConfigInProduction", func(t *testing.T) {
-		// This function should not panic and should handle the test environment
-		// In test environment, it should not print warnings
+		// Verify the function completes without panic in test environment.
+		// In production, this would log a warning; in tests it should be silent.
 		warnTestingConfigInProduction()
-		// No assertion needed - just verify it doesn't panic
 	})
 }
 

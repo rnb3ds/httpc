@@ -132,51 +132,35 @@ func WithQueryMap(params map[string]any) RequestOption {
 	}
 }
 
-// queryValueLength efficiently calculates the string length of a query value
-// without allocating a string. Uses type switching for common types.
+// queryValueLength returns the string length of a formatted query value.
+// Uses the same formatting rules as engine.formatQueryParam to stay consistent.
 func queryValueLength(v any) int {
 	switch val := v.(type) {
 	case string:
 		return len(val)
 	case int:
-		return lenInt(int64(val))
+		return len(strconv.Itoa(val))
 	case int64:
-		return lenInt(val)
+		return len(strconv.FormatInt(val, 10))
 	case int32:
-		return lenInt(int64(val))
+		return len(strconv.FormatInt(int64(val), 10))
 	case uint:
-		return lenUint(uint64(val))
+		return len(strconv.FormatUint(uint64(val), 10))
 	case uint64:
-		return lenUint(val)
+		return len(strconv.FormatUint(val, 10))
 	case uint32:
-		return lenUint(uint64(val))
+		return len(strconv.FormatUint(uint64(val), 10))
 	case float64:
 		return len(strconv.FormatFloat(val, 'f', -1, 64))
 	case float32:
 		return len(strconv.FormatFloat(float64(val), 'f', -1, 32))
 	case bool:
-		if val {
-			return 4 // "true"
-		}
-		return 5 // "false"
+		return len(strconv.FormatBool(val))
 	case fmt.Stringer:
 		return len(val.String())
 	default:
 		return len(fmt.Sprintf("%v", val))
 	}
-}
-
-// lenInt calculates the number of digits in an int64 (including sign if negative)
-func lenInt(v int64) int {
-	if v < 0 {
-		return 1 + lenUint(uint64(-v))
-	}
-	return lenUint(uint64(v))
-}
-
-// lenUint calculates the number of digits in a uint64
-func lenUint(v uint64) int {
-	return len(strconv.FormatUint(v, 10))
 }
 
 // WithJSON sets the request body as JSON and sets Content-Type to application/json.

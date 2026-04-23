@@ -125,7 +125,7 @@ func TestSanitizeURL(t *testing.T) {
 		{
 			name:     "URL with fragment",
 			input:    "https://user:pass@example.com/path#section",
-			expected: "https://***:***@example.com/path#section",
+			expected: "https://***:***@example.com/path",
 		},
 		{
 			name:     "URL without scheme (relative path)",
@@ -266,7 +266,7 @@ func TestClassifyError_ContextErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ClassifyError(tt.err, "https://example.com", "GET", 1)
+			result := classifyError(tt.err, "https://example.com", "GET", 1)
 
 			if result.Type != tt.expectedType {
 				t.Errorf("Expected type %v, got %v", tt.expectedType, result.Type)
@@ -311,7 +311,7 @@ func TestClassifyError_NetworkErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ClassifyError(tt.err, "", "", 0)
+			result := classifyError(tt.err, "", "", 0)
 
 			if result.Type != tt.expectedType {
 				t.Errorf("Expected type %v, got %v", tt.expectedType, result.Type)
@@ -361,7 +361,7 @@ func TestClassifyError_MessagePatterns(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := errors.New(tt.errMsg)
-			result := ClassifyError(err, "", "", 0)
+			result := classifyError(err, "", "", 0)
 
 			if result.Type != tt.expectedType {
 				t.Errorf("Expected type %v, got %v", tt.expectedType, result.Type)
@@ -371,7 +371,7 @@ func TestClassifyError_MessagePatterns(t *testing.T) {
 }
 
 func TestClassifyError_NilError(t *testing.T) {
-	result := ClassifyError(nil, "", "", 0)
+	result := classifyError(nil, "", "", 0)
 
 	if result != nil {
 		t.Errorf("Expected nil for nil error, got %v", result)
@@ -428,7 +428,7 @@ func TestClassifyError_NetError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ClassifyError(tt.err, "", "", 0)
+			result := classifyError(tt.err, "", "", 0)
 
 			if result.Type != tt.expectedType {
 				t.Errorf("Expected type %v, got %v", tt.expectedType, result.Type)
@@ -550,9 +550,9 @@ func TestClassifyError_AdditionalPatterns(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ClassifyError(errors.New(tt.errMsg), "https://example.com", "GET", 1)
+			result := classifyError(errors.New(tt.errMsg), "https://example.com", "GET", 1)
 			if result.Type != tt.expectedType {
-				t.Errorf("ClassifyError(%q) type = %v, want %v", tt.errMsg, result.Type, tt.expectedType)
+				t.Errorf("classifyError(%q) type = %v, want %v", tt.errMsg, result.Type, tt.expectedType)
 			}
 		})
 	}
@@ -844,7 +844,7 @@ func TestClassifyError_UrlErrorWrapping(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ClassifyError(tt.err, "https://example.com", "GET", 1)
+			result := classifyError(tt.err, "https://example.com", "GET", 1)
 			if result == nil {
 				t.Fatal("Expected non-nil result")
 			}
@@ -859,8 +859,8 @@ func TestClassifyError_UrlErrorWrapping(t *testing.T) {
 }
 
 // TestClassifyError_DoubleClassificationPrevention verifies that passing an
-// already-classified *ClientError into ClassifyError returns it directly
-// instead of creating a new wrapper.
+// already-classified *ClientError into classifyError returns a copy with
+// updated fields, preventing shared-pointer mutation between retry attempts.
 func TestClassifyError_DoubleClassificationPrevention(t *testing.T) {
 	originalCause := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
 	original := &ClientError{
@@ -872,10 +872,11 @@ func TestClassifyError_DoubleClassificationPrevention(t *testing.T) {
 		Attempts: 1,
 	}
 
-	result := ClassifyError(original, "https://example.com/api", "POST", 3)
+	result := classifyError(original, "https://example.com/api", "POST", 3)
 
-	if result != original {
-		t.Fatal("Expected same *ClientError instance to be returned")
+	// Must be a distinct pointer to prevent mutation of the original.
+	if result == original {
+		t.Fatal("Expected a new *ClientError copy, not the same pointer")
 	}
 	if result.Type != ErrorTypeNetwork {
 		t.Errorf("Expected type %v, got %v", ErrorTypeNetwork, result.Type)
@@ -894,6 +895,16 @@ func TestClassifyError_DoubleClassificationPrevention(t *testing.T) {
 	}
 	if result.Cause != originalCause {
 		t.Error("Expected Cause preserved")
+	}
+	// Verify original is unmutated.
+	if original.URL != "https://example.com" {
+		t.Errorf("Original was mutated: URL=%q", original.URL)
+	}
+	if original.Method != "GET" {
+		t.Errorf("Original was mutated: Method=%q", original.Method)
+	}
+	if original.Attempts != 1 {
+		t.Errorf("Original was mutated: Attempts=%d", original.Attempts)
 	}
 }
 
@@ -939,7 +950,7 @@ func TestClassifyError_UrlErrorWrappingRetryability(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ClassifyError(tt.err, "https://example.com", "GET", 1)
+			result := classifyError(tt.err, "https://example.com", "GET", 1)
 			if result == nil {
 				t.Fatal("Expected non-nil result")
 			}

@@ -94,7 +94,7 @@ var jsonBufferPool = sync.Pool{
 	},
 }
 
-// pooledStringsReader wraps a strings.Reader and returns it to the pool on EOF
+// pooledStringsReader wraps a strings.Reader and returns it to the pool on EOF or Close.
 type pooledStringsReader struct {
 	reader *strings.Reader
 }
@@ -115,7 +115,16 @@ func (r *pooledStringsReader) Read(p []byte) (n int, err error) {
 	return n, err
 }
 
-// pooledBytesReader wraps a bytes.Reader and returns it to the pool on EOF
+func (r *pooledStringsReader) Close() error {
+	if r.reader != nil {
+		r.reader.Reset("")
+		stringsReaderPool.Put(r.reader)
+		r.reader = nil
+	}
+	return nil
+}
+
+// pooledBytesReader wraps a bytes.Reader and returns it to the pool on EOF or Close.
 type pooledBytesReader struct {
 	reader *bytes.Reader
 }
@@ -134,6 +143,15 @@ func (r *pooledBytesReader) Read(p []byte) (n int, err error) {
 		r.reader = nil
 	}
 	return n, err
+}
+
+func (r *pooledBytesReader) Close() error {
+	if r.reader != nil {
+		r.reader.Reset(nil)
+		bytesReaderPool.Put(r.reader)
+		r.reader = nil
+	}
+	return nil
 }
 
 // getPooledStringsReader gets a strings.Reader from the pool and wraps it
@@ -369,6 +387,15 @@ func (r *pooledMultipartBuffer) Read(p []byte) (n int, err error) {
 	return n, err
 }
 
+func (r *pooledMultipartBuffer) Close() error {
+	if r.buf != nil && r.owned {
+		putMultipartBuffer(r.buf)
+		r.buf = nil
+		r.owned = false
+	}
+	return nil
+}
+
 // getJSONBuffer retrieves a bytes.Buffer from the pool for JSON encoding.
 func getJSONBuffer() *bytes.Buffer {
 	buf, ok := jsonBufferPool.Get().(*bytes.Buffer)
@@ -409,18 +436,27 @@ func (r *pooledJSONBuffer) Read(p []byte) (n int, err error) {
 	return n, err
 }
 
+func (r *pooledJSONBuffer) Close() error {
+	if r.buf != nil && r.owned {
+		putJSONBuffer(r.buf)
+		r.buf = nil
+		r.owned = false
+	}
+	return nil
+}
 
-type RequestProcessor struct {
+
+type requestProcessor struct {
 	config *Config
 }
 
-func NewRequestProcessor(config *Config) *RequestProcessor {
-	return &RequestProcessor{
+func newRequestProcessor(config *Config) *requestProcessor {
+	return &requestProcessor{
 		config: config,
 	}
 }
 
-func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
+func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 	if req.Method() == "" {
 		req.SetMethod("GET")
 	}
@@ -549,10 +585,37 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 		}
 	}
 
-	httpReq, err := http.NewRequestWithContext(req.Context(), req.Method(), parsedURL.String(), body)
-	if err != nil {
-		return nil, fmt.Errorf("create HTTP request failed: %w", err)
+	// Construct http.Request directly to avoid:
+	//   1. parsedURL.String() allocation (URL to string)
+	//   2. url.Parse re-parsing that string back to *url.URL
+	//   3. io.NopCloser wrapper for body readers that implement io.ReadCloser
+	headerSize := max(len(p.config.Headers)+len(req.Headers())+2, 8) // +2 for Content-Type, User-Agent
+
+	var bodyRC io.ReadCloser
+	if body != nil {
+		if rc, ok := body.(io.ReadCloser); ok {
+			bodyRC = rc
+		} else {
+			bodyRC = io.NopCloser(body)
+		}
 	}
+
+	method := req.Method()
+	httpReq := &http.Request{
+		Method:     method,
+		URL:        parsedURL,
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     make(http.Header, headerSize),
+		Body:       bodyRC,
+		Host:       parsedURL.Host,
+	}
+
+	// Set Content-Length from known body types
+	p.setContentLength(httpReq, body)
+
+	httpReq = httpReq.WithContext(req.Context())
 
 	if contentType != "" && httpReq.Header.Get("Content-Type") == "" {
 		httpReq.Header.Set("Content-Type", contentType)
@@ -582,6 +645,29 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 	}
 
 	return httpReq, nil
+}
+
+// setContentLength sets Content-Length on the http.Request for known body types.
+// This avoids the stdlib's reflection-based detection when constructing requests directly.
+func (p *requestProcessor) setContentLength(req *http.Request, body io.Reader) {
+	switch v := body.(type) {
+	case *pooledStringsReader:
+		if v.reader != nil {
+			req.ContentLength = int64(v.reader.Len())
+		}
+	case *pooledBytesReader:
+		if v.reader != nil {
+			req.ContentLength = int64(v.reader.Len())
+		}
+	case *pooledJSONBuffer:
+		if v.buf != nil {
+			req.ContentLength = int64(v.buf.Len())
+		}
+	case *pooledMultipartBuffer:
+		if v.buf != nil {
+			req.ContentLength = int64(v.buf.Len())
+		}
+	}
 }
 
 // escapeQuotes escapes backslashes and double quotes in filenames per RFC 7578.

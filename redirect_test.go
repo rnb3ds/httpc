@@ -301,22 +301,22 @@ func TestRedirect_ChainTracking(t *testing.T) {
 	}
 }
 
+var maxRedirectValidationCases = []struct {
+	name        string
+	maxRedirect int
+	wantErr     bool
+}{
+	{"Valid: 0", 0, false},
+	{"Valid: 10", 10, false},
+	{"Valid: 50", 50, false},
+	{"Invalid: negative", -1, true},
+	{"Invalid: too large", 51, true},
+}
+
 func TestRedirect_ConfigValidation(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name        string
-		maxRedirect int
-		wantErr     bool
-	}{
-		{"Valid: 0", 0, false},
-		{"Valid: 10", 10, false},
-		{"Valid: 50", 50, false},
-		{"Invalid: negative", -1, true},
-		{"Invalid: too large", 51, true},
-	}
-
-	for _, tt := range tests {
+	for _, tt := range maxRedirectValidationCases {
 		t.Run(tt.name, func(t *testing.T) {
 			config := DefaultConfig()
 			config.Middleware.MaxRedirects = tt.maxRedirect
@@ -331,19 +331,7 @@ func TestRedirect_ConfigValidation(t *testing.T) {
 func TestRedirect_OptionValidation(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name        string
-		maxRedirect int
-		wantErr     bool
-	}{
-		{"Valid: 0", 0, false},
-		{"Valid: 10", 10, false},
-		{"Valid: 50", 50, false},
-		{"Invalid: negative", -1, true},
-		{"Invalid: too large", 51, true},
-	}
-
-	for _, tt := range tests {
+	for _, tt := range maxRedirectValidationCases {
 		t.Run(tt.name, func(t *testing.T) {
 			req := &engine.Request{}
 			opt := WithMaxRedirects(tt.maxRedirect)

@@ -43,8 +43,11 @@ Security:
 - Security.MinTLSVersion: TLS 1.2
 - Security.MaxTLSVersion: TLS 1.3
 - Security.MaxResponseBodySize: 10 MB
-- Security.AllowPrivateIPs: true
+- Security.AllowPrivateIPs: false
 - Security.StrictContentLength: true
+- Security.ValidateURL: true
+- Security.ValidateHeaders: true
+- Security.MaxDecompressedBodySize: 100 MB
 
 Retry:
 - Retry.MaxRetries: 3
@@ -88,6 +91,7 @@ defer client.Close()
 - Security.AllowPrivateIPs: true
 - Security.ValidateURL: false
 - Security.ValidateHeaders: false
+- Security.MaxDecompressedBodySize: 100 MB
 - Connection.EnableHTTP2: false
 - Connection.EnableCookies: true
 - Middleware.UserAgent: "httpc-test/1.0"
@@ -119,7 +123,7 @@ client, err := httpc.New()  // Uses balanced by default
 - Connection.MaxIdleConns: 50
 - Connection.MaxConnsPerHost: 10
 - Security.MaxResponseBodySize: 10 MB
-- Security.AllowPrivateIPs: true
+- Security.AllowPrivateIPs: false
 - Connection.EnableHTTP2: true
 - Middleware.FollowRedirects: true
 - Middleware.MaxRedirects: 10
@@ -132,6 +136,76 @@ client, err := httpc.New()  // Uses balanced by default
 - Microservices communication
 
 **✅ Recommended:** This is the default and works for 90% of use cases.
+
+### High Throughput (Performance)
+
+For high-throughput scenarios with larger connection pools:
+
+```go
+client, err := httpc.New(httpc.PerformanceConfig())
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Close()
+```
+
+**Settings:**
+- TLS: 1.2-1.3 (modern security)
+- Timeouts.Request: 60 seconds
+- Timeouts.Dial: 15 seconds
+- Timeouts.TLSHandshake: 15 seconds
+- Timeouts.ResponseHeader: 60 seconds
+- Timeouts.IdleConn: 120 seconds
+- Connection.MaxIdleConns: 100
+- Connection.MaxConnsPerHost: 20
+- Connection.EnableCookies: true
+- Security.MaxResponseBodySize: 50 MB
+- Security.StrictContentLength: false
+- Security.ValidateURL: true
+- Security.ValidateHeaders: true
+- Retry.Delay: 500 milliseconds
+- Retry.BackoffFactor: 1.5
+- Retry.EnableJitter: true
+
+**Use Cases:**
+- High-throughput API clients
+- Microservices communication with low latency
+- Batch processing with many concurrent requests
+- CDN or internal service polling
+
+### Minimal (Lightweight)
+
+For simple, one-off requests without retries or redirects:
+
+```go
+client, err := httpc.New(httpc.MinimalConfig())
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Close()
+```
+
+**Settings:**
+- TLS: 1.2-1.3 (modern security)
+- Timeouts.Dial: 5 seconds
+- Timeouts.TLSHandshake: 5 seconds
+- Timeouts.ResponseHeader: 10 seconds
+- Timeouts.IdleConn: 30 seconds
+- Connection.MaxIdleConns: 10
+- Connection.MaxConnsPerHost: 2
+- Security.MaxResponseBodySize: 1 MB
+- Security.ValidateURL: true
+- Security.ValidateHeaders: true
+- Retry.MaxRetries: 0 (disabled)
+- Retry.Delay: 0
+- Retry.BackoffFactor: 1.0
+- Middleware.FollowRedirects: false
+
+**Use Cases:**
+- Simple one-off HTTP requests
+- CLI tools with minimal overhead
+- Embedded devices with limited resources
+- Scripts that don't need retries
 
 ### Strict (High Security)
 
@@ -347,7 +421,9 @@ client, err := httpc.New(config)
 | `Security.MaxTLSVersion`        | `uint16`      | TLS 1.3 | Maximum TLS version                |
 | `Security.InsecureSkipVerify`   | `bool`        | false   | Skip TLS verification (dangerous)  |
 | `Security.MaxResponseBodySize`  | `int64`       | 10 MB   | Max response body size             |
-| `Security.AllowPrivateIPs`      | `bool`        | true    | Allow private IP addresses         |
+| `Security.MaxDecompressedBodySize` | `int64`    | 100 MB  | Max decompressed response body size (decompression bomb protection) |
+| `Security.AllowPrivateIPs`      | `bool`        | false   | Allow private IP addresses (SSRF protection) |
+| `Security.SSRFExemptCIDRs`      | `[]string`    | nil     | CIDR ranges exempt from private IP blocking |
 | `Security.StrictContentLength`  | `bool`        | true    | Enforce Content-Length validation  |
 | `Security.TLSConfig`            | `*tls.Config` | nil     | Custom TLS configuration           |
 | `Security.ValidateURL`          | `bool`        | true    | Enable URL validation              |
@@ -367,7 +443,7 @@ client, err := httpc.New(config)
 | `Retry.EnableJitter`     | `bool`          | true    | Enable jitter in retry delay |
 | `Retry.CustomPolicy`     | `RetryPolicy`   | nil     | Custom retry logic override |
 
-**Note:** MaxRetryDelay is calculated internally as `min(Delay * BackoffFactor * 3, 30s)`.
+**Note:** MaxRetryDelay is calculated internally. The formula is `min(Delay * BackoffFactor * 3, 30s)`, with a floor of 5s. For default config: `min(1s * 2.0 * 3, 30s) = 6s`. If Retry-After header is present in the response, its value takes precedence (capped at 60s).
 
 ### Middleware
 

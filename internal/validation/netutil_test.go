@@ -48,7 +48,7 @@ func TestIsPrivateOrReservedIP(t *testing.T) {
 		// IPv4 reserved ranges
 		{"IPv4 Class E", "240.0.0.1", true},
 		{"IPv4 This network", "0.1.2.3", true},
-		{"IPv4 CGNAT", "100.64.0.1", false},
+		{"IPv4 CGNAT", "100.64.0.1", true},
 		{"IPv4 Benchmarking", "198.18.0.1", false},
 
 		// IPv4 public addresses
@@ -75,7 +75,7 @@ func TestIsPrivateOrReservedIP(t *testing.T) {
 		{"IPv4-mapped private C", "::ffff:192.168.1.1", true},
 		{"IPv4-mapped public", "::ffff:8.8.8.8", false},
 		{"IPv4-mapped link-local", "::ffff:169.254.1.1", true},
-		{"IPv4-mapped CGNAT", "::ffff:100.64.0.1", false},
+		{"IPv4-mapped CGNAT", "::ffff:100.64.0.1", true},
 
 		// NAT64 well-known prefix (RFC 6052)
 		{"NAT64 mapped loopback", "64:ff9b::7f00:1", true},

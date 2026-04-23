@@ -85,7 +85,7 @@ func ValidateToken(token string) error {
 //   - credType: Description of the credential type for error messages
 //
 // Returns an error if validation fails, nil otherwise.
-func ValidateCredentialStrict(cred string, maxLen int, checkColon bool, credType string) error {
+func validateCredentialStrict(cred string, maxLen int, checkColon bool, credType string) error {
 	// First perform standard validation
 	if err := ValidateCredential(cred, maxLen, checkColon, credType); err != nil {
 		return err
@@ -105,7 +105,7 @@ func ValidateCredentialStrict(cred string, maxLen int, checkColon bool, credType
 //
 // This is recommended for financial, medical, and government applications
 // where defense-in-depth is required.
-func ValidateTokenStrict(token string) error {
+func validateTokenStrict(token string) error {
 	// First perform standard validation
 	if err := ValidateToken(token); err != nil {
 		return err
@@ -149,7 +149,7 @@ func ValidateFieldName(name string, fieldType string) error {
 // ValidateHeaderKeyValue validates HTTP header keys and values.
 func ValidateHeaderKeyValue(key, value string) error {
 	if err := validateInputString(key, MaxHeaderKeyLen, "header key", func(r rune) error {
-		if !IsValidHeaderChar(r) {
+		if !isValidHeaderChar(r) {
 			return fmt.Errorf("invalid character in header key")
 		}
 		return nil
@@ -174,9 +174,9 @@ func ValidateHeaderKeyValue(key, value string) error {
 	return nil
 }
 
-// IsValidHeaderChar checks if a character is valid in HTTP header names.
+// isValidHeaderChar checks if a character is valid in HTTP header names.
 // Optimized with a lookup table for O(1) character validation.
-func IsValidHeaderChar(r rune) bool {
+func isValidHeaderChar(r rune) bool {
 	// Fast path: use lookup table for common ASCII range
 	if r >= 0 && r <= 127 {
 		return validHeaderCharTable[r]
@@ -250,6 +250,9 @@ func ValidateCookieValue(value string) error {
 // ValidateCookie performs comprehensive validation of an HTTP cookie including
 // name, value, domain, and path attributes.
 func ValidateCookie(cookie *http.Cookie) error {
+	if cookie == nil {
+		return fmt.Errorf("cookie is nil")
+	}
 	if err := ValidateCookieName(cookie.Name); err != nil {
 		return err
 	}

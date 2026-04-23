@@ -66,43 +66,6 @@ func putHeader(h *http.Header) {
 	headerPool.Put(h)
 }
 
-// copyHeader efficiently copies headers from src to dst using batch allocation.
-// SECURITY: Allocates new slices for values because dst may hold long-term references.
-// Using pooled slices here would cause memory leaks as the pool expects objects to be returned.
-// OPTIMIZATION: Uses batch allocation to reduce N allocations (one per header) to 1 allocation.
-func copyHeader(dst, src http.Header) {
-	if src == nil || dst == nil {
-		return
-	}
-
-	// Count total values for batch allocation
-	totalValues := 0
-	for _, v := range src {
-		totalValues += len(v)
-	}
-
-	if totalValues == 0 {
-		return
-	}
-
-	// Batch allocate all strings in one slice
-	allValues := make([]string, totalValues)
-	valueIdx := 0
-
-	for k, v := range src {
-		if len(v) == 0 {
-			continue
-		}
-
-		// Slice into the batch allocation for this header's values
-		endIdx := valueIdx + len(v)
-		newVals := allValues[valueIdx:endIdx]
-		copy(newVals, v)
-		dst[k] = newVals
-		valueIdx = endIdx
-	}
-}
-
 // cloneHeader creates a deep copy of headers using batch allocation.
 // Returns a newly allocated header map that can be safely modified.
 // SECURITY: Always allocates new slices to prevent data leakage between requests.
@@ -178,10 +141,10 @@ func putQueryBuilder(sb *strings.Builder) {
 func shouldEscape(c byte) bool {
 	// RFC 3986: unreserved characters are A-Z, a-z, 0-9, '-', '.', '_', '~'
 	// These are the only characters that DON'T need escaping
-	return !((c >= 'A' && c <= 'Z') ||
-		(c >= 'a' && c <= 'z') ||
-		(c >= '0' && c <= '9') ||
-		c == '-' || c == '.' || c == '_' || c == '~')
+	return (c < 'A' || c > 'Z') &&
+		(c < 'a' || c > 'z') &&
+		(c < '0' || c > '9') &&
+		c != '-' && c != '.' && c != '_' && c != '~'
 }
 
 // queryEscapePool pools byte slices for query escaping.

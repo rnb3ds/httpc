@@ -266,3 +266,89 @@ exists := result.HasRequestCookie("session")
 - [Request Inspection](./08_request-inspection.md) - Detailed guide on inspecting requests
 - [cookies_advanced.go](../examples/03_advanced/cookies_advanced.go) - More cookie examples
 - [Configuration](./02_configuration.md) - Cookie jar configuration
+
+## SessionManager Cookie API
+
+For cross-request cookie persistence without a cookie jar, use `SessionManager`:
+
+```go
+// Create a session manager
+session, err := httpc.NewSessionManager()
+if err != nil {
+    log.Fatal(err)
+}
+
+// Set cookies in the session
+session.SetCookie(&http.Cookie{Name: "session", Value: "abc123"})
+session.SetCookies([]*http.Cookie{
+    {Name: "token", Value: "xyz789"},
+})
+
+// Retrieve cookies
+allCookies := session.GetCookies()
+singleCookie := session.GetCookie("session")
+
+// Update session from a response
+session.UpdateFromResult(result)
+
+// Cookie security validation
+config := httpc.DefaultSessionConfig()
+config.CookieSecurity = httpc.StrictCookieSecurityConfig()
+session, err := httpc.NewSessionManager(config)
+
+// Remove cookies
+session.DeleteCookie("session")
+session.ClearCookies()
+```
+
+**SessionManager Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `SetCookie(cookie *http.Cookie) error` | Add or update a cookie |
+| `SetCookies(cookies []*http.Cookie) error` | Add multiple cookies |
+| `GetCookie(name string) *http.Cookie` | Get a specific cookie |
+| `GetCookies() []*http.Cookie` | Get all cookies |
+| `DeleteCookie(name string)` | Remove a cookie by name |
+| `ClearCookies()` | Remove all cookies |
+| `UpdateFromResult(result *Result)` | Update session cookies from a response |
+| `UpdateFromCookies(cookies []*http.Cookie)` | Update session from cookie list |
+| `SetCookieSecurity(config *CookieSecurityConfig)` | Set cookie security validation rules (use `httpc.DefaultCookieSecurityConfig()` or `httpc.StrictCookieSecurityConfig()`) |
+
+## DomainClient Cookie API
+
+`DomainClient` provides built-in cookie management through its session:
+
+```go
+dc, err := httpc.NewDomain("https://api.example.com")
+if err != nil {
+    log.Fatal(err)
+}
+
+// Set cookies (safe for concurrent use)
+dc.SetCookie(&http.Cookie{Name: "session", Value: "abc123"})
+
+// Set multiple cookies
+dc.SetCookies([]*http.Cookie{
+    {Name: "token", Value: "xyz789"},
+})
+
+// Retrieve cookies
+cookies := dc.GetCookies()
+cookie := dc.GetCookie("session")
+
+// Remove cookies
+dc.DeleteCookie("session")
+dc.ClearCookies()
+```
+
+**DomainClienter Cookie Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `SetCookie(cookie *http.Cookie) error` | Add or update a cookie |
+| `SetCookies(cookies []*http.Cookie) error` | Add multiple cookies |
+| `GetCookie(name string) *http.Cookie` | Get a specific cookie |
+| `GetCookies() []*http.Cookie` | Get all cookies |
+| `DeleteCookie(name string)` | Remove a cookie by name |
+| `ClearCookies()` | Remove all cookies |

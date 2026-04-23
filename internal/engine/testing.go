@@ -8,9 +8,9 @@ import (
 	"sync"
 )
 
-// MockTransport is a mock implementation of TransportManager for testing.
+// mockTransport is a mock implementation of transportManager for testing.
 // It allows controlling the response and error returned by RoundTrip.
-type MockTransport struct {
+type mockTransport struct {
 	mu        sync.Mutex
 	Response  *http.Response
 	Error     error
@@ -22,9 +22,9 @@ type MockTransport struct {
 	RedirectChain []string
 }
 
-// NewMockTransport creates a new MockTransport with a predefined response.
-func NewMockTransport(statusCode int, body string) *MockTransport {
-	return &MockTransport{
+// newMockTransport creates a new mockTransport with a predefined response.
+func newMockTransport(statusCode int, body string) *mockTransport {
+	return &mockTransport{
 		Response: &http.Response{
 			StatusCode: statusCode,
 			Status:     http.StatusText(statusCode),
@@ -34,8 +34,8 @@ func NewMockTransport(statusCode int, body string) *MockTransport {
 	}
 }
 
-// RoundTrip implements TransportManager.
-func (m *MockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+// RoundTrip implements transportManager.
+func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -50,13 +50,13 @@ func (m *MockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return m.Response, nil
 }
 
-// SetRedirectPolicy implements TransportManager.
-func (m *MockTransport) SetRedirectPolicy(ctx context.Context, followRedirects bool, maxRedirects int) (context.Context, func()) {
+// SetRedirectPolicy implements transportManager.
+func (m *mockTransport) SetRedirectPolicy(ctx context.Context, followRedirects bool, maxRedirects int) (context.Context, func()) {
 	return ctx, func() {}
 }
 
-// GetRedirectChain implements TransportManager.
-func (m *MockTransport) GetRedirectChain(ctx context.Context) []string {
+// GetRedirectChain implements transportManager.
+func (m *mockTransport) GetRedirectChain(ctx context.Context) []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -65,13 +65,13 @@ func (m *MockTransport) GetRedirectChain(ctx context.Context) []string {
 	return chain
 }
 
-// Close implements TransportManager.
-func (m *MockTransport) Close() error {
+// Close implements transportManager.
+func (m *mockTransport) Close() error {
 	return nil
 }
 
 // SetResponse sets the response to return for subsequent requests.
-func (m *MockTransport) SetResponse(statusCode int, body string) {
+func (m *mockTransport) SetResponse(statusCode int, body string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -84,7 +84,7 @@ func (m *MockTransport) SetResponse(statusCode int, body string) {
 }
 
 // SetError sets the error to return for subsequent requests.
-func (m *MockTransport) SetError(err error) {
+func (m *mockTransport) SetError(err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -92,7 +92,7 @@ func (m *MockTransport) SetError(err error) {
 }
 
 // GetCallCount returns the number of times RoundTrip was called.
-func (m *MockTransport) GetCallCount() int {
+func (m *mockTransport) GetCallCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -100,7 +100,7 @@ func (m *MockTransport) GetCallCount() int {
 }
 
 // GetLastRequest returns the last request made, or nil if none.
-func (m *MockTransport) GetLastRequest() *http.Request {
+func (m *mockTransport) GetLastRequest() *http.Request {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -111,7 +111,7 @@ func (m *MockTransport) GetLastRequest() *http.Request {
 }
 
 // Reset clears all recorded state.
-func (m *MockTransport) Reset() {
+func (m *mockTransport) Reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

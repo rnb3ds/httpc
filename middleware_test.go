@@ -274,7 +274,7 @@ func TestMetricsMiddleware(t *testing.T) {
 	}
 }
 
-func TestZeroOverheadNoMiddleware(t *testing.T) {
+func TestClient_NoMiddleware_Succeeds(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
