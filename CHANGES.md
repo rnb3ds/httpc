@@ -4,6 +4,56 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ---
 
+## v1.4.0 - Security Hardening, Performance & API Unification (2026-04-24)
+
+### Breaking
+- Config restructured from 39 flat fields to 5 sub-structs (Timeouts, Connection, Security, Retry, Middleware) — all field paths changed (e.g. `cfg.Timeout` → `cfg.Timeouts.Request`)
+- NewDomain returns DomainClienter interface instead of *DomainClient
+- NewSessionManager() merged with NewSessionManagerWithConfig() into NewSessionManager(config ...*SessionConfig) returning (*SessionManager, error)
+- ClassifyError removed from public API
+- AuditMiddlewareJSON removed — use AuditMiddlewareWithConfig with Format:"json"
+- AllowPrivateIPs default changed from true to false (SSRF protection enabled by default)
+
+### Added
+- WithStreamBody() option for streaming response mode (avoids OOM on large downloads)
+- SSRFExemptCIDRs field in SecurityConfig for granular SSRF bypass (VPN/VPC CIDR ranges)
+- CookieSecurityConfig type alias with DefaultCookieSecurityConfig()/StrictCookieSecurityConfig() helpers
+- IsSensitiveQueryParam() helper and BodyAuto/BodyMultipart constants
+- Context-aware download methods: DownloadFileWithContext, DownloadWithOptionsWithContext
+- DownloadResult.ResponseCookies field for download cookie access
+- SessionManager.UpdateFromCookies() method and IsClosed() client method
+- PerformanceConfig() and MinimalConfig() config presets
+- Comprehensive docs/ directory (9 files) and new examples for session, retry, dynamic methods, context downloads
+
+### Changed
+- ~34-38% memory reduction and 2-16% latency improvement across all benchmarks
+- Downloads use streaming io.Copy instead of full-body buffering
+- Error classification unwraps *url.Error for accurate DNS/TLS/network error types
+- DNS rebinding protection: resolve→validate→dial-by-IP replaces TOCTOU-vulnerable hostname dialing
+- Redirect limit off-by-one fixed: MaxRedirects=2 now correctly allows 2 redirects
+- Retry-After header delay capped at 60s to prevent indefinite waits
+- Cookie security enforced in UpdateFromResult/UpdateFromCookies (was bypassable)
+- Redirect errors classified as non-retryable; URL cache auto-compacts when oversized
+
+### Fixed
+- Data races: ClientError mutation in retry loop, metrics torn reads, DNS cache TOCTOU, session pool type assertion
+- Resource leaks: response pool in retry loop, time.After timer leak, streaming goroutine leak, download Result never returned to pool
+- SSRF blocking configured proxy connections — proxy addresses now auto-exempted from validation
+- SSRF over-blocking: removed 198.18.0.0/15 (Clash/Surge) and CGNAT 100.64.0.0/10 (Tailscale/WireGuard) from blocklist
+- DNS wire parser variable shadowing causing wrong answer section offset
+- Compressed response size check comparing decompressed size against wrong limit
+- Downloads bypassing middleware chain entirely
+- WithMaxRetries(0) semantic ambiguity — 0 now means "disabled", -1 means "not set"
+- Cookie pool sensitive data residual between requests
+
+### Performance
+- SimpleGET: 93→91 allocs/op, POST_JSON: 130→122 allocs/op (-6.2%) and ns/op -5.0%
+- WithRetry: memory -38%, QueryParams: allocs -3.2% and ns/op -6.2%
+- Large response: -32% memory, Deflate decompression: -12% latency / -22% memory
+- Concurrent benchmarks: -6% latency improvement across the board
+
+---
+
 ## v1.3.9 - API Unification & Performance Optimization (2026-03-24)
 
 ### Breaking Changes
@@ -72,55 +122,6 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ### Breaking Changes
 - `DoHResolver` now implements `io.Closer`; callers should call `Close()` for proper cleanup
-
----
-
-## v1.3.7.1 - DNS-over-HTTPS, Proxy Detection & Code Quality (2026-01-22)
-
-### Added
-- **DNS-over-HTTPS (DoH) Resolver**: Encrypted DNS resolution with multiple providers (Cloudflare, Google, AliDNS)
-  - Built-in caching with configurable TTL (default: 5 minutes)
-  - Automatic fallback to system DNS when DoH fails
-  - Helps bypass DNS pollution and prevents DNS hijacking
-  - Configurable via `EnableDoH` and `DoHCacheTTL` options
-- **Configurable System Proxy Detection**: New `EnableSystemProxy` option for explicit control over automatic system proxy detection
-  - Supports Windows Registry, macOS system settings, and environment variables
-  - Proxy priority: Manual ProxyURL > System Proxy > Direct Connection
-  - Default: `false` (requires explicit opt-in)
-- **Cross-Platform System Proxy Detection**: Automatic detection across Windows, macOS, and Linux platforms
-  - Windows: Reads from Registry (`Internet Settings`)
-  - All platforms: Falls back to `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` env vars
-- **New IP Validation Utilities in `internal/validation`**: Shared IP validation functions
-  - `IsPrivateOrReservedIP()` for private/reserved IP detection
-  - `ValidateIP()` for SSRF protection
-  - `IsLocalhost()` for localhost detection
-  - Single source of truth for network security checks
-
-### Changed
-- **IP Validation Logic**: Consolidated duplicate IP validation code (~60 lines) into `internal/validation/netutil.go`
-- **Cookie Validation**: Centralized in `internal/validation/common.go`, removed duplication from `public_options.go` and `domain_client.go`
-- **Cross-Platform Path Validation**: Enhanced `isSystemPath()` with platform-specific system paths for Windows, macOS, and Linux
-  - Environment variable expansion on Windows (`%SystemRoot%`, `%windir%`)
-  - Proper case-insensitive comparison on Windows, case-sensitive on Unix
-- **FormData Performance**: Replaced JSON serialization/deserialization with type reflection-based detection
-- **Constants**: Added `maxURLLen` constant, replaced hard-coded timeout values with named constants
-- **Metrics**: Removed unused `idleConns` field and `IdleConnections` metric
-
-### Fixed
-- **Windows Proxy Detection**: Replaced deprecated `syscall.StringToUTF16Ptr()` with `windows.UTF16PtrFromString()` from `golang.org/x/sys/windows`
-- **Dead Code**: Removed unused `isValidHeaderByte()` function from `types.go`
-
-### API Compatibility
-- **Breaking Change**: System proxy detection no longer automatic by default
-  - Set `EnableSystemProxy: true` to restore old behavior
-  - Code relying on implicit system proxy detection needs migration
-- **No Breaking Changes to Public API**: All modifications are internal refactoring except `EnableSystemProxy` default behavior
-
-### Impact
-- **Maintainability**: Reduced code duplication by ~150 lines through package consolidation
-- **Cross-Platform**: System path detection works correctly on Windows, macOS, and Linux
-- **Testability**: `getOS()` function provides OS detection for internal use
-- **Security**: Consistent IP and cookie validation across all code paths
 
 ---
 
