@@ -38,9 +38,9 @@ func TestParseWindowsProxyString(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:     "Whitespace-only string returns error",
-			input:    "   ",
-			wantErr:  true,
+			name:    "Whitespace-only string returns error",
+			input:   "   ",
+			wantErr: true,
 		},
 		{
 			name:     "Per-protocol returns first matching protocol",
@@ -130,9 +130,9 @@ func TestParseWindowsProxyString_ProtocolPriority(t *testing.T) {
 // is valid and usable by an http.Transport.
 func TestParseWindowsProxyString_URLVerification(t *testing.T) {
 	tests := []struct {
-		name       string
-		input      string
-		wantURL    string
+		name    string
+		input   string
+		wantURL string
 	}{
 		{
 			name:    "Simple proxy gets http scheme prepended",

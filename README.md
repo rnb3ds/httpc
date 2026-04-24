@@ -209,6 +209,9 @@ httpc.WithFile("file", "document.pdf", fileBytes)
 // Raw body (auto-detect Content-Type)
 httpc.WithBody([]byte("raw data"))
 httpc.WithBinary(binaryData, "application/pdf")
+
+// Stream body (for large request bodies)
+httpc.WithStreamBody(true)
 ```
 
 ### Cookies
@@ -270,7 +273,7 @@ httpc.WithOnResponse(func(resp httpc.ResponseMutator) error {
 | **Headers** | `WithHeader(key, value)`, `WithHeaderMap(map)`, `WithUserAgent(ua)` |
 | **Auth** | `WithBearerToken(token)`, `WithBasicAuth(user, pass)` |
 | **Query** | `WithQuery(key, value)`, `WithQueryMap(map)` |
-| **Body** | `WithJSON(data)`, `WithXML(data)`, `WithForm(map)`, `WithFormData(form)`, `WithFile(field, filename, content)`, `WithBody(data)`, `WithBinary([]byte, contentType?)` |
+| **Body** | `WithJSON(data)`, `WithXML(data)`, `WithForm(map)`, `WithFormData(form)`, `WithFile(field, filename, content)`, `WithBody(data, kind?)`, `WithBinary([]byte, contentType?)`, `WithStreamBody(bool)` |
 | **Cookies** | `WithCookie(cookie)`, `WithCookieMap(map)`, `WithCookieString("a=1; b=2")`, `WithSecureCookie(config)` |
 | **Control** | `WithTimeout(dur)`, `WithMaxRetries(n)`, `WithContext(ctx)` |
 | **Redirects** | `WithFollowRedirects(bool)`, `WithMaxRedirects(n)` |
@@ -881,7 +884,7 @@ if errors.As(err, &clientErr) {
 HTTPC is designed to be goroutine-safe:
 
 ```go
-client, _ := httpc.New()
+client, _ := httpc.New() // Uses DefaultConfig() internally
 defer client.Close()
 
 var wg sync.WaitGroup

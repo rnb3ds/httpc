@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,6 +24,7 @@ type PoolManager struct {
 
 	transport   *http.Transport
 	dohResolver *dns.DoHResolver
+	proxyAddrs  []string
 
 	activeConns   int64
 	totalConns    int64
@@ -177,6 +179,7 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 			return nil, fmt.Errorf("invalid proxy URL: %w", err)
 		}
 		transport.Proxy = http.ProxyURL(proxyURL)
+		pm.proxyAddrs = append(pm.proxyAddrs, proxyURL.Host)
 	} else if config.EnableSystemProxy {
 		// No manual proxy, but system proxy detection is enabled
 		// Automatically detect system proxy settings (reads from Windows registry,
@@ -184,6 +187,11 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 		detector := proxy.NewDetector()
 		if proxyFunc := detector.GetProxyFunc(); proxyFunc != nil {
 			transport.Proxy = proxyFunc
+			testURL, _ := url.Parse("https://example.com")
+			testReq := &http.Request{URL: testURL}
+			if pu, err := proxyFunc(testReq); err == nil && pu != nil {
+				pm.proxyAddrs = append(pm.proxyAddrs, pu.Host)
+			}
 		}
 		// If proxyFunc is nil, transport.Proxy remains nil (direct connection)
 	}
@@ -209,6 +217,28 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 			return nil, fmt.Errorf("connection pool exhausted (max %d)", pm.config.MaxTotalConns)
 		}
 		startTime := time.Now()
+
+		// Proxy connections bypass SSRF validation and DoH resolution —
+		// the proxy address is explicitly configured by the user.
+		if pm.isProxyAddr(address) {
+			conn, err := dialer.DialContext(ctx, network, address)
+			connTime := time.Since(startTime).Nanoseconds()
+			stats := pm.updateConnectionMetrics(address, connTime, err == nil)
+
+			if err != nil {
+				atomic.AddInt64(&pm.rejectedConns, 1)
+				return nil, fmt.Errorf("proxy connection failed: %w", err)
+			}
+
+			atomic.AddInt64(&pm.totalConns, 1)
+			atomic.AddInt64(&pm.activeConns, 1)
+			return &trackedConn{
+				Conn:  conn,
+				pm:    pm,
+				host:  address,
+				stats: stats,
+			}, nil
+		}
 
 		// If DoH is enabled, resolve the address using DoH and dial the IP directly
 		if pm.dohResolver != nil {
@@ -336,6 +366,10 @@ func (pm *PoolManager) resolveAndValidateAddress(address string) (string, error)
 
 	// Return the first validated IP for direct dialing to prevent DNS rebinding
 	return net.JoinHostPort(ips[0].String(), port), nil
+}
+
+func (pm *PoolManager) isProxyAddr(address string) bool {
+	return slices.Contains(pm.proxyAddrs, address)
 }
 
 func (pm *PoolManager) createTLSConfig() *tls.Config {

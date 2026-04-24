@@ -424,21 +424,6 @@ func TestUtilityFunctions(t *testing.T) {
 		}
 	})
 
-	t.Run("DefaultDownloadConfig", func(t *testing.T) {
-		filePath := "test/file.txt"
-		opts := DefaultDownloadConfig()
-		opts.FilePath = filePath
-
-		if opts.FilePath != filePath {
-			t.Errorf("Expected FilePath %s, got %s", filePath, opts.FilePath)
-		}
-		if opts.Overwrite != false {
-			t.Error("Expected Overwrite to be false")
-		}
-		if opts.ResumeDownload != false {
-			t.Error("Expected ResumeDownload to be false")
-		}
-	})
 }
 
 // ----------------------------------------------------------------------------
@@ -569,49 +554,26 @@ func TestRequest_CallbackErrors(t *testing.T) {
 	}))
 	defer server.Close()
 
-	t.Run("NilOnRequestCallback", func(t *testing.T) {
-		client, _ := newTestClient()
-		defer client.Close()
+	tests := []struct {
+		name string
+		opt  RequestOption
+	}{
+		{"NilOnRequestCallback", WithOnRequest(nil)},
+		{"NilOnResponseCallback", WithOnResponse(nil)},
+		{"OnRequestError", WithOnRequest(func(req RequestMutator) error { return fmt.Errorf("onRequest error") })},
+		{"OnResponseError", WithOnResponse(func(resp ResponseMutator) error { return fmt.Errorf("onResponse error") })},
+	}
 
-		_, err := client.Get(server.URL, WithOnRequest(nil))
-		if err == nil {
-			t.Error("Expected error for nil onRequest callback")
-		}
-	})
-
-	t.Run("NilOnResponseCallback", func(t *testing.T) {
-		client, _ := newTestClient()
-		defer client.Close()
-
-		_, err := client.Get(server.URL, WithOnResponse(nil))
-		if err == nil {
-			t.Error("Expected error for nil onResponse callback")
-		}
-	})
-
-	t.Run("OnRequestError", func(t *testing.T) {
-		client, _ := newTestClient()
-		defer client.Close()
-
-		_, err := client.Get(server.URL, WithOnRequest(func(req RequestMutator) error {
-			return fmt.Errorf("onRequest error")
-		}))
-		if err == nil {
-			t.Error("Expected error from onRequest callback")
-		}
-	})
-
-	t.Run("OnResponseError", func(t *testing.T) {
-		client, _ := newTestClient()
-		defer client.Close()
-
-		_, err := client.Get(server.URL, WithOnResponse(func(resp ResponseMutator) error {
-			return fmt.Errorf("onResponse error")
-		}))
-		if err == nil {
-			t.Error("Expected error from onResponse callback")
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, _ := newTestClient()
+			defer client.Close()
+			_, err := client.Get(server.URL, tt.opt)
+			if err == nil {
+				t.Error("Expected error")
+			}
+		})
+	}
 }
 
 // ----------------------------------------------------------------------------

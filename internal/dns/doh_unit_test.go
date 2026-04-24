@@ -22,12 +22,12 @@ func buildDNSWireResponse(id uint16, domain string, answers []struct {
 	var buf []byte
 
 	// Header (12 bytes)
-	buf = append(buf, byte(id>>8), byte(id))                       // ID
-	buf = append(buf, 0x81, 0x80)                                   // Flags: standard response, no error
-	buf = append(buf, 0x00, 0x01)                                   // QDCOUNT = 1
-	buf = append(buf, byte(len(answers)>>8), byte(len(answers)))    // ANCOUNT
-	buf = append(buf, 0x00, 0x00)                                   // NSCOUNT = 0
-	buf = append(buf, 0x00, 0x00)                                   // ARCOUNT = 0
+	buf = append(buf, byte(id>>8), byte(id))                     // ID
+	buf = append(buf, 0x81, 0x80)                                // Flags: standard response, no error
+	buf = append(buf, 0x00, 0x01)                                // QDCOUNT = 1
+	buf = append(buf, byte(len(answers)>>8), byte(len(answers))) // ANCOUNT
+	buf = append(buf, 0x00, 0x00)                                // NSCOUNT = 0
+	buf = append(buf, 0x00, 0x00)                                // ARCOUNT = 0
 
 	// Question section
 	for _, label := range append(splitDomain(domain), "") {
@@ -540,7 +540,7 @@ func TestParseWireFormatResponse_Success(t *testing.T) {
 		// Question section
 		0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e', // label "example"
 		0x03, 'c', 'o', 'm', // label "com"
-		0x00, // null terminator
+		0x00,       // null terminator
 		0x00, 0x01, // QTYPE = A (1)
 		0x00, 0x01, // QCLASS = IN (1)
 		// Answer section

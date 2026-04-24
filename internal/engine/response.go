@@ -339,7 +339,12 @@ func (p *responseProcessor) createDecompressor(reader io.Reader, encoding string
 				// The discarded reader will be garbage collected.
 				return gzip.NewReader(reader)
 			}
-			return &pooledGzipReader{Reader: pooled}, nil
+			wrapper, _ := gzipReaderWrapperPool.Get().(*pooledGzipReader)
+			if wrapper == nil {
+				wrapper = &pooledGzipReader{}
+			}
+			wrapper.Reader = pooled
+			return wrapper, nil
 		}
 		return gzip.NewReader(reader)
 	case "deflate":
@@ -353,7 +358,12 @@ func (p *responseProcessor) createDecompressor(reader io.Reader, encoding string
 					// The discarded reader will be garbage collected.
 					return flate.NewReader(reader), nil
 				}
-				return &pooledFlateReader{reader: pooled}, nil
+				wrapper, _ := flateReaderWrapperPool.Get().(*pooledFlateReader)
+				if wrapper == nil {
+					wrapper = &pooledFlateReader{}
+				}
+				wrapper.reader = pooled
+				return wrapper, nil
 			}
 			// Doesn't implement Resetter, discard and create new
 		}
@@ -374,6 +384,11 @@ type pooledGzipReader struct {
 	*gzip.Reader
 }
 
+// gzipReaderWrapperPool reduces allocations for the pooledGzipReader wrapper struct.
+var gzipReaderWrapperPool = sync.Pool{
+	New: func() any { return &pooledGzipReader{} },
+}
+
 func (r *pooledGzipReader) Close() error {
 	if r.Reader == nil {
 		return nil
@@ -383,6 +398,8 @@ func (r *pooledGzipReader) Close() error {
 	_ = r.Reader.Reset(bytes.NewReader(nil)) // reset before returning to pool
 	gzipReaderPool.Put(r.Reader)
 	r.Reader = nil
+	// Return wrapper to pool
+	gzipReaderWrapperPool.Put(r)
 	return err
 }
 
@@ -390,6 +407,11 @@ func (r *pooledGzipReader) Close() error {
 // flate.NewReader returns an io.ReadCloser that also implements flate.Resetter.
 type pooledFlateReader struct {
 	reader io.ReadCloser
+}
+
+// flateReaderWrapperPool reduces allocations for the pooledFlateReader wrapper struct.
+var flateReaderWrapperPool = sync.Pool{
+	New: func() any { return &pooledFlateReader{} },
 }
 
 func (r *pooledFlateReader) Read(p []byte) (n int, err error) {
@@ -414,6 +436,8 @@ func (r *pooledFlateReader) Close() error {
 		_ = r.reader.Close()
 	}
 	r.reader = nil
+	// Return wrapper to pool
+	flateReaderWrapperPool.Put(r)
 	return nil
 }
 

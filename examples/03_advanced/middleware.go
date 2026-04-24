@@ -141,7 +141,7 @@ func demonstrateMetricsMiddleware() {
 	for i := 1; i <= 5; i++ {
 		_, err := client.Get("https://httpbin.org/delay/1")
 		if err != nil {
-			// Expected for some errors
+			_ = err // error details captured by metrics middleware above
 		}
 	}
 

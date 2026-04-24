@@ -209,6 +209,9 @@ httpc.WithFile("file", "document.pdf", fileBytes)
 // 原始请求体 (自动检测 Content-Type)
 httpc.WithBody([]byte("raw data"))
 httpc.WithBinary(binaryData, "application/pdf")
+
+// 流式请求体 (用于大型请求体)
+httpc.WithStreamBody(true)
 ```
 
 ### Cookie
@@ -270,7 +273,7 @@ httpc.WithOnResponse(func(resp httpc.ResponseMutator) error {
 | **请求头** | `WithHeader(key, value)`, `WithHeaderMap(map)`, `WithUserAgent(ua)` |
 | **认证** | `WithBearerToken(token)`, `WithBasicAuth(user, pass)` |
 | **查询参数** | `WithQuery(key, value)`, `WithQueryMap(map)` |
-| **请求体** | `WithJSON(data)`, `WithXML(data)`, `WithForm(map)`, `WithFormData(form)`, `WithFile(field, filename, content)`, `WithBody(data)`, `WithBinary([]byte, contentType?)` |
+| **请求体** | `WithJSON(data)`, `WithXML(data)`, `WithForm(map)`, `WithFormData(form)`, `WithFile(field, filename, content)`, `WithBody(data, kind?)`, `WithBinary([]byte, contentType?)`, `WithStreamBody(bool)` |
 | **Cookie** | `WithCookie(cookie)`, `WithCookieMap(map)`, `WithCookieString("a=1; b=2")`, `WithSecureCookie(config)` |
 | **控制** | `WithTimeout(dur)`, `WithMaxRetries(n)`, `WithContext(ctx)` |
 | **重定向** | `WithFollowRedirects(bool)`, `WithMaxRedirects(n)` |
@@ -881,7 +884,7 @@ if errors.As(err, &clientErr) {
 HTTPC 设计为 goroutine 安全：
 
 ```go
-client, _ := httpc.New()
+client, _ := httpc.New() // 内部使用 DefaultConfig()
 defer client.Close()
 
 var wg sync.WaitGroup

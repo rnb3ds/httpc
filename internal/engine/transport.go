@@ -229,7 +229,7 @@ func (t *transport) checkRedirect(req *http.Request, via []*http.Request) error 
 	}
 
 	// Check redirect limit (0 means unlimited)
-	if settings.maxRedirects > 0 && len(via) >= settings.maxRedirects {
+	if settings.maxRedirects > 0 && len(via) > settings.maxRedirects {
 		return fmt.Errorf("stopped after %d redirects", settings.maxRedirects)
 	}
 
@@ -308,18 +308,12 @@ type redirectContextKey struct{}
 //	defer cleanup()
 //
 // SECURITY: Failure to call cleanup will cause memory leaks and pool exhaustion.
-func (t *transport) SetRedirectPolicy(ctx context.Context, followRedirects bool, maxRedirects int) (context.Context, func()) {
+func (t *transport) SetRedirectPolicy(ctx context.Context, followRedirects bool, maxRedirects int) (context.Context, *redirectSettings) {
 	settings := getRedirectSettings()
 	settings.followRedirects = followRedirects
 	settings.maxRedirects = maxRedirects
 	newCtx := context.WithValue(ctx, redirectContextKey{}, settings)
-
-	// Return cleanup function that captures the settings reference
-	cleanup := func() {
-		putRedirectSettings(settings)
-	}
-
-	return newCtx, cleanup
+	return newCtx, settings
 }
 
 // GetRedirectChain returns the redirect chain from the context

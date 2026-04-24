@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -133,34 +132,8 @@ func WithQueryMap(params map[string]any) RequestOption {
 }
 
 // queryValueLength returns the string length of a formatted query value.
-// Uses the same formatting rules as engine.formatQueryParam to stay consistent.
 func queryValueLength(v any) int {
-	switch val := v.(type) {
-	case string:
-		return len(val)
-	case int:
-		return len(strconv.Itoa(val))
-	case int64:
-		return len(strconv.FormatInt(val, 10))
-	case int32:
-		return len(strconv.FormatInt(int64(val), 10))
-	case uint:
-		return len(strconv.FormatUint(uint64(val), 10))
-	case uint64:
-		return len(strconv.FormatUint(val, 10))
-	case uint32:
-		return len(strconv.FormatUint(uint64(val), 10))
-	case float64:
-		return len(strconv.FormatFloat(val, 'f', -1, 64))
-	case float32:
-		return len(strconv.FormatFloat(float64(val), 'f', -1, 32))
-	case bool:
-		return len(strconv.FormatBool(val))
-	case fmt.Stringer:
-		return len(val.String())
-	default:
-		return len(fmt.Sprintf("%v", val))
-	}
+	return len(engine.FormatQueryParam(v))
 }
 
 // WithJSON sets the request body as JSON and sets Content-Type to application/json.

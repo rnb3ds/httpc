@@ -111,6 +111,7 @@ func (r *pooledStringsReader) Read(p []byte) (n int, err error) {
 		r.reader.Reset("")
 		stringsReaderPool.Put(r.reader)
 		r.reader = nil
+		stringsReaderWrapperPool.Put(r)
 	}
 	return n, err
 }
@@ -121,6 +122,7 @@ func (r *pooledStringsReader) Close() error {
 		stringsReaderPool.Put(r.reader)
 		r.reader = nil
 	}
+	stringsReaderWrapperPool.Put(r)
 	return nil
 }
 
@@ -141,6 +143,7 @@ func (r *pooledBytesReader) Read(p []byte) (n int, err error) {
 		r.reader.Reset(nil)
 		bytesReaderPool.Put(r.reader)
 		r.reader = nil
+		bytesReaderWrapperPool.Put(r)
 	}
 	return n, err
 }
@@ -151,7 +154,18 @@ func (r *pooledBytesReader) Close() error {
 		bytesReaderPool.Put(r.reader)
 		r.reader = nil
 	}
+	bytesReaderWrapperPool.Put(r)
 	return nil
+}
+
+// stringsReaderWrapperPool reduces allocations for pooledStringsReader wrapper structs.
+var stringsReaderWrapperPool = sync.Pool{
+	New: func() any { return &pooledStringsReader{} },
+}
+
+// bytesReaderWrapperPool reduces allocations for pooledBytesReader wrapper structs.
+var bytesReaderWrapperPool = sync.Pool{
+	New: func() any { return &pooledBytesReader{} },
 }
 
 // getPooledStringsReader gets a strings.Reader from the pool and wraps it
@@ -161,7 +175,12 @@ func getPooledStringsReader(s string) io.Reader {
 		reader = &strings.Reader{}
 	}
 	reader.Reset(s)
-	return &pooledStringsReader{reader: reader}
+	wrapper, _ := stringsReaderWrapperPool.Get().(*pooledStringsReader)
+	if wrapper == nil {
+		wrapper = &pooledStringsReader{}
+	}
+	wrapper.reader = reader
+	return wrapper
 }
 
 // getPooledBytesReader gets a bytes.Reader from the pool and wraps it
@@ -171,7 +190,12 @@ func getPooledBytesReader(b []byte) io.Reader {
 		reader = &bytes.Reader{}
 	}
 	reader.Reset(b)
-	return &pooledBytesReader{reader: reader}
+	wrapper, _ := bytesReaderWrapperPool.Get().(*pooledBytesReader)
+	if wrapper == nil {
+		wrapper = &pooledBytesReader{}
+	}
+	wrapper.reader = reader
+	return wrapper
 }
 
 // urlCache provides a thread-safe LRU-like cache for parsed URLs
@@ -373,6 +397,22 @@ type pooledMultipartBuffer struct {
 	owned bool // Tracks if buffer still needs to be returned to pool
 }
 
+// multipartBufferWrapperPool reduces allocations for pooledMultipartBuffer wrapper structs.
+var multipartBufferWrapperPool = sync.Pool{
+	New: func() any { return &pooledMultipartBuffer{} },
+}
+
+// getPooledMultipartBufferWrapper creates a pooledMultipartBuffer from the pool.
+func getPooledMultipartBufferWrapper(buf *bytes.Buffer) *pooledMultipartBuffer {
+	wrapper, _ := multipartBufferWrapperPool.Get().(*pooledMultipartBuffer)
+	if wrapper == nil {
+		wrapper = &pooledMultipartBuffer{}
+	}
+	wrapper.buf = buf
+	wrapper.owned = true
+	return wrapper
+}
+
 func (r *pooledMultipartBuffer) Read(p []byte) (n int, err error) {
 	if r.buf == nil {
 		return 0, io.EOF
@@ -383,6 +423,7 @@ func (r *pooledMultipartBuffer) Read(p []byte) (n int, err error) {
 		putMultipartBuffer(r.buf)
 		r.buf = nil
 		r.owned = false
+		multipartBufferWrapperPool.Put(r)
 	}
 	return n, err
 }
@@ -393,6 +434,7 @@ func (r *pooledMultipartBuffer) Close() error {
 		r.buf = nil
 		r.owned = false
 	}
+	multipartBufferWrapperPool.Put(r)
 	return nil
 }
 
@@ -423,6 +465,22 @@ type pooledJSONBuffer struct {
 	owned bool
 }
 
+// jsonBufferWrapperPool reduces allocations for pooledJSONBuffer wrapper structs.
+var jsonBufferWrapperPool = sync.Pool{
+	New: func() any { return &pooledJSONBuffer{} },
+}
+
+// getPooledJSONBufferWrapper creates a pooledJSONBuffer from the pool.
+func getPooledJSONBufferWrapper(buf *bytes.Buffer) *pooledJSONBuffer {
+	wrapper, _ := jsonBufferWrapperPool.Get().(*pooledJSONBuffer)
+	if wrapper == nil {
+		wrapper = &pooledJSONBuffer{}
+	}
+	wrapper.buf = buf
+	wrapper.owned = true
+	return wrapper
+}
+
 func (r *pooledJSONBuffer) Read(p []byte) (n int, err error) {
 	if r.buf == nil {
 		return 0, io.EOF
@@ -432,6 +490,7 @@ func (r *pooledJSONBuffer) Read(p []byte) (n int, err error) {
 		putJSONBuffer(r.buf)
 		r.buf = nil
 		r.owned = false
+		jsonBufferWrapperPool.Put(r)
 	}
 	return n, err
 }
@@ -442,9 +501,9 @@ func (r *pooledJSONBuffer) Close() error {
 		r.buf = nil
 		r.owned = false
 	}
+	jsonBufferWrapperPool.Put(r)
 	return nil
 }
-
 
 type requestProcessor struct {
 	config *Config
@@ -564,7 +623,7 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 					return nil, fmt.Errorf("close multipart writer failed: %w", err)
 				}
 
-				body = &pooledMultipartBuffer{buf: buf, owned: true}
+				body = getPooledMultipartBufferWrapper(buf)
 				contentType = writer.FormDataContentType()
 			} else {
 				// Use pooled buffer for JSON encoding to reduce allocations
@@ -579,7 +638,7 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 				if b := buf.Bytes(); len(b) > 0 && b[len(b)-1] == '\n' {
 					buf.Truncate(len(b) - 1)
 				}
-				body = &pooledJSONBuffer{buf: buf, owned: true}
+				body = getPooledJSONBufferWrapper(buf)
 				contentType = "application/json"
 			}
 		}
@@ -709,9 +768,9 @@ func escapeQuotes(s string) string {
 	return result
 }
 
-// formatQueryParam converts a value to string for query parameters.
+// FormatQueryParam converts a value to string for query parameters.
 // Optimized to avoid fmt.Sprintf allocations for common types.
-func formatQueryParam(v any) string {
+func FormatQueryParam(v any) string {
 	if v == nil {
 		return ""
 	}

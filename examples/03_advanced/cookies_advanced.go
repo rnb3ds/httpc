@@ -259,8 +259,9 @@ func demonstrateAdvancedScenarios() {
 	fmt.Printf("✓ Cookies with auth: Status %d\n", resp.StatusCode())
 
 	// Scenario 4: Secure cookie with validation
+	// Note: WithSecureCookie validates cookies already on the request,
+	// so add cookies first, then validate.
 	resp, err = client.Get("https://httpbin.org/cookies",
-		httpc.WithSecureCookie(httpc.DefaultCookieSecurityConfig()),
 		httpc.WithCookie(http.Cookie{
 			Name:     "secure_session",
 			Value:    "encrypted_value",
@@ -268,6 +269,7 @@ func demonstrateAdvancedScenarios() {
 			HttpOnly: true,
 			SameSite: http.SameSiteStrictMode,
 		}),
+		httpc.WithSecureCookie(httpc.DefaultCookieSecurityConfig()),
 	)
 	if err != nil {
 		log.Printf("Error: %v\n", err)

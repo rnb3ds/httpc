@@ -230,9 +230,9 @@ func TestFormatQueryParam(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := formatQueryParam(tt.input)
+			result := FormatQueryParam(tt.input)
 			if result != tt.expected {
-				t.Errorf("formatQueryParam(%v) = %q, want %q", tt.input, result, tt.expected)
+				t.Errorf("FormatQueryParam(%v) = %q, want %q", tt.input, result, tt.expected)
 			}
 		})
 	}
@@ -703,7 +703,7 @@ func TestClient_ClosedRequest(t *testing.T) {
 	// Close before making request
 	client.Close()
 
-	_, err = client.Get(server.URL)
+	_, err = client.get(server.URL)
 	if err == nil {
 		t.Error("Expected error when using closed client")
 	}
@@ -1000,15 +1000,18 @@ func TestBuild_MultipartFormData(t *testing.T) {
 // CLIENT ERROR WITH TYPE TEST
 // ============================================================================
 
-// TestClientError_WithType validates the WithType method.
+// TestClientError_WithType validates the WithType method returns a copy.
 func TestClientError_WithType(t *testing.T) {
 	err := &ClientError{Type: ErrorTypeNetwork}
 	result := err.WithType(ErrorTypeTimeout)
-	if result != err {
-		t.Error("WithType should return the same error")
+	if result == err {
+		t.Error("WithType should return a new copy, not the same pointer")
 	}
-	if err.Type != ErrorTypeTimeout {
-		t.Errorf("Expected ErrorTypeTimeout, got %v", err.Type)
+	if err.Type != ErrorTypeNetwork {
+		t.Errorf("Original should be unmodified, got %v", err.Type)
+	}
+	if result.Type != ErrorTypeTimeout {
+		t.Errorf("Expected ErrorTypeTimeout, got %v", result.Type)
 	}
 }
 
@@ -1139,7 +1142,7 @@ func TestResponseDecompression(t *testing.T) {
 
 	// This may fail because the data isn't actually gzipped
 	// but it exercises the decompression path
-	_, _ = client.Get(server.URL)
+	_, _ = client.get(server.URL)
 }
 
 // ============================================================================
@@ -1149,34 +1152,6 @@ func TestResponseDecompression(t *testing.T) {
 // TestClearPools validates that clearPools does not panic.
 func TestClearPools(t *testing.T) {
 	clearPools()
-}
-
-// ============================================================================
-// IS RETRYABLE SYSCALL ERROR TEST
-// ============================================================================
-
-// TestIsRetryableSyscallError validates syscall error classification.
-func TestIsRetryableSyscallError(t *testing.T) {
-	tests := []struct {
-		name     string
-		errno    interface{}
-		expected bool
-	}{
-		// We can't easily create syscall.Errno values portably,
-		// so test the classifyError path that triggers it
-		{"Always false for non-syscall", nil, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Just exercise the path through classifyError
-			err := fmt.Errorf("connection refused by peer")
-			result := classifyError(err, "https://example.com", "GET", 1)
-			if result == nil {
-				t.Error("Expected non-nil result")
-			}
-		})
-	}
 }
 
 // ============================================================================
@@ -1212,7 +1187,7 @@ func TestClient_RetryOnServerErrors(t *testing.T) {
 	}
 	defer client.Close()
 
-	resp, err := client.Get(server.URL)
+	resp, err := client.get(server.URL)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1246,7 +1221,7 @@ func TestClient_RetryExhausted(t *testing.T) {
 	}
 	defer client.Close()
 
-	resp, err := client.Get(server.URL)
+	resp, err := client.get(server.URL)
 	// After all retries, the last response should be returned (500)
 	if err != nil {
 		t.Logf("Error (acceptable for exhausted retries): %v", err)
@@ -1283,7 +1258,7 @@ func TestClient_OverrideMaxRetries(t *testing.T) {
 		return nil
 	}
 
-	resp, err := client.Get(server.URL, retryOption)
+	resp, err := client.get(server.URL, retryOption)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1310,11 +1285,11 @@ func TestClient_RedirectFollowing(t *testing.T) {
 	defer server.Close()
 
 	config := &Config{
-		Timeout:          30 * time.Second,
-		AllowPrivateIPs:  true,
-		FollowRedirects:  true,
-		MaxRetries:       0,
-		UserAgent:        "test/1.0",
+		Timeout:         30 * time.Second,
+		AllowPrivateIPs: true,
+		FollowRedirects: true,
+		MaxRetries:      0,
+		UserAgent:       "test/1.0",
 	}
 
 	client, err := NewClient(config)
@@ -1323,7 +1298,7 @@ func TestClient_RedirectFollowing(t *testing.T) {
 	}
 	defer client.Close()
 
-	resp, err := client.Get(server.URL + "/redirect")
+	resp, err := client.get(server.URL + "/redirect")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1346,11 +1321,11 @@ func TestClient_NoRedirectFollowing(t *testing.T) {
 	defer server.Close()
 
 	config := &Config{
-		Timeout:          30 * time.Second,
-		AllowPrivateIPs:  true,
-		FollowRedirects:  false,
-		MaxRetries:       0,
-		UserAgent:        "test/1.0",
+		Timeout:         30 * time.Second,
+		AllowPrivateIPs: true,
+		FollowRedirects: false,
+		MaxRetries:      0,
+		UserAgent:       "test/1.0",
 	}
 
 	client, err := NewClient(config)
@@ -1359,7 +1334,7 @@ func TestClient_NoRedirectFollowing(t *testing.T) {
 	}
 	defer client.Close()
 
-	resp, err := client.Get(server.URL + "/redirect")
+	resp, err := client.get(server.URL + "/redirect")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1401,7 +1376,7 @@ func TestResponseProcessor_GzipResponse(t *testing.T) {
 	}
 	defer client.Close()
 
-	resp, err := client.Get(server.URL)
+	resp, err := client.get(server.URL)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1540,7 +1515,7 @@ func TestClient_ZeroTimeout(t *testing.T) {
 	}
 	defer client.Close()
 
-	resp, err := client.Get(server.URL)
+	resp, err := client.get(server.URL)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1624,7 +1599,7 @@ func TestClient_WithCookieJar(t *testing.T) {
 		return nil
 	}
 
-	resp, err := client.Get(server.URL, cookieOption)
+	resp, err := client.get(server.URL, cookieOption)
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)
 	}
@@ -1741,7 +1716,7 @@ func TestResponseProcessor_DeflateResponse(t *testing.T) {
 	}
 	defer client.Close()
 
-	resp, err := client.Get(server.URL)
+	resp, err := client.get(server.URL)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1824,7 +1799,7 @@ func TestClient_ExecuteRetry_MaxReached(t *testing.T) {
 	}
 	defer client.Close()
 
-	resp, err := client.Get(server.URL)
+	resp, err := client.get(server.URL)
 	// Should return the last response after retries exhausted
 	if resp != nil {
 		t.Logf("Response status: %d, attempts: %d", resp.StatusCode(), resp.Attempts())
@@ -1854,11 +1829,11 @@ func TestClient_MultipleRedirects(t *testing.T) {
 	defer server.Close()
 
 	config := &Config{
-		Timeout:          30 * time.Second,
-		AllowPrivateIPs:  true,
-		FollowRedirects:  true,
-		MaxRetries:       0,
-		UserAgent:        "test/1.0",
+		Timeout:         30 * time.Second,
+		AllowPrivateIPs: true,
+		FollowRedirects: true,
+		MaxRetries:      0,
+		UserAgent:       "test/1.0",
 	}
 
 	client, err := NewClient(config)
@@ -1867,7 +1842,7 @@ func TestClient_MultipleRedirects(t *testing.T) {
 	}
 	defer client.Close()
 
-	resp, err := client.Get(server.URL + "/start")
+	resp, err := client.get(server.URL + "/start")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1989,12 +1964,12 @@ func TestClient_MaxRedirectLimit(t *testing.T) {
 	defer server.Close()
 
 	config := &Config{
-		Timeout:          30 * time.Second,
-		AllowPrivateIPs:  true,
-		FollowRedirects:  true,
-		MaxRedirects:     3,
-		MaxRetries:       0,
-		UserAgent:        "test/1.0",
+		Timeout:         30 * time.Second,
+		AllowPrivateIPs: true,
+		FollowRedirects: true,
+		MaxRedirects:    3,
+		MaxRetries:      0,
+		UserAgent:       "test/1.0",
 	}
 
 	client, err := NewClient(config)
@@ -2003,7 +1978,7 @@ func TestClient_MaxRedirectLimit(t *testing.T) {
 	}
 	defer client.Close()
 
-	_, err = client.Get(server.URL + "/start")
+	_, err = client.get(server.URL + "/start")
 	if err == nil {
 		t.Error("Expected error due to max redirects exceeded")
 	}
@@ -2033,46 +2008,6 @@ func TestURLCache_Eviction(t *testing.T) {
 	// Cache should have evicted the first entry
 	if cache.size() > 4 {
 		t.Errorf("Cache size should be <= 4, got %d", cache.size())
-	}
-}
-
-// ============================================================================
-// GZIP RESPONSE THROUGH CLIENT TEST
-// ============================================================================
-
-// TestClient_GzipResponse validates gzip decompression through the full client path.
-func TestClient_GzipResponse(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Encoding", "gzip")
-		w.WriteHeader(http.StatusOK)
-
-		var buf bytes.Buffer
-		gw := gzip.NewWriter(&buf)
-		_, _ = gw.Write([]byte("gzip decompressed"))
-		_ = gw.Close()
-		_, _ = w.Write(buf.Bytes())
-	}))
-	defer server.Close()
-
-	config := &Config{
-		Timeout:         30 * time.Second,
-		AllowPrivateIPs: true,
-		MaxRetries:      0,
-		UserAgent:       "test/1.0",
-	}
-
-	client, err := NewClient(config)
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
-	defer client.Close()
-
-	resp, err := client.Get(server.URL)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if resp.Body() != "gzip decompressed" {
-		t.Errorf("Expected 'gzip decompressed', got %q", resp.Body())
 	}
 }
 
@@ -2133,13 +2068,13 @@ func TestClient_CustomRetryPolicy(t *testing.T) {
 	defer server.Close()
 
 	config := &Config{
-		Timeout:            30 * time.Second,
-		AllowPrivateIPs:    true,
-		MaxRetries:         0, // Let custom policy decide
-		RetryDelay:         10 * time.Millisecond,
-		BackoffFactor:      1.0,
-		UserAgent:          "test/1.0",
-		CustomRetryPolicy:  &testRetryPolicy{maxRetries: 3, delay: 10 * time.Millisecond},
+		Timeout:           30 * time.Second,
+		AllowPrivateIPs:   true,
+		MaxRetries:        0, // Let custom policy decide
+		RetryDelay:        10 * time.Millisecond,
+		BackoffFactor:     1.0,
+		UserAgent:         "test/1.0",
+		CustomRetryPolicy: &testRetryPolicy{maxRetries: 3, delay: 10 * time.Millisecond},
 	}
 
 	client, err := NewClient(config)
@@ -2148,7 +2083,7 @@ func TestClient_CustomRetryPolicy(t *testing.T) {
 	}
 	defer client.Close()
 
-	resp, err := client.Get(server.URL)
+	resp, err := client.get(server.URL)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2163,8 +2098,8 @@ type testRetryPolicy struct {
 	delay      time.Duration
 }
 
-func (p *testRetryPolicy) MaxRetries() int                                         { return p.maxRetries }
-func (p *testRetryPolicy) GetDelay(attempt int) time.Duration                      { return p.delay }
+func (p *testRetryPolicy) MaxRetries() int                    { return p.maxRetries }
+func (p *testRetryPolicy) GetDelay(attempt int) time.Duration { return p.delay }
 func (p *testRetryPolicy) ShouldRetry(resp types.ResponseReader, err error, attempt int) bool {
 	if err != nil {
 		return attempt < p.maxRetries
@@ -2199,7 +2134,7 @@ func TestClient_CloseWithConnectionPool(t *testing.T) {
 	}
 
 	// Make a request first to establish connections
-	_, _ = client.Get(server.URL)
+	_, _ = client.get(server.URL)
 
 	// Close should clean up transport and connection pool
 	err = client.Close()
@@ -2274,7 +2209,7 @@ func TestClient_PutWithBody(t *testing.T) {
 		return nil
 	}
 
-	resp, err := client.Put(server.URL, bodyOption)
+	resp, err := client.put(server.URL, bodyOption)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2308,12 +2243,12 @@ func TestClient_CircularRedirect(t *testing.T) {
 	defer server.Close()
 
 	config := &Config{
-		Timeout:          30 * time.Second,
-		AllowPrivateIPs:  true,
-		FollowRedirects:  true,
-		MaxRedirects:     0, // Use default limit
-		MaxRetries:       0,
-		UserAgent:        "test/1.0",
+		Timeout:         30 * time.Second,
+		AllowPrivateIPs: true,
+		FollowRedirects: true,
+		MaxRedirects:    0, // Use default limit
+		MaxRetries:      0,
+		UserAgent:       "test/1.0",
 	}
 
 	client, err := NewClient(config)
@@ -2323,7 +2258,7 @@ func TestClient_CircularRedirect(t *testing.T) {
 	defer client.Close()
 
 	// Circular redirect should be detected
-	_, err = client.Get(server.URL + "/a")
+	_, err = client.get(server.URL + "/a")
 	if err != nil {
 		t.Logf("Circular redirect detected (expected): %v", err)
 	}
@@ -2346,11 +2281,11 @@ func TestClient_SSRSRedirectBlocked(t *testing.T) {
 	defer server.Close()
 
 	config := &Config{
-		Timeout:          30 * time.Second,
-		AllowPrivateIPs:  false, // Enable SSRF protection
-		FollowRedirects:  true,
-		MaxRetries:       0,
-		UserAgent:        "test/1.0",
+		Timeout:         30 * time.Second,
+		AllowPrivateIPs: false, // Enable SSRF protection
+		FollowRedirects: true,
+		MaxRetries:      0,
+		UserAgent:       "test/1.0",
 	}
 
 	client, err := NewClient(config)
@@ -2360,7 +2295,7 @@ func TestClient_SSRSRedirectBlocked(t *testing.T) {
 	defer client.Close()
 
 	// Should fail because redirect target is a private IP
-	_, err = client.Get(server.URL + "/redirect-to-localhost")
+	_, err = client.get(server.URL + "/redirect-to-localhost")
 	if err == nil {
 		t.Log("Expected error for redirect to private IP (or redirect just didn't happen)")
 	} else {
@@ -2473,44 +2408,4 @@ func TestClient_MockTransportRetry(t *testing.T) {
 			t.Errorf("Expected 1 attempt, got %d", resp.Attempts())
 		}
 	})
-}
-
-// ============================================================================
-// DEFLATE RESPONSE THROUGH CLIENT TEST
-// ============================================================================
-
-// TestClient_DeflateResponse validates deflate decompression through client.
-func TestClient_DeflateResponse(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Encoding", "deflate")
-		w.WriteHeader(http.StatusOK)
-
-		var buf bytes.Buffer
-		fw, _ := flate.NewWriter(&buf, flate.DefaultCompression)
-		_, _ = fw.Write([]byte("deflated through client"))
-		_ = fw.Close()
-		_, _ = w.Write(buf.Bytes())
-	}))
-	defer server.Close()
-
-	config := &Config{
-		Timeout:         30 * time.Second,
-		AllowPrivateIPs: true,
-		MaxRetries:      0,
-		UserAgent:       "test/1.0",
-	}
-
-	client, err := NewClient(config)
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
-	defer client.Close()
-
-	resp, err := client.Get(server.URL)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if resp.Body() != "deflated through client" {
-		t.Errorf("Expected 'deflated through client', got %q", resp.Body())
-	}
 }

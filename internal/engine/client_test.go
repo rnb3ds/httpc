@@ -154,7 +154,7 @@ func TestClient_RequestWithOptions(t *testing.T) {
 		return nil
 	}
 
-	resp, err := client.Get(server.URL, headerOption)
+	resp, err := client.get(server.URL, headerOption)
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestClient_ConcurrentRequests(t *testing.T) {
 
 	for i := 0; i < numRequests; i++ {
 		go func() {
-			_, err := client.Get(server.URL)
+			_, err := client.get(server.URL)
 			results <- err
 		}()
 	}
@@ -278,7 +278,7 @@ func TestClient_TLSConfig(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	resp, err := client.Get(server.URL)
+	resp, err := client.get(server.URL)
 	if err != nil {
 		t.Fatalf("HTTPS request failed: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestClient_LargeResponse(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	resp, err := client.Get(server.URL)
+	resp, err := client.get(server.URL)
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)
 	}
@@ -333,12 +333,12 @@ func TestClient_ConvenienceMethods(t *testing.T) {
 		method string
 		fn     func(*Client, string, ...RequestOption) (*Response, error)
 	}{
-		{"Post", "POST", (*Client).Post},
-		{"Put", "PUT", (*Client).Put},
-		{"Patch", "PATCH", (*Client).Patch},
-		{"Delete", "DELETE", (*Client).Delete},
-		{"Head", "HEAD", (*Client).Head},
-		{"Options", "OPTIONS", (*Client).Options},
+		{"Post", "POST", (*Client).post},
+		{"Put", "PUT", (*Client).put},
+		{"Patch", "PATCH", (*Client).patch},
+		{"Delete", "DELETE", (*Client).delete},
+		{"Head", "HEAD", (*Client).head},
+		{"Options", "OPTIONS", (*Client).options},
 	}
 
 	for _, tt := range methods {
@@ -581,7 +581,7 @@ func TestClient_ResponseProcessing(t *testing.T) {
 			}
 			defer client.Close()
 
-			resp, err := client.Get(server.URL)
+			resp, err := client.get(server.URL)
 			if err != nil {
 				t.Fatalf("Request failed: %v", err)
 			}
@@ -672,7 +672,7 @@ func TestClient_ErrorHandling(t *testing.T) {
 			}
 			defer client.Close()
 
-			_, err = client.Get(server.URL)
+			_, err = client.get(server.URL)
 
 			if tt.expectError && err == nil {
 				t.Error("Expected error, got nil")

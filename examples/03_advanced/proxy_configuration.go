@@ -82,6 +82,7 @@ func demonstrateSystemProxy() {
 	resp, err := client.Get("https://httpbin.org/ip",
 		httpc.WithTimeout(10*time.Second),
 	)
+
 	if err != nil {
 		log.Printf("Request failed: %v\n", err)
 		fmt.Println("Note: If system proxy is configured but unavailable, this may fail")
@@ -127,6 +128,7 @@ func demonstrateManualProxy() {
 	resp, err := client.Get("https://httpbin.org/ip",
 		httpc.WithTimeout(10*time.Second),
 	)
+
 	if err != nil {
 		fmt.Printf("Request failed: %v\n", err)
 		fmt.Println("\nNote: This is expected if no proxy is running at 127.0.0.1:7890")

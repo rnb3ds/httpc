@@ -112,8 +112,9 @@ func (e *ClientError) Unwrap() error {
 
 // WithType returns a copy of the error with the specified type set.
 func (e *ClientError) WithType(t ErrorType) *ClientError {
-	e.Type = t
-	return e
+	cp := *e
+	cp.Type = t
+	return &cp
 }
 
 // IsRetryable determines if the error is retryable based on its type and cause.
@@ -414,6 +415,15 @@ func classifyError(err error, reqURL, method string, attempts int) *ClientError 
 	case containsFold(errMsg, "context deadline exceeded"):
 		clientErr.Type = ErrorTypeTimeout
 		clientErr.Message = "request context deadline exceeded"
+	case containsFold(errMsg, "stopped after") && containsFold(errMsg, "redirect"):
+		clientErr.Type = ErrorTypeValidation
+		clientErr.Message = "redirect limit exceeded"
+	case containsFold(errMsg, "circular redirect"):
+		clientErr.Type = ErrorTypeValidation
+		clientErr.Message = "circular redirect detected"
+	case containsFold(errMsg, "redirect blocked"):
+		clientErr.Type = ErrorTypeValidation
+		clientErr.Message = "redirect blocked by policy"
 	case containsFold(errMsg, "http2") && containsFold(errMsg, "invalid"):
 		clientErr.Type = ErrorTypeValidation
 		clientErr.Message = "invalid HTTP/2 request header"

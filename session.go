@@ -248,9 +248,16 @@ func (s *SessionManager) prepareOptions() []RequestOption {
 	options := make([]RequestOption, 0, 2)
 
 	if cookieCount > 0 {
+		// Batch all cookies into a single option to avoid N closure allocations
+		cookies := make([]http.Cookie, 0, cookieCount)
 		for _, cookie := range s.cookies {
-			options = append(options, WithCookie(*cookie))
+			cookies = append(cookies, *cookie)
 		}
+		options = append(options, func(r *engine.Request) error {
+			existing := r.Cookies()
+			r.SetCookies(append(existing, cookies...))
+			return nil
+		})
 	}
 
 	if headerCount > 0 {
@@ -281,14 +288,7 @@ func (s *SessionManager) UpdateFromResult(result *Result) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for _, cookie := range result.Response.Cookies {
-		if cookie != nil {
-			if err := s.validateCookieSecurity(cookie); err != nil {
-				continue
-			}
-			s.cookies[cookie.Name] = cookie
-		}
-	}
+	s.storeCookies(result.Response.Cookies)
 }
 
 // UpdateFromCookies updates session cookies from a slice of http.Cookie.
@@ -301,6 +301,12 @@ func (s *SessionManager) UpdateFromCookies(cookies []*http.Cookie) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.storeCookies(cookies)
+}
+
+// storeCookies validates and stores cookies in the session map.
+// Caller must hold s.mu.
+func (s *SessionManager) storeCookies(cookies []*http.Cookie) {
 	for _, cookie := range cookies {
 		if cookie != nil {
 			if err := s.validateCookieSecurity(cookie); err != nil {

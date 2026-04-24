@@ -302,7 +302,7 @@ func TestConfig_TLSVersions(t *testing.T) {
 		}{
 			{"Valid: 1.2-1.3", tls.VersionTLS12, tls.VersionTLS13, false},
 			{"Valid: 1.2-1.2", tls.VersionTLS12, tls.VersionTLS12, false},
-				{"Invalid: Min>Max", tls.VersionTLS13, tls.VersionTLS12, true},
+			{"Invalid: Min>Max", tls.VersionTLS13, tls.VersionTLS12, true},
 		}
 
 		for _, tt := range tests {

@@ -113,7 +113,8 @@ func demonstrateWorkerPool() {
 	}
 
 	jobs := make(chan string, len(urls))
-	results := make(chan int, len(urls))
+	statusCh := make(chan int, len(urls))
+	errCh := make(chan error, len(urls))
 
 	// Start workers
 	var wg sync.WaitGroup
@@ -124,10 +125,10 @@ func demonstrateWorkerPool() {
 			for url := range jobs {
 				resp, err := client.Get(url)
 				if err != nil {
-					log.Printf("Worker %d error: %v\n", id, err)
+					errCh <- err
 					continue
 				}
-				results <- resp.StatusCode()
+				statusCh <- resp.StatusCode()
 			}
 		}(w)
 	}
@@ -141,18 +142,20 @@ func demonstrateWorkerPool() {
 
 	// Wait for completion
 	wg.Wait()
-	close(results)
+	close(statusCh)
+	close(errCh)
 
 	// Collect results
 	successCount := 0
-	for status := range results {
+	for status := range statusCh {
 		if status >= 200 && status < 300 {
 			successCount++
 		}
 	}
+	errorCount := len(errCh)
 
 	fmt.Printf("Processed %d URLs with %d workers\n", len(urls), numWorkers)
-	fmt.Printf("Successful: %d/%d\n", successCount, len(urls))
+	fmt.Printf("Successful: %d, Errors: %d, Total: %d\n", successCount, errorCount, len(urls))
 	fmt.Printf("Duration: %v\n\n", time.Since(start))
 }
 
@@ -226,17 +229,19 @@ func demonstrateConcurrentWithErrors() {
 	wg.Wait()
 	close(results)
 
+	successCount := 0
 	fmt.Println("Task Results:")
 	for r := range results {
 		if r.err != nil {
 			fmt.Printf("  Task %d: Error - %v (took %v)\n", r.id, r.err, r.duration)
 		} else if r.status >= 200 && r.status < 300 {
 			fmt.Printf("  Task %d: Success - Status %d (took %v)\n", r.id, r.status, r.duration)
+			successCount++
 		} else {
 			fmt.Printf("  Task %d: HTTP Error - Status %d (took %v)\n", r.id, r.status, r.duration)
 		}
 	}
-	fmt.Println()
+	fmt.Printf("Summary: %d/%d successful\n\n", successCount, len(tasks))
 }
 
 // demonstrateRateLimited shows rate-limited concurrent requests

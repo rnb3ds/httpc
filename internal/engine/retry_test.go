@@ -286,61 +286,86 @@ func TestRetryEngine_GetDelay_WithJitter(t *testing.T) {
 	}
 }
 
-func TestRetryEngine_GetDelay_MaxRetryDelay(t *testing.T) {
-	config := &Config{
-		RetryDelay:    100 * time.Millisecond,
-		BackoffFactor: 2.0,
-		MaxRetryDelay: 500 * time.Millisecond,
-		Jitter:        false,
+// TestRetryEngine_GetDelay_TableDriven consolidates MaxRetryDelay and DefaultValues
+// into a single table-driven test.
+func TestRetryEngine_GetDelay_TableDriven(t *testing.T) {
+	tests := []struct {
+		name          string
+		config        *Config
+		attempt       int
+		expectedDelay time.Duration
+		expectedMax   time.Duration
+		checkMax      bool // if true, verify delay <= expectedMax instead of exact match
+	}{
+		{
+			name: "MaxRetryDelay caps exponential growth",
+			config: &Config{
+				RetryDelay:    100 * time.Millisecond,
+				BackoffFactor: 2.0,
+				MaxRetryDelay: 500 * time.Millisecond,
+				Jitter:        false,
+			},
+			attempt:       3,
+			expectedDelay: 500 * time.Millisecond,
+		},
+		{
+			name: "Zero RetryDelay uses default 1s",
+			config: &Config{
+				RetryDelay:    0,
+				BackoffFactor: 2.0,
+				Jitter:        false,
+			},
+			attempt:       0,
+			expectedDelay: 1 * time.Second,
+		},
+		{
+			name: "Zero BackoffFactor uses default 2.0",
+			config: &Config{
+				RetryDelay:    100 * time.Millisecond,
+				BackoffFactor: 0,
+				Jitter:        false,
+			},
+			attempt:       1,
+			expectedDelay: 200 * time.Millisecond,
+		},
+		{
+			name: "Normal exponential at attempt 0",
+			config: &Config{
+				RetryDelay:    200 * time.Millisecond,
+				BackoffFactor: 3.0,
+				Jitter:        false,
+			},
+			attempt:       0,
+			expectedDelay: 200 * time.Millisecond,
+		},
+		{
+			name: "Normal exponential at attempt 2",
+			config: &Config{
+				RetryDelay:    100 * time.Millisecond,
+				BackoffFactor: 2.0,
+				Jitter:        false,
+			},
+			attempt:       2,
+			expectedDelay: 400 * time.Millisecond,
+		},
 	}
 
-	engine := newRetryEngine(config)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			engine := newRetryEngine(tt.config)
+			delay := engine.GetDelay(tt.attempt)
 
-	// Attempt 3 would normally be 800ms, but should be capped at 500ms
-	delay := engine.GetDelay(3)
-
-	if delay > 500*time.Millisecond {
-		t.Errorf("Expected delay <= 500ms, got %v", delay)
+			if tt.checkMax {
+				if delay > tt.expectedMax {
+					t.Errorf("Expected delay <= %v, got %v", tt.expectedMax, delay)
+				}
+			} else {
+				if delay != tt.expectedDelay {
+					t.Errorf("Expected delay %v, got %v", tt.expectedDelay, delay)
+				}
+			}
+		})
 	}
-
-	if delay != 500*time.Millisecond {
-		t.Errorf("Expected delay to be capped at 500ms, got %v", delay)
-	}
-}
-
-func TestRetryEngine_GetDelay_DefaultValues(t *testing.T) {
-	t.Run("Zero RetryDelay uses default", func(t *testing.T) {
-		config := &Config{
-			RetryDelay:    0,
-			BackoffFactor: 2.0,
-			Jitter:        false,
-		}
-
-		engine := newRetryEngine(config)
-		delay := engine.GetDelay(0)
-
-		// Should use default 1 second
-		if delay != 1*time.Second {
-			t.Errorf("Expected default delay 1s, got %v", delay)
-		}
-	})
-
-	t.Run("Zero BackoffFactor uses default", func(t *testing.T) {
-		config := &Config{
-			RetryDelay:    100 * time.Millisecond,
-			BackoffFactor: 0,
-			Jitter:        false,
-		}
-
-		engine := newRetryEngine(config)
-		delay := engine.GetDelay(1)
-
-		// Should use default backoff factor of 2.0
-		expected := 200 * time.Millisecond
-		if delay != expected {
-			t.Errorf("Expected delay %v, got %v", expected, delay)
-		}
-	})
 }
 
 func TestRetryEngine_IsRetryableError(t *testing.T) {

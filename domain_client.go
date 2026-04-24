@@ -3,7 +3,6 @@ package httpc
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"net/url"
 	stdpath "path"
 	"strings"
@@ -22,7 +21,7 @@ type DomainClient struct {
 	baseURL   string
 	parsedURL *url.URL // Cached parsed URL for efficient URL building
 	domain    string
-	session   *SessionManager
+	*SessionManager
 }
 
 // NewDomain creates a new DomainClient scoped to the specified base URL.
@@ -82,11 +81,11 @@ func NewDomain(baseURL string, config ...*Config) (DomainClienter, error) {
 	}
 
 	return &DomainClient{
-		client:    client,
-		baseURL:   baseURL,
-		parsedURL: parsedURL, // Cache parsed URL for efficient URL building
-		domain:    parsedURL.Hostname(),
-		session:   session,
+		client:         client,
+		baseURL:        baseURL,
+		parsedURL:      parsedURL,
+		domain:         parsedURL.Hostname(),
+		SessionManager: session,
 	}, nil
 }
 
@@ -150,7 +149,7 @@ func (dc *DomainClient) Request(ctx context.Context, method, path string, option
 	}
 
 	if result != nil {
-		dc.session.UpdateFromResult(result)
+		dc.SessionManager.UpdateFromResult(result)
 	}
 
 	return result, nil
@@ -208,16 +207,16 @@ func (dc *DomainClient) DownloadWithOptionsWithContext(ctx context.Context, path
 
 // prepareSessionOptions merges session state (headers, cookies) with user-provided options.
 func (dc *DomainClient) prepareSessionOptions(options []RequestOption) []RequestOption {
-	managedOptions := dc.session.prepareOptions()
+	managedOptions := dc.SessionManager.prepareOptions()
 	allOptions := append(managedOptions, options...)
-	dc.session.captureFromOptions(options)
+	dc.SessionManager.captureFromOptions(options)
 	return allOptions
 }
 
 // captureDownloadCookies captures response cookies from a download result into the session.
 func (dc *DomainClient) captureDownloadCookies(result *DownloadResult) {
 	if result != nil {
-		dc.session.UpdateFromCookies(result.ResponseCookies)
+		dc.SessionManager.UpdateFromCookies(result.ResponseCookies)
 	}
 }
 
@@ -269,61 +268,6 @@ func (dc *DomainClient) buildURL(pathStr string) (string, error) {
 	return result.String(), nil
 }
 
-// SetHeader adds or updates a header in the session.
-func (dc *DomainClient) SetHeader(key, value string) error {
-	return dc.session.SetHeader(key, value)
-}
-
-// SetHeaders adds or updates multiple headers in the session.
-func (dc *DomainClient) SetHeaders(headers map[string]string) error {
-	return dc.session.SetHeaders(headers)
-}
-
-// DeleteHeader removes a header from the session.
-func (dc *DomainClient) DeleteHeader(key string) {
-	dc.session.DeleteHeader(key)
-}
-
-// ClearHeaders removes all headers from the session.
-func (dc *DomainClient) ClearHeaders() {
-	dc.session.ClearHeaders()
-}
-
-// GetHeaders returns a copy of all session headers.
-func (dc *DomainClient) GetHeaders() map[string]string {
-	return dc.session.GetHeaders()
-}
-
-// SetCookie adds or updates a cookie in the session.
-func (dc *DomainClient) SetCookie(cookie *http.Cookie) error {
-	return dc.session.SetCookie(cookie)
-}
-
-// SetCookies adds or updates multiple cookies in the session.
-func (dc *DomainClient) SetCookies(cookies []*http.Cookie) error {
-	return dc.session.SetCookies(cookies)
-}
-
-// DeleteCookie removes a cookie from the session by name.
-func (dc *DomainClient) DeleteCookie(name string) {
-	dc.session.DeleteCookie(name)
-}
-
-// ClearCookies removes all cookies from the session.
-func (dc *DomainClient) ClearCookies() {
-	dc.session.ClearCookies()
-}
-
-// GetCookies returns a copy of all session cookies.
-func (dc *DomainClient) GetCookies() []*http.Cookie {
-	return dc.session.GetCookies()
-}
-
-// GetCookie returns a copy of a cookie by name, or nil if not found.
-func (dc *DomainClient) GetCookie(name string) *http.Cookie {
-	return dc.session.GetCookie(name)
-}
-
 // URL returns the base URL
 func (dc *DomainClient) URL() string { return dc.baseURL }
 
@@ -332,7 +276,7 @@ func (dc *DomainClient) Domain() string { return dc.domain }
 
 // Session returns the underlying SessionManager for advanced session management.
 func (dc *DomainClient) Session() *SessionManager {
-	return dc.session
+	return dc.SessionManager
 }
 
 // Compile-time interface check to ensure DomainClient implements Client.

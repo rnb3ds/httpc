@@ -338,11 +338,7 @@ func (c *clientImpl) buildMiddlewareChain(middlewares []MiddlewareFunc) Handler 
 	}
 
 	// Build the chain by wrapping middlewares in reverse order
-	chain := finalHandler
-	for i := len(middlewares) - 1; i >= 0; i-- {
-		chain = middlewares[i](chain)
-	}
-	return chain
+	return Chain(middlewares...)(finalHandler)
 }
 
 // Get makes a GET request to the specified URL using the client's configuration.
@@ -497,67 +493,48 @@ func CloseDefaultClient() error {
 	return client.Close()
 }
 
-// Get makes a GET request to the specified URL using the default client.
-func Get(url string, options ...RequestOption) (*Result, error) {
+// doPackage is a helper for package-level HTTP verb functions.
+func doPackage(fn func(Client, string, ...RequestOption) (*Result, error), url string, options ...RequestOption) (*Result, error) {
 	client, err := getDefaultClient()
 	if err != nil {
 		return nil, err
 	}
-	return client.Get(url, options...)
+	return fn(client, url, options...)
+}
+
+// Get makes a GET request to the specified URL using the default client.
+func Get(url string, options ...RequestOption) (*Result, error) {
+	return doPackage(Client.Get, url, options...)
 }
 
 // Post makes a POST request to the specified URL using the default client.
 func Post(url string, options ...RequestOption) (*Result, error) {
-	client, err := getDefaultClient()
-	if err != nil {
-		return nil, err
-	}
-	return client.Post(url, options...)
+	return doPackage(Client.Post, url, options...)
 }
 
 // Put makes a PUT request to the specified URL using the default client.
 func Put(url string, options ...RequestOption) (*Result, error) {
-	client, err := getDefaultClient()
-	if err != nil {
-		return nil, err
-	}
-	return client.Put(url, options...)
+	return doPackage(Client.Put, url, options...)
 }
 
 // Patch makes a PATCH request to the specified URL using the default client.
 func Patch(url string, options ...RequestOption) (*Result, error) {
-	client, err := getDefaultClient()
-	if err != nil {
-		return nil, err
-	}
-	return client.Patch(url, options...)
+	return doPackage(Client.Patch, url, options...)
 }
 
 // Delete makes a DELETE request to the specified URL using the default client.
 func Delete(url string, options ...RequestOption) (*Result, error) {
-	client, err := getDefaultClient()
-	if err != nil {
-		return nil, err
-	}
-	return client.Delete(url, options...)
+	return doPackage(Client.Delete, url, options...)
 }
 
 // Head makes a HEAD request to the specified URL using the default client.
 func Head(url string, options ...RequestOption) (*Result, error) {
-	client, err := getDefaultClient()
-	if err != nil {
-		return nil, err
-	}
-	return client.Head(url, options...)
+	return doPackage(Client.Head, url, options...)
 }
 
 // Options makes an OPTIONS request to the specified URL using the default client.
 func Options(url string, options ...RequestOption) (*Result, error) {
-	client, err := getDefaultClient()
-	if err != nil {
-		return nil, err
-	}
-	return client.Options(url, options...)
+	return doPackage(Client.Options, url, options...)
 }
 
 // Request executes an HTTP request with the given method using the default client.

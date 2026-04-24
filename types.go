@@ -17,16 +17,16 @@ import (
 )
 
 const (
-	maxJSONSize         = 50 * 1024 * 1024   // 50MB
-	maxTimeout          = 30 * time.Minute   // 30 minutes
-	maxIdleConns        = 1000               // Connection pool limit
-	maxConnsPerHost     = 1000               // Per-host connection limit
-	maxResponseBodySize      = 1024 * 1024 * 1024 // 1GB
+	maxJSONSize             = 50 * 1024 * 1024   // 50MB
+	maxTimeout              = 30 * time.Minute   // 30 minutes
+	maxIdleConns            = 1000               // Connection pool limit
+	maxConnsPerHost         = 1000               // Per-host connection limit
+	maxResponseBodySize     = 1024 * 1024 * 1024 // 1GB
 	maxDecompressedBodySize = 100 * 1024 * 1024  // 100MB default for decompressed bodies
-	maxRetries          = 10                 // Maximum retry attempts
-	minBackoffFactor    = 1.0                // Minimum backoff multiplier
-	maxBackoffFactor    = 10.0               // Maximum backoff multiplier
-	maxUserAgentLen     = 512                // User-Agent header limit
+	maxRetries              = 10                 // Maximum retry attempts
+	minBackoffFactor        = 1.0                // Minimum backoff multiplier
+	maxBackoffFactor        = 10.0               // Maximum backoff multiplier
+	maxUserAgentLen         = 512                // User-Agent header limit
 )
 
 // TimeoutConfig configures timeout behavior for HTTP requests.
@@ -338,16 +338,16 @@ func DefaultConfig() *Config {
 			DoHCacheTTL:       5 * time.Minute,
 		},
 		Security: SecurityConfig{
-			TLSConfig:              nil,
-			MinTLSVersion:          tls.VersionTLS12,
-			MaxTLSVersion:          tls.VersionTLS13,
-			InsecureSkipVerify:     false,
-			MaxResponseBodySize:    10 * 1024 * 1024,          // 10MB
-			MaxDecompressedBodySize: 100 * 1024 * 1024,        // 100MB
-			AllowPrivateIPs:        false,
-			ValidateURL:            true,
-			ValidateHeaders:        true,
-			StrictContentLength:    true,
+			TLSConfig:               nil,
+			MinTLSVersion:           tls.VersionTLS12,
+			MaxTLSVersion:           tls.VersionTLS13,
+			InsecureSkipVerify:      false,
+			MaxResponseBodySize:     10 * 1024 * 1024,  // 10MB
+			MaxDecompressedBodySize: 100 * 1024 * 1024, // 100MB
+			AllowPrivateIPs:         false,
+			ValidateURL:             true,
+			ValidateHeaders:         true,
+			StrictContentLength:     true,
 		},
 		Retry: RetryConfig{
 			MaxRetries:    3,

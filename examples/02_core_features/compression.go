@@ -5,7 +5,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"strings"
 
 	"github.com/cybergodev/httpc"
 )
@@ -67,7 +66,7 @@ func demonstrateGzipFromServer() {
 	fmt.Printf("   Status: %d\n", resp.StatusCode())
 	fmt.Printf("   Content-Encoding: %s\n", resp.Response.Headers.Get("Content-Encoding"))
 	fmt.Printf("   Decompressed body length: %d bytes\n", len(resp.Body()))
-	fmt.Printf("   Body preview: \n%.200s...\n\n", strings.Trim(resp.Body(), "\n"))
+	fmt.Printf("   Body preview: \n%.200s...\n\n", resp.Body())
 }
 
 // demonstrateNoCompression shows response without compression

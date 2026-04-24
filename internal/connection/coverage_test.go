@@ -12,13 +12,12 @@ import (
 	"time"
 )
 
-
 // TestUpdateConnectionMetrics verifies per-host connection statistics tracking
 // including baseline latency, weighted moving average, and failure counting.
 func TestUpdateConnectionMetrics(t *testing.T) {
 	tests := []struct {
-		name           string
-		updates        []struct {
+		name    string
+		updates []struct {
 			host     string
 			connTime int64
 			success  bool
@@ -710,7 +709,7 @@ func TestCreateDialer_Integration(t *testing.T) {
 	if metrics.TotalConnections < 1 {
 		t.Errorf("TotalConnections = %d, want at least 1", metrics.TotalConnections)
 	}
-	}
+}
 
 // TestCreateDialer_SSRFRejectsPrivateIP verifies that the dialer function
 // rejects connections to private IPs by calling it directly.

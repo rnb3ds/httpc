@@ -5,7 +5,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"runtime"
 	"time"
 
 	"github.com/cybergodev/httpc"
@@ -77,6 +76,7 @@ func demonstrateCallbacks() {
 	fmt.Println("  - Response validation before processing")
 	fmt.Println("  - Custom metrics collection")
 	fmt.Println("  - Request modification on-the-fly")
+	fmt.Println()
 }
 
 // demonstrateResultPool shows result pool optimization
@@ -94,19 +94,19 @@ func demonstrateResultPool() {
 
 	// Without pool - each Result is garbage collected
 	fmt.Println("Without pool optimization:")
+	start = time.Now()
 	for i := 0; i < numRequests; i++ {
 		resp, err := client.Get("https://httpbin.org/get")
 		if err != nil {
 			continue
 		}
-		_ = resp.Body() // Use the result
-		// Result will be garbage collected
+		_ = resp.Body()
 	}
 	fmt.Printf("  %d requests completed in %v\n", numRequests, time.Since(start))
 
 	// With pool - Results are reused
-	start = time.Now()
 	fmt.Println("\nWith pool optimization (ReleaseResult):")
+	start = time.Now()
 	for i := 0; i < numRequests; i++ {
 		resp, err := client.Get("https://httpbin.org/get")
 		if err != nil {
@@ -122,6 +122,7 @@ func demonstrateResultPool() {
 	fmt.Println("  - Memory-constrained environments")
 	fmt.Println("  - Long-running services")
 	fmt.Println("\nWARNING: Never use Result after calling ReleaseResult!")
+	fmt.Println()
 }
 
 // demonstrateTestingConfig shows TestingConfig preset
@@ -131,9 +132,10 @@ func demonstrateTestingConfig() {
 	// TestingConfig is optimized for unit tests
 	config := httpc.TestingConfig()
 	fmt.Println("TestingConfig settings:")
-	fmt.Println("  - Short timeout (1s)")
-	fmt.Println("  - No retries (faster test failures)")
+	fmt.Println("  - Reduced timeouts (5-10s)")
+	fmt.Println("  - Minimal retries (1 attempt)")
 	fmt.Println("  - TLS verification disabled (for mock servers)")
+	fmt.Println("  - HTTP/2 disabled (simpler debugging)")
 	fmt.Println()
 
 	client, err := httpc.New(config)
@@ -167,6 +169,7 @@ func demonstrateTestingConfig() {
 	fmt.Println("        resp, err := client.Request(ctx, \"GET\", testServer.URL)")
 	fmt.Println("        // assert.NoError(t, err)")
 	fmt.Println("    }")
+	fmt.Println()
 }
 
 // demonstrateDefaultClient shows default client management
@@ -183,15 +186,11 @@ func demonstrateDefaultClient() {
 	}
 	fmt.Printf("  httpc.Get: Status %d\n", resp.StatusCode())
 
-	// Set custom default client
-	customClient, err := httpc.New(&httpc.Config{
-		Timeouts: httpc.TimeoutConfig{
-			Request: 5 * time.Second,
-		},
-		Retry: httpc.RetryConfig{
-			MaxRetries: 0,
-		},
-	})
+	// Set custom default client (start from defaults, override only needed fields)
+	customCfg := httpc.DefaultConfig()
+	customCfg.Timeouts.Request = 5 * time.Second
+	customCfg.Retry.MaxRetries = 0
+	customClient, err := httpc.New(customCfg)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -220,71 +219,20 @@ func demonstrateDefaultClient() {
 	fmt.Println("  - Application-wide configuration")
 	fmt.Println("  - Lazy initialization")
 	fmt.Println("  - Testing with custom client")
+	fmt.Println()
 }
 
 // demonstrateMemoryOptimization shows memory optimization techniques
 func demonstrateMemoryOptimization() {
 	fmt.Println("--- Example 5: Memory Optimization Techniques ---")
 
-	client, err := httpc.New()
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer client.Close()
-
-	// Use a reasonable request count to avoid rate-limiting
-	const numRequests = 10
-
-	var m1, m2 runtime.MemStats
-
-	// Make requests without pool optimization
-	runtime.GC()
-	runtime.ReadMemStats(&m1)
-
-	for i := 0; i < numRequests; i++ {
-		resp, err := client.Get("https://httpbin.org/get",
-			httpc.WithTimeout(10*time.Second),
-		)
-		if err != nil {
-			continue
-		}
-		_ = resp.Body()
-		// Result will be garbage collected
-	}
-
-	runtime.GC()
-	runtime.ReadMemStats(&m2)
-
-	fmt.Printf("Memory after %d requests (without pool):\n", numRequests)
-	fmt.Printf("  Heap allocations: %d\n", m2.Mallocs-m1.Mallocs)
-	fmt.Printf("  GC cycles: %d\n", m2.NumGC-m1.NumGC)
-
-	// With pool optimization - Results are returned to sync.Pool
-	runtime.GC()
-	runtime.ReadMemStats(&m1)
-
-	for i := 0; i < numRequests; i++ {
-		resp, err := client.Get("https://httpbin.org/get",
-			httpc.WithTimeout(10*time.Second),
-		)
-		if err != nil {
-			continue
-		}
-		_ = resp.Body()
-		httpc.ReleaseResult(resp) // Return to pool for reuse
-	}
-
-	runtime.GC()
-	runtime.ReadMemStats(&m2)
-
-	fmt.Printf("\nMemory after %d requests (with pool):\n", numRequests)
-	fmt.Printf("  Heap allocations: %d\n", m2.Mallocs-m1.Mallocs)
-	fmt.Printf("  GC cycles: %d\n", m2.NumGC-m1.NumGC)
-
-	fmt.Println("\nOptimization tips:")
+	fmt.Println("Optimization tips:")
 	fmt.Println("  1. Reuse client instances (don't create new clients per request)")
 	fmt.Println("  2. Use ReleaseResult() for high-throughput scenarios")
 	fmt.Println("  3. Configure appropriate timeouts to avoid goroutine leaks")
 	fmt.Println("  4. Use PerformanceConfig() for high-concurrency applications")
 	fmt.Println("  5. Close clients when done (releases connection pool)")
+	fmt.Println()
+	fmt.Println("For benchmarking, use go test -bench and -memprofile:")
+	fmt.Println("  go test -bench=BenchmarkClient -benchmem ./...")
 }

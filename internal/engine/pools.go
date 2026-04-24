@@ -244,8 +244,8 @@ func encodeQueryParams(params map[string]any) string {
 		sb.WriteString(queryEscape(key))
 		sb.WriteByte('=')
 
-		// Format value without allocation using formatQueryParam
-		strValue := formatQueryParam(value)
+		// Format value without allocation using FormatQueryParam
+		strValue := FormatQueryParam(value)
 		if strValue != "" {
 			sb.WriteString(queryEscape(strValue))
 		}
@@ -284,7 +284,7 @@ func appendQueryParams(existingQuery string, params map[string]any) string {
 		sb.WriteString(queryEscape(key))
 		sb.WriteByte('=')
 
-		strValue := formatQueryParam(value)
+		strValue := FormatQueryParam(value)
 		if strValue != "" {
 			sb.WriteString(queryEscape(strValue))
 		}

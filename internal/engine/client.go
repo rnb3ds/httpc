@@ -60,17 +60,17 @@ type Config struct {
 	// System proxy configuration
 	EnableSystemProxy bool // Automatically detect and use system proxy settings
 
-	TLSConfig           *tls.Config
-	MinTLSVersion       uint16
-	MaxTLSVersion       uint16
-	InsecureSkipVerify  bool
-	MaxResponseBodySize      int64
+	TLSConfig               *tls.Config
+	MinTLSVersion           uint16
+	MaxTLSVersion           uint16
+	InsecureSkipVerify      bool
+	MaxResponseBodySize     int64
 	MaxDecompressedBodySize int64
-	ValidateURL         bool
-	ValidateHeaders     bool
-	AllowPrivateIPs     bool
-	ExemptNets          []*net.IPNet
-	StrictContentLength bool
+	ValidateURL             bool
+	ValidateHeaders         bool
+	AllowPrivateIPs         bool
+	ExemptNets              []*net.IPNet
+	StrictContentLength     bool
 
 	MaxRetries    int
 	RetryDelay    time.Duration
@@ -176,7 +176,7 @@ type Response struct {
 	headers        http.Header
 	body           string
 	rawBody        []byte
-	bodyOnce       sync.Once // Ensures body string is computed exactly once
+	bodyOnce       sync.Once          // Ensures body string is computed exactly once
 	rawBodyReader  io.ReadCloser      // Set when streamBody=true; caller must close
 	cancelFunc     context.CancelFunc // Stored for streaming mode cleanup
 	contentLength  int64
@@ -195,9 +195,9 @@ type Response struct {
 var _ types.ResponseMutator = (*Response)(nil)
 
 // Accessors (implement ResponseAccessor)
-func (r *Response) StatusCode() int              { return r.statusCode }
-func (r *Response) Status() string               { return r.status }
-func (r *Response) Headers() http.Header         { return r.headers }
+func (r *Response) StatusCode() int      { return r.statusCode }
+func (r *Response) Status() string       { return r.status }
+func (r *Response) Headers() http.Header { return r.headers }
 func (r *Response) Body() string {
 	r.bodyOnce.Do(func() {
 		if r.rawBody != nil {
@@ -223,7 +223,7 @@ func (r *Response) RawBodyReader() io.ReadCloser { return r.rawBodyReader }
 func (r *Response) SetStatusCode(v int)             { r.statusCode = v }
 func (r *Response) SetStatus(v string)              { r.status = v }
 func (r *Response) SetHeaders(v http.Header)        { r.headers = v }
-func (r *Response) SetBody(v string) { r.body = v; r.bodyOnce.Do(func() {}) }
+func (r *Response) SetBody(v string)                { r.body = v; r.bodyOnce.Do(func() {}) }
 func (r *Response) SetRawBody(v []byte)             { r.rawBody = v }
 func (r *Response) SetContentLength(v int64)        { r.contentLength = v }
 func (r *Response) SetProto(v string)               { r.proto = v }
@@ -441,40 +441,6 @@ func (c *Client) putExecRequest(req *Request) {
 	c.execRequestPool.Put(req)
 }
 
-func (c *Client) Get(url string, options ...RequestOption) (*Response, error) {
-	return c.executeWithDefaultContext("GET", url, options...)
-}
-
-func (c *Client) Post(url string, options ...RequestOption) (*Response, error) {
-	return c.executeWithDefaultContext("POST", url, options...)
-}
-
-func (c *Client) Put(url string, options ...RequestOption) (*Response, error) {
-	return c.executeWithDefaultContext("PUT", url, options...)
-}
-
-func (c *Client) Patch(url string, options ...RequestOption) (*Response, error) {
-	return c.executeWithDefaultContext("PATCH", url, options...)
-}
-
-func (c *Client) Delete(url string, options ...RequestOption) (*Response, error) {
-	return c.executeWithDefaultContext("DELETE", url, options...)
-}
-
-func (c *Client) Head(url string, options ...RequestOption) (*Response, error) {
-	return c.executeWithDefaultContext("HEAD", url, options...)
-}
-
-func (c *Client) Options(url string, options ...RequestOption) (*Response, error) {
-	return c.executeWithDefaultContext("OPTIONS", url, options...)
-}
-
-func (c *Client) executeWithDefaultContext(method, url string, options ...RequestOption) (*Response, error) {
-	ctx, cancel := c.createDefaultContext()
-	defer cancel()
-	return c.Request(ctx, method, url, options...)
-}
-
 // nopCancelFunc is a no-op cancel function that avoids allocation
 // when no timeout is configured
 var nopCancelFunc = func() {}
@@ -485,6 +451,34 @@ func (c *Client) createDefaultContext() (context.Context, context.CancelFunc) {
 	}
 	// Return cached background context with no-op cancel to avoid allocation
 	return backgroundCtx, nopCancelFunc
+}
+
+func (c *Client) get(url string, options ...RequestOption) (*Response, error) {
+	return c.Request(context.Background(), "GET", url, options...)
+}
+
+func (c *Client) post(url string, options ...RequestOption) (*Response, error) {
+	return c.Request(context.Background(), "POST", url, options...)
+}
+
+func (c *Client) put(url string, options ...RequestOption) (*Response, error) {
+	return c.Request(context.Background(), "PUT", url, options...)
+}
+
+func (c *Client) patch(url string, options ...RequestOption) (*Response, error) {
+	return c.Request(context.Background(), "PATCH", url, options...)
+}
+
+func (c *Client) delete(url string, options ...RequestOption) (*Response, error) {
+	return c.Request(context.Background(), "DELETE", url, options...)
+}
+
+func (c *Client) head(url string, options ...RequestOption) (*Response, error) {
+	return c.Request(context.Background(), "HEAD", url, options...)
+}
+
+func (c *Client) options(url string, options ...RequestOption) (*Response, error) {
+	return c.Request(context.Background(), "OPTIONS", url, options...)
 }
 
 func (c *Client) sleepWithContext(ctx context.Context, duration time.Duration) error {
@@ -722,12 +716,11 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 		maxRedirects = *req.MaxRedirects()
 	}
 	// Set redirect policy via context for thread-safety
-	// SECURITY: cleanup must be called to return settings to pool
-	var redirectCleanup func()
-	reqCopy.context, redirectCleanup = c.transport.SetRedirectPolicy(execCtx, followRedirects, maxRedirects)
-	// Ensure redirect settings are returned to pool to prevent memory leak
-	if redirectCleanup != nil {
-		defer redirectCleanup()
+	// SECURITY: settings must be returned to pool to prevent memory leak
+	var redirectSettings *redirectSettings
+	reqCopy.context, redirectSettings = c.transport.SetRedirectPolicy(execCtx, followRedirects, maxRedirects)
+	if redirectSettings != nil {
+		defer putRedirectSettings(redirectSettings)
 	}
 
 	// Invoke OnRequest callback before building the HTTP request

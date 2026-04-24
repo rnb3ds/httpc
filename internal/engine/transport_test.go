@@ -550,9 +550,9 @@ func TestTransport_SetRedirectPolicy(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Set redirect policy - now returns cleanup function
-	ctx, cleanup := transport.SetRedirectPolicy(ctx, true, 5)
-	defer cleanup()
+	// Set redirect policy - now returns settings pointer
+	ctx, settings := transport.SetRedirectPolicy(ctx, true, 5)
+	defer putRedirectSettings(settings)
 
 	// Get redirect chain (should be empty initially)
 	chain := transport.GetRedirectChain(ctx)
@@ -581,14 +581,13 @@ func TestTransport_SetRedirectPolicyCleanup(t *testing.T) {
 	defer func() { _ = transport.Close() }()
 
 	t.Run("Cleanup function is safe to call", func(t *testing.T) {
-		_, cleanup := transport.SetRedirectPolicy(context.Background(), true, 5)
-		cleanup() // Should not panic
+		_, settings := transport.SetRedirectPolicy(context.Background(), true, 5)
+		putRedirectSettings(settings) // Should not panic
 	})
 
 	t.Run("Cleanup function can be called multiple times safely", func(t *testing.T) {
-		// Note: cleanup should be idempotent or at least not panic on multiple calls
-		_, cleanup := transport.SetRedirectPolicy(context.Background(), true, 5)
-		cleanup()
-		// Second call should not panic (though may not be safe in practice)
+		// Note: putRedirectSettings should be idempotent or at least not panic on multiple calls
+		_, settings := transport.SetRedirectPolicy(context.Background(), true, 5)
+		putRedirectSettings(settings)
 	})
 }

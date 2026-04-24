@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/url"
 
 	"github.com/cybergodev/httpc"
 )
@@ -200,6 +201,13 @@ func example6ManualHandling() {
 	redirectCount := 0
 	maxRedirects := 5
 
+	// Parse base URL for resolving relative redirect locations
+	baseURL, err := url.Parse(currentURL)
+	if err != nil {
+		log.Printf("Error parsing base URL: %v\n", err)
+		return
+	}
+
 	for redirectCount < maxRedirects {
 		resp, err := client.Get(currentURL)
 		if err != nil {
@@ -212,7 +220,11 @@ func example6ManualHandling() {
 		// Check if it's a redirect
 		if !resp.IsRedirect() {
 			fmt.Printf("Reached final destination after %d redirects\n", redirectCount)
-			fmt.Printf("Final response: %s\n\n", resp.Body()[:50])
+			body := resp.Body()
+			if len(body) > 50 {
+				body = body[:50]
+			}
+			fmt.Printf("Final response: %s\n\n", body)
 			break
 		}
 
@@ -223,8 +235,16 @@ func example6ManualHandling() {
 			break
 		}
 
-		fmt.Printf("  Redirecting to: %s\n", location)
-		currentURL = location
+		// Resolve relative URL against the current request URL
+		nextURL, err := baseURL.Parse(location)
+		if err != nil {
+			log.Printf("Error parsing redirect location: %v\n", err)
+			return
+		}
+
+		fmt.Printf("  Redirecting to: %s\n", nextURL.String())
+		currentURL = nextURL.String()
+		baseURL = nextURL
 		redirectCount++
 	}
 

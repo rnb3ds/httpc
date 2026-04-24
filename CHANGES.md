@@ -75,7 +75,7 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ---
 
-## v1.3.7 - DNS-over-HTTPS, Proxy Detection & Code Quality (2026-01-22)
+## v1.3.7.1 - DNS-over-HTTPS, Proxy Detection & Code Quality (2026-01-22)
 
 ### Added
 - **DNS-over-HTTPS (DoH) Resolver**: Encrypted DNS resolution with multiple providers (Cloudflare, Google, AliDNS)

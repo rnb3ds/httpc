@@ -29,8 +29,8 @@ func main() {
 	// Example 5: Disable retries
 	demonstrateNoRetry()
 
-	// Example 6: Custom retry policy
-	demonstrateCustomRetryPolicy()
+	// Example 6: Custom retry configuration
+	demonstrateCustomRetryConfig()
 
 	fmt.Println("\n=== All Examples Completed ===")
 }
@@ -172,8 +172,8 @@ func demonstrateNoRetry() {
 	fmt.Printf("Duration: %v\n\n", resp.Meta.Duration)
 }
 
-// demonstrateCustomRetryPolicy shows retry configuration tuning
-func demonstrateCustomRetryPolicy() {
+// demonstrateCustomRetryConfig shows retry configuration tuning
+func demonstrateCustomRetryConfig() {
 	fmt.Println("--- Example 6: Custom Retry Configuration ---")
 
 	// Fine-tune retry behavior via config fields
