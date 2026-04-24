@@ -25,7 +25,8 @@ const (
 	truncationMarker = "...[truncated]"
 )
 
-// sensitiveHeaders contains header names that should be masked in String() output.
+// sensitiveHeaders contains header names that should be masked in String() and audit output.
+// Keys use http.CanonicalHeaderKey form (Title-Case).
 var sensitiveHeaders = map[string]bool{
 	"Authorization":       true,
 	"Cookie":              true,
@@ -35,12 +36,25 @@ var sensitiveHeaders = map[string]bool{
 	"Proxy-Authorization": true,
 }
 
+// sensitiveHeaderNames returns the canonical list as a slice for AuditMiddlewareConfig defaults.
+func sensitiveHeaderNames() []string {
+	names := make([]string, 0, len(sensitiveHeaders))
+	for k := range sensitiveHeaders {
+		names = append(names, k)
+	}
+	return names
+}
+
+// Result wraps an HTTP response with request metadata and convenience methods.
+// Obtain a Result from Client.Request() or package-level functions like Get(), Post(), etc.
+// Call ReleaseResult(r) when done to return it to the pool.
 type Result struct {
 	Request  *RequestInfo
 	Response *ResponseInfo
 	Meta     *RequestMeta
 }
 
+// RequestInfo contains details about the HTTP request that was sent.
 type RequestInfo struct {
 	URL     string
 	Method  string
@@ -48,6 +62,7 @@ type RequestInfo struct {
 	Cookies []*http.Cookie
 }
 
+// ResponseInfo contains the HTTP response data including status, headers, body, and cookies.
 type ResponseInfo struct {
 	StatusCode    int
 	Status        string
@@ -59,6 +74,7 @@ type ResponseInfo struct {
 	Cookies       []*http.Cookie
 }
 
+// RequestMeta contains metadata about the request execution including timing and redirect info.
 type RequestMeta struct {
 	Duration      time.Duration
 	Attempts      int

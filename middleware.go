@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"runtime/debug"
 	"time"
 
 	"github.com/cybergodev/httpc/internal/validation"
@@ -65,24 +66,20 @@ func DefaultAuditMiddlewareConfig() *AuditMiddlewareConfig {
 	return &AuditMiddlewareConfig{
 		Format:         "text",
 		IncludeHeaders: false,
-		MaskHeaders:    []string{"Authorization", "Cookie", "Set-Cookie", "X-API-Key"},
+		MaskHeaders:    sensitiveHeaderNames(),
 		SanitizeError:  true,
 	}
 }
 
-// AuditContextKey is the type for context keys used in audit middleware.
-type AuditContextKey string
+// auditContextKey is the type for context keys used in audit middleware.
+type auditContextKey string
 
 const (
 	// SourceIPKey is the context key for source IP address in audit events.
-	SourceIPKey AuditContextKey = "source_ip"
+	SourceIPKey auditContextKey = "source_ip"
 	// UserIDKey is the context key for user identifier in audit events.
-	UserIDKey AuditContextKey = "user_id"
+	UserIDKey auditContextKey = "user_id"
 )
-
-// Note: engine.Request now directly implements the RequestMutator interface,
-// and engine.Response now directly implements the ResponseMutator interface.
-// The adapters have been removed to eliminate the GC overhead.
 
 // Chain combines multiple middlewares into a single middleware.
 // Middlewares are executed in the order they are provided (first to last).
@@ -98,6 +95,7 @@ func Chain(middlewares ...MiddlewareFunc) MiddlewareFunc {
 
 // LoggingMiddleware creates a middleware that logs request and response information.
 // The log function receives formatted log messages (similar to log.Printf).
+// SECURITY: URLs are sanitized to remove credentials before logging.
 func LoggingMiddleware(log func(format string, args ...any)) MiddlewareFunc {
 	return func(next Handler) Handler {
 		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
@@ -110,10 +108,12 @@ func LoggingMiddleware(log func(format string, args ...any)) MiddlewareFunc {
 				status = resp.StatusCode()
 			}
 
+			sanitizedURL := validation.SanitizeURL(req.URL())
+
 			if err != nil {
-				log("%s %s -> error: %v (%v)", req.Method(), req.URL(), err, duration)
+				log("%s %s -> error: %v (%v)", req.Method(), sanitizedURL, err, duration)
 			} else {
-				log("%s %s -> %d (%v)", req.Method(), req.URL(), status, duration)
+				log("%s %s -> %d (%v)", req.Method(), sanitizedURL, status, duration)
 			}
 
 			return resp, err
@@ -128,10 +128,11 @@ func RecoveryMiddleware() MiddlewareFunc {
 		return func(ctx context.Context, req RequestMutator) (resp ResponseMutator, err error) {
 			defer func() {
 				if r := recover(); r != nil {
+					stack := debug.Stack()
 					if e, ok := r.(error); ok {
-						err = fmt.Errorf("panic recovered: %w", e)
+						err = fmt.Errorf("panic recovered: %w\n%s", e, stack)
 					} else {
-						err = fmt.Errorf("panic recovered: %v", r)
+						err = fmt.Errorf("panic recovered: %v\n%s", r, stack)
 					}
 				}
 			}()
@@ -193,8 +194,14 @@ func TimeoutMiddleware(timeout time.Duration) MiddlewareFunc {
 // Existing headers with the same keys will be overwritten.
 // Headers are validated for security (CRLF injection prevention) before being set.
 func HeaderMiddleware(headers map[string]string) MiddlewareFunc {
-	// Pre-validate all headers at middleware creation time
+	// Defensive copy to prevent concurrent mutation by caller
+	copied := make(map[string]string, len(headers))
 	for key, value := range headers {
+		copied[key] = value
+	}
+
+	// Pre-validate all headers at middleware creation time
+	for key, value := range copied {
 		if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
 			// Return a middleware that always returns the validation error
 			return func(next Handler) Handler {
@@ -207,7 +214,7 @@ func HeaderMiddleware(headers map[string]string) MiddlewareFunc {
 
 	return func(next Handler) Handler {
 		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
-			for key, value := range headers {
+			for key, value := range copied {
 				req.SetHeader(key, value)
 			}
 
@@ -225,12 +232,13 @@ func MetricsMiddleware(onMetrics func(method, url string, statusCode int, durati
 			resp, err := next(ctx, req)
 			duration := time.Since(start)
 
-			statusCode := 0
-			if resp != nil {
-				statusCode = resp.StatusCode()
+			if onMetrics != nil {
+				statusCode := 0
+				if resp != nil {
+					statusCode = resp.StatusCode()
+				}
+				onMetrics(req.Method(), req.URL(), statusCode, duration, err)
 			}
-
-			onMetrics(req.Method(), req.URL(), statusCode, duration, err)
 
 			return resp, err
 		}
@@ -309,25 +317,11 @@ func AuditMiddlewareWithConfig(onAudit func(event AuditEvent), config *AuditMidd
 				event.Error = fmt.Errorf("[sanitized]")
 			}
 
-			onAudit(event)
+			if onAudit != nil {
+				onAudit(event)
+			}
 
 			return resp, err
 		}
 	}
-}
-
-// AuditMiddlewareJSON creates a middleware that outputs audit events as JSON.
-// This is a convenience function for structured logging systems.
-// like ELK, Splunk, or cloud logging services.
-//
-// Example:
-//
-//	auditMiddleware := httpc.AuditMiddlewareJSON(func(event httpc.AuditEvent) {
-//	    data, _ := json.Marshal(event)
-//	    log.Printf("[AUDIT] %s", data)
-//	})
-func AuditMiddlewareJSON(onAudit func(event AuditEvent)) MiddlewareFunc {
-	config := DefaultAuditMiddlewareConfig()
-	config.Format = "json"
-	return AuditMiddlewareWithConfig(onAudit, config)
 }

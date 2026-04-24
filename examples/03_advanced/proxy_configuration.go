@@ -69,7 +69,7 @@ func demonstrateSystemProxy() {
 	// On Windows: reads from registry
 	// On Linux/Mac: reads environment variables (HTTP_PROXY, HTTPS_PROXY, NO_PROXY)
 	config := httpc.DefaultConfig()
-	config.EnableSystemProxy = true
+	config.Connection.EnableSystemProxy = true
 
 	client, err := httpc.New(config)
 	if err != nil {
@@ -82,6 +82,7 @@ func demonstrateSystemProxy() {
 	resp, err := client.Get("https://httpbin.org/ip",
 		httpc.WithTimeout(10*time.Second),
 	)
+
 	if err != nil {
 		log.Printf("Request failed: %v\n", err)
 		fmt.Println("Note: If system proxy is configured but unavailable, this may fail")
@@ -109,8 +110,8 @@ func demonstrateManualProxy() {
 	proxyURL := "http://127.0.0.1:7890" // Common proxy port for tools like Clash, V2Ray
 
 	config := httpc.DefaultConfig()
-	config.ProxyURL = proxyURL
-	config.Timeout = 10 * time.Second
+	config.Connection.ProxyURL = proxyURL
+	config.Timeouts.Request = 10 * time.Second
 
 	client, err := httpc.New(config)
 	if err != nil {
@@ -127,6 +128,7 @@ func demonstrateManualProxy() {
 	resp, err := client.Get("https://httpbin.org/ip",
 		httpc.WithTimeout(10*time.Second),
 	)
+
 	if err != nil {
 		fmt.Printf("Request failed: %v\n", err)
 		fmt.Println("\nNote: This is expected if no proxy is running at 127.0.0.1:7890")
@@ -145,9 +147,9 @@ func demonstrateProxyPriority() {
 
 	// When both ProxyURL and EnableSystemProxy are set, ProxyURL takes priority
 	config := httpc.DefaultConfig()
-	config.ProxyURL = "http://127.0.0.1:8080" // This takes priority
-	config.EnableSystemProxy = true           // This is ignored
-	config.Timeout = 5 * time.Second
+	config.Connection.ProxyURL = "http://127.0.0.1:8080" // This takes priority
+	config.Connection.EnableSystemProxy = true           // This is ignored
+	config.Timeouts.Request = 5 * time.Second
 
 	client, err := httpc.New(config)
 	if err != nil {
@@ -204,12 +206,4 @@ func printSummary() {
 	fmt.Println("  $env:HTTPS_PROXY = \"http://127.0.0.1:7890\"")
 	fmt.Println()
 	fmt.Println("  # Then use EnableSystemProxy: true to read these values")
-}
-
-// min returns the smaller of two integers
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

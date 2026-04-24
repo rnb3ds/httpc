@@ -96,6 +96,118 @@ func BenchmarkClient_Concurrent_Requests(b *testing.B) {
 }
 
 // ============================================================================
+// MICRO-BENCHMARKS - Isolate internal hot-path operations
+// ============================================================================
+
+func BenchmarkMicro_URLCache(b *testing.B) {
+	urls := []string{
+		"https://api.example.com/v1/users",
+		"https://api.example.com/v1/users?page=1&limit=10",
+		"https://cdn.example.com/static/image.png",
+		"https://auth.example.com/oauth/token",
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		for _, u := range urls {
+			_, err := getDefaultTestClient().Get(u)
+			if err != nil {
+				_ = err
+			}
+		}
+	}
+}
+
+func BenchmarkMicro_Headers(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := newBenchmarkClient()
+	defer client.Close()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_, err := client.Get(server.URL,
+			WithHeader("X-Request-Id", "abc-123-def"),
+			WithHeader("X-Custom-1", "value1"),
+			WithHeader("X-Custom-2", "value2"),
+			WithHeader("Accept", "application/json"),
+		)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkMicro_ManyQueryParams(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := newBenchmarkClient()
+	defer client.Close()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_, err := client.Get(server.URL,
+			WithQuery("page", 1),
+			WithQuery("limit", 50),
+			WithQuery("sort", "name"),
+			WithQuery("order", "asc"),
+			WithQuery("filter[status]", "active"),
+			WithQuery("filter[type]", "premium"),
+			WithQuery("search", "hello world"),
+			WithQuery("fields", "id,name,email"),
+			WithQuery("embed", "profile,settings"),
+			WithQuery("locale", "en_US"),
+		)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkMicro_ResultReuse(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok","data":[1,2,3]}`))
+	}))
+	defer server.Close()
+
+	client, _ := newBenchmarkClient()
+	defer client.Close()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		result, err := client.Get(server.URL)
+		if err != nil {
+			b.Fatal(err)
+		}
+		ReleaseResult(result)
+	}
+}
+
+// getDefaultTestClient returns a client for micro-benchmarks (does not connect)
+func getDefaultTestClient() Client {
+	config := DefaultConfig()
+	config.Security.AllowPrivateIPs = true
+	config.Retry.MaxRetries = 0
+	client, _ := New(config)
+	return client
+}
+
+// ============================================================================
 // MEMORY ALLOCATION BENCHMARKS
 // ============================================================================
 
@@ -160,9 +272,9 @@ func BenchmarkClient_WithRetry(b *testing.B) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.MaxRetries = 3
-	config.RetryDelay = 1 * time.Millisecond
-	config.AllowPrivateIPs = true
+	config.Retry.MaxRetries = 3
+	config.Retry.Delay = 1 * time.Millisecond
+	config.Security.AllowPrivateIPs = true
 
 	client, _ := New(config)
 	defer client.Close()
@@ -233,7 +345,7 @@ func BenchmarkDefaultClient_Get(b *testing.B) {
 
 	// Ensure default client is initialized
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	_ = SetDefaultClient(client)
 	defer func() { _ = CloseDefaultClient() }()
@@ -381,8 +493,8 @@ func BenchmarkResult_String(b *testing.B) {
 
 func newBenchmarkClient() (Client, error) {
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
-	config.MaxRetries = 0
+	config.Security.AllowPrivateIPs = true
+	config.Retry.MaxRetries = 0
 	return New(config)
 }
 
@@ -519,73 +631,6 @@ func BenchmarkClient_QueryParams_Typed(b *testing.B) {
 // ============================================================================
 // COMPONENT-LEVEL BENCHMARKS - Isolate specific operations
 // ============================================================================
-
-func BenchmarkHeaderCopy(b *testing.B) {
-	src := http.Header{}
-	src.Set("Content-Type", "application/json")
-	src.Set("Authorization", "Bearer token123")
-	src.Set("X-Request-Id", "abc-123-def")
-	src.Set("User-Agent", "httpc/1.0")
-	src.Set("Accept", "application/json")
-	src.Add("Set-Cookie", "session=abc123")
-	src.Add("Set-Cookie", "user=john")
-
-	dst := http.Header{}
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		for k := range dst {
-			delete(dst, k)
-		}
-		// Use the internal CopyHeader through a public wrapper or test helper
-		// For now, simulate the operation
-		for k, v := range src {
-			newVals := make([]string, len(v))
-			copy(newVals, v)
-			dst[k] = newVals
-		}
-	}
-}
-
-func BenchmarkHeaderCopy_Batch(b *testing.B) {
-	src := http.Header{}
-	src.Set("Content-Type", "application/json")
-	src.Set("Authorization", "Bearer token123")
-	src.Set("X-Request-Id", "abc-123-def")
-	src.Set("User-Agent", "httpc/1.0")
-	src.Set("Accept", "application/json")
-	src.Add("Set-Cookie", "session=abc123")
-	src.Add("Set-Cookie", "user=john")
-
-	dst := http.Header{}
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		for k := range dst {
-			delete(dst, k)
-		}
-		// Batch allocation - count first, then allocate once
-		totalValues := 0
-		for _, v := range src {
-			totalValues += len(v)
-		}
-		allValues := make([]string, totalValues)
-		valueIdx := 0
-		for k, v := range src {
-			if len(v) > 0 {
-				endIdx := valueIdx + len(v)
-				newVals := allValues[valueIdx:endIdx]
-				copy(newVals, v)
-				dst[k] = newVals
-				valueIdx = endIdx
-			}
-		}
-	}
-}
 
 func BenchmarkJSONMarshal(b *testing.B) {
 	payload := map[string]interface{}{

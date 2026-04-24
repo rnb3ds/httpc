@@ -22,19 +22,6 @@ type ClientError = engine.ClientError
 // ErrorType represents the classification of an error.
 type ErrorType = engine.ErrorType
 
-// ClassifyError classifies an error into a ClientError with context.
-// This is useful for custom error handling and logging.
-//
-// Example:
-//
-//	var clientErr *httpc.ClientError
-//	if errors.As(err, &clientErr) {
-//	    if clientErr.IsRetryable() {
-//	        // Retry the request
-//	    }
-//	}
-var ClassifyError = engine.ClassifyError
-
 // Error type constants for error classification.
 const (
 	// ErrorTypeUnknown indicates an unknown or unclassified error.
@@ -66,7 +53,8 @@ const (
 var (
 	// ErrClientClosed is returned when attempting to use a closed client.
 	// This occurs after calling Close() on a client instance.
-	ErrClientClosed = errors.New("client is closed")
+	// Use errors.Is(err, httpc.ErrClientClosed) to detect this condition.
+	ErrClientClosed = engine.ErrClientClosed
 
 	// ErrNilConfig is returned when a nil configuration is provided.
 	// Always provide a valid Config or use DefaultConfig().
@@ -88,6 +76,18 @@ var (
 	// MaxRetries must be 0-10, BackoffFactor must be 1.0-10.0.
 	ErrInvalidRetry = errors.New("invalid retry configuration")
 
+	// ErrInvalidConnection is returned when connection configuration is invalid.
+	// MaxIdleConns and MaxConnsPerHost must be within allowed ranges.
+	ErrInvalidConnection = errors.New("invalid connection configuration")
+
+	// ErrInvalidSecurity is returned when security configuration is invalid.
+	// MaxResponseBodySize and MaxDecompressedBodySize must be within allowed ranges.
+	ErrInvalidSecurity = errors.New("invalid security configuration")
+
+	// ErrInvalidMiddleware is returned when middleware configuration is invalid.
+	// MaxRedirects must be 0-50, UserAgent must not exceed length limit.
+	ErrInvalidMiddleware = errors.New("invalid middleware configuration")
+
 	// ErrEmptyFilePath is returned when file path is empty.
 	// Provide a valid file path for download operations.
 	ErrEmptyFilePath = errors.New("file path cannot be empty")
@@ -97,7 +97,7 @@ var (
 	ErrFileExists = errors.New("file already exists")
 
 	// ErrResponseBodyEmpty is returned when attempting to parse empty response body.
-	// Check response.RawBody before calling JSON() or other parsing methods.
+	// Check response.RawBody before calling Unmarshal() or other parsing methods.
 	ErrResponseBodyEmpty = errors.New("response body is empty")
 
 	// ErrResponseBodyTooLarge is returned when response body exceeds size limit.

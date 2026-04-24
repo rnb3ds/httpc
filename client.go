@@ -1,7 +1,7 @@
 package httpc
 
 // Package httpc provides a high-performance HTTP client library with enterprise-grade
-// security, zero external dependencies, and production-ready defaults.
+// security and production-ready defaults.
 //
 // # Key Features
 //
@@ -30,8 +30,8 @@ package httpc
 // Create a client with custom configuration:
 //
 //	cfg := httpc.DefaultConfig()
-//	cfg.Timeout = 60 * time.Second
-//	cfg.MaxRetries = 5
+//	cfg.Timeouts.Request = 60 * time.Second
+//	cfg.Retry.MaxRetries = 5
 //	client, err := httpc.New(cfg)
 //
 // Use preset configurations:
@@ -42,21 +42,23 @@ package httpc
 //
 // # SSRF Protection
 //
-// By default, AllowPrivateIPs is true for maximum compatibility with VPNs, proxies,
-// and corporate networks. If your application makes requests to user-provided URLs,
-// enable SSRF protection to block connections to private/reserved IP addresses:
+// By default, AllowPrivateIPs is false, blocking connections to private/reserved
+// IP addresses (127.0.0.1, 10.x, 192.168.x, 169.254.x, etc.). This protects
+// against Server-Side Request Forgery attacks.
 //
-//	// Enable SSRF protection
+// Set AllowPrivateIPs to true only when connecting to internal services:
+//
+//	// Allow internal service access (VPNs, proxies, corporate networks)
 //	cfg := httpc.DefaultConfig()
-//	cfg.AllowPrivateIPs = false
+//	cfg.Security.AllowPrivateIPs = true
 //	client, err := httpc.New(cfg)
 //
-//	// Or use the secure preset (has SSRF protection enabled)
+//	// Or use the secure preset (SSRF protection already enabled)
 //	client, err := httpc.New(httpc.SecureConfig())
 //
 // # Request Options
 //
-// Core options (18 functions):
+// Core options (25+ functions):
 //
 //	// Headers
 //	httpc.WithHeader("Authorization", "Bearer token")
@@ -132,6 +134,8 @@ import (
 	"time"
 
 	"github.com/cybergodev/httpc/internal/engine"
+	"github.com/cybergodev/httpc/internal/security"
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // Doer is a minimal interface for executing HTTP requests.
@@ -159,6 +163,8 @@ type Client interface {
 	// File download methods
 	DownloadFile(url string, filePath string, options ...RequestOption) (*DownloadResult, error)
 	DownloadWithOptions(url string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error)
+	DownloadFileWithContext(ctx context.Context, url string, filePath string, options ...RequestOption) (*DownloadResult, error)
+	DownloadWithOptionsWithContext(ctx context.Context, url string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error)
 
 	// Close releases resources held by the client
 	Close() error
@@ -212,7 +218,7 @@ type clientImpl struct {
 //
 //	// Use custom configuration
 //	cfg := httpc.DefaultConfig()
-//	cfg.Timeout = 60 * time.Second
+//	cfg.Timeouts.Request = 60 * time.Second
 //	client, err := httpc.New(cfg)
 //
 //	// Use preset configuration
@@ -240,12 +246,12 @@ func New(config ...*Config) (Client, error) {
 
 	client := &clientImpl{
 		engine:         engineClient,
-		hasMiddlewares: len(cfg.Middlewares) > 0,
+		hasMiddlewares: len(cfg.Middleware.Middlewares) > 0,
 	}
 
 	// Build middleware chain if middlewares are configured
 	if client.hasMiddlewares {
-		client.middlewareChain = client.buildMiddlewareChain(cfg.Middlewares)
+		client.middlewareChain = client.buildMiddlewareChain(cfg.Middleware.Middlewares)
 	}
 
 	return client, nil
@@ -258,21 +264,39 @@ func New(config ...*Config) (Client, error) {
 func deepCopyConfig(src *Config) *Config {
 	dst := *src
 
-	// Deep copy headers
-	if src.Headers != nil {
-		dst.Headers = make(map[string]string, len(src.Headers))
-		maps.Copy(dst.Headers, src.Headers)
+	// Deep copy middleware headers
+	if src.Middleware.Headers != nil {
+		dst.Middleware.Headers = make(map[string]string, len(src.Middleware.Headers))
+		maps.Copy(dst.Middleware.Headers, src.Middleware.Headers)
 	}
 
 	// Deep copy middlewares slice
-	if len(src.Middlewares) > 0 {
-		dst.Middlewares = make([]MiddlewareFunc, len(src.Middlewares))
-		copy(dst.Middlewares, src.Middlewares)
+	if len(src.Middleware.Middlewares) > 0 {
+		dst.Middleware.Middlewares = make([]MiddlewareFunc, len(src.Middleware.Middlewares))
+		copy(dst.Middleware.Middlewares, src.Middleware.Middlewares)
+	}
+
+	// Deep copy redirect whitelist
+	if len(src.Security.RedirectWhitelist) > 0 {
+		dst.Security.RedirectWhitelist = make([]string, len(src.Security.RedirectWhitelist))
+		copy(dst.Security.RedirectWhitelist, src.Security.RedirectWhitelist)
 	}
 
 	// Clone TLS config if present
-	if src.TLSConfig != nil {
-		dst.TLSConfig = src.TLSConfig.Clone()
+	if src.Security.TLSConfig != nil {
+		dst.Security.TLSConfig = src.Security.TLSConfig.Clone()
+	}
+
+	// Deep copy cookie security config if present
+	if src.Security.CookieSecurity != nil {
+		cookieSec := *src.Security.CookieSecurity
+		dst.Security.CookieSecurity = &cookieSec
+	}
+
+	// Deep copy SSRF exempt CIDRs
+	if len(src.Security.SSRFExemptCIDRs) > 0 {
+		dst.Security.SSRFExemptCIDRs = make([]string, len(src.Security.SSRFExemptCIDRs))
+		copy(dst.Security.SSRFExemptCIDRs, src.Security.SSRFExemptCIDRs)
 	}
 
 	return &dst
@@ -300,6 +324,11 @@ func (c *clientImpl) buildMiddlewareChain(middlewares []MiddlewareFunc) Handler 
 				r.SetCookies(req.Cookies())
 				r.SetFollowRedirects(req.FollowRedirects())
 				r.SetMaxRedirects(req.MaxRedirects())
+				// Forward callbacks via type assertion
+				if engReq, ok := req.(*engine.Request); ok {
+					r.SetOnRequest(engReq.OnRequest())
+					r.SetOnResponse(engReq.OnResponse())
+				}
 				return nil
 			})
 		if err != nil {
@@ -309,37 +338,40 @@ func (c *clientImpl) buildMiddlewareChain(middlewares []MiddlewareFunc) Handler 
 	}
 
 	// Build the chain by wrapping middlewares in reverse order
-	chain := finalHandler
-	for i := len(middlewares) - 1; i >= 0; i-- {
-		chain = middlewares[i](chain)
-	}
-	return chain
+	return Chain(middlewares...)(finalHandler)
 }
 
+// Get makes a GET request to the specified URL using the client's configuration.
 func (c *clientImpl) Get(url string, options ...RequestOption) (*Result, error) {
 	return c.doRequest("GET", url, options)
 }
 
+// Post makes a POST request to the specified URL using the client's configuration.
 func (c *clientImpl) Post(url string, options ...RequestOption) (*Result, error) {
 	return c.doRequest("POST", url, options)
 }
 
+// Put makes a PUT request to the specified URL using the client's configuration.
 func (c *clientImpl) Put(url string, options ...RequestOption) (*Result, error) {
 	return c.doRequest("PUT", url, options)
 }
 
+// Patch makes a PATCH request to the specified URL using the client's configuration.
 func (c *clientImpl) Patch(url string, options ...RequestOption) (*Result, error) {
 	return c.doRequest("PATCH", url, options)
 }
 
+// Delete makes a DELETE request to the specified URL using the client's configuration.
 func (c *clientImpl) Delete(url string, options ...RequestOption) (*Result, error) {
 	return c.doRequest("DELETE", url, options)
 }
 
+// Head makes a HEAD request to the specified URL using the client's configuration.
 func (c *clientImpl) Head(url string, options ...RequestOption) (*Result, error) {
 	return c.doRequest("HEAD", url, options)
 }
 
+// Options makes an OPTIONS request to the specified URL using the client's configuration.
 func (c *clientImpl) Options(url string, options ...RequestOption) (*Result, error) {
 	return c.doRequest("OPTIONS", url, options)
 }
@@ -351,29 +383,45 @@ func (c *clientImpl) doRequest(method, url string, options []RequestOption) (*Re
 }
 
 // Request executes an HTTP request with the given context, method, URL, and options.
+// The context parameter allows for timeout and cancellation control.
 func (c *clientImpl) Request(ctx context.Context, method, url string, options ...RequestOption) (*Result, error) {
-	// Use middleware chain if configured
-	if c.hasMiddlewares {
-		return c.executeWithMiddleware(ctx, method, url, options)
-	}
-
-	// Direct path when no middlewares (zero overhead)
-	resp, err := c.engine.Request(ctx, method, url, options...)
+	resp, err := c.executeRequest(ctx, method, url, options)
 	if err != nil {
 		return nil, err
 	}
-	return convertResponseToResult(resp), nil
+	result := convertResponseToResult(resp)
+	if engineResp, ok := resp.(*engine.Response); ok {
+		engine.ReleaseResponse(engineResp)
+	}
+	return result, nil
 }
 
-// executeWithMiddleware executes a request through the middleware chain.
-func (c *clientImpl) executeWithMiddleware(ctx context.Context, method, url string, options []RequestOption) (*Result, error) {
-	// Build engine request from options using setters
-	engineReq := &engine.Request{}
+// middlewareRequestPool reduces allocations for engine.Request objects in the middleware path
+var middlewareRequestPool = sync.Pool{
+	New: func() any {
+		return &engine.Request{}
+	},
+}
+
+// executeRequest executes an HTTP request through the middleware chain (if configured)
+// or directly via the engine. Returns the raw ResponseMutator; the caller must
+// release the response via engine.ReleaseResponse() or convert it via convertResponseToResult().
+func (c *clientImpl) executeRequest(ctx context.Context, method, url string, options []RequestOption) (ResponseMutator, error) {
+	if !c.hasMiddlewares {
+		return c.engine.Request(ctx, method, url, options...)
+	}
+
+	engineReq, ok := middlewareRequestPool.Get().(*engine.Request)
+	if !ok || engineReq == nil {
+		engineReq = &engine.Request{}
+	}
+	defer middlewareRequestPool.Put(engineReq)
+
+	*engineReq = engine.Request{}
 	engineReq.SetMethod(method)
 	engineReq.SetURL(url)
 	engineReq.SetContext(ctx)
 
-	// Apply request options directly (no conversion needed with unified types)
 	for _, opt := range options {
 		if opt != nil {
 			if err := opt(engineReq); err != nil {
@@ -382,15 +430,11 @@ func (c *clientImpl) executeWithMiddleware(ctx context.Context, method, url stri
 		}
 	}
 
-	// Execute through middleware chain - engine.Request now implements RequestMutator
-	respAccessor, err := c.middlewareChain(ctx, engineReq)
-	if err != nil {
-		return nil, err
-	}
-
-	return convertResponseToResult(respAccessor), nil
+	return c.middlewareChain(ctx, engineReq)
 }
 
+// Close releases resources held by the client including connection pools and transport.
+// After calling Close, the client must not be used for further requests.
 func (c *clientImpl) Close() error {
 	// engine.Close() handles all resource cleanup including connection pool and transport
 	// If it fails, we wrap the error for better context
@@ -401,7 +445,8 @@ func (c *clientImpl) Close() error {
 }
 
 var (
-	defaultClient atomic.Pointer[clientImpl]
+	defaultClient   atomic.Pointer[clientImpl]
+	defaultClientMu sync.Mutex
 )
 
 func getDefaultClient() (Client, error) {
@@ -410,8 +455,15 @@ func getDefaultClient() (Client, error) {
 		return client, nil
 	}
 
-	// Slow path: initialize with CAS to avoid allocation races
-	// Create new client outside of any lock
+	// Slow path: mutex-protected initialization ensures exactly one client
+	defaultClientMu.Lock()
+	defer defaultClientMu.Unlock()
+
+	// Double-check after acquiring lock
+	if client := defaultClient.Load(); client != nil {
+		return client, nil
+	}
+
 	newClient, err := New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize default client: %w", err)
@@ -422,13 +474,7 @@ func getDefaultClient() (Client, error) {
 		return nil, fmt.Errorf("unexpected client type")
 	}
 
-	// CAS: only store if not already set by another goroutine
-	// If CAS fails, another goroutine won the race - use their client
-	if !defaultClient.CompareAndSwap(nil, impl) {
-		// Another goroutine initialized first, close ours and use theirs
-		_ = impl.Close() // best-effort cleanup
-		return defaultClient.Load(), nil
-	}
+	defaultClient.Store(impl)
 	return impl, nil
 }
 
@@ -436,74 +482,59 @@ func getDefaultClient() (Client, error) {
 // After calling this, the next package-level function call will create a new client.
 // This function is safe for concurrent use.
 func CloseDefaultClient() error {
-	// Atomically swap out the client and close it
-	for {
-		client := defaultClient.Load()
-		if client == nil {
-			return nil
-		}
-		// Try to atomically clear the pointer
-		if defaultClient.CompareAndSwap(client, nil) {
-			return client.Close()
-		}
-		// CAS failed - another goroutine modified it, retry
+	defaultClientMu.Lock()
+	defer defaultClientMu.Unlock()
+
+	client := defaultClient.Load()
+	if client == nil {
+		return nil
 	}
+	defaultClient.Store(nil)
+	return client.Close()
 }
 
+// doPackage is a helper for package-level HTTP verb functions.
+func doPackage(fn func(Client, string, ...RequestOption) (*Result, error), url string, options ...RequestOption) (*Result, error) {
+	client, err := getDefaultClient()
+	if err != nil {
+		return nil, err
+	}
+	return fn(client, url, options...)
+}
+
+// Get makes a GET request to the specified URL using the default client.
 func Get(url string, options ...RequestOption) (*Result, error) {
-	client, err := getDefaultClient()
-	if err != nil {
-		return nil, err
-	}
-	return client.Get(url, options...)
+	return doPackage(Client.Get, url, options...)
 }
 
+// Post makes a POST request to the specified URL using the default client.
 func Post(url string, options ...RequestOption) (*Result, error) {
-	client, err := getDefaultClient()
-	if err != nil {
-		return nil, err
-	}
-	return client.Post(url, options...)
+	return doPackage(Client.Post, url, options...)
 }
 
+// Put makes a PUT request to the specified URL using the default client.
 func Put(url string, options ...RequestOption) (*Result, error) {
-	client, err := getDefaultClient()
-	if err != nil {
-		return nil, err
-	}
-	return client.Put(url, options...)
+	return doPackage(Client.Put, url, options...)
 }
 
+// Patch makes a PATCH request to the specified URL using the default client.
 func Patch(url string, options ...RequestOption) (*Result, error) {
-	client, err := getDefaultClient()
-	if err != nil {
-		return nil, err
-	}
-	return client.Patch(url, options...)
+	return doPackage(Client.Patch, url, options...)
 }
 
+// Delete makes a DELETE request to the specified URL using the default client.
 func Delete(url string, options ...RequestOption) (*Result, error) {
-	client, err := getDefaultClient()
-	if err != nil {
-		return nil, err
-	}
-	return client.Delete(url, options...)
+	return doPackage(Client.Delete, url, options...)
 }
 
+// Head makes a HEAD request to the specified URL using the default client.
 func Head(url string, options ...RequestOption) (*Result, error) {
-	client, err := getDefaultClient()
-	if err != nil {
-		return nil, err
-	}
-	return client.Head(url, options...)
+	return doPackage(Client.Head, url, options...)
 }
 
+// Options makes an OPTIONS request to the specified URL using the default client.
 func Options(url string, options ...RequestOption) (*Result, error) {
-	client, err := getDefaultClient()
-	if err != nil {
-		return nil, err
-	}
-	return client.Options(url, options...)
+	return doPackage(Client.Options, url, options...)
 }
 
 // Request executes an HTTP request with the given method using the default client.
@@ -536,19 +567,19 @@ func SetDefaultClient(client Client) error {
 		return fmt.Errorf("only clients created by this package are supported")
 	}
 
-	// Atomically swap the old client with the new one
+	if impl.engine.IsClosed() {
+		return fmt.Errorf("cannot set a closed client as default")
+	}
+
+	defaultClientMu.Lock()
+	defer defaultClientMu.Unlock()
+
+	// Swap the old client with the new one
 	var closeErr error
-	for {
-		oldClient := defaultClient.Load()
-		// Try to atomically swap the pointer
-		if defaultClient.CompareAndSwap(oldClient, impl) {
-			// Successfully swapped - close the old client
-			if oldClient != nil {
-				closeErr = oldClient.Close()
-			}
-			break
-		}
-		// CAS failed - another goroutine modified it, retry
+	oldClient := defaultClient.Load()
+	defaultClient.Store(impl)
+	if oldClient != nil {
+		closeErr = oldClient.Close()
 	}
 	return closeErr
 }
@@ -579,11 +610,11 @@ func calculateIdleConnsPerHost(maxConnsPerHost int) int {
 // resolveTLSVersions returns the minimum and maximum TLS versions from config.
 // Falls back to TLS 1.2 and TLS 1.3 if not specified.
 func resolveTLSVersions(cfg *Config) (min, max uint16) {
-	min = cfg.MinTLSVersion
+	min = cfg.Security.MinTLSVersion
 	if min == 0 {
 		min = tls.VersionTLS12
 	}
-	max = cfg.MaxTLSVersion
+	max = cfg.Security.MaxTLSVersion
 	if max == 0 {
 		max = tls.VersionTLS13
 	}
@@ -598,11 +629,11 @@ func calculateMaxRetryDelay(cfg *Config) time.Duration {
 		absoluteMaxRetryDelay = 30 * time.Second
 	)
 
-	if cfg.RetryDelay <= 0 || cfg.BackoffFactor <= 0 {
+	if cfg.Retry.Delay <= 0 || cfg.Retry.BackoffFactor <= 0 {
 		return defaultMaxRetryDelay
 	}
 
-	calculated := time.Duration(float64(cfg.RetryDelay) * cfg.BackoffFactor * retryDelayMultiplier)
+	calculated := time.Duration(float64(cfg.Retry.Delay) * cfg.Retry.BackoffFactor * retryDelayMultiplier)
 	if calculated > absoluteMaxRetryDelay {
 		return absoluteMaxRetryDelay
 	}
@@ -619,52 +650,77 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		cfg = DefaultConfig()
 	}
 
-	idleConnsPerHost := calculateIdleConnsPerHost(cfg.MaxConnsPerHost)
+	idleConnsPerHost := calculateIdleConnsPerHost(cfg.Connection.MaxConnsPerHost)
 	minTLSVersion, maxTLSVersion := resolveTLSVersions(cfg)
 	maxRetryDelay := calculateMaxRetryDelay(cfg)
 
-	cookieJar, err := createCookieJar(cfg.EnableCookies)
+	cookieJar, err := createCookieJar(cfg.Connection.EnableCookies)
 	if err != nil {
 		return nil, err
 	}
 
-	return &engine.Config{
-		Timeout:               cfg.Timeout,
-		DialTimeout:           cfg.DialTimeout,
+	engineConfig := &engine.Config{
+		// Timeout settings
+		Timeout:               cfg.Timeouts.Request,
+		DialTimeout:           cfg.Timeouts.Dial,
 		KeepAlive:             30 * time.Second,
-		TLSHandshakeTimeout:   cfg.TLSHandshakeTimeout,
-		ResponseHeaderTimeout: cfg.ResponseHeaderTimeout,
-		IdleConnTimeout:       cfg.IdleConnTimeout,
-		MaxIdleConns:          cfg.MaxIdleConns,
-		MaxIdleConnsPerHost:   idleConnsPerHost,
-		MaxConnsPerHost:       cfg.MaxConnsPerHost,
-		ProxyURL:              cfg.ProxyURL,
-		EnableSystemProxy:     cfg.EnableSystemProxy,
-		TLSConfig:             cfg.TLSConfig,
-		MinTLSVersion:         minTLSVersion,
-		MaxTLSVersion:         maxTLSVersion,
-		InsecureSkipVerify:    cfg.InsecureSkipVerify,
-		MaxResponseBodySize:   cfg.MaxResponseBodySize,
-		ValidateURL:           cfg.ValidateURL,
-		ValidateHeaders:       cfg.ValidateHeaders,
-		AllowPrivateIPs:       cfg.AllowPrivateIPs,
-		StrictContentLength:   cfg.StrictContentLength,
-		MaxRetries:            cfg.MaxRetries,
-		RetryDelay:            cfg.RetryDelay,
-		MaxRetryDelay:         maxRetryDelay,
-		BackoffFactor:         cfg.BackoffFactor,
-		Jitter:                cfg.EnableJitter,
-		CustomRetryPolicy:     cfg.CustomRetryPolicy,
-		UserAgent:             cfg.UserAgent,
-		Headers:               cfg.Headers,
-		FollowRedirects:       cfg.FollowRedirects,
-		MaxRedirects:          cfg.MaxRedirects,
-		EnableHTTP2:           cfg.EnableHTTP2,
-		CookieJar:             cookieJar,
-		EnableCookies:         cfg.EnableCookies,
-		EnableDoH:             cfg.EnableDoH,
-		DoHCacheTTL:           cfg.DoHCacheTTL,
-	}, nil
+		TLSHandshakeTimeout:   cfg.Timeouts.TLSHandshake,
+		ResponseHeaderTimeout: cfg.Timeouts.ResponseHeader,
+		IdleConnTimeout:       cfg.Timeouts.IdleConn,
+
+		// Connection settings
+		MaxIdleConns:        cfg.Connection.MaxIdleConns,
+		MaxIdleConnsPerHost: idleConnsPerHost,
+		MaxConnsPerHost:     cfg.Connection.MaxConnsPerHost,
+		ProxyURL:            cfg.Connection.ProxyURL,
+		EnableSystemProxy:   cfg.Connection.EnableSystemProxy,
+		EnableHTTP2:         cfg.Connection.EnableHTTP2,
+		CookieJar:           cookieJar,
+		EnableCookies:       cfg.Connection.EnableCookies,
+		EnableDoH:           cfg.Connection.EnableDoH,
+		DoHCacheTTL:         cfg.Connection.DoHCacheTTL,
+
+		// Security settings
+		TLSConfig:               cfg.Security.TLSConfig,
+		MinTLSVersion:           minTLSVersion,
+		MaxTLSVersion:           maxTLSVersion,
+		InsecureSkipVerify:      cfg.Security.InsecureSkipVerify,
+		MaxResponseBodySize:     cfg.Security.MaxResponseBodySize,
+		MaxDecompressedBodySize: cfg.Security.MaxDecompressedBodySize,
+		ValidateURL:             cfg.Security.ValidateURL,
+		ValidateHeaders:         cfg.Security.ValidateHeaders,
+		AllowPrivateIPs:         cfg.Security.AllowPrivateIPs,
+		StrictContentLength:     cfg.Security.StrictContentLength,
+
+		// Retry settings
+		MaxRetries:        cfg.Retry.MaxRetries,
+		RetryDelay:        cfg.Retry.Delay,
+		MaxRetryDelay:     maxRetryDelay,
+		BackoffFactor:     cfg.Retry.BackoffFactor,
+		Jitter:            cfg.Retry.EnableJitter,
+		CustomRetryPolicy: cfg.Retry.CustomPolicy,
+
+		// Middleware settings
+		UserAgent:       cfg.Middleware.UserAgent,
+		Headers:         cfg.Middleware.Headers,
+		FollowRedirects: cfg.Middleware.FollowRedirects,
+		MaxRedirects:    cfg.Middleware.MaxRedirects,
+	}
+
+	if len(cfg.Security.RedirectWhitelist) > 0 {
+		engineConfig.RedirectWhitelist = security.NewDomainWhitelist(cfg.Security.RedirectWhitelist...)
+	}
+
+	// Parse SSRF exempt CIDRs
+	if len(cfg.Security.SSRFExemptCIDRs) > 0 {
+		exemptNets, err := validation.ParseExemptCIDRs(cfg.Security.SSRFExemptCIDRs)
+		if err != nil {
+			return nil, fmt.Errorf("invalid SSRF exempt CIDRs: %w", err)
+		}
+		engineConfig.ExemptNets = exemptNets
+	}
+
+	return engineConfig, nil
 }
 
 // resultPool reduces heap allocations for Result objects.
@@ -704,29 +760,19 @@ func ReleaseResult(r *Result) {
 	if r == nil {
 		return
 	}
-	// Clear all fields to prevent data leakage and ensure clean state for reuse
-	// Request fields
-	r.Request.URL = ""
-	r.Request.Method = ""
-	r.Request.Headers = nil
-	r.Request.Cookies = nil
-
-	// Response fields - clear all including sensitive data
-	r.Response.StatusCode = 0
-	r.Response.Status = ""
-	r.Response.Proto = ""
-	r.Response.Headers = nil
-	r.Response.Body = ""
-	r.Response.RawBody = nil
-	r.Response.ContentLength = 0
-	r.Response.Cookies = nil
-
-	// Meta fields
-	r.Meta.Duration = 0
-	r.Meta.Attempts = 0
-	r.Meta.RedirectChain = nil
-	r.Meta.RedirectCount = 0
-
+	// Sanitize sensitive body data before returning to pool.
+	// Always clear up to 64KB and nil the slice for large bodies.
+	body := r.Response.RawBody
+	if len(body) > 0 {
+		clearLen := min(len(body), 64*1024)
+		for i := range body[:clearLen] {
+			body[i] = 0
+		}
+		r.Response.RawBody = nil
+	}
+	*r.Request = RequestInfo{}
+	*r.Response = ResponseInfo{}
+	*r.Meta = RequestMeta{}
 	resultPool.Put(r)
 }
 
@@ -764,6 +810,7 @@ func extractRequestCookies(headers http.Header) []*http.Cookie {
 		return nil
 	}
 
+	// Fast path: avoid map lookup when no Cookie header exists
 	cookieHeader := headers.Get("Cookie")
 	if cookieHeader == "" {
 		return nil
@@ -776,7 +823,7 @@ func createCookieJar(enableCookies bool) (http.CookieJar, error) {
 	if !enableCookies {
 		return nil, nil
 	}
-	jar, err := NewCookieJar()
+	jar, err := newCookieJar()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create cookie jar: %w", err)
 	}

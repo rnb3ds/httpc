@@ -268,33 +268,26 @@ func TestEnforceCookieSecurity(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := EnforceCookieSecurity(tt.cookie, tt.config)
+			EnforceCookieSecurity(tt.cookie, tt.config)
 
 			if tt.cookie == nil {
-				if result != nil {
-					t.Error("expected nil result for nil cookie")
-				}
 				return
 			}
 
-			if result == nil {
-				t.Fatal("expected non-nil result")
+			if tt.cookie.Secure != tt.wantSecure {
+				t.Errorf("Secure = %v, want %v", tt.cookie.Secure, tt.wantSecure)
 			}
 
-			if result.Secure != tt.wantSecure {
-				t.Errorf("Secure = %v, want %v", result.Secure, tt.wantSecure)
+			if tt.cookie.HttpOnly != tt.wantHttpOnly {
+				t.Errorf("HttpOnly = %v, want %v", tt.cookie.HttpOnly, tt.wantHttpOnly)
 			}
 
-			if result.HttpOnly != tt.wantHttpOnly {
-				t.Errorf("HttpOnly = %v, want %v", result.HttpOnly, tt.wantHttpOnly)
+			if tt.wantSameSite != 0 && tt.cookie.SameSite != tt.wantSameSite {
+				t.Errorf("SameSite = %v, want %v", tt.cookie.SameSite, tt.wantSameSite)
 			}
 
-			if tt.wantSameSite != 0 && result.SameSite != tt.wantSameSite {
-				t.Errorf("SameSite = %v, want %v", result.SameSite, tt.wantSameSite)
-			}
-
-			if tt.wantPath != "" && result.Path != tt.wantPath {
-				t.Errorf("Path = %q, want %q", result.Path, tt.wantPath)
+			if tt.wantPath != "" && tt.cookie.Path != tt.wantPath {
+				t.Errorf("Path = %q, want %q", tt.cookie.Path, tt.wantPath)
 			}
 		})
 	}
@@ -302,4 +295,157 @@ func TestEnforceCookieSecurity(t *testing.T) {
 
 func containsString(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsString(s[1:], substr))
+}
+
+// TestSameSiteConversions tests the sameSiteToString and stringToSameSite conversion
+// functions across all SameSite modes and edge cases.
+func TestSameSiteConversions(t *testing.T) {
+	t.Run("sameSiteToString", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			sameSite http.SameSite
+			want     string
+		}{
+			{"DefaultMode", http.SameSiteDefaultMode, "Default"},
+			{"LaxMode", http.SameSiteLaxMode, "Lax"},
+			{"StrictMode", http.SameSiteStrictMode, "Strict"},
+			{"NoneMode", http.SameSiteNoneMode, "None"},
+			{"Unknown value", http.SameSite(99), ""},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				got := sameSiteToString(tt.sameSite)
+				if got != tt.want {
+					t.Errorf("sameSiteToString(%v) = %q, want %q", tt.sameSite, got, tt.want)
+				}
+			})
+		}
+	})
+
+	t.Run("stringToSameSite", func(t *testing.T) {
+		tests := []struct {
+			name  string
+			input string
+			want  http.SameSite
+		}{
+			{"Strict", "Strict", http.SameSiteStrictMode},
+			{"Lax", "Lax", http.SameSiteLaxMode},
+			{"None", "None", http.SameSiteNoneMode},
+			{"Default", "Default", http.SameSiteDefaultMode},
+			{"Empty string", "", http.SameSiteDefaultMode},
+			{"Invalid value", "invalid", http.SameSiteDefaultMode},
+			{"Case insensitive strict", "STRICT", http.SameSiteStrictMode},
+			{"Case insensitive lax", "LAX", http.SameSiteLaxMode},
+			{"Case insensitive none", "none", http.SameSiteNoneMode},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				got := stringToSameSite(tt.input)
+				if got != tt.want {
+					t.Errorf("stringToSameSite(%q) = %v, want %v", tt.input, got, tt.want)
+				}
+			})
+		}
+	})
+}
+
+// TestValidateSameSite tests the validateSameSite function with various SameSite
+// requirements and cookie configurations.
+func TestValidateSameSite(t *testing.T) {
+	tests := []struct {
+		name      string
+		cookie    *http.Cookie
+		required  string
+		allowNone bool
+		wantErr   bool
+	}{
+		{
+			name:      "Strict cookie with Strict requirement",
+			cookie:    &http.Cookie{Name: "test", SameSite: http.SameSiteStrictMode},
+			required:  "Strict",
+			allowNone: false,
+			wantErr:   false,
+		},
+		{
+			name:      "Lax cookie with Lax requirement",
+			cookie:    &http.Cookie{Name: "test", SameSite: http.SameSiteLaxMode},
+			required:  "Lax",
+			allowNone: false,
+			wantErr:   false,
+		},
+		{
+			name:      "None cookie with None requirement but allowNone=false",
+			cookie:    &http.Cookie{Name: "test", SameSite: http.SameSiteNoneMode},
+			required:  "None",
+			allowNone: false,
+			wantErr:   true,
+		},
+		{
+			name:      "None cookie with None requirement and allowNone=true",
+			cookie:    &http.Cookie{Name: "test", SameSite: http.SameSiteNoneMode},
+			required:  "None",
+			allowNone: true,
+			wantErr:   false,
+		},
+		{
+			name:      "Default mode cookie with Lax requirement accepted",
+			cookie:    &http.Cookie{Name: "test", SameSite: http.SameSiteDefaultMode},
+			required:  "Lax",
+			allowNone: false,
+			wantErr:   false,
+		},
+		{
+			name:      "Default mode cookie with Strict requirement rejected",
+			cookie:    &http.Cookie{Name: "test", SameSite: http.SameSiteDefaultMode},
+			required:  "Strict",
+			allowNone: false,
+			wantErr:   true,
+		},
+		{
+			name:      "Mismatch Strict cookie with Lax requirement",
+			cookie:    &http.Cookie{Name: "test", SameSite: http.SameSiteStrictMode},
+			required:  "Lax",
+			allowNone: false,
+			wantErr:   true,
+		},
+		{
+			name:      "Zero SameSite with Lax requirement accepted as default",
+			cookie:    &http.Cookie{Name: "test", SameSite: 0},
+			required:  "lax",
+			allowNone: false,
+			wantErr:   false,
+		},
+		{
+			name:      "Zero SameSite with Strict requirement rejected",
+			cookie:    &http.Cookie{Name: "test", SameSite: 0},
+			required:  "strict",
+			allowNone: false,
+			wantErr:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateSameSite(tt.cookie, tt.required, tt.allowNone)
+			if tt.wantErr && err == nil {
+				t.Error("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// TestEnforceCookieSecurity_InvalidSameSite verifies that EnforceCookieSecurity handles
+// unrecognized RequireSameSite values by falling back to SameSiteDefaultMode.
+func TestEnforceCookieSecurity_InvalidSameSite(t *testing.T) {
+	cookie := &http.Cookie{Name: "test", Value: "value"}
+	config := &CookieSecurityConfig{RequireSameSite: "UnrecognizedValue"}
+
+	EnforceCookieSecurity(cookie, config)
+
+	if cookie.SameSite != http.SameSiteDefaultMode {
+		t.Errorf("expected SameSiteDefaultMode for unrecognized value, got %v", cookie.SameSite)
+	}
 }

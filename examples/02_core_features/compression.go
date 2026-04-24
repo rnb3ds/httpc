@@ -5,7 +5,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"strings"
 
 	"github.com/cybergodev/httpc"
 )
@@ -14,46 +13,13 @@ func main() {
 	fmt.Println("=== HTTP Response Decompression Example ===\n ")
 
 	// Example 1: Automatic gzip decompression
-	fmt.Println("1. Automatic gzip decompression:")
-	headers := map[string]string{
-		"Accept-Encoding": "gzip, deflate", // Request compressed response
-		"User-Agent":      "httpc-example/1.0",
-	}
+	demonstrateGzipDecompression()
 
-	resp, err := httpc.Get("https://httpbin.org/gzip", httpc.WithHeaderMap(headers))
-	if err != nil {
-		log.Fatalf("Request failed: %v", err)
-	}
-
-	fmt.Printf("   Status: %d\n", resp.StatusCode())
-	fmt.Printf("   Content-Encoding: %s\n", resp.Response.Headers.Get("Content-Encoding"))
-	fmt.Printf("   Decompressed body length: %d bytes\n", len(resp.Body()))
-	fmt.Printf("   Body preview: %.200s...\n\n", resp.Body())
-
-	// Example 2: Deflate decompression
-	// Note: Some servers may not properly support deflate encoding
-	fmt.Println("2. Testing with another gzip endpoint:")
-	resp2, err := httpc.Get("https://www.github.com", httpc.WithHeaderMap(headers))
-	if err != nil {
-		log.Fatalf("Request failed: %v", err)
-	}
-
-	fmt.Printf("   Status: %d\n", resp2.StatusCode())
-	fmt.Printf("   Content-Encoding: %s\n", resp2.Response.Headers.Get("Content-Encoding"))
-	fmt.Printf("   Decompressed body length: %d bytes\n", len(resp2.Body()))
-	fmt.Printf("   Body preview: \n%.200s...\n\n", strings.Trim(resp2.Body(), "\n"))
+	// Example 2: Gzip from another server
+	demonstrateGzipFromServer()
 
 	// Example 3: Without compression
-	fmt.Println("3. Without compression (no Accept-Encoding header):")
-	resp3, err := httpc.Get("https://httpbin.org/get")
-	if err != nil {
-		log.Fatalf("Request failed: %v", err)
-	}
-
-	fmt.Printf("   Status: %d\n", resp3.StatusCode())
-	fmt.Printf("   Content-Encoding: %s\n", resp3.Response.Headers.Get("Content-Encoding"))
-	fmt.Printf("   Body length: %d bytes\n", len(resp3.Body()))
-	fmt.Printf("   Body preview: %.200s...\n\n", resp3.Body())
+	demonstrateNoCompression()
 
 	fmt.Println("\n[OK] All compression examples completed successfully!")
 	fmt.Println("\nNote:")
@@ -61,4 +27,60 @@ func main() {
 	fmt.Println("  - Decompression is based on the Content-Encoding header")
 	fmt.Println("  - Brotli (br) is not supported due to zero-dependency constraint")
 	fmt.Println("  - To request compressed responses, set Accept-Encoding header")
+}
+
+// demonstrateGzipDecompression shows automatic gzip decompression
+func demonstrateGzipDecompression() {
+	fmt.Println("1. Automatic gzip decompression:")
+	headers := map[string]string{
+		"Accept-Encoding": "gzip, deflate",
+		"User-Agent":      "httpc-example/1.0",
+	}
+
+	resp, err := httpc.Get("https://httpbin.org/gzip", httpc.WithHeaderMap(headers))
+	if err != nil {
+		log.Printf("Request failed: %v\n", err)
+		return
+	}
+
+	fmt.Printf("   Status: %d\n", resp.StatusCode())
+	fmt.Printf("   Content-Encoding: %s\n", resp.Response.Headers.Get("Content-Encoding"))
+	fmt.Printf("   Decompressed body length: %d bytes\n", len(resp.Body()))
+	fmt.Printf("   Body preview: %.200s...\n\n", resp.Body())
+}
+
+// demonstrateGzipFromServer shows gzip decompression from another server
+func demonstrateGzipFromServer() {
+	fmt.Println("2. Testing with another gzip endpoint:")
+	headers := map[string]string{
+		"Accept-Encoding": "gzip, deflate",
+		"User-Agent":      "httpc-example/1.0",
+	}
+
+	resp, err := httpc.Get("https://www.github.com", httpc.WithHeaderMap(headers))
+	if err != nil {
+		log.Printf("Request failed: %v\n", err)
+		return
+	}
+
+	fmt.Printf("   Status: %d\n", resp.StatusCode())
+	fmt.Printf("   Content-Encoding: %s\n", resp.Response.Headers.Get("Content-Encoding"))
+	fmt.Printf("   Decompressed body length: %d bytes\n", len(resp.Body()))
+	fmt.Printf("   Body preview: \n%.200s...\n\n", resp.Body())
+}
+
+// demonstrateNoCompression shows response without compression
+func demonstrateNoCompression() {
+	fmt.Println("3. Without compression (no Accept-Encoding header):")
+
+	resp, err := httpc.Get("https://httpbin.org/get")
+	if err != nil {
+		log.Printf("Request failed: %v\n", err)
+		return
+	}
+
+	fmt.Printf("   Status: %d\n", resp.StatusCode())
+	fmt.Printf("   Content-Encoding: %s\n", resp.Response.Headers.Get("Content-Encoding"))
+	fmt.Printf("   Body length: %d bytes\n", len(resp.Body()))
+	fmt.Printf("   Body preview: %.200s...\n\n", resp.Body())
 }

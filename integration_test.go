@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -294,8 +295,8 @@ func TestStress_HighConcurrency(t *testing.T) {
 
 	// Use more lenient configuration
 	config := DefaultConfig()
-	config.Timeout = 30 * time.Second // Increase timeout
-	config.AllowPrivateIPs = true     // Allow access to test server
+	config.Timeouts.Request = 30 * time.Second // Increase timeout
+	config.Security.AllowPrivateIPs = true     // Allow access to test server
 	client, err := New(config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
@@ -387,6 +388,10 @@ func TestStress_MemoryUsage(t *testing.T) {
 	client, _ := newTestClient()
 	defer client.Close()
 
+	runtime.GC()
+	var baseline runtime.MemStats
+	runtime.ReadMemStats(&baseline)
+
 	// Make many requests to test memory management
 	for i := 0; i < 10000; i++ {
 		resp, err := client.Get(server.URL)
@@ -398,5 +403,17 @@ func TestStress_MemoryUsage(t *testing.T) {
 		if i%1000 == 0 {
 			t.Logf("Completed %d requests", i)
 		}
+	}
+
+	runtime.GC()
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+
+	heapGrowth := int64(after.HeapAlloc) - int64(baseline.HeapAlloc)
+	// Allow up to 10MB growth — pools should keep allocations bounded
+	maxGrowth := int64(10 * 1024 * 1024)
+	if heapGrowth > maxGrowth {
+		t.Errorf("Heap grew by %d bytes (baseline=%d, after=%d), expected < %d",
+			heapGrowth, baseline.HeapAlloc, after.HeapAlloc, maxGrowth)
 	}
 }

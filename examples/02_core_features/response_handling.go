@@ -157,9 +157,10 @@ func demonstrateHeaderAccess(client httpc.Client) {
 	contentType := resp.Response.Headers.Get("content-type")
 	fmt.Printf("Content-Type: %s\n", contentType)
 
-	// Direct map access (case-sensitive)
-	date := resp.Response.Headers["Date"]
-	fmt.Printf("Date: %s\n", date)
+	// Case-insensitive access (same as Get, but shows Header is http.Header)
+	if date := resp.Response.Headers.Get("Date"); date != "" {
+		fmt.Printf("Date: %s\n", date)
+	}
 
 	// Check if header exists
 	if server := resp.Response.Headers.Get("Server"); server != "" {

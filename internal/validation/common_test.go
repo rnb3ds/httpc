@@ -84,18 +84,18 @@ func TestValidateInputString(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateInputString(tt.input, tt.maxLen, tt.fieldName, tt.additionalFunc)
+			err := validateInputString(tt.input, tt.maxLen, tt.fieldName, tt.additionalFunc)
 			if tt.wantErr {
 				if err == nil {
-					t.Errorf("ValidateInputString() expected error, got nil")
+					t.Errorf("validateInputString() expected error, got nil")
 					return
 				}
 				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
-					t.Errorf("ValidateInputString() error = %v, want to contain %v", err, tt.errContains)
+					t.Errorf("validateInputString() error = %v, want to contain %v", err, tt.errContains)
 				}
 			} else {
 				if err != nil {
-					t.Errorf("ValidateInputString() unexpected error = %v", err)
+					t.Errorf("validateInputString() unexpected error = %v", err)
 				}
 			}
 		})
@@ -568,9 +568,9 @@ func TestIsValidHeaderChar(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(string(tt.char), func(t *testing.T) {
-			result := IsValidHeaderChar(tt.char)
+			result := isValidHeaderChar(tt.char)
 			if result != tt.valid {
-				t.Errorf("IsValidHeaderChar(%q) = %v, want %v", tt.char, result, tt.valid)
+				t.Errorf("isValidHeaderChar(%q) = %v, want %v", tt.char, result, tt.valid)
 			}
 		})
 	}
@@ -820,22 +820,127 @@ func TestValidateCredentialStrict(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateCredentialStrict(tt.cred, tt.maxLen, tt.checkColon, tt.credType)
+			err := validateCredentialStrict(tt.cred, tt.maxLen, tt.checkColon, tt.credType)
 			if tt.wantErr {
 				if err == nil {
-					t.Errorf("ValidateCredentialStrict() expected error, got nil")
+					t.Errorf("validateCredentialStrict() expected error, got nil")
 					return
 				}
 				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
-					t.Errorf("ValidateCredentialStrict() error = %v, want to contain %v", err, tt.errContains)
+					t.Errorf("validateCredentialStrict() error = %v, want to contain %v", err, tt.errContains)
 				}
 			} else {
 				if err != nil {
-					t.Errorf("ValidateCredentialStrict() unexpected error = %v", err)
+					t.Errorf("validateCredentialStrict() unexpected error = %v", err)
 				}
 			}
 		})
 	}
+}
+
+// TestIsValidHeaderChar_Boundaries tests the character boundary conditions for
+// HTTP header name validation including control characters, DEL, and ASCII edges.
+func TestIsValidHeaderChar_Boundaries(t *testing.T) {
+	tests := []struct {
+		name string
+		char rune
+		want bool
+	}{
+		{"NUL", 0, false},
+		{"Last control char", 31, false},
+		{"Space", 32, false},
+		{"DEL", 127, false},
+		{"First non-ASCII", 128, false},
+		{"Exclamation mark 0x21", '!', false},
+		{"Digit start 0", '0', true},
+		{"Digit end 9", '9', true},
+		{"Uppercase start A", 'A', true},
+		{"Uppercase end Z", 'Z', true},
+		{"Lowercase start a", 'a', true},
+		{"Lowercase end z", 'z', true},
+		{"Hyphen", '-', true},
+		{"Underscore", '_', false},
+		{"Dot", '.', false},
+		{"Colon", ':', false},
+		{"Tab", '\t', false},
+		{"Newline", '\n', false},
+		{"Large rune", 256, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isValidHeaderChar(tt.char)
+			if got != tt.want {
+				t.Errorf("isValidHeaderChar(%d/%q) = %v, want %v", tt.char, tt.char, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestValidateCookieValue_Boundaries tests the cookie value length boundaries
+// including empty string, exact max length, and one over max length.
+func TestValidateCookieValue_Boundaries(t *testing.T) {
+	t.Run("empty string is valid", func(t *testing.T) {
+		err := ValidateCookieValue("")
+		if err != nil {
+			t.Errorf("unexpected error for empty cookie value: %v", err)
+		}
+	})
+
+	t.Run("value at exact max length", func(t *testing.T) {
+		err := ValidateCookieValue(strings.Repeat("a", MaxCookieValueLen))
+		if err != nil {
+			t.Errorf("unexpected error for value at MaxCookieValueLen: %v", err)
+		}
+	})
+
+	t.Run("value one over max length", func(t *testing.T) {
+		err := ValidateCookieValue(strings.Repeat("a", MaxCookieValueLen+1))
+		if err == nil {
+			t.Error("expected error for value exceeding MaxCookieValueLen")
+		}
+		if err != nil && !strings.Contains(err.Error(), "too long") {
+			t.Errorf("error should contain 'too long', got: %v", err)
+		}
+	})
+}
+
+// TestValidateURL_Boundaries tests URL length boundary conditions at exactly maxURLLen
+// and one character over the limit.
+func TestValidateURL_Boundaries(t *testing.T) {
+	t.Run("URL at exact max length", func(t *testing.T) {
+		// Build a URL that is exactly maxURLLen characters
+		base := "https://example.com/"
+		padding := strings.Repeat("a", maxURLLen-len(base))
+		urlStr := base + padding
+
+		if len(urlStr) != maxURLLen {
+			t.Fatalf("test URL length %d != maxURLLen %d", len(urlStr), maxURLLen)
+		}
+
+		err := ValidateURL(urlStr)
+		if err != nil {
+			t.Errorf("unexpected error for URL at exact max length: %v", err)
+		}
+	})
+
+	t.Run("URL one over max length", func(t *testing.T) {
+		base := "https://example.com/"
+		padding := strings.Repeat("a", maxURLLen-len(base)+1)
+		urlStr := base + padding
+
+		if len(urlStr) != maxURLLen+1 {
+			t.Fatalf("test URL length %d != maxURLLen+1 %d", len(urlStr), maxURLLen+1)
+		}
+
+		err := ValidateURL(urlStr)
+		if err == nil {
+			t.Error("expected error for URL exceeding max length")
+		}
+		if err != nil && !strings.Contains(err.Error(), "too long") {
+			t.Errorf("error should contain 'too long', got: %v", err)
+		}
+	})
 }
 
 func TestValidateTokenStrict(t *testing.T) {
@@ -918,18 +1023,18 @@ func TestValidateTokenStrict(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateTokenStrict(tt.token)
+			err := validateTokenStrict(tt.token)
 			if tt.wantErr {
 				if err == nil {
-					t.Errorf("ValidateTokenStrict() expected error, got nil")
+					t.Errorf("validateTokenStrict() expected error, got nil")
 					return
 				}
 				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
-					t.Errorf("ValidateTokenStrict() error = %v, want to contain %v", err, tt.errContains)
+					t.Errorf("validateTokenStrict() error = %v, want to contain %v", err, tt.errContains)
 				}
 			} else {
 				if err != nil {
-					t.Errorf("ValidateTokenStrict() unexpected error = %v", err)
+					t.Errorf("validateTokenStrict() unexpected error = %v", err)
 				}
 			}
 		})

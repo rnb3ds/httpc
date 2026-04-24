@@ -13,22 +13,22 @@
 
 ---
 
-## ✨ 特性
+## 特性
 
 | 特性 | 描述 |
 |------|------|
-| 🔒 **默认安全** | TLS 1.2+、SSRF 防护、CRLF 注入防护、路径遍历阻断 |
-| ⚡ **高性能** | 连接池、HTTP/2、goroutine 安全、`sync.Pool` 优化 |
-| 🔄 **内置弹性** | 智能重试，支持指数退避和抖动 |
-| 🛠️ **开发者友好** | 简洁的 API、直观的选项模式、完善的文档 |
-| 📦 **极简依赖** | 仅依赖 `golang.org/x/sys` 用于系统级操作 |
-| ✅ **生产就绪** | 经过实战检验的默认配置，广泛的测试覆盖 |
-| 🍪 **Cookie 管理** | 完整的 Cookie Jar 支持，带安全验证 |
-| 📁 **文件操作** | 安全的文件下载，支持进度跟踪和断点续传 |
+| **默认安全** | TLS 1.2+、SSRF 防护、CRLF 注入防护、路径遍历阻断 |
+| **高性能** | 连接池、HTTP/2、goroutine 安全、`sync.Pool` 优化 |
+| **内置弹性** | 智能重试，支持指数退避和抖动 |
+| **开发者友好** | 简洁的 API、直观的选项模式、完善的文档 |
+| **极简依赖** | 仅依赖 `golang.org/x/sys` 用于系统级操作 |
+| **生产就绪** | 经过实战检验的默认配置，广泛的测试覆盖 |
+| **Cookie 管理** | 完整的 Cookie Jar 支持，带安全验证 |
+| **文件操作** | 安全的文件下载，支持进度跟踪和断点续传 |
 
 ---
 
-## 📦 安装
+## 安装
 
 ```bash
 go get -u github.com/cybergodev/httpc
@@ -38,7 +38,7 @@ go get -u github.com/cybergodev/httpc
 
 ---
 
-## 🚀 快速开始 (5 分钟)
+## 快速开始 (5 分钟)
 
 ### 简单 GET 请求
 
@@ -123,7 +123,7 @@ func main() {
 
 ---
 
-## 📖 HTTP 方法
+## HTTP 方法
 
 ```go
 // GET 带查询参数
@@ -145,11 +145,14 @@ result, _ := httpc.Delete(url)
 // HEAD / OPTIONS
 result, _ := httpc.Head(url)
 result, _ := httpc.Options(url)
+
+// 自定义方法的通用请求
+result, _ := httpc.Request(ctx, "PROPFIND", url)
 ```
 
 ---
 
-## 🔧 请求选项
+## 请求选项
 
 ### 请求头
 
@@ -206,6 +209,9 @@ httpc.WithFile("file", "document.pdf", fileBytes)
 // 原始请求体 (自动检测 Content-Type)
 httpc.WithBody([]byte("raw data"))
 httpc.WithBinary(binaryData, "application/pdf")
+
+// 流式请求体 (用于大型请求体)
+httpc.WithStreamBody(true)
 ```
 
 ### Cookie
@@ -222,6 +228,9 @@ httpc.WithCookieMap(map[string]string{
 
 // Cookie 字符串
 httpc.WithCookieString("session=abc123; token=xyz")
+
+// 安全 Cookie 验证 (验证 Cookie 安全属性)
+httpc.WithSecureCookie(securityConfig)
 ```
 
 ### 请求控制
@@ -264,7 +273,7 @@ httpc.WithOnResponse(func(resp httpc.ResponseMutator) error {
 | **请求头** | `WithHeader(key, value)`, `WithHeaderMap(map)`, `WithUserAgent(ua)` |
 | **认证** | `WithBearerToken(token)`, `WithBasicAuth(user, pass)` |
 | **查询参数** | `WithQuery(key, value)`, `WithQueryMap(map)` |
-| **请求体** | `WithJSON(data)`, `WithXML(data)`, `WithForm(map)`, `WithFormData(form)`, `WithFile(field, filename, content)`, `WithBody(data)`, `WithBinary([]byte, contentType?)` |
+| **请求体** | `WithJSON(data)`, `WithXML(data)`, `WithForm(map)`, `WithFormData(form)`, `WithFile(field, filename, content)`, `WithBody(data, kind?)`, `WithBinary([]byte, contentType?)`, `WithStreamBody(bool)` |
 | **Cookie** | `WithCookie(cookie)`, `WithCookieMap(map)`, `WithCookieString("a=1; b=2")`, `WithSecureCookie(config)` |
 | **控制** | `WithTimeout(dur)`, `WithMaxRetries(n)`, `WithContext(ctx)` |
 | **重定向** | `WithFollowRedirects(bool)`, `WithMaxRedirects(n)` |
@@ -272,7 +281,7 @@ httpc.WithOnResponse(func(resp httpc.ResponseMutator) error {
 
 ---
 
-## 📥 响应处理
+## 响应处理
 
 ```go
 result, _ := httpc.Get("https://api.example.com/users/123")
@@ -291,7 +300,9 @@ if result.IsServerError() { }        // 5xx
 
 // 解析 JSON 响应
 var data map[string]interface{}
-result.Unmarshal(&data)
+if err := result.Unmarshal(&data); err != nil {
+    log.Fatal(err)
+}
 
 // Cookie 访问
 cookie := result.GetCookie("session")
@@ -299,9 +310,16 @@ if result.HasCookie("session") { }
 
 // 获取请求时发送的 Cookie
 reqCookie := result.GetRequestCookie("token")
+if result.HasRequestCookie("token") { }
+
+// 获取所有 Cookie
+allResponse := result.ResponseCookies()
+allRequest := result.RequestCookies()
 
 // 保存响应到文件
-result.SaveToFile("response.json")
+if err := result.SaveToFile("response.json"); err != nil {
+    log.Fatal(err)
+}
 
 // 元数据
 fmt.Println(result.Meta.Duration)      // 请求耗时
@@ -315,7 +333,7 @@ fmt.Println(result.String())
 
 ---
 
-## ⏱️ Context 与取消
+## Context 与取消
 
 ```go
 ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -331,7 +349,7 @@ if errors.Is(err, context.DeadlineExceeded) {
 
 ---
 
-## 📁 文件下载
+## 文件下载
 
 ### 简单下载
 
@@ -375,9 +393,46 @@ if result.Resumed {
 }
 ```
 
+### 带 Context 的下载
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+defer cancel()
+
+result, _ := httpc.DownloadFileWithContext(ctx,
+    "https://example.com/large.zip",
+    "downloads/large.zip",
+)
+
+// 使用下载配置 + Context 完全控制
+result, _ := httpc.DownloadWithOptionsWithContext(ctx, url, opts)
+```
+
+### 下载函数
+
+| 函数 | 描述 |
+|------|------|
+| `DownloadFile(url, filePath, ...options)` | 简单下载 |
+| `DownloadWithOptions(url, config, ...options)` | 带进度/断点续传配置下载 |
+| `DownloadFileWithContext(ctx, url, filePath, ...options)` | 带取消控制的下载 |
+| `DownloadWithOptionsWithContext(ctx, url, config, ...options)` | 带配置 + Context 完全控制 |
+
+### DownloadResult 字段
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| `FilePath` | `string` | 本地文件路径 |
+| `BytesWritten` | `int64` | 总写入字节数 |
+| `Duration` | `time.Duration` | 下载耗时 |
+| `AverageSpeed` | `float64` | 平均下载速度 (字节/秒) |
+| `StatusCode` | `int` | HTTP 状态码 |
+| `ContentLength` | `int64` | 服务器返回的 Content-Length |
+| `Resumed` | `bool` | 是否从断点恢复 |
+| `ResponseCookies` | `[]*http.Cookie` | 响应中的 Cookie |
+
 ---
 
-## 🌐 域名客户端 (会话管理)
+## 域名客户端 (会话管理)
 
 用于对同一域名发起多次请求，自动管理 Cookie 和请求头：
 
@@ -394,23 +449,110 @@ client.SetHeader("Authorization", "Bearer "+token)
 // 后续请求自动携带 Cookie 和请求头
 profile, _ := client.Get("/profile")
 data, _ := client.Get("/data")
+```
 
-// Cookie 管理
+### Cookie 管理
+
+```go
+// 单个 Cookie
 client.SetCookie(&http.Cookie{Name: "session", Value: "abc"})
-client.GetCookie("session")
+
+// 多个 Cookie
+client.SetCookies([]*http.Cookie{
+    {Name: "session", Value: "abc"},
+    {Name: "token", Value: "xyz"},
+})
+
+// 读取 Cookie
+cookie := client.GetCookie("session")   // 单个 Cookie
+allCookies := client.GetCookies()        // 所有 Cookie
+
+// 删除 Cookie
 client.DeleteCookie("session")
 client.ClearCookies()
+```
 
-// 请求头管理
-client.SetHeaders(map[string]string{"X-App": "v1"})
-client.GetHeaders()
+### 请求头管理
+
+```go
+client.SetHeader("X-Custom", "value")
+client.SetHeaders(map[string]string{"X-App": "v1", "X-Version": "1.0"})
+headers := client.GetHeaders()
 client.DeleteHeader("X-Old")
 client.ClearHeaders()
 ```
 
+### 访问器
+
+```go
+client.URL()     // 完整基础 URL
+client.Domain()  // 仅域名
+client.Session() // 底层 SessionManager
+```
+
+### 文件下载 (相对路径)
+
+```go
+result, _ := client.DownloadFile("/files/data.csv", "data.csv")
+result, _ := client.DownloadWithOptions("/files/large.zip", downloadOpts)
+result, _ := client.DownloadFileWithContext(ctx, "/files/data.csv", "data.csv")
+result, _ := client.DownloadWithOptionsWithContext(ctx, "/files/large.zip", downloadOpts)
+```
+
+### 所有 HTTP 方法
+
+```go
+result, _ := client.Get("/users")
+result, _ := client.Post("/users", httpc.WithJSON(data))
+result, _ := client.Put("/users/1", httpc.WithJSON(data))
+result, _ := client.Patch("/users/1", httpc.WithJSON(data))
+result, _ := client.Delete("/users/1")
+result, _ := client.Head("/users")
+result, _ := client.Options("/users")
+result, _ := client.Request(ctx, "PROPFIND", "/resource")
+```
+
 ---
 
-## ⚙️ 配置
+## 会话管理器
+
+`SessionManager` 提供线程安全的 Cookie 和请求头管理，内部被 `DomainClient` 使用，也可独立使用：
+
+```go
+// 创建会话管理器
+sm, _ := httpc.NewSessionManager()
+
+// 或带 Cookie 安全验证
+cfg := httpc.DefaultSessionConfig()
+cfg.CookieSecurity = httpc.StrictCookieSecurityConfig()
+sm, _ := httpc.NewSessionManager(cfg)
+
+// 管理 Cookie
+sm.SetCookie(&http.Cookie{Name: "session", Value: "abc"})
+sm.SetCookies([]*http.Cookie{{Name: "token", Value: "xyz"}})
+cookie := sm.GetCookie("session")
+allCookies := sm.GetCookies()
+sm.DeleteCookie("session")
+sm.ClearCookies()
+
+// 管理请求头
+sm.SetHeader("Authorization", "Bearer token")
+sm.SetHeaders(map[string]string{"X-App": "v1"})
+headers := sm.GetHeaders()
+sm.DeleteHeader("X-Old")
+sm.ClearHeaders()
+
+// 从响应更新
+sm.UpdateFromResult(result)
+sm.UpdateFromCookies(responseCookies)
+
+// Cookie 安全设置
+sm.SetCookieSecurity(httpc.StrictCookieSecurityConfig())
+```
+
+---
+
+## 配置
 
 ### 预设配置
 
@@ -436,34 +578,44 @@ client, _ := httpc.New(httpc.TestingConfig())
 ```go
 config := &httpc.Config{
     // 超时设置
-    Timeout:               30 * time.Second,
-    DialTimeout:           10 * time.Second,
-    TLSHandshakeTimeout:   10 * time.Second,
-    ResponseHeaderTimeout: 30 * time.Second,
-    IdleConnTimeout:       90 * time.Second,
+    Timeouts: httpc.TimeoutConfig{
+        Request:        30 * time.Second,
+        Dial:           10 * time.Second,
+        TLSHandshake:   10 * time.Second,
+        ResponseHeader: 30 * time.Second,
+        IdleConn:       90 * time.Second,
+    },
 
     // 连接设置
-    MaxIdleConns:      100,
-    MaxConnsPerHost:   20,
-    EnableHTTP2:       true,
-    EnableCookies:     false,
+    Connection: httpc.ConnectionConfig{
+        MaxIdleConns:    100,
+        MaxConnsPerHost: 20,
+        EnableHTTP2:     true,
+        EnableCookies:   false,
+    },
 
     // 安全设置
-    MinTLSVersion:       tls.VersionTLS12,
-    MaxTLSVersion:       tls.VersionTLS13,
-    MaxResponseBodySize: 50 * 1024 * 1024, // 50 MB
-    AllowPrivateIPs:     true,
+    Security: httpc.SecurityConfig{
+        MinTLSVersion:       tls.VersionTLS12,
+        MaxTLSVersion:       tls.VersionTLS13,
+        MaxResponseBodySize: 50 * 1024 * 1024, // 50 MB
+        AllowPrivateIPs:     false,
+    },
 
     // 重试设置
-    MaxRetries:    3,
-    RetryDelay:    1 * time.Second,
-    BackoffFactor: 2.0,
-    EnableJitter:  true,
+    Retry: httpc.RetryConfig{
+        MaxRetries:    3,
+        Delay:         1 * time.Second,
+        BackoffFactor: 2.0,
+        EnableJitter:  true,
+    },
 
-    // 其他设置
-    UserAgent:       "MyApp/1.0",
-    FollowRedirects: true,
-    MaxRedirects:    10,
+    // 中间件设置
+    Middleware: httpc.MiddlewareConfig{
+        UserAgent:       "MyApp/1.0",
+        FollowRedirects: true,
+        MaxRedirects:    10,
+    },
 }
 client, _ := httpc.New(config)
 ```
@@ -472,48 +624,51 @@ client, _ := httpc.New(config)
 
 | 选项 | 类型 | 默认值 | 描述 |
 |------|------|--------|------|
-| **超时设置** ||||
-| `Timeout` | `time.Duration` | `30s` | 整体请求超时 |
-| `DialTimeout` | `time.Duration` | `10s` | TCP 连接超时 |
-| `TLSHandshakeTimeout` | `time.Duration` | `10s` | TLS 握手超时 |
-| `ResponseHeaderTimeout` | `time.Duration` | `30s` | 响应头超时 |
-| `IdleConnTimeout` | `time.Duration` | `90s` | 空闲连接超时 |
-| **连接设置** ||||
-| `MaxIdleConns` | `int` | `50` | 最大空闲连接数 |
-| `MaxConnsPerHost` | `int` | `10` | 每个主机最大连接数 |
-| `ProxyURL` | `string` | `""` | 代理 URL (http/socks5) |
-| `EnableSystemProxy` | `bool` | `false` | 自动检测系统代理 |
-| `EnableHTTP2` | `bool` | `true` | 启用 HTTP/2 |
-| `EnableCookies` | `bool` | `false` | 启用 Cookie Jar |
-| `EnableDoH` | `bool` | `false` | 启用 DNS-over-HTTPS |
-| `DoHCacheTTL` | `time.Duration` | `5m` | DoH 缓存时长 |
-| **安全设置** ||||
-| `TLSConfig` | `*tls.Config` | `nil` | 自定义 TLS 配置 |
-| `MinTLSVersion` | `uint16` | `TLS 1.2` | 最低 TLS 版本 |
-| `MaxTLSVersion` | `uint16` | `TLS 1.3` | 最高 TLS 版本 |
-| `InsecureSkipVerify` | `bool` | `false` | 跳过 TLS 验证 (仅限测试！) |
-| `MaxResponseBodySize` | `int64` | `10MB` | 最大响应体大小 |
-| `AllowPrivateIPs` | `bool` | `true` | 允许私有 IP (SSRF) |
-| `ValidateURL` | `bool` | `true` | 启用 URL 验证 |
-| `ValidateHeaders` | `bool` | `true` | 启用请求头验证 |
-| `StrictContentLength` | `bool` | `true` | 严格 Content-Length 检查 |
-| `RedirectWhitelist` | `[]string` | `nil` | 允许的重定向域名 |
-| **重试设置** ||||
-| `MaxRetries` | `int` | `3` | 最大重试次数 |
-| `RetryDelay` | `time.Duration` | `1s` | 初始重试延迟 |
-| `BackoffFactor` | `float64` | `2.0` | 退避乘数 |
-| `EnableJitter` | `bool` | `true` | 重试添加抖动 |
-| `CustomRetryPolicy` | `RetryPolicy` | `nil` | 自定义重试逻辑 |
-| **其他** ||||
-| `Middlewares` | `[]MiddlewareFunc` | `nil` | 中间件链 |
-| `UserAgent` | `string` | `"httpc/1.0"` | 默认 User-Agent |
-| `Headers` | `map[string]string` | `{}` | 默认请求头 |
-| `FollowRedirects` | `bool` | `true` | 跟随重定向 |
-| `MaxRedirects` | `int` | `10` | 最大重定向次数 |
+| **超时设置** (`Timeouts`) ||||
+| `Timeouts.Request` | `time.Duration` | `30s` | 整体请求超时 |
+| `Timeouts.Dial` | `time.Duration` | `10s` | TCP 连接超时 |
+| `Timeouts.TLSHandshake` | `time.Duration` | `10s` | TLS 握手超时 |
+| `Timeouts.ResponseHeader` | `time.Duration` | `30s` | 响应头超时 |
+| `Timeouts.IdleConn` | `time.Duration` | `90s` | 空闲连接超时 |
+| **连接设置** (`Connection`) ||||
+| `Connection.MaxIdleConns` | `int` | `50` | 最大空闲连接数 |
+| `Connection.MaxConnsPerHost` | `int` | `10` | 每个主机最大连接数 |
+| `Connection.ProxyURL` | `string` | `""` | 代理 URL (http/socks5) |
+| `Connection.EnableSystemProxy` | `bool` | `false` | 自动检测系统代理 |
+| `Connection.EnableHTTP2` | `bool` | `true` | 启用 HTTP/2 |
+| `Connection.EnableCookies` | `bool` | `false` | 启用 Cookie Jar |
+| `Connection.EnableDoH` | `bool` | `false` | 启用 DNS-over-HTTPS |
+| `Connection.DoHCacheTTL` | `time.Duration` | `5m` | DoH 缓存时长 |
+| **安全设置** (`Security`) ||||
+| `Security.TLSConfig` | `*tls.Config` | `nil` | 自定义 TLS 配置 |
+| `Security.MinTLSVersion` | `uint16` | `TLS 1.2` | 最低 TLS 版本 |
+| `Security.MaxTLSVersion` | `uint16` | `TLS 1.3` | 最高 TLS 版本 |
+| `Security.InsecureSkipVerify` | `bool` | `false` | 跳过 TLS 验证 (仅限测试！) |
+| `Security.MaxResponseBodySize` | `int64` | `10MB` | 最大响应体大小 |
+| `Security.AllowPrivateIPs` | `bool` | `false` | 允许私有 IP (默认启用 SSRF 防护) |
+| `Security.ValidateURL` | `bool` | `true` | 启用 URL 验证 |
+| `Security.ValidateHeaders` | `bool` | `true` | 启用请求头验证 |
+| `Security.StrictContentLength` | `bool` | `true` | 严格 Content-Length 检查 |
+| `Security.RedirectWhitelist` | `[]string` | `nil` | 允许的重定向域名 |
+| `Security.MaxDecompressedBodySize` | `int64` | `100MB` | 最大解压响应体大小 (Zip 炸弹防护) |
+| `Security.SSRFExemptCIDRs` | `[]string` | `nil` | 豁免 SSRF 阻断的 CIDR 范围 |
+| `Security.CookieSecurity` | `*httpc.CookieSecurityConfig` | `nil` | Cookie 安全验证规则 |
+| **重试设置** (`Retry`) ||||
+| `Retry.MaxRetries` | `int` | `3` | 最大重试次数 |
+| `Retry.Delay` | `time.Duration` | `1s` | 初始重试延迟 |
+| `Retry.BackoffFactor` | `float64` | `2.0` | 退避乘数 |
+| `Retry.EnableJitter` | `bool` | `true` | 重试添加抖动 |
+| `Retry.CustomPolicy` | `RetryPolicy` | `nil` | 自定义重试逻辑 |
+| **中间件设置** (`Middleware`) ||||
+| `Middleware.Middlewares` | `[]MiddlewareFunc` | `nil` | 中间件链 |
+| `Middleware.UserAgent` | `string` | `"httpc/1.0"` | 默认 User-Agent |
+| `Middleware.Headers` | `map[string]string` | `{}` | 默认请求头 |
+| `Middleware.FollowRedirects` | `bool` | `true` | 跟随重定向 |
+| `Middleware.MaxRedirects` | `int` | `10` | 最大重定向次数 |
 
 ---
 
-## 🔌 中间件
+## 中间件
 
 ### 内置中间件
 
@@ -544,6 +699,14 @@ httpc.MetricsMiddleware(func(method, url string, statusCode int, duration time.D
 httpc.AuditMiddleware(func(a httpc.AuditEvent) {
     log.Printf("[AUDIT] %s %s -> %d (%v)", a.Method, a.URL, a.StatusCode, a.Duration)
 })
+
+// 带自定义配置的审计
+auditCfg := httpc.DefaultAuditMiddlewareConfig()
+auditCfg.IncludeHeaders = true
+auditCfg.Format = "json"
+httpc.AuditMiddlewareWithConfig(func(a httpc.AuditEvent) {
+    log.Printf("[AUDIT] %v", a)
+}, auditCfg)
 ```
 
 ### 链式中间件
@@ -555,7 +718,7 @@ chainedMiddleware := httpc.Chain(
     httpc.RequestIDMiddleware("X-Request-ID", nil),
     httpc.HeaderMiddleware(map[string]string{"X-App": "v1"}),
 )
-config.Middlewares = []httpc.MiddlewareFunc{chainedMiddleware}
+config.Middleware.Middlewares = []httpc.MiddlewareFunc{chainedMiddleware}
 ```
 
 ### 自定义中间件
@@ -579,24 +742,22 @@ func CustomMiddleware() httpc.MiddlewareFunc {
 
 ---
 
-## 🔀 代理配置
+## 代理配置
 
 ```go
 // 手动代理
-config := &httpc.Config{
-    ProxyURL: "http://127.0.0.1:8080",
-    // 或 SOCKS5: "socks5://127.0.0.1:1080"
-}
+config := httpc.DefaultConfig()
+config.Connection.ProxyURL = "http://127.0.0.1:8080"
+// 或 SOCKS5: "socks5://127.0.0.1:1080"
 
 // 系统代理自动检测 (Windows/macOS/Linux)
-config := &httpc.Config{
-    EnableSystemProxy: true,  // 从环境变量和系统设置读取
-}
+config := httpc.DefaultConfig()
+config.Connection.EnableSystemProxy = true  // 从环境变量和系统设置读取
 ```
 
 ---
 
-## 🔒 安全特性
+## 安全特性
 
 | 特性 | 描述 |
 |------|------|
@@ -610,28 +771,32 @@ config := &httpc.Config{
 ### 重定向域名白名单
 
 ```go
-config := &httpc.Config{
-    RedirectWhitelist: []string{"api.example.com", "secure.example.com"},
-}
+config := httpc.DefaultConfig()
+config.Security.RedirectWhitelist = []string{"api.example.com", "secure.example.com"}
 ```
 
 ### SSRF 防护
 
-默认情况下，`AllowPrivateIPs` 为 `true` 以保持兼容性。当请求用户提供的 URL 时，应启用 SSRF 防护：
+默认情况下，`AllowPrivateIPs` 为 `false`（SSRF 防护已启用），阻止连接到私有/保留 IP 地址。仅在连接内部服务时设为 `true`：
 
 ```go
-// 启用 SSRF 防护
+// SSRF 防护默认已启用
+client, _ := httpc.New(httpc.DefaultConfig())
+
+// 允许私有 IP 用于内部服务访问
 cfg := httpc.DefaultConfig()
-cfg.AllowPrivateIPs = false
+cfg.Security.AllowPrivateIPs = true
 client, _ := httpc.New(cfg)
 
-// 或使用安全预设
-client, _ := httpc.New(httpc.SecureConfig())
+// 或豁免特定 CIDR 范围（如 VPN/VPC）
+cfg := httpc.DefaultConfig()
+cfg.Security.SSRFExemptCIDRs = []string{"10.0.0.0/8", "100.64.0.0/10"}
+client, _ := httpc.New(cfg)
 ```
 
 ---
 
-## ⚠️ 错误处理
+## 错误处理
 
 ```go
 result, err := httpc.Get(url)
@@ -649,6 +814,19 @@ if !result.IsSuccess() {
     return fmt.Errorf("意外的状态码: %d", result.StatusCode())
 }
 ```
+
+### ClientError 字段
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| `Type` | `ErrorType` | 错误分类 |
+| `Message` | `string` | 可读的错误描述 |
+| `Cause` | `error` | 底层错误 (可用 `%w` 解包) |
+| `URL` | `string` | 请求 URL |
+| `Method` | `string` | HTTP 方法 |
+| `Attempts` | `int` | 重试次数 |
+| `StatusCode` | `int` | HTTP 状态码 (如适用) |
+| `Host` | `string` | 目标主机 |
 
 ### 错误类型
 
@@ -669,14 +847,44 @@ const (
 )
 ```
 
+### 哨兵错误
+
+```go
+var (
+    ErrClientClosed         // 客户端已关闭
+    ErrNilConfig            // 提供了 nil 配置
+    ErrInvalidURL           // URL 验证失败
+    ErrInvalidHeader        // 请求头验证失败
+    ErrInvalidTimeout       // 超时为负数或超出限制
+    ErrInvalidRetry         // 重试配置无效
+    ErrInvalidConnection    // 连接配置无效
+    ErrInvalidSecurity      // 安全配置无效
+    ErrInvalidMiddleware    // 中间件配置无效
+    ErrEmptyFilePath        // 文件路径为空
+    ErrFileExists           // 文件已存在 (且 Overwrite 为 false)
+    ErrResponseBodyEmpty    // 响应体为空
+    ErrResponseBodyTooLarge // 响应体超过大小限制
+)
+```
+
+### 错误分类
+
+```go
+// 使用 errors.As 检查错误类型
+var clientErr *httpc.ClientError
+if errors.As(err, &clientErr) {
+    fmt.Printf("类型: %s, 可重试: %v\n", clientErr.Code(), clientErr.IsRetryable())
+}
+```
+
 ---
 
-## 🔄 并发安全
+## 并发安全
 
 HTTPC 设计为 goroutine 安全：
 
 ```go
-client, _ := httpc.New()
+client, _ := httpc.New() // 内部使用 DefaultConfig()
 defer client.Close()
 
 var wg sync.WaitGroup
@@ -699,6 +907,19 @@ result, _ := httpc.Get(url)
 defer httpc.ReleaseResult(result)
 ```
 
+### 默认客户端管理
+
+包级函数 (`Get`, `Post` 等) 使用共享的默认客户端，你可以自定义它：
+
+```go
+// 设置自定义默认客户端
+customClient, _ := httpc.New(httpc.SecureConfig())
+_ = httpc.SetDefaultClient(customClient)
+
+// 关闭并重置默认客户端
+_ = httpc.CloseDefaultClient()
+```
+
 **线程安全保证：**
 - 所有 `Client` 方法均可安全并发使用
 - 包级函数安全使用共享的默认客户端
@@ -707,7 +928,7 @@ defer httpc.ReleaseResult(result)
 
 ---
 
-## 📚 文档
+## 文档
 
 | 资源 | 描述 |
 |------|------|
@@ -732,10 +953,10 @@ defer httpc.ReleaseResult(result)
 
 ---
 
-## 📄 许可证
+## 许可证
 
 MIT License - 详见 [LICENSE](LICENSE) 文件。
 
 ---
 
-如果这个项目对你有帮助，请给一个 Star！ ⭐
+如果这个项目对你有帮助，请给一个 Star！

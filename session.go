@@ -10,6 +10,11 @@ import (
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
+// tempReqPool reuses engine.Request objects in captureFromOptions to reduce allocations.
+var tempReqPool = sync.Pool{
+	New: func() any { return &engine.Request{} },
+}
+
 // SessionConfig configures SessionManager behavior.
 // Use DefaultSessionConfig() to get a configuration with sensible defaults.
 type SessionConfig struct {
@@ -39,27 +44,19 @@ type SessionManager struct {
 	cookieSecurity *validation.CookieSecurityConfig
 }
 
-// NewSessionManager creates a new SessionManager with empty session state.
-func NewSessionManager() *SessionManager {
-	return &SessionManager{
-		cookies: make(map[string]*http.Cookie),
-		headers: make(map[string]string),
-	}
-}
-
-// NewSessionManagerWithConfig creates a new SessionManager with the given configuration.
+// NewSessionManager creates a new SessionManager with the given configuration.
 // If no configuration is provided or nil is passed, DefaultSessionConfig() is used.
 //
-// Example:
+// Examples:
 //
 //	// Use default configuration
-//	sm, err := httpc.NewSessionManagerWithConfig()
+//	sm, err := httpc.NewSessionManager()
 //
 //	// Use custom configuration
 //	cfg := httpc.DefaultSessionConfig()
 //	cfg.CookieSecurity = mySecurityConfig
-//	sm, err := httpc.NewSessionManagerWithConfig(cfg)
-func NewSessionManagerWithConfig(config ...*SessionConfig) (*SessionManager, error) {
+//	sm, err := httpc.NewSessionManager(cfg)
+func NewSessionManager(config ...*SessionConfig) (*SessionManager, error) {
 	cfg := DefaultSessionConfig()
 	if len(config) > 0 && config[0] != nil {
 		cfg = config[0]
@@ -235,9 +232,9 @@ func (s *SessionManager) GetCookie(name string) *http.Cookie {
 	return nil
 }
 
-// PrepareOptions creates RequestOptions from the current session state.
-// This is used to apply session cookies and headers to outgoing requests.
-func (s *SessionManager) PrepareOptions() []RequestOption {
+// prepareOptions creates RequestOptions from the current session state.
+// This is used internally by DomainClient to apply session cookies and headers to outgoing requests.
+func (s *SessionManager) prepareOptions() []RequestOption {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -251,9 +248,16 @@ func (s *SessionManager) PrepareOptions() []RequestOption {
 	options := make([]RequestOption, 0, 2)
 
 	if cookieCount > 0 {
+		// Batch all cookies into a single option to avoid N closure allocations
+		cookies := make([]http.Cookie, 0, cookieCount)
 		for _, cookie := range s.cookies {
-			options = append(options, WithCookie(*cookie))
+			cookies = append(cookies, *cookie)
 		}
+		options = append(options, func(r *engine.Request) error {
+			existing := r.Cookies()
+			r.SetCookies(append(existing, cookies...))
+			return nil
+		})
 	}
 
 	if headerCount > 0 {
@@ -265,7 +269,17 @@ func (s *SessionManager) PrepareOptions() []RequestOption {
 	return options
 }
 
+// validateCookieSecurity checks cookie against the session's security config.
+// Returns nil if no security config is set or if the cookie passes validation.
+func (s *SessionManager) validateCookieSecurity(cookie *http.Cookie) error {
+	if s.cookieSecurity == nil {
+		return nil
+	}
+	return validation.ValidateCookieSecurity(cookie, s.cookieSecurity)
+}
+
 // UpdateFromResult updates session cookies from a Result.
+// If cookie security is configured, insecure cookies are silently skipped.
 func (s *SessionManager) UpdateFromResult(result *Result) {
 	if result == nil || result.Response == nil || len(result.Response.Cookies) == 0 {
 		return
@@ -274,22 +288,51 @@ func (s *SessionManager) UpdateFromResult(result *Result) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for _, cookie := range result.Response.Cookies {
+	s.storeCookies(result.Response.Cookies)
+}
+
+// UpdateFromCookies updates session cookies from a slice of http.Cookie.
+// If cookie security is configured, insecure cookies are silently skipped.
+func (s *SessionManager) UpdateFromCookies(cookies []*http.Cookie) {
+	if len(cookies) == 0 {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.storeCookies(cookies)
+}
+
+// storeCookies validates and stores cookies in the session map.
+// Caller must hold s.mu.
+func (s *SessionManager) storeCookies(cookies []*http.Cookie) {
+	for _, cookie := range cookies {
 		if cookie != nil {
+			if err := s.validateCookieSecurity(cookie); err != nil {
+				continue
+			}
 			s.cookies[cookie.Name] = cookie
 		}
 	}
 }
 
-// CaptureFromOptions extracts cookies and headers from RequestOptions
+// captureFromOptions extracts cookies and headers from RequestOptions
 // and stores them in the session.
-func (s *SessionManager) CaptureFromOptions(options []RequestOption) {
+func (s *SessionManager) captureFromOptions(options []RequestOption) {
 	if len(options) == 0 {
 		return
 	}
 
-	// Use engine.Request which implements RequestMutator
-	tempReq := &engine.Request{}
+	// Use pooled engine.Request to reduce allocations on hot path
+	tempReq, ok := tempReqPool.Get().(*engine.Request)
+	if !ok || tempReq == nil {
+		tempReq = &engine.Request{}
+	}
+	defer func() {
+		*tempReq = engine.Request{}
+		tempReqPool.Put(tempReq)
+	}()
 
 	for _, opt := range options {
 		if opt != nil {
@@ -311,10 +354,18 @@ func (s *SessionManager) CaptureFromOptions(options []RequestOption) {
 
 	for i := range cookies {
 		cookie := &cookies[i]
+		if s.cookieSecurity != nil {
+			if err := validation.ValidateCookieSecurity(cookie, s.cookieSecurity); err != nil {
+				continue
+			}
+		}
 		s.cookies[cookie.Name] = cookie
 	}
 
 	for key, value := range headers {
+		if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
+			continue
+		}
 		s.headers[key] = value
 	}
 }

@@ -3,12 +3,15 @@ package httpc
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/cybergodev/httpc/internal/engine"
 )
 
 // DownloadProgressCallback is called during file download to report progress.
@@ -43,13 +46,14 @@ func DefaultDownloadConfig() *DownloadConfig {
 
 // DownloadResult contains information about a completed download.
 type DownloadResult struct {
-	FilePath      string
-	BytesWritten  int64
-	Duration      time.Duration
-	AverageSpeed  float64
-	StatusCode    int
-	ContentLength int64
-	Resumed       bool
+	FilePath        string
+	BytesWritten    int64
+	Duration        time.Duration
+	AverageSpeed    float64
+	StatusCode      int
+	ContentLength   int64
+	Resumed         bool
+	ResponseCookies []*http.Cookie
 }
 
 // DownloadFile downloads a file from the given URL to the specified file path using the default client.
@@ -74,14 +78,46 @@ func DownloadWithOptions(url string, downloadOpts *DownloadConfig, options ...Re
 	return client.DownloadWithOptions(url, downloadOpts, options...)
 }
 
-func (c *clientImpl) DownloadFile(url string, filePath string, options ...RequestOption) (*DownloadResult, error) {
-	downloadOpts := DefaultDownloadConfig()
-	downloadOpts.FilePath = filePath
-	return c.downloadFile(context.Background(), url, downloadOpts, options...)
+// DownloadFileWithContext downloads a file using the default client with context control.
+// The context parameter allows for timeout and cancellation control during the download.
+func DownloadFileWithContext(ctx context.Context, url string, filePath string, options ...RequestOption) (*DownloadResult, error) {
+	client, err := getDefaultClient()
+	if err != nil {
+		return nil, err
+	}
+	return client.DownloadFileWithContext(ctx, url, filePath, options...)
 }
 
+// DownloadWithOptionsWithContext downloads a file with custom download options and context control.
+// The context parameter allows for timeout and cancellation control during the download.
+func DownloadWithOptionsWithContext(ctx context.Context, url string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error) {
+	client, err := getDefaultClient()
+	if err != nil {
+		return nil, err
+	}
+	return client.DownloadWithOptionsWithContext(ctx, url, downloadOpts, options...)
+}
+
+// DownloadFile downloads a file from the given URL to the specified file path.
+func (c *clientImpl) DownloadFile(url string, filePath string, options ...RequestOption) (*DownloadResult, error) {
+	return c.DownloadFileWithContext(context.Background(), url, filePath, options...)
+}
+
+// DownloadWithOptions downloads a file with custom download options.
 func (c *clientImpl) DownloadWithOptions(url string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error) {
-	return c.downloadFile(context.Background(), url, downloadOpts, options...)
+	return c.DownloadWithOptionsWithContext(context.Background(), url, downloadOpts, options...)
+}
+
+// DownloadFileWithContext downloads a file with context control for cancellation and timeouts.
+func (c *clientImpl) DownloadFileWithContext(ctx context.Context, url string, filePath string, options ...RequestOption) (*DownloadResult, error) {
+	downloadOpts := DefaultDownloadConfig()
+	downloadOpts.FilePath = filePath
+	return c.downloadFile(ctx, url, downloadOpts, options...)
+}
+
+// DownloadWithOptionsWithContext downloads a file with custom download options and context control.
+func (c *clientImpl) DownloadWithOptionsWithContext(ctx context.Context, url string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error) {
+	return c.downloadFile(ctx, url, downloadOpts, options...)
 }
 
 func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *DownloadConfig, options ...RequestOption) (result *DownloadResult, err error) {
@@ -100,37 +136,70 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 		if !opts.Overwrite && !opts.ResumeDownload {
 			return nil, fmt.Errorf("%w: %s", ErrFileExists, opts.FilePath)
 		}
+		// ResumeDownload takes precedence over Overwrite when both are set:
+		// the existing file is extended rather than replaced.
 		if opts.ResumeDownload {
 			resumeOffset = fileInfo.Size()
-			options = append(options, WithHeader("Range", fmt.Sprintf("bytes=%d-", resumeOffset)))
+			rangeOption := WithHeader("Range", fmt.Sprintf("bytes=%d-", resumeOffset))
+			combined := make([]RequestOption, len(options)+1)
+			copy(combined, options)
+			combined[len(options)] = rangeOption
+			options = combined
 		}
 	}
 
-	resp, err := c.Request(ctx, "GET", url, options...)
+	// Use streaming mode to avoid buffering the entire response body into memory.
+	// The body is streamed directly from the network to the file via io.Copy.
+	streamOptions := make([]RequestOption, len(options)+1)
+	copy(streamOptions, options)
+	streamOptions[len(options)] = WithStreamBody(true)
+
+	rawResp, err := c.executeRequest(ctx, "GET", url, streamOptions)
 	if err != nil {
 		return nil, fmt.Errorf("download request failed: %w", err)
 	}
+	if rawResp == nil {
+		return nil, fmt.Errorf("download request returned nil response")
+	}
+	engResp, ok := rawResp.(*engine.Response)
+	if !ok {
+		return nil, fmt.Errorf("unexpected response type from download request")
+	}
+	defer engine.ReleaseResponse(engResp)
 
-	statusCode := resp.Response.StatusCode
-	rawBody := resp.Response.RawBody
-	contentLength := resp.Response.ContentLength
-	duration := resp.Meta.Duration
+	bodyReader := engResp.RawBodyReader()
+	if bodyReader != nil {
+		defer func() { _ = bodyReader.Close() }()
+	}
+
+	statusCode := engResp.StatusCode()
+	contentLength := engResp.ContentLength()
+	duration := engResp.Duration()
+	responseCookies := engResp.Cookies()
 
 	resumed := resumeOffset > 0 && statusCode == http.StatusPartialContent
 	if resumeOffset > 0 && statusCode == http.StatusRequestedRangeNotSatisfiable {
 		return &DownloadResult{
-			FilePath:      opts.FilePath,
-			BytesWritten:  0,
-			Duration:      duration,
-			AverageSpeed:  0,
-			StatusCode:    statusCode,
-			ContentLength: resumeOffset,
-			Resumed:       false,
+			FilePath:        opts.FilePath,
+			BytesWritten:    0,
+			Duration:        duration,
+			AverageSpeed:    0,
+			StatusCode:      statusCode,
+			ContentLength:   resumeOffset,
+			Resumed:         false,
+			ResponseCookies: responseCookies,
 		}, nil
 	}
 
 	if statusCode != http.StatusOK && statusCode != http.StatusPartialContent {
+		if bodyReader != nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(bodyReader, 1<<20))
+		}
 		return nil, fmt.Errorf("unexpected status code: %d", statusCode)
+	}
+
+	if bodyReader == nil {
+		return nil, fmt.Errorf("download response has no body reader")
 	}
 
 	var file *os.File
@@ -148,8 +217,9 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 		}
 	}()
 
-	bytesWritten := int64(len(rawBody))
-	if _, err = file.Write(rawBody); err != nil {
+	// Stream body directly from network to file — no full-body buffering.
+	bytesWritten, err := io.Copy(file, bodyReader)
+	if err != nil {
 		return nil, fmt.Errorf("failed to write file: %w", err)
 	}
 
@@ -164,13 +234,14 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	}
 
 	return &DownloadResult{
-		FilePath:      opts.FilePath,
-		BytesWritten:  bytesWritten,
-		Duration:      duration,
-		AverageSpeed:  avgSpeed,
-		StatusCode:    statusCode,
-		ContentLength: contentLength,
-		Resumed:       resumed,
+		FilePath:        opts.FilePath,
+		BytesWritten:    bytesWritten,
+		Duration:        duration,
+		AverageSpeed:    avgSpeed,
+		StatusCode:      statusCode,
+		ContentLength:   contentLength,
+		Resumed:         resumed,
+		ResponseCookies: responseCookies,
 	}, nil
 }
 
@@ -182,7 +253,7 @@ const (
 
 // getSystemPaths returns platform-specific system paths that should be protected.
 func getSystemPaths() []string {
-	switch getOS() {
+	switch runtime.GOOS {
 	case "windows":
 		return []string{
 			"c:\\windows\\", "c:\\system32\\",
@@ -212,12 +283,6 @@ func getSystemPaths() []string {
 			"/run/", "/var/run/", "/sys/fs/",
 		}
 	}
-}
-
-// getOS returns the current operating system.
-// Kept as a wrapper for testability - allows mocking in unit tests.
-func getOS() string {
-	return runtime.GOOS
 }
 
 func calculateSpeed(bytes int64, duration time.Duration) float64 {
@@ -251,7 +316,7 @@ func prepareFilePath(filePath string) error {
 	}
 
 	// Validate characters
-	for i := 0; i < filePathLen; i++ {
+	for i := range filePathLen {
 		c := filePath[i]
 		if c < 0x20 || c == 0x7F || c == 0 {
 			return fmt.Errorf("file path contains invalid characters at position %d", i)
@@ -388,39 +453,3 @@ func isSystemPath(path string) bool {
 	return false
 }
 
-func FormatBytes(bytes int64) string {
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
-	}
-
-	units := [6]byte{'K', 'M', 'G', 'T', 'P', 'E'}
-	div := int64(unit)
-	exp := 0
-
-	for n := bytes / unit; n >= unit && exp < 5; n /= unit {
-		div *= unit
-		exp++
-	}
-
-	return fmt.Sprintf("%.2f %cB", float64(bytes)/float64(div), units[exp])
-}
-
-func FormatSpeed(bytesPerSecond float64) string {
-	const unit = 1024.0
-	if bytesPerSecond < unit {
-		return fmt.Sprintf("%.0f B/s", bytesPerSecond)
-	}
-
-	units := [6]string{"KB/s", "MB/s", "GB/s", "TB/s", "PB/s", "EB/s"}
-	div := unit
-
-	for exp := 0; exp < 6; exp++ {
-		if bytesPerSecond < div*unit || exp == 5 {
-			return fmt.Sprintf("%.2f %s", bytesPerSecond/div, units[exp])
-		}
-		div *= unit
-	}
-
-	return fmt.Sprintf("%.2f %s", bytesPerSecond/div, units[5])
-}

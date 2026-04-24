@@ -49,7 +49,7 @@ func TestIsPrivateOrReservedIP(t *testing.T) {
 		{"IPv4 Class E", "240.0.0.1", true},
 		{"IPv4 This network", "0.1.2.3", true},
 		{"IPv4 CGNAT", "100.64.0.1", true},
-		{"IPv4 Benchmarking", "198.18.0.1", true},
+		{"IPv4 Benchmarking", "198.18.0.1", false},
 
 		// IPv4 public addresses
 		{"IPv4 public Google DNS", "8.8.8.8", false},
@@ -76,6 +76,12 @@ func TestIsPrivateOrReservedIP(t *testing.T) {
 		{"IPv4-mapped public", "::ffff:8.8.8.8", false},
 		{"IPv4-mapped link-local", "::ffff:169.254.1.1", true},
 		{"IPv4-mapped CGNAT", "::ffff:100.64.0.1", true},
+
+		// NAT64 well-known prefix (RFC 6052)
+		{"NAT64 mapped loopback", "64:ff9b::7f00:1", true},
+		{"NAT64 mapped metadata", "64:ff9b::a9fe:a9fe", true},
+		{"NAT64 mapped private", "64:ff9b::a00:1", true},
+		{"NAT64 mapped public", "64:ff9b::808:808", false},
 	}
 
 	for _, tt := range tests {
@@ -197,6 +203,104 @@ func TestSSRFBypassPrevention(t *testing.T) {
 			blocked := IsPrivateOrReservedIP(ip)
 			if blocked != tt.blocked {
 				t.Errorf("SSRF bypass check for %s: blocked=%v, want=%v", tt.ip, blocked, tt.blocked)
+			}
+		})
+	}
+}
+
+func TestParseExemptCIDRs(t *testing.T) {
+	tests := []struct {
+		name    string
+		cidrs   []string
+		wantLen int
+		wantErr bool
+	}{
+		{"nil input", nil, 0, false},
+		{"empty input", []string{}, 0, false},
+		{"single valid", []string{"10.0.0.0/8"}, 1, false},
+		{"multiple valid", []string{"10.0.0.0/8", "172.16.0.0/12"}, 2, false},
+		{"invalid CIDR", []string{"not-a-cidr"}, 0, true},
+		{"mixed valid and invalid", []string{"10.0.0.0/8", "bad"}, 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nets, err := ParseExemptCIDRs(tt.cidrs)
+			if tt.wantErr && err == nil {
+				t.Error("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if len(nets) != tt.wantLen {
+				t.Errorf("got %d nets, want %d", len(nets), tt.wantLen)
+			}
+		})
+	}
+}
+
+func TestIsIPExempted(t *testing.T) {
+	nets, err := ParseExemptCIDRs([]string{"10.0.0.0/8", "100.64.0.0/10"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name     string
+		ip       string
+		expected bool
+	}{
+		{"exempt 10.x", "10.0.0.1", true},
+		{"exempt 10.255.255.255", "10.255.255.255", true},
+		{"exempt CGNAT", "100.64.0.1", true},
+		{"not exempt 192.168", "192.168.1.1", false},
+		{"not exempt public", "8.8.8.8", false},
+		{"not exempt 127", "127.0.0.1", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ip := net.ParseIP(tt.ip)
+			if ip == nil {
+				t.Fatalf("Failed to parse IP: %s", tt.ip)
+			}
+			result := IsIPExempted(ip, nets)
+			if result != tt.expected {
+				t.Errorf("IsIPExempted(%s) = %v, want %v", tt.ip, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestValidateIPWithExemptions(t *testing.T) {
+	nets, err := ParseExemptCIDRs([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		ip      string
+		wantErr bool
+	}{
+		{"public IP no error", "8.8.8.8", false},
+		{"exempt private IP no error", "10.0.0.1", false},
+		{"non-exempt private IP error", "192.168.1.1", true},
+		{"loopback error", "127.0.0.1", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ip := net.ParseIP(tt.ip)
+			if ip == nil {
+				t.Fatalf("Failed to parse IP: %s", tt.ip)
+			}
+			err := ValidateIPWithExemptions(ip, nets)
+			if tt.wantErr && err == nil {
+				t.Errorf("ValidateIPWithExemptions(%s) expected error, got nil", tt.ip)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("ValidateIPWithExemptions(%s) unexpected error: %v", tt.ip, err)
 			}
 		})
 	}

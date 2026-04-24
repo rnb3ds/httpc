@@ -21,7 +21,7 @@ func TestResponseProcessor_Process(t *testing.T) {
 		MaxResponseBodySize: 50 * 1024 * 1024, // 50MB
 	}
 
-	processor := NewResponseProcessor(config)
+	processor := newResponseProcessor(config)
 
 	tests := []struct {
 		name         string
@@ -185,7 +185,7 @@ func TestResponseProcessor_LargeResponse(t *testing.T) {
 		MaxResponseBodySize: 1024, // 1KB limit for testing
 	}
 
-	processor := NewResponseProcessor(config)
+	processor := newResponseProcessor(config)
 
 	// Create response exceeding the limit
 	largeData := strings.Repeat("A", 2048) // 2KB data
@@ -216,7 +216,7 @@ func TestResponseProcessor_HeaderProcessing(t *testing.T) {
 		MaxResponseBodySize: 50 * 1024 * 1024,
 	}
 
-	processor := NewResponseProcessor(config)
+	processor := newResponseProcessor(config)
 
 	httpResponse := &http.Response{
 		StatusCode:    200,
@@ -265,7 +265,7 @@ func TestResponseProcessor_CookieProcessing(t *testing.T) {
 		MaxResponseBodySize: 50 * 1024 * 1024,
 	}
 
-	processor := NewResponseProcessor(config)
+	processor := newResponseProcessor(config)
 
 	tests := []struct {
 		name       string
@@ -404,7 +404,7 @@ func TestResponseProcessor_ErrorHandling(t *testing.T) {
 		MaxResponseBodySize: 50 * 1024 * 1024,
 	}
 
-	processor := NewResponseProcessor(config)
+	processor := newResponseProcessor(config)
 
 	tests := []struct {
 		name         string
@@ -451,7 +451,7 @@ func TestResponseProcessor_ContentLengthHandling(t *testing.T) {
 		MaxResponseBodySize: 50 * 1024 * 1024,
 	}
 
-	processor := NewResponseProcessor(config)
+	processor := newResponseProcessor(config)
 
 	tests := []struct {
 		name           string

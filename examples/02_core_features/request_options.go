@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/xml"
 	"fmt"
 	"log"
 	"time"
@@ -80,7 +81,7 @@ func demonstrateBodyFormats(client httpc.Client) {
 
 	// XML
 	type Person struct {
-		XMLName struct{} `xml:"person"`
+		XMLName xml.Name `xml:"person"`
 		Name    string   `xml:"name"`
 		Age     int      `xml:"age"`
 	}
@@ -103,6 +104,17 @@ func demonstrateBodyFormats(client httpc.Client) {
 		log.Printf("Binary error: %v\n", err)
 	} else {
 		fmt.Printf("✓ Binary: Status %d (%d bytes)\n", resp.StatusCode(), len(binaryData))
+	}
+
+	// WithBody with explicit BodyKind (forces encoding regardless of input type)
+	bodyData := map[string]string{"key": "value"}
+	resp, err = client.Post("https://echo.hoppscotch.io",
+		httpc.WithBody(bodyData, httpc.BodyJSON),
+	)
+	if err != nil {
+		log.Printf("WithBody error: %v\n", err)
+	} else {
+		fmt.Printf("✓ WithBody(BodyJSON): Status %d\n", resp.StatusCode())
 	}
 
 	// File upload

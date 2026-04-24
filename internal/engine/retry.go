@@ -1,39 +1,29 @@
 package engine
 
 import (
-	"math"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
-	"sync/atomic"
 	"time"
 
 	"github.com/cybergodev/httpc/internal/types"
 )
 
-type RetryEngine struct {
+type retryEngine struct {
 	config *Config
-	// counter provides pseudo-random jitter variation via atomic increment.
-	// Combined with timestamp, it generates deterministic-looking but varied
-	// delays to prevent thundering herd problems without requiring crypto/rand.
-	counter int64
 }
 
 // Compile-time interface check
-var _ types.RetryPolicy = (*RetryEngine)(nil)
+var _ types.RetryPolicy = (*retryEngine)(nil)
 
-func NewRetryEngine(config *Config) *RetryEngine {
-	return &RetryEngine{
-		config:  config,
-		counter: time.Now().UnixNano(),
+func newRetryEngine(config *Config) *retryEngine {
+	return &retryEngine{
+		config: config,
 	}
 }
 
 // ShouldRetry implements types.RetryPolicy interface.
-func (r *RetryEngine) ShouldRetry(resp types.ResponseReader, err error, attempt int) bool {
-	if attempt >= r.config.MaxRetries {
-		return false
-	}
-
+func (r *retryEngine) ShouldRetry(resp types.ResponseReader, err error, attempt int) bool {
 	if err != nil {
 		return r.isRetryableError(err)
 	}
@@ -45,13 +35,13 @@ func (r *RetryEngine) ShouldRetry(resp types.ResponseReader, err error, attempt 
 	return false
 }
 
-func (r *RetryEngine) GetDelay(attempt int) time.Duration {
+func (r *retryEngine) GetDelay(attempt int) time.Duration {
 	return r.GetDelayWithResponse(attempt, nil)
 }
 
 // GetDelayWithResponse returns the delay for the given attempt, considering response headers.
 // It first checks for Retry-After header, then falls back to exponential backoff.
-func (r *RetryEngine) GetDelayWithResponse(attempt int, resp *Response) time.Duration {
+func (r *retryEngine) GetDelayWithResponse(attempt int, resp *Response) time.Duration {
 	// Check Retry-After header first
 	if resp != nil {
 		if retryAfterDelay := parseRetryAfterHeader(resp.Headers()); retryAfterDelay > 0 {
@@ -65,7 +55,11 @@ func (r *RetryEngine) GetDelayWithResponse(attempt int, resp *Response) time.Dur
 // parseRetryAfterHeader parses the Retry-After header and returns the delay duration.
 // Returns 0 if the header is not present or cannot be parsed.
 // Supports both delta-seconds and HTTP-date formats per RFC 7231.
+// SECURITY: The delay is capped at maxRetryAfterDelay (60s) to prevent a malicious
+// server from causing indefinite waits via unreasonably large Retry-After values.
 func parseRetryAfterHeader(headers http.Header) time.Duration {
+	const maxRetryAfterDelay = 60 * time.Second
+
 	if headers == nil {
 		return 0
 	}
@@ -79,12 +73,29 @@ func parseRetryAfterHeader(headers http.Header) time.Duration {
 
 	// Try parsing as seconds (delta-seconds format)
 	if seconds, err := strconv.Atoi(retryAfter); err == nil && seconds > 0 {
-		return time.Duration(seconds) * time.Second
+		delay := time.Duration(seconds) * time.Second
+		if delay > maxRetryAfterDelay {
+			delay = maxRetryAfterDelay
+		}
+		return delay
 	}
 
 	// Try parsing as HTTP date (RFC1123 format)
 	if retryTime, err := time.Parse(time.RFC1123, retryAfter); err == nil {
 		if delay := time.Until(retryTime); delay > 0 {
+			if delay > maxRetryAfterDelay {
+				delay = maxRetryAfterDelay
+			}
+			return delay
+		}
+	}
+
+	// Try RFC1123 with numeric timezone (e.g., "Mon, 02 Jan 2006 15:04:05 -0700")
+	if retryTime, err := time.Parse(time.RFC1123Z, retryAfter); err == nil {
+		if delay := time.Until(retryTime); delay > 0 {
+			if delay > maxRetryAfterDelay {
+				delay = maxRetryAfterDelay
+			}
 			return delay
 		}
 	}
@@ -93,7 +104,8 @@ func parseRetryAfterHeader(headers http.Header) time.Duration {
 }
 
 // calculateExponentialDelay calculates the exponential backoff delay with optional jitter.
-func (r *RetryEngine) calculateExponentialDelay(attempt int) time.Duration {
+// Uses iterative multiplication instead of math.Pow for better performance.
+func (r *retryEngine) calculateExponentialDelay(attempt int) time.Duration {
 	delay := r.config.RetryDelay
 	if delay <= 0 {
 		delay = time.Second
@@ -104,23 +116,28 @@ func (r *RetryEngine) calculateExponentialDelay(attempt int) time.Duration {
 		backoffFactor = 2.0
 	}
 
-	exponentialDelay := time.Duration(float64(delay) * math.Pow(backoffFactor, float64(attempt)))
+	// Iterative multiplication avoids math.Pow's transcendental function overhead
+	exponentialDelay := float64(delay)
+	for i := 0; i < attempt; i++ {
+		exponentialDelay *= backoffFactor
+	}
+	result := time.Duration(exponentialDelay)
 
 	// Apply max delay cap
-	if r.config.MaxRetryDelay > 0 && exponentialDelay > r.config.MaxRetryDelay {
-		exponentialDelay = r.config.MaxRetryDelay
+	if r.config.MaxRetryDelay > 0 && result > r.config.MaxRetryDelay {
+		result = r.config.MaxRetryDelay
 	}
 
 	// Apply jitter to prevent thundering herd
 	if r.config.Jitter {
-		exponentialDelay = r.applyJitter(exponentialDelay)
+		result = r.applyJitter(result)
 	}
 
-	return exponentialDelay
+	return result
 }
 
 // applyJitter adds randomization to the delay to prevent thundering herd problems.
-func (r *RetryEngine) applyJitter(delay time.Duration) time.Duration {
+func (r *retryEngine) applyJitter(delay time.Duration) time.Duration {
 	if delay <= 0 {
 		return delay
 	}
@@ -130,53 +147,30 @@ func (r *RetryEngine) applyJitter(delay time.Duration) time.Duration {
 	return delay - jitterRange + jitter
 }
 
-func (r *RetryEngine) MaxRetries() int {
+func (r *retryEngine) MaxRetries() int {
 	return r.config.MaxRetries
 }
 
 // isRetryableError determines if an error is retryable by delegating to
 // the centralized error classification in ClientError.IsRetryable().
 // This ensures consistent retry behavior across the codebase.
-func (r *RetryEngine) isRetryableError(err error) bool {
-	clientErr := ClassifyError(err, "", "", 0)
+func (r *retryEngine) isRetryableError(err error) bool {
+	clientErr := classifyError(err, "", "", 0)
 	if clientErr == nil {
 		return false
 	}
 	return clientErr.IsRetryable()
 }
 
-// getJitter generates pseudo-random jitter for retry delays using a combination
-// of atomic counter and timestamp. This is NOT cryptographically secure but is
-// sufficient for retry delay randomization to avoid thundering herd problems.
-func (r *RetryEngine) getJitter(maxJitter time.Duration) time.Duration {
+// getJitter generates pseudo-random jitter for retry delays.
+// Uses math/rand/v2 for high-quality randomness without security concerns.
+func (r *retryEngine) getJitter(maxJitter time.Duration) time.Duration {
 	if maxJitter <= 0 {
 		return 0
 	}
-
-	count := atomic.AddInt64(&r.counter, 1)
-	nanos := time.Now().UnixNano()
-
-	// Use XOR mixing and multiplication with overflow-safe arithmetic
-	// The constant 1103515245 is from LCG (Linear Congruential Generator)
-	mixed := uint64(count) ^ uint64(nanos)
-	mixed = mixed * 1103515245
-
-	// Use unsigned modulo to avoid negative results
-	jitter := mixed % uint64(maxJitter)
-
-	return time.Duration(jitter)
+	return time.Duration(rand.Int64N(int64(maxJitter)))
 }
 
-func (r *RetryEngine) isRetryableStatus(statusCode int) bool {
-	switch statusCode {
-	case http.StatusRequestTimeout, // 408
-		http.StatusTooManyRequests,     // 429
-		http.StatusInternalServerError, // 500
-		http.StatusBadGateway,          // 502
-		http.StatusServiceUnavailable,  // 503
-		http.StatusGatewayTimeout:      // 504
-		return true
-	default:
-		return false
-	}
+func (r *retryEngine) isRetryableStatus(statusCode int) bool {
+	return retryableStatusCodes[statusCode]
 }

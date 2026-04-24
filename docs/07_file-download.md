@@ -95,7 +95,7 @@ result, err := client.DownloadFile(
 
 Track download completion:
 
-**Note**: The current implementation loads the entire response into memory before writing to disk, so the progress callback is called once at the end with final statistics. This is suitable for most files but may not provide real-time progress updates during the download.
+**Note**: The download uses streaming mode — the response body is written directly to disk via `io.Copy` without buffering the entire response into memory. The progress callback is called once at completion with final statistics.
 
 ```go
 opts := httpc.DefaultDownloadConfig()
@@ -246,6 +246,16 @@ result, err := client.DownloadWithOptions(url, opts)
 - `ResumeDownload` (bool) - Resume partial downloads (default: false)
 - `ProgressCallback` (func) - Progress tracking callback (optional)
 
+**DownloadResult Fields:**
+- `FilePath` (string) - Path where the file was saved
+- `BytesWritten` (int64) - Total bytes written to disk
+- `Duration` (time.Duration) - Time taken for the download
+- `AverageSpeed` (float64) - Average download speed in bytes/second
+- `StatusCode` (int) - HTTP status code from the response
+- `ContentLength` (int64) - Content-Length from the response header
+- `Resumed` (bool) - Whether the download was resumed from a partial file
+- `ResponseCookies` ([]*http.Cookie) - Cookies returned by the server
+
 ### Save Response to File
 
 Alternative method for small files:
@@ -264,22 +274,19 @@ if err != nil {
 }
 ```
 
-### Manual File Saving
+### Context-Aware Downloads
 
-For simple file saving from response:
+For downloads that need cancellation or timeout control at the call site:
 
 ```go
-// Make a regular GET request
-result, err := client.Get("https://example.com/data.json")
-if err != nil {
-    log.Fatal(err)
-}
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+defer cancel()
 
-// Save response to file
-err = result.SaveToFile("data.json")
-if err != nil {
-    log.Fatal(err)
-}
+// Package-level function with context
+result, err := httpc.DownloadFileWithContext(ctx, url, filePath)
+
+// Client method with context and custom options
+result, err := client.DownloadWithOptionsWithContext(ctx, url, opts)
 ```
 
 ## Implementation Notes
@@ -287,18 +294,18 @@ if err != nil {
 ### Current Behavior
 
 The HTTPC download implementation:
-- Loads the entire response into memory before writing to disk
+- Uses streaming mode (`io.Copy`) to write response body directly to disk — no full-body memory buffering
 - Progress callback is called once at completion with final statistics
 - Supports resume downloads using HTTP Range requests
 - Automatically creates parent directories
-- Includes security checks to prevent path traversal attacks
+- Includes security checks to prevent path traversal attacks (UNC path blocking, symlink prevention, control character filtering)
 
 ### Memory Considerations
 
-For very large files (>100MB), consider:
-- Using the regular `Get()` method and handling the response stream manually
-- Monitoring available memory during downloads
-- Using resume functionality to handle interrupted downloads
+The streaming download implementation is memory-efficient even for large files. For additional control:
+- Use resume functionality (`ResumeDownload: true`) to handle interrupted downloads
+- Set appropriate timeouts for large files (`httpc.WithTimeout(30*time.Minute)`)
+- Use context-aware download functions for cancellation control
 
 ## Best Practices
 

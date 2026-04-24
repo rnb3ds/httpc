@@ -120,20 +120,21 @@ func putRedirectSettings(s *redirectSettings) {
 	redirectSettingsPool.Put(s)
 }
 
-// Transport manages HTTP transport with comprehensive security and optimal performance
-type Transport struct {
+// transport manages HTTP transport with comprehensive security and optimal performance
+type transport struct {
 	transport         *http.Transport
 	httpClient        *http.Client
 	config            *Config
 	allowPrivateIPs   bool                      // Cached for performance in redirect checks
+	exemptNets        []*net.IPNet              // SSRF exempt CIDR ranges
 	redirectWhitelist *security.DomainWhitelist // Whitelist for redirect domains
 }
 
 // Compile-time interface check
-var _ TransportManager = (*Transport)(nil)
+var _ transportManager = (*transport)(nil)
 
-// NewTransport creates a new transport manager with connection pool
-func NewTransport(config *Config, pool *connection.PoolManager) (*Transport, error) {
+// newTransport creates a new transport manager with connection pool
+func newTransport(config *Config, pool *connection.PoolManager) (*transport, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
@@ -142,18 +143,19 @@ func NewTransport(config *Config, pool *connection.PoolManager) (*Transport, err
 	}
 
 	// Use the optimized transport from the connection pool
-	transport := pool.GetTransport()
+	httpTransport := pool.GetTransport()
 
-	t := &Transport{
-		transport:         transport,
+	t := &transport{
+		transport:         httpTransport,
 		config:            config,
 		allowPrivateIPs:   config.AllowPrivateIPs,
+		exemptNets:        config.ExemptNets,
 		redirectWhitelist: config.RedirectWhitelist,
 	}
 
 	// Create http.Client with optional cookie jar
 	httpClient := &http.Client{
-		Transport: transport,
+		Transport: httpTransport,
 	}
 
 	// Set cookie jar if enabled and provided
@@ -171,7 +173,7 @@ func NewTransport(config *Config, pool *connection.PoolManager) (*Transport, err
 
 // checkRedirect is the single redirect policy that handles all requests
 // It reads per-request settings from the context and validates redirect targets for SSRF
-func (t *Transport) checkRedirect(req *http.Request, via []*http.Request) error {
+func (t *transport) checkRedirect(req *http.Request, via []*http.Request) error {
 	// Get redirect settings from context
 	settings, ok := req.Context().Value(redirectContextKey{}).(*redirectSettings)
 	if !ok {
@@ -204,8 +206,30 @@ func (t *Transport) checkRedirect(req *http.Request, via []*http.Request) error 
 		settings.addRedirect(via[len(via)-1].URL.String())
 	}
 
+	// SECURITY: Detect circular redirects to prevent infinite loops.
+	// A circular redirect occurs when the target URL appeared earlier in the chain
+	// but was reached from a DIFFERENT URL (true cycle). Same-URL repeats (A→A→A)
+	// are excluded because the server may return different responses per visit.
+	targetURL := req.URL.String()
+	if len(via) >= 2 {
+		for i := 0; i < len(via); i++ {
+			if via[i].URL.String() == targetURL {
+				// Exclude consecutive same-URL redirects (A→A)
+				prevIdx := i - 1
+				if prevIdx >= 0 && via[prevIdx].URL.String() == targetURL {
+					continue
+				}
+				// Also exclude if the immediate predecessor (last via entry) is the target
+				if via[len(via)-1].URL.String() == targetURL {
+					continue
+				}
+				return fmt.Errorf("circular redirect detected: %s", targetURL)
+			}
+		}
+	}
+
 	// Check redirect limit (0 means unlimited)
-	if settings.maxRedirects > 0 && len(via) >= settings.maxRedirects {
+	if settings.maxRedirects > 0 && len(via) > settings.maxRedirects {
 		return fmt.Errorf("stopped after %d redirects", settings.maxRedirects)
 	}
 
@@ -219,9 +243,20 @@ func (t *Transport) checkRedirect(req *http.Request, via []*http.Request) error 
 
 // validateRedirectTarget checks if the redirect target URL is allowed under SSRF protection rules.
 // This prevents attackers from using HTTP redirects to bypass initial SSRF validation.
-func (t *Transport) validateRedirectTarget(targetURL *url.URL) error {
+//
+// The connection pool's dialer (pool.go createDialer) also performs SSRF validation
+// with DNS rebinding protection (resolves once, validates, dials IP directly). This
+// redirect check provides an additional early-validation layer that blocks malicious
+// redirects before the connection is even attempted.
+func (t *transport) validateRedirectTarget(targetURL *url.URL) error {
 	if targetURL == nil {
 		return fmt.Errorf("nil redirect URL")
+	}
+
+	// SECURITY: Check URL scheme first (lightweight) before expensive DNS resolution
+	scheme := strings.ToLower(targetURL.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("unsupported redirect scheme: %s", targetURL.Scheme)
 	}
 
 	host := targetURL.Hostname()
@@ -236,31 +271,24 @@ func (t *Transport) validateRedirectTarget(targetURL *url.URL) error {
 
 	// If host is an IP address, validate it directly
 	if ip := net.ParseIP(host); ip != nil {
-		if err := validation.ValidateIP(ip); err != nil {
-			return fmt.Errorf("private/reserved IP blocked: %s", ip.String())
+		if err := validation.ValidateIPWithExemptions(ip, t.exemptNets); err != nil {
+			return fmt.Errorf("private/reserved IP blocked")
 		}
 		return nil
 	}
 
-	// For domain names, resolve and check all IPs
-	// This provides protection against DNS rebinding attacks
+	// For domain names, resolve and check all IPs.
+	// The connection pool dialer provides a second layer of protection by resolving
+	// DNS once and dialing the validated IP directly, preventing DNS rebinding TOCTOU.
 	ips, err := net.LookupIP(host)
 	if err != nil {
-		// SECURITY: Block on DNS resolution failure to prevent DNS-based bypasses
 		return fmt.Errorf("DNS resolution failed for redirect target: %w", err)
 	}
 
-	// Check all resolved IPs - if any point to a private/reserved address, block it
 	for _, ip := range ips {
-		if err := validation.ValidateIP(ip); err != nil {
-			return fmt.Errorf("redirect domain resolves to blocked address: %w", err)
+		if err := validation.ValidateIPWithExemptions(ip, t.exemptNets); err != nil {
+			return fmt.Errorf("redirect domain resolves to blocked address")
 		}
-	}
-
-	// SECURITY: Check URL scheme - only allow http and https
-	scheme := strings.ToLower(targetURL.Scheme)
-	if scheme != "http" && scheme != "https" {
-		return fmt.Errorf("unsupported redirect scheme: %s", targetURL.Scheme)
 	}
 
 	return nil
@@ -280,22 +308,16 @@ type redirectContextKey struct{}
 //	defer cleanup()
 //
 // SECURITY: Failure to call cleanup will cause memory leaks and pool exhaustion.
-func (t *Transport) SetRedirectPolicy(ctx context.Context, followRedirects bool, maxRedirects int) (context.Context, func()) {
+func (t *transport) SetRedirectPolicy(ctx context.Context, followRedirects bool, maxRedirects int) (context.Context, *redirectSettings) {
 	settings := getRedirectSettings()
 	settings.followRedirects = followRedirects
 	settings.maxRedirects = maxRedirects
 	newCtx := context.WithValue(ctx, redirectContextKey{}, settings)
-
-	// Return cleanup function that captures the settings reference
-	cleanup := func() {
-		putRedirectSettings(settings)
-	}
-
-	return newCtx, cleanup
+	return newCtx, settings
 }
 
 // GetRedirectChain returns the redirect chain from the context
-func (t *Transport) GetRedirectChain(ctx context.Context) []string {
+func (t *transport) GetRedirectChain(ctx context.Context) []string {
 	settings, ok := ctx.Value(redirectContextKey{}).(*redirectSettings)
 	if !ok || settings.chainLen == 0 {
 		return nil
@@ -304,7 +326,7 @@ func (t *Transport) GetRedirectChain(ctx context.Context) []string {
 }
 
 // RoundTrip executes an HTTP round trip
-func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// The http.Client with Jar handles cookies automatically
 	// If there are manually set cookies, merge them with the jar
 	if t.httpClient.Jar != nil {
@@ -312,8 +334,8 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			existingCookies := t.httpClient.Jar.Cookies(req.URL)
 
 			// Use pooled cookie map to reduce allocations
-			cookieMapPtr, _ := cookieMapPool.Get().(*map[string]*http.Cookie)
-			if cookieMapPtr == nil {
+			cookieMapPtr, ok := cookieMapPool.Get().(*map[string]*http.Cookie)
+			if !ok || cookieMapPtr == nil {
 				m := make(map[string]*http.Cookie, len(existingCookies)+len(requestCookies))
 				cookieMapPtr = &m
 			}
@@ -340,8 +362,8 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			}
 
 			// Use pooled slice for merged cookies
-			mergedPtr, _ := cookieSlicePool.Get().(*[]*http.Cookie)
-			if mergedPtr == nil {
+			mergedPtr, ok := cookieSlicePool.Get().(*[]*http.Cookie)
+			if !ok || mergedPtr == nil {
 				s := make([]*http.Cookie, 0, len(cookieMap))
 				mergedPtr = &s
 			}
@@ -387,18 +409,18 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // Close closes the transport and cleans up resources
-func (t *Transport) Close() error {
+func (t *transport) Close() error {
 	if t.transport != nil {
 		t.transport.CloseIdleConnections()
 	}
 	return nil
 }
 
-// ClearPools clears all sync.Pool instances used by the transport package.
+// clearPools clears all sync.Pool instances used by the transport package.
 // This is primarily useful for testing and debugging to ensure a clean state.
 // Note: sync.Pool is automatically managed by the GC, so this is typically not needed
 // in production code. The pools will be repopulated on next use.
-func ClearPools() {
+func clearPools() {
 	// Clear redirect settings pool by creating fresh pool entries
 	// The old entries will be garbage collected
 	redirectSettingsPool = sync.Pool{

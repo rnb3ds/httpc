@@ -10,12 +10,12 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/cybergodev/httpc/internal/types"
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // stringsReaderPool reduces allocations for strings.Reader used in request bodies
@@ -48,13 +48,6 @@ var mimeHeaderPool = sync.Pool{
 	New: func() any {
 		h := make(textproto.MIMEHeader, 4) // Pre-allocate for typical multipart headers
 		return &h
-	},
-}
-
-// urlPool reduces allocations for url.URL objects during cloning
-var urlPool = sync.Pool{
-	New: func() any {
-		return &url.URL{}
 	},
 }
 
@@ -101,7 +94,7 @@ var jsonBufferPool = sync.Pool{
 	},
 }
 
-// pooledStringsReader wraps a strings.Reader and returns it to the pool on EOF
+// pooledStringsReader wraps a strings.Reader and returns it to the pool on EOF or Close.
 type pooledStringsReader struct {
 	reader *strings.Reader
 }
@@ -118,11 +111,22 @@ func (r *pooledStringsReader) Read(p []byte) (n int, err error) {
 		r.reader.Reset("")
 		stringsReaderPool.Put(r.reader)
 		r.reader = nil
+		stringsReaderWrapperPool.Put(r)
 	}
 	return n, err
 }
 
-// pooledBytesReader wraps a bytes.Reader and returns it to the pool on EOF
+func (r *pooledStringsReader) Close() error {
+	if r.reader != nil {
+		r.reader.Reset("")
+		stringsReaderPool.Put(r.reader)
+		r.reader = nil
+	}
+	stringsReaderWrapperPool.Put(r)
+	return nil
+}
+
+// pooledBytesReader wraps a bytes.Reader and returns it to the pool on EOF or Close.
 type pooledBytesReader struct {
 	reader *bytes.Reader
 }
@@ -139,8 +143,29 @@ func (r *pooledBytesReader) Read(p []byte) (n int, err error) {
 		r.reader.Reset(nil)
 		bytesReaderPool.Put(r.reader)
 		r.reader = nil
+		bytesReaderWrapperPool.Put(r)
 	}
 	return n, err
+}
+
+func (r *pooledBytesReader) Close() error {
+	if r.reader != nil {
+		r.reader.Reset(nil)
+		bytesReaderPool.Put(r.reader)
+		r.reader = nil
+	}
+	bytesReaderWrapperPool.Put(r)
+	return nil
+}
+
+// stringsReaderWrapperPool reduces allocations for pooledStringsReader wrapper structs.
+var stringsReaderWrapperPool = sync.Pool{
+	New: func() any { return &pooledStringsReader{} },
+}
+
+// bytesReaderWrapperPool reduces allocations for pooledBytesReader wrapper structs.
+var bytesReaderWrapperPool = sync.Pool{
+	New: func() any { return &pooledBytesReader{} },
 }
 
 // getPooledStringsReader gets a strings.Reader from the pool and wraps it
@@ -150,7 +175,12 @@ func getPooledStringsReader(s string) io.Reader {
 		reader = &strings.Reader{}
 	}
 	reader.Reset(s)
-	return &pooledStringsReader{reader: reader}
+	wrapper, _ := stringsReaderWrapperPool.Get().(*pooledStringsReader)
+	if wrapper == nil {
+		wrapper = &pooledStringsReader{}
+	}
+	wrapper.reader = reader
+	return wrapper
 }
 
 // getPooledBytesReader gets a bytes.Reader from the pool and wraps it
@@ -160,7 +190,12 @@ func getPooledBytesReader(b []byte) io.Reader {
 		reader = &bytes.Reader{}
 	}
 	reader.Reset(b)
-	return &pooledBytesReader{reader: reader}
+	wrapper, _ := bytesReaderWrapperPool.Get().(*pooledBytesReader)
+	if wrapper == nil {
+		wrapper = &pooledBytesReader{}
+	}
+	wrapper.reader = reader
+	return wrapper
 }
 
 // urlCache provides a thread-safe LRU-like cache for parsed URLs
@@ -183,31 +218,6 @@ var globalURLCache = &urlCache{
 	maxSize: 1024,
 }
 
-// sensitiveQueryParamNames contains query parameter names that should be excluded
-// from cache keys to prevent credential leakage in logs and cache dumps.
-// SECURITY: This list covers common sensitive parameter names but may not be exhaustive.
-// Applications handling highly sensitive data should implement additional filtering.
-var sensitiveQueryParamNames = map[string]bool{
-	// OAuth and authentication tokens
-	"token": true, "access_token": true, "refresh_token": true,
-	"id_token": true, "idtoken": true, "bearer": true,
-	// API keys and secrets
-	"api_key": true, "apikey": true, "key": true,
-	"secret": true, "secret_key": true, "client_secret": true,
-	"private_key": true, "privatekey": true, "private-key": true,
-	// Passwords and credentials
-	"password": true, "passwd": true, "pass": true, "pwd": true,
-	"credential": true, "credentials": true,
-	// Authentication headers
-	"auth": true, "authorization": true,
-	// Session identifiers
-	"session_id": true, "sessionid": true, "session": true,
-	// JWT and signatures
-	"jwt": true, "signature": true, "sign": true, "sig": true,
-	// OAuth authorization codes
-	"code": true,
-}
-
 // sanitizeCacheKey creates a cache-safe version of the URL by removing sensitive
 // query parameters. This prevents credentials from being stored in cache keys.
 func sanitizeCacheKey(rawURL string) string {
@@ -225,7 +235,7 @@ func sanitizeCacheKey(rawURL string) string {
 	query := parsed.Query()
 	hasSensitive := false
 	for key := range query {
-		if sensitiveQueryParamNames[strings.ToLower(key)] {
+		if validation.IsSensitiveQueryParam(key) {
 			hasSensitive = true
 			break
 		}
@@ -239,7 +249,7 @@ func sanitizeCacheKey(rawURL string) string {
 	cloned := cloneURL(parsed)
 	newQuery := cloned.Query()
 	for key := range newQuery {
-		if sensitiveQueryParamNames[strings.ToLower(key)] {
+		if validation.IsSensitiveQueryParam(key) {
 			newQuery.Set(key, "[REDACTED]")
 		}
 	}
@@ -283,52 +293,63 @@ func (c *urlCache) Get(rawURL string) (*url.URL, error) {
 		oldestKey := c.keys[0]
 		delete(c.entries, oldestKey)
 		c.keys = c.keys[1:]
+		// Compact backing array when capacity is significantly larger than length
+		// to prevent unbounded memory growth under sustained unique URL traffic
+		if cap(c.keys) > len(c.keys)*2 {
+			newKeys := make([]string, len(c.keys), len(c.keys)*2)
+			copy(newKeys, c.keys)
+			c.keys = newKeys
+		}
 	}
 
-	// Clone the URL to ensure cached entries are immutable
-	// This prevents modifications from affecting cached values
-	cloned := cloneURL(parsed)
-	c.entries[cacheKey] = cloned
+	// Store the parsed URL directly — callers always receive a clone
+	c.entries[cacheKey] = parsed
 	c.keys = append(c.keys, cacheKey)
 
-	return cloneURL(cloned), nil
+	return cloneURL(parsed), nil
 }
 
-// cloneURL creates a deep copy of a URL using pooled allocation
+// cloneURL creates a deep copy of a URL
 // to ensure cached entries remain immutable
 func cloneURL(u *url.URL) *url.URL {
 	if u == nil {
 		return nil
 	}
-	cloned, ok := urlPool.Get().(*url.URL)
-	if !ok || cloned == nil {
-		cloned = &url.URL{}
+	clone := &url.URL{
+		Scheme:      u.Scheme,
+		Opaque:      u.Opaque,
+		Host:        u.Host,
+		Path:        u.Path,
+		RawPath:     u.RawPath,
+		OmitHost:    u.OmitHost,
+		ForceQuery:  u.ForceQuery,
+		RawQuery:    u.RawQuery,
+		Fragment:    u.Fragment,
+		RawFragment: u.RawFragment,
 	}
-	cloned.Scheme = u.Scheme
-	cloned.Opaque = u.Opaque
-	cloned.User = u.User // Userinfo is immutable, safe to share
-	cloned.Host = u.Host
-	cloned.Path = u.Path
-	cloned.RawPath = u.RawPath
-	cloned.OmitHost = u.OmitHost
-	cloned.ForceQuery = u.ForceQuery
-	cloned.RawQuery = u.RawQuery
-	cloned.Fragment = u.Fragment
-	cloned.RawFragment = u.RawFragment
-	return cloned
+	if u.User != nil {
+		username := u.User.Username()
+		password, hasPassword := u.User.Password()
+		if hasPassword {
+			clone.User = url.UserPassword(username, password)
+		} else {
+			clone.User = url.User(username)
+		}
+	}
+	return clone
 }
 
-// ClearURLCache clears the global URL cache to release memory.
+// clearURLCache clears the global URL cache to release memory.
 // This is useful for long-running applications that want to free memory
 // when the URL patterns change or during low-activity periods.
 // Thread-safe: can be called concurrently with cache operations.
-func ClearURLCache() {
+func clearURLCache() {
 	globalURLCache.clear()
 }
 
-// GetURLCacheSize returns the current number of entries in the URL cache.
+// getURLCacheSize returns the current number of entries in the URL cache.
 // Useful for monitoring cache usage in production environments.
-func GetURLCacheSize() int {
+func getURLCacheSize() int {
 	return globalURLCache.size()
 }
 
@@ -376,6 +397,22 @@ type pooledMultipartBuffer struct {
 	owned bool // Tracks if buffer still needs to be returned to pool
 }
 
+// multipartBufferWrapperPool reduces allocations for pooledMultipartBuffer wrapper structs.
+var multipartBufferWrapperPool = sync.Pool{
+	New: func() any { return &pooledMultipartBuffer{} },
+}
+
+// getPooledMultipartBufferWrapper creates a pooledMultipartBuffer from the pool.
+func getPooledMultipartBufferWrapper(buf *bytes.Buffer) *pooledMultipartBuffer {
+	wrapper, _ := multipartBufferWrapperPool.Get().(*pooledMultipartBuffer)
+	if wrapper == nil {
+		wrapper = &pooledMultipartBuffer{}
+	}
+	wrapper.buf = buf
+	wrapper.owned = true
+	return wrapper
+}
+
 func (r *pooledMultipartBuffer) Read(p []byte) (n int, err error) {
 	if r.buf == nil {
 		return 0, io.EOF
@@ -386,8 +423,19 @@ func (r *pooledMultipartBuffer) Read(p []byte) (n int, err error) {
 		putMultipartBuffer(r.buf)
 		r.buf = nil
 		r.owned = false
+		multipartBufferWrapperPool.Put(r)
 	}
 	return n, err
+}
+
+func (r *pooledMultipartBuffer) Close() error {
+	if r.buf != nil && r.owned {
+		putMultipartBuffer(r.buf)
+		r.buf = nil
+		r.owned = false
+	}
+	multipartBufferWrapperPool.Put(r)
+	return nil
 }
 
 // getJSONBuffer retrieves a bytes.Buffer from the pool for JSON encoding.
@@ -417,6 +465,22 @@ type pooledJSONBuffer struct {
 	owned bool
 }
 
+// jsonBufferWrapperPool reduces allocations for pooledJSONBuffer wrapper structs.
+var jsonBufferWrapperPool = sync.Pool{
+	New: func() any { return &pooledJSONBuffer{} },
+}
+
+// getPooledJSONBufferWrapper creates a pooledJSONBuffer from the pool.
+func getPooledJSONBufferWrapper(buf *bytes.Buffer) *pooledJSONBuffer {
+	wrapper, _ := jsonBufferWrapperPool.Get().(*pooledJSONBuffer)
+	if wrapper == nil {
+		wrapper = &pooledJSONBuffer{}
+	}
+	wrapper.buf = buf
+	wrapper.owned = true
+	return wrapper
+}
+
 func (r *pooledJSONBuffer) Read(p []byte) (n int, err error) {
 	if r.buf == nil {
 		return 0, io.EOF
@@ -426,45 +490,32 @@ func (r *pooledJSONBuffer) Read(p []byte) (n int, err error) {
 		putJSONBuffer(r.buf)
 		r.buf = nil
 		r.owned = false
+		jsonBufferWrapperPool.Put(r)
 	}
 	return n, err
 }
 
-// ClearRequestPools clears all sync.Pool instances used by the request package.
-// This is primarily useful for testing and debugging to ensure a clean state.
-// Note: sync.Pool is automatically managed by the GC, so this is typically not needed
-// in production code. The pools will be repopulated on next use.
-func ClearRequestPools() {
-	stringsReaderPool = sync.Pool{
-		New: func() any { return &strings.Reader{} },
+func (r *pooledJSONBuffer) Close() error {
+	if r.buf != nil && r.owned {
+		putJSONBuffer(r.buf)
+		r.buf = nil
+		r.owned = false
 	}
-	bytesReaderPool = sync.Pool{
-		New: func() any { return &bytes.Reader{} },
-	}
-	stringBuilderPool = sync.Pool{
-		New: func() any {
-			sb := &strings.Builder{}
-			return sb
-		},
-	}
-	multipartBufferPool = sync.Pool{
-		New: func() any {
-			return bytes.NewBuffer(make([]byte, 0, 8*1024))
-		},
-	}
+	jsonBufferWrapperPool.Put(r)
+	return nil
 }
 
-type RequestProcessor struct {
+type requestProcessor struct {
 	config *Config
 }
 
-func NewRequestProcessor(config *Config) *RequestProcessor {
-	return &RequestProcessor{
+func newRequestProcessor(config *Config) *requestProcessor {
+	return &requestProcessor{
 		config: config,
 	}
 }
 
-func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
+func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 	if req.Method() == "" {
 		req.SetMethod("GET")
 	}
@@ -480,11 +531,8 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 	}
 
 	if len(req.QueryParams()) > 0 {
-		// Clone the cached URL before modifying it with query params
-		// This ensures the cached version remains immutable
-		parsedURL = cloneURL(parsedURL)
-		// Use optimized query encoder that avoids url.Values allocation
-		parsedURL.RawQuery = AppendQueryParams(parsedURL.RawQuery, req.QueryParams())
+		// parsedURL is already a clone from the cache, safe to modify directly.
+		parsedURL.RawQuery = appendQueryParams(parsedURL.RawQuery, req.QueryParams())
 	}
 
 	var body io.Reader
@@ -513,86 +561,60 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 				}
 				body = getPooledBytesReader(xmlData)
 				contentType = "application/xml"
-			} else if isFormData(v) {
+			} else if fd, ok := v.(*types.FormData); ok {
 				// Use pooled buffer for multipart form data
 				buf := getMultipartBuffer()
 				writer := multipart.NewWriter(buf)
 
-				fieldsVal := reflect.ValueOf(v).Elem().FieldByName("Fields")
-				filesVal := reflect.ValueOf(v).Elem().FieldByName("Files")
-
-				if fieldsVal.IsValid() && fieldsVal.Kind() == reflect.Map {
-					for _, key := range fieldsVal.MapKeys() {
-						value := fieldsVal.MapIndex(key).String()
-						if err := writer.WriteField(key.String(), value); err != nil {
-							putMultipartBuffer(buf)
-							return nil, fmt.Errorf("write form field failed: %w", err)
-						}
+				for key, value := range fd.Fields {
+					if err := writer.WriteField(key, value); err != nil {
+						putMultipartBuffer(buf)
+						return nil, fmt.Errorf("write form field failed: %w", err)
 					}
 				}
 
-				if filesVal.IsValid() && filesVal.Kind() == reflect.Map {
-					for _, key := range filesVal.MapKeys() {
-						fileDataValue := filesVal.MapIndex(key)
-						if !fileDataValue.IsValid() || fileDataValue.IsNil() {
-							continue
-						}
-						fileDataElem := fileDataValue.Elem()
+				for key, fileData := range fd.Files {
+					if fileData == nil {
+						continue
+					}
 
-						filename := ""
-						var content []byte
-						contentType := ""
+					var part io.Writer
+					var err error
 
-						if f := fileDataElem.FieldByName("Filename"); f.IsValid() && f.Kind() == reflect.String {
-							filename = f.String()
+					if fileData.ContentType != "" {
+						h := getMIMEHeader()
+						sb, ok := stringBuilderPool.Get().(*strings.Builder)
+						if !ok || sb == nil {
+							sb = &strings.Builder{}
 						}
-						if f := fileDataElem.FieldByName("Content"); f.IsValid() && f.Kind() == reflect.Slice {
-							content = f.Bytes()
-						}
-						if f := fileDataElem.FieldByName("ContentType"); f.IsValid() && f.Kind() == reflect.String {
-							contentType = f.String()
-						}
+						sb.Reset()
+						escapedKey := escapeQuotes(key)
+						escapedFilename := escapeQuotes(fileData.Filename)
+						sb.Grow(21 + len(escapedKey) + 12 + len(escapedFilename) + 2)
+						sb.WriteString(`form-data; name="`)
+						sb.WriteString(escapedKey)
+						sb.WriteString(`"; filename="`)
+						sb.WriteString(escapedFilename)
+						sb.WriteByte('"')
+						contentDisposition := sb.String()
+						stringBuilderPool.Put(sb)
 
-						var part io.Writer
-						var err error
+						h.Set("Content-Disposition", contentDisposition)
+						h.Set("Content-Type", fileData.ContentType)
+						part, err = writer.CreatePart(*h)
+						putMIMEHeader(h)
+					} else {
+						part, err = writer.CreateFormFile(key, fileData.Filename)
+					}
 
-						if contentType != "" {
-							h := getMIMEHeader()
-							// Build Content-Disposition without fmt.Sprintf for better performance
-							sb, _ := stringBuilderPool.Get().(*strings.Builder)
-							if sb == nil {
-								sb = &strings.Builder{}
-							}
-							sb.Reset()
-							escapedKey := escapeQuotes(key.String())
-							escapedFilename := escapeQuotes(filename)
-							// Pre-calculate size: "form-data; name=" + escapedKey + "; filename=" + escapedFilename
-							sb.Grow(21 + len(escapedKey) + 12 + len(escapedFilename) + 2)
-							sb.WriteString(`form-data; name="`)
-							sb.WriteString(escapedKey)
-							sb.WriteString(`"; filename="`)
-							sb.WriteString(escapedFilename)
-							sb.WriteByte('"')
-							contentDisposition := sb.String()
-							stringBuilderPool.Put(sb)
+					if err != nil {
+						putMultipartBuffer(buf)
+						return nil, fmt.Errorf("create form file failed: %w", err)
+					}
 
-							h.Set("Content-Disposition", contentDisposition)
-							h.Set("Content-Type", contentType)
-							part, err = writer.CreatePart(*h)
-							putMIMEHeader(h)
-						} else {
-							part, err = writer.CreateFormFile(key.String(), filename)
-						}
-
-						if err != nil {
-							putMultipartBuffer(buf)
-							return nil, fmt.Errorf("create form file failed: %w", err)
-						}
-
-						if _, err := part.Write(content); err != nil {
-							putMultipartBuffer(buf)
-							return nil, fmt.Errorf("write file content failed: %w", err)
-						}
+					if _, err := part.Write(fileData.Content); err != nil {
+						putMultipartBuffer(buf)
+						return nil, fmt.Errorf("write file content failed: %w", err)
 					}
 				}
 
@@ -601,7 +623,7 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 					return nil, fmt.Errorf("close multipart writer failed: %w", err)
 				}
 
-				body = &pooledMultipartBuffer{buf: buf, owned: true}
+				body = getPooledMultipartBufferWrapper(buf)
 				contentType = writer.FormDataContentType()
 			} else {
 				// Use pooled buffer for JSON encoding to reduce allocations
@@ -616,16 +638,41 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 				if b := buf.Bytes(); len(b) > 0 && b[len(b)-1] == '\n' {
 					buf.Truncate(len(b) - 1)
 				}
-				body = &pooledJSONBuffer{buf: buf, owned: true}
+				body = getPooledJSONBufferWrapper(buf)
 				contentType = "application/json"
 			}
 		}
 	}
 
-	httpReq, err := http.NewRequest(req.Method(), parsedURL.String(), body)
-	if err != nil {
-		return nil, fmt.Errorf("create HTTP request failed: %w", err)
+	// Construct http.Request directly to avoid:
+	//   1. parsedURL.String() allocation (URL to string)
+	//   2. url.Parse re-parsing that string back to *url.URL
+	//   3. io.NopCloser wrapper for body readers that implement io.ReadCloser
+	headerSize := max(len(p.config.Headers)+len(req.Headers())+2, 8) // +2 for Content-Type, User-Agent
+
+	var bodyRC io.ReadCloser
+	if body != nil {
+		if rc, ok := body.(io.ReadCloser); ok {
+			bodyRC = rc
+		} else {
+			bodyRC = io.NopCloser(body)
+		}
 	}
+
+	method := req.Method()
+	httpReq := &http.Request{
+		Method:     method,
+		URL:        parsedURL,
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     make(http.Header, headerSize),
+		Body:       bodyRC,
+		Host:       parsedURL.Host,
+	}
+
+	// Set Content-Length from known body types
+	p.setContentLength(httpReq, body)
 
 	httpReq = httpReq.WithContext(req.Context())
 
@@ -657,6 +704,29 @@ func (p *RequestProcessor) Build(req *Request) (*http.Request, error) {
 	}
 
 	return httpReq, nil
+}
+
+// setContentLength sets Content-Length on the http.Request for known body types.
+// This avoids the stdlib's reflection-based detection when constructing requests directly.
+func (p *requestProcessor) setContentLength(req *http.Request, body io.Reader) {
+	switch v := body.(type) {
+	case *pooledStringsReader:
+		if v.reader != nil {
+			req.ContentLength = int64(v.reader.Len())
+		}
+	case *pooledBytesReader:
+		if v.reader != nil {
+			req.ContentLength = int64(v.reader.Len())
+		}
+	case *pooledJSONBuffer:
+		if v.buf != nil {
+			req.ContentLength = int64(v.buf.Len())
+		}
+	case *pooledMultipartBuffer:
+		if v.buf != nil {
+			req.ContentLength = int64(v.buf.Len())
+		}
+	}
 }
 
 // escapeQuotes escapes backslashes and double quotes in filenames per RFC 7578.
@@ -698,9 +768,9 @@ func escapeQuotes(s string) string {
 	return result
 }
 
-// formatQueryParam converts a value to string for query parameters.
+// FormatQueryParam converts a value to string for query parameters.
 // Optimized to avoid fmt.Sprintf allocations for common types.
-func formatQueryParam(v any) string {
+func FormatQueryParam(v any) string {
 	if v == nil {
 		return ""
 	}
@@ -730,29 +800,4 @@ func formatQueryParam(v any) string {
 	default:
 		return fmt.Sprintf("%v", val)
 	}
-}
-
-func isFormData(v any) bool {
-	if v == nil {
-		return false
-	}
-	// Check if it's a pointer to types.FormData
-	if _, ok := v.(*types.FormData); ok {
-		return true
-	}
-	// Fallback to reflection for compatible types from different packages
-	t := reflect.TypeOf(v)
-	if t.Kind() != reflect.Ptr {
-		return false
-	}
-	t = t.Elem()
-	if t.Kind() != reflect.Struct {
-		return false
-	}
-	if t.Name() != "FormData" {
-		return false
-	}
-	_, hasFields := t.FieldByName("Fields")
-	_, hasFiles := t.FieldByName("Files")
-	return hasFields && hasFiles
 }

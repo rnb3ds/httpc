@@ -57,7 +57,7 @@ func getWindowsProxySettings() (proxyServer string, proxyEnable bool, err error)
 	); err != nil {
 		return "", false, fmt.Errorf("failed to open registry key: %w", err)
 	}
-	defer syscall.RegCloseKey(hKey)
+	defer func() { _ = syscall.RegCloseKey(hKey) }() // best-effort registry key cleanup
 
 	// Read ProxyEnable value
 	valueName, _ := windows.UTF16PtrFromString("ProxyEnable")

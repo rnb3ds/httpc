@@ -21,7 +21,7 @@ func TestResponseProcessor_GzipDecompression(t *testing.T) {
 		MaxResponseBodySize: 50 * 1024 * 1024,
 	}
 
-	processor := NewResponseProcessor(config)
+	processor := newResponseProcessor(config)
 
 	tests := []struct {
 		name         string
@@ -113,7 +113,7 @@ func TestResponseProcessor_DeflateDecompression(t *testing.T) {
 		MaxResponseBodySize: 50 * 1024 * 1024,
 	}
 
-	processor := NewResponseProcessor(config)
+	processor := newResponseProcessor(config)
 
 	tests := []struct {
 		name         string
@@ -196,7 +196,7 @@ func TestResponseProcessor_BrotliDecompression(t *testing.T) {
 		MaxResponseBodySize: 50 * 1024 * 1024,
 	}
 
-	processor := NewResponseProcessor(config)
+	processor := newResponseProcessor(config)
 
 	// Test that brotli returns an appropriate error since it's not supported
 	// without external dependencies
@@ -228,7 +228,7 @@ func TestResponseProcessor_NoDecompression(t *testing.T) {
 		MaxResponseBodySize: 50 * 1024 * 1024,
 	}
 
-	processor := NewResponseProcessor(config)
+	processor := newResponseProcessor(config)
 
 	tests := []struct {
 		name         string
@@ -287,7 +287,7 @@ func TestResponseProcessor_DecompressionWithSizeLimit(t *testing.T) {
 		MaxResponseBodySize: 100, // Small limit for testing
 	}
 
-	processor := NewResponseProcessor(config)
+	processor := newResponseProcessor(config)
 
 	// Create data that will exceed limit after decompression
 	largeData := strings.Repeat("A", 200) // 200 bytes uncompressed
@@ -328,7 +328,7 @@ func TestResponseProcessor_InvalidGzipData(t *testing.T) {
 		MaxResponseBodySize: 50 * 1024 * 1024,
 	}
 
-	processor := NewResponseProcessor(config)
+	processor := newResponseProcessor(config)
 
 	httpResponse := &http.Response{
 		StatusCode: 200,
@@ -353,7 +353,7 @@ func TestResponseProcessor_InvalidDeflateData(t *testing.T) {
 		MaxResponseBodySize: 50 * 1024 * 1024,
 	}
 
-	processor := NewResponseProcessor(config)
+	processor := newResponseProcessor(config)
 
 	httpResponse := &http.Response{
 		StatusCode: 200,
@@ -378,7 +378,7 @@ func TestResponseProcessor_MultipleEncodings(t *testing.T) {
 		MaxResponseBodySize: 50 * 1024 * 1024,
 	}
 
-	processor := NewResponseProcessor(config)
+	processor := newResponseProcessor(config)
 
 	// Test with multiple encodings - HTTP spec says they should be listed in order applied
 	// So "gzip, deflate" means data was first deflated, then gzipped
@@ -422,7 +422,7 @@ func TestResponseProcessor_CaseInsensitiveEncoding(t *testing.T) {
 		MaxResponseBodySize: 50 * 1024 * 1024,
 	}
 
-	processor := NewResponseProcessor(config)
+	processor := newResponseProcessor(config)
 
 	originalData := "Test case insensitive encoding"
 
@@ -487,7 +487,7 @@ func BenchmarkResponseProcessor_GzipDecompression(b *testing.B) {
 		MaxResponseBodySize: 50 * 1024 * 1024,
 	}
 
-	processor := NewResponseProcessor(config)
+	processor := newResponseProcessor(config)
 
 	// Prepare compressed data
 	originalData := strings.Repeat("The quick brown fox jumps over the lazy dog. ", 100)
@@ -524,7 +524,7 @@ func BenchmarkResponseProcessor_DeflateDecompression(b *testing.B) {
 		MaxResponseBodySize: 50 * 1024 * 1024,
 	}
 
-	processor := NewResponseProcessor(config)
+	processor := newResponseProcessor(config)
 
 	// Prepare compressed data
 	originalData := strings.Repeat("The quick brown fox jumps over the lazy dog. ", 100)

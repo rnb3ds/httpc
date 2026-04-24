@@ -2,6 +2,8 @@ package httpc
 
 import (
 	"crypto/tls"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -21,16 +23,16 @@ func TestConfig_Defaults(t *testing.T) {
 	if config == nil {
 		t.Fatal("DefaultConfig should not return nil")
 	}
-	if config.Timeout <= 0 {
+	if config.Timeouts.Request <= 0 {
 		t.Error("Default timeout should be positive")
 	}
-	if config.MaxRetries < 0 {
+	if config.Retry.MaxRetries < 0 {
 		t.Error("Default max retries should be non-negative")
 	}
-	if config.MaxIdleConns <= 0 {
+	if config.Connection.MaxIdleConns <= 0 {
 		t.Error("Default max idle connections should be positive")
 	}
-	if config.UserAgent == "" {
+	if config.Middleware.UserAgent == "" {
 		t.Error("Default user agent should not be empty")
 	}
 }
@@ -49,22 +51,22 @@ func TestConfig_Presets(t *testing.T) {
 		defer client.Close()
 
 		// Verify security-focused settings
-		if config.MinTLSVersion < tls.VersionTLS12 {
+		if config.Security.MinTLSVersion < tls.VersionTLS12 {
 			t.Error("Secure config should enforce TLS 1.2+")
 		}
-		if config.InsecureSkipVerify {
+		if config.Security.InsecureSkipVerify {
 			t.Error("Secure config should not skip TLS verification")
 		}
-		if config.AllowPrivateIPs {
+		if config.Security.AllowPrivateIPs {
 			t.Error("Secure config should not allow private IPs")
 		}
-		if config.Timeout != 15*time.Second {
-			t.Errorf("Expected Timeout=15s, got %v", config.Timeout)
+		if config.Timeouts.Request != 15*time.Second {
+			t.Errorf("Expected Timeout=15s, got %v", config.Timeouts.Request)
 		}
-		if config.MaxRetries != 1 {
-			t.Errorf("Expected MaxRetries=1, got %d", config.MaxRetries)
+		if config.Retry.MaxRetries != 1 {
+			t.Errorf("Expected MaxRetries=1, got %d", config.Retry.MaxRetries)
 		}
-		if config.FollowRedirects {
+		if config.Middleware.FollowRedirects {
 			t.Error("Expected FollowRedirects=false")
 		}
 	})
@@ -78,14 +80,14 @@ func TestConfig_Presets(t *testing.T) {
 		defer client.Close()
 
 		// Verify performance-focused settings
-		if config.MaxIdleConns <= 0 {
+		if config.Connection.MaxIdleConns <= 0 {
 			t.Error("Performance config should have connection pooling")
 		}
-		if !config.EnableHTTP2 {
+		if !config.Connection.EnableHTTP2 {
 			t.Error("Performance config should enable HTTP/2")
 		}
-		if config.Timeout != 60*time.Second {
-			t.Errorf("Expected Timeout=60s, got %v", config.Timeout)
+		if config.Timeouts.Request != 60*time.Second {
+			t.Errorf("Expected Timeout=60s, got %v", config.Timeouts.Request)
 		}
 	})
 
@@ -98,10 +100,10 @@ func TestConfig_Presets(t *testing.T) {
 		defer client.Close()
 
 		// Verify minimal settings
-		if config.MaxRetries != 0 {
+		if config.Retry.MaxRetries != 0 {
 			t.Error("Minimal config should have no retries")
 		}
-		if config.FollowRedirects {
+		if config.Middleware.FollowRedirects {
 			t.Error("Minimal config should not follow redirects")
 		}
 	})
@@ -110,20 +112,20 @@ func TestConfig_Presets(t *testing.T) {
 		config := TestingConfig()
 
 		// Verify testing-focused settings
-		if config.Timeout != 30*time.Second {
-			t.Errorf("Expected timeout 30s, got %v", config.Timeout)
+		if config.Timeouts.Request != 30*time.Second {
+			t.Errorf("Expected timeout 30s, got %v", config.Timeouts.Request)
 		}
-		if !config.AllowPrivateIPs {
+		if !config.Security.AllowPrivateIPs {
 			t.Error("Expected AllowPrivateIPs to be true")
 		}
-		if !config.InsecureSkipVerify {
+		if !config.Security.InsecureSkipVerify {
 			t.Error("Expected InsecureSkipVerify to be true for testing")
 		}
-		if config.MaxRetries != 1 {
-			t.Errorf("Expected MaxRetries=1, got %d", config.MaxRetries)
+		if config.Retry.MaxRetries != 1 {
+			t.Errorf("Expected MaxRetries=1, got %d", config.Retry.MaxRetries)
 		}
-		if config.UserAgent != "httpc-test/1.0" {
-			t.Errorf("Expected UserAgent='httpc-test/1.0', got %q", config.UserAgent)
+		if config.Middleware.UserAgent != "httpc-test/1.0" {
+			t.Errorf("Expected UserAgent='httpc-test/1.0', got %q", config.Middleware.UserAgent)
 		}
 	})
 }
@@ -148,7 +150,7 @@ func TestConfig_Validation(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				config := DefaultConfig()
-				config.Timeout = tt.timeout
+				config.Timeouts.Request = tt.timeout
 				_, err := New(config)
 				if (err != nil) != tt.wantErr {
 					t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
@@ -172,7 +174,7 @@ func TestConfig_Validation(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				config := DefaultConfig()
-				config.MaxRetries = tt.maxRetries
+				config.Retry.MaxRetries = tt.maxRetries
 				_, err := New(config)
 				if (err != nil) != tt.wantErr {
 					t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
@@ -196,8 +198,8 @@ func TestConfig_Validation(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				config := DefaultConfig()
-				config.MaxIdleConns = tt.maxIdleConns
-				config.MaxConnsPerHost = tt.maxConns
+				config.Connection.MaxIdleConns = tt.maxIdleConns
+				config.Connection.MaxConnsPerHost = tt.maxConns
 				client, err := New(config)
 				if (err != nil) != tt.wantErr {
 					t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
@@ -223,7 +225,7 @@ func TestConfig_Validation(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				config := DefaultConfig()
-				config.UserAgent = tt.userAgent
+				config.Middleware.UserAgent = tt.userAgent
 				client, err := New(config)
 				if (err != nil) != tt.wantErr {
 					t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
@@ -254,7 +256,7 @@ func TestConfig_TLSVersions(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				config := DefaultConfig()
-				config.MinTLSVersion = tt.minVersion
+				config.Security.MinTLSVersion = tt.minVersion
 				client, err := New(config)
 				if (err != nil) != tt.wantErr {
 					t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
@@ -279,7 +281,7 @@ func TestConfig_TLSVersions(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				config := DefaultConfig()
-				config.MaxTLSVersion = tt.maxVersion
+				config.Security.MaxTLSVersion = tt.maxVersion
 				client, err := New(config)
 				if (err != nil) != tt.wantErr {
 					t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
@@ -300,13 +302,14 @@ func TestConfig_TLSVersions(t *testing.T) {
 		}{
 			{"Valid: 1.2-1.3", tls.VersionTLS12, tls.VersionTLS13, false},
 			{"Valid: 1.2-1.2", tls.VersionTLS12, tls.VersionTLS12, false},
+			{"Invalid: Min>Max", tls.VersionTLS13, tls.VersionTLS12, true},
 		}
 
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				config := DefaultConfig()
-				config.MinTLSVersion = tt.minVersion
-				config.MaxTLSVersion = tt.maxVersion
+				config.Security.MinTLSVersion = tt.minVersion
+				config.Security.MaxTLSVersion = tt.maxVersion
 				client, err := New(config)
 				if (err != nil) != tt.wantErr {
 					t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
@@ -320,9 +323,9 @@ func TestConfig_TLSVersions(t *testing.T) {
 
 	t.Run("WithTLSConfig", func(t *testing.T) {
 		config := DefaultConfig()
-		config.MinTLSVersion = tls.VersionTLS12
-		config.MaxTLSVersion = tls.VersionTLS13
-		config.TLSConfig = &tls.Config{
+		config.Security.MinTLSVersion = tls.VersionTLS12
+		config.Security.MaxTLSVersion = tls.VersionTLS13
+		config.Security.TLSConfig = &tls.Config{
 			MinVersion: tls.VersionTLS13,
 		}
 
@@ -340,7 +343,8 @@ func TestConfig_TLSVersions(t *testing.T) {
 
 func TestConfig_Modification(t *testing.T) {
 	config := DefaultConfig()
-	originalTimeout := config.Timeout
+	config.Security.AllowPrivateIPs = true
+	originalTimeout := config.Timeouts.Request
 
 	client, err := New(config)
 	if err != nil {
@@ -349,12 +353,25 @@ func TestConfig_Modification(t *testing.T) {
 	defer client.Close()
 
 	// Modify config after client creation
-	config.Timeout = 1 * time.Second
-	config.MaxRetries = 10
+	config.Timeouts.Request = 1 * time.Nanosecond
+	config.Retry.MaxRetries = 10
 
-	// Original client should not be affected
-	if config.Timeout == originalTimeout {
-		t.Log("Config modification does not affect existing client")
+	// Sanity check: config was actually modified
+	if config.Timeouts.Request == originalTimeout {
+		t.Fatal("sanity check failed: config should have been modified")
+	}
+
+	// Verify client is unaffected: make a request that would time out
+	// if the client used the modified 1ns timeout.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(10 * time.Millisecond) // Small delay that 1ns timeout can't survive
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	_, err = client.Get(server.URL)
+	if err != nil {
+		t.Errorf("client should use original timeout, not modified 1ns: %v", err)
 	}
 }
 
@@ -371,10 +388,9 @@ func TestConfig_InternalHelpers(t *testing.T) {
 	})
 
 	t.Run("warnTestingConfigInProduction", func(t *testing.T) {
-		// This function should not panic and should handle the test environment
-		// In test environment, it should not print warnings
+		// Verify the function completes without panic in test environment.
+		// In production, this would log a warning; in tests it should be silent.
 		warnTestingConfigInProduction()
-		// No assertion needed - just verify it doesn't panic
 	})
 }
 
@@ -387,21 +403,21 @@ func TestConfig_AdvancedFields(t *testing.T) {
 		config := DefaultConfig()
 
 		// Use flat fields for common settings
-		config.Timeout = 60 * time.Second
-		config.MaxRetries = 5
-		config.ProxyURL = "http://proxy:8080"
-		config.AllowPrivateIPs = true
-		config.UserAgent = "my-app/1.0"
-		config.FollowRedirects = false
+		config.Timeouts.Request = 60 * time.Second
+		config.Retry.MaxRetries = 5
+		config.Connection.ProxyURL = "http://proxy:8080"
+		config.Security.AllowPrivateIPs = true
+		config.Middleware.UserAgent = "my-app/1.0"
+		config.Middleware.FollowRedirects = false
 
 		// Use flat fields for advanced settings
-		config.DialTimeout = 5 * time.Second
-		config.TLSHandshakeTimeout = 5 * time.Second
-		config.MaxIdleConns = 100
-		config.MaxConnsPerHost = 20
-		config.MaxResponseBodySize = 50 * 1024 * 1024
-		config.RetryDelay = 500 * time.Millisecond
-		config.BackoffFactor = 1.5
+		config.Timeouts.Dial = 5 * time.Second
+		config.Timeouts.TLSHandshake = 5 * time.Second
+		config.Connection.MaxIdleConns = 100
+		config.Connection.MaxConnsPerHost = 20
+		config.Security.MaxResponseBodySize = 50 * 1024 * 1024
+		config.Retry.Delay = 500 * time.Millisecond
+		config.Retry.BackoffFactor = 1.5
 
 		client, err := New(config)
 		if err != nil {
@@ -432,8 +448,8 @@ func TestConfig_String(t *testing.T) {
 		if !strings.Contains(result, "Config{") {
 			t.Error("String should start with 'Config{'")
 		}
-		if !strings.Contains(result, "Timeout:") {
-			t.Error("String should contain 'Timeout:'")
+		if !strings.Contains(result, "Request:") {
+			t.Error("String should contain 'Request:'")
 		}
 		if !strings.Contains(result, "ProxyURL:") {
 			t.Error("String should contain 'ProxyURL:'")
@@ -448,7 +464,7 @@ func TestConfig_String(t *testing.T) {
 
 	t.Run("Config with TLS", func(t *testing.T) {
 		config := DefaultConfig()
-		config.TLSConfig = &tls.Config{
+		config.Security.TLSConfig = &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		}
 
@@ -460,7 +476,7 @@ func TestConfig_String(t *testing.T) {
 
 	t.Run("Config with proxy", func(t *testing.T) {
 		config := DefaultConfig()
-		config.ProxyURL = "http://user:password@proxy.example.com:8080"
+		config.Connection.ProxyURL = "http://user:password@proxy.example.com:8080"
 
 		result := config.String()
 		// Password should be masked
@@ -474,27 +490,37 @@ func TestConfig_String(t *testing.T) {
 
 	t.Run("Config with all fields", func(t *testing.T) {
 		config := &Config{
-			Timeout:             30 * time.Second,
-			DialTimeout:         5 * time.Second,
-			TLSHandshakeTimeout: 5 * time.Second,
-			MaxIdleConns:        100,
-			MaxConnsPerHost:     20,
-			ProxyURL:            "http://proxy:8080",
-			InsecureSkipVerify:  true,
-			AllowPrivateIPs:     true,
-			MaxRetries:          3,
-			BackoffFactor:       1.5,
-			UserAgent:           "test-agent",
-			FollowRedirects:     false,
+			Timeouts: TimeoutConfig{
+				Request:      30 * time.Second,
+				Dial:         5 * time.Second,
+				TLSHandshake: 5 * time.Second,
+			},
+			Connection: ConnectionConfig{
+				MaxIdleConns:    100,
+				MaxConnsPerHost: 20,
+				ProxyURL:        "http://proxy:8080",
+			},
+			Security: SecurityConfig{
+				InsecureSkipVerify: true,
+				AllowPrivateIPs:    true,
+			},
+			Retry: RetryConfig{
+				MaxRetries:    3,
+				BackoffFactor: 1.5,
+			},
+			Middleware: MiddlewareConfig{
+				UserAgent:       "test-agent",
+				FollowRedirects: false,
+			},
 		}
 
 		result := config.String()
 
 		// Verify all key fields are present
 		expectedParts := []string{
-			"Timeout:",
-			"DialTimeout:",
-			"TLSHandshakeTimeout:",
+			"Request:",
+			"Dial:",
+			"TLSHandshake:",
 			"MaxIdleConns:",
 			"MaxConnsPerHost:",
 			"ProxyURL:",
@@ -551,7 +577,7 @@ func TestMaskProxyURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			config := DefaultConfig()
-			config.ProxyURL = tt.proxyURL
+			config.Connection.ProxyURL = tt.proxyURL
 			result := config.String()
 
 			if tt.contains != "" && !strings.Contains(result, tt.contains) {
@@ -562,4 +588,88 @@ func TestMaskProxyURL(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ----------------------------------------------------------------------------
+// ValidateConfig additional boundary cases
+// ----------------------------------------------------------------------------
+
+func TestValidateConfig_AdditionalBoundaries(t *testing.T) {
+	t.Run("nil config", func(t *testing.T) {
+		if err := ValidateConfig(nil); err == nil {
+			t.Error("expected error for nil config")
+		}
+	})
+
+	t.Run("negative dial timeout", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Timeouts.Dial = -1 * time.Second
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected error for negative dial timeout")
+		}
+	})
+
+	t.Run("negative TLS handshake timeout", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Timeouts.TLSHandshake = -1 * time.Second
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected error for negative TLS handshake timeout")
+		}
+	})
+
+	t.Run("negative response header timeout", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Timeouts.ResponseHeader = -1 * time.Second
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected error for negative response header timeout")
+		}
+	})
+
+	t.Run("negative idle conn timeout", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Timeouts.IdleConn = -1 * time.Second
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected error for negative idle conn timeout")
+		}
+	})
+
+	t.Run("negative max idle conns", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Connection.MaxIdleConns = -1
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected error for negative max idle conns")
+		}
+	})
+
+	t.Run("negative max conns per host", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Connection.MaxConnsPerHost = -1
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected error for negative max conns per host")
+		}
+	})
+
+	t.Run("negative max response body size", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Security.MaxResponseBodySize = -1
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected error for negative max response body size")
+		}
+	})
+
+	t.Run("negative retry delay", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Retry.Delay = -1 * time.Second
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected error for negative retry delay")
+		}
+	})
+
+	t.Run("invalid middleware headers", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Middleware.Headers = map[string]string{"X-Bad": "value\r\nevil"}
+		if err := ValidateConfig(cfg); err == nil {
+			t.Error("expected error for CRLF in middleware header value")
+		}
+	})
 }

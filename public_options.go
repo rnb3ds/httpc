@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -16,6 +15,8 @@ import (
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
+// WithHeader sets a single HTTP header on the request.
+// The key and value are validated for security (CRLF injection prevention).
 func WithHeader(key, value string) RequestOption {
 	return func(r *engine.Request) error {
 		if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
@@ -46,6 +47,7 @@ func WithUserAgent(userAgent string) RequestOption {
 	return WithHeader("User-Agent", userAgent)
 }
 
+// WithBasicAuth sets HTTP Basic Authentication using the provided username and password.
 func WithBasicAuth(username, password string) RequestOption {
 	return func(r *engine.Request) error {
 		if username == "" {
@@ -65,6 +67,7 @@ func WithBasicAuth(username, password string) RequestOption {
 	}
 }
 
+// WithBearerToken sets the Authorization header to "Bearer <token>".
 func WithBearerToken(token string) RequestOption {
 	return func(r *engine.Request) error {
 		if token == "" {
@@ -79,6 +82,7 @@ func WithBearerToken(token string) RequestOption {
 	}
 }
 
+// WithQuery sets a single query parameter on the request.
 func WithQuery(key string, value any) RequestOption {
 	return func(r *engine.Request) error {
 		if err := validation.ValidateQueryKey(key); err != nil {
@@ -127,157 +131,12 @@ func WithQueryMap(params map[string]any) RequestOption {
 	}
 }
 
-// queryValueLength efficiently calculates the string length of a query value
-// without allocating a string. Uses type switching for common types.
+// queryValueLength returns the string length of a formatted query value.
 func queryValueLength(v any) int {
-	switch val := v.(type) {
-	case string:
-		return len(val)
-	case int:
-		return lenInt(int64(val))
-	case int64:
-		return lenInt(val)
-	case int32:
-		return lenInt(int64(val))
-	case uint:
-		return lenUint(uint64(val))
-	case uint64:
-		return lenUint(val)
-	case uint32:
-		return lenUint(uint64(val))
-	case float64:
-		return lenFloat(val, 64)
-	case float32:
-		return lenFloat(float64(val), 32)
-	case bool:
-		if val {
-			return 4 // "true"
-		}
-		return 5 // "false"
-	case fmt.Stringer:
-		return len(val.String())
-	default:
-		return len(fmt.Sprintf("%v", val))
-	}
+	return len(engine.FormatQueryParam(v))
 }
 
-// lenInt calculates the number of digits in an int64 (including sign if negative)
-func lenInt(v int64) int {
-	if v < 0 {
-		return 1 + lenUint(uint64(-v))
-	}
-	return lenUint(uint64(v))
-}
-
-// lenUint calculates the number of digits in a uint64
-func lenUint(v uint64) int {
-	if v < 10 {
-		return 1
-	}
-	if v < 100 {
-		return 2
-	}
-	if v < 1000 {
-		return 3
-	}
-	if v < 10000 {
-		return 4
-	}
-	if v < 100000 {
-		return 5
-	}
-	if v < 1000000 {
-		return 6
-	}
-	if v < 10000000 {
-		return 7
-	}
-	if v < 100000000 {
-		return 8
-	}
-	if v < 1000000000 {
-		return 9
-	}
-	if v < 10000000000 {
-		return 10
-	}
-	if v < 100000000000 {
-		return 11
-	}
-	if v < 1000000000000 {
-		return 12
-	}
-	if v < 10000000000000 {
-		return 13
-	}
-	if v < 100000000000000 {
-		return 14
-	}
-	if v < 1000000000000000 {
-		return 15
-	}
-	if v < 10000000000000000 {
-		return 16
-	}
-	if v < 100000000000000000 {
-		return 17
-	}
-	if v < 1000000000000000000 {
-		return 18
-	}
-	return 19
-}
-
-// lenFloat estimates the length of a float formatted with strconv.FormatFloat
-// without allocating a string. Uses mathematical estimation to avoid heap allocation.
-func lenFloat(v float64, bitSize int) int {
-	// Handle special cases first
-	if math.IsInf(v, 0) {
-		return 4 // "Inf" or "-Inf" or "+Inf"
-	}
-	if math.IsNaN(v) {
-		return 3 // "NaN"
-	}
-
-	// Estimate the length without formatting
-	absV := math.Abs(v)
-
-	// Count integer part digits using log10
-	var intDigits int
-	if absV < 1 {
-		intDigits = 1 // "0" before decimal point
-	} else {
-		intDigits = int(math.Log10(absV)) + 1
-	}
-
-	// Estimate fractional part - use conservative estimate based on bitSize
-	// float64: up to 15-17 significant digits, float32: up to 6-9
-	var maxFracDigits int
-	if bitSize == 32 {
-		maxFracDigits = 9
-	} else {
-		maxFracDigits = 17
-	}
-
-	// For small integers, fractional part is 0
-	if absV >= 1 && absV == math.Floor(absV) && absV < 1e15 {
-		maxFracDigits = 0
-	}
-
-	// Total: sign (1 if negative) + integer digits + decimal point (1) + fractional digits
-	signLen := 0
-	if v < 0 {
-		signLen = 1
-	}
-
-	decimalPointLen := 0
-	if maxFracDigits > 0 {
-		decimalPointLen = 1
-	}
-
-	return signLen + intDigits + decimalPointLen + maxFracDigits
-}
-
+// WithJSON sets the request body as JSON and sets Content-Type to application/json.
 func WithJSON(data any) RequestOption {
 	return func(r *engine.Request) error {
 		if data == nil {
@@ -289,6 +148,7 @@ func WithJSON(data any) RequestOption {
 	}
 }
 
+// WithXML sets the request body as XML and sets Content-Type to application/xml.
 func WithXML(data any) RequestOption {
 	return func(r *engine.Request) error {
 		if data == nil {
@@ -456,6 +316,7 @@ func setAutoDetectedBody(r *engine.Request, data any) (string, error) {
 	}
 }
 
+// WithForm sets the request body as URL-encoded form data.
 func WithForm(data map[string]string) RequestOption {
 	return func(r *engine.Request) error {
 		if data == nil {
@@ -472,6 +333,7 @@ func WithForm(data map[string]string) RequestOption {
 	}
 }
 
+// WithFormData sets the request body as multipart/form-data.
 func WithFormData(data *FormData) RequestOption {
 	return func(r *engine.Request) error {
 		if data == nil {
@@ -482,6 +344,7 @@ func WithFormData(data *FormData) RequestOption {
 	}
 }
 
+// WithFile adds a file upload to the request as multipart/form-data.
 func WithFile(fieldName, filename string, content []byte) RequestOption {
 	return func(r *engine.Request) error {
 		if fieldName == "" {
@@ -515,6 +378,7 @@ func WithFile(fieldName, filename string, content []byte) RequestOption {
 	}
 }
 
+// WithTimeout sets a per-request timeout that overrides the client's default timeout.
 func WithTimeout(timeout time.Duration) RequestOption {
 	return func(r *engine.Request) error {
 		if timeout < 0 {
@@ -528,6 +392,8 @@ func WithTimeout(timeout time.Duration) RequestOption {
 	}
 }
 
+// WithContext sets the context for the request, enabling timeout and cancellation control.
+// The context overrides the client's default timeout for this request.
 func WithContext(ctx context.Context) RequestOption {
 	return func(r *engine.Request) error {
 		if ctx == nil {
@@ -538,6 +404,7 @@ func WithContext(ctx context.Context) RequestOption {
 	}
 }
 
+// WithMaxRetries sets the maximum number of retry attempts for this request.
 func WithMaxRetries(maxRetries int) RequestOption {
 	return func(r *engine.Request) error {
 		if maxRetries < 0 || maxRetries > 10 {
@@ -548,6 +415,7 @@ func WithMaxRetries(maxRetries int) RequestOption {
 	}
 }
 
+// WithFollowRedirects controls whether HTTP redirects are followed for this request.
 func WithFollowRedirects(follow bool) RequestOption {
 	return func(r *engine.Request) error {
 		r.SetFollowRedirects(&follow)
@@ -555,6 +423,17 @@ func WithFollowRedirects(follow bool) RequestOption {
 	}
 }
 
+// WithStreamBody enables streaming mode where the response body is not buffered
+// into memory. The caller reads the body directly via the engine Response's
+// RawBodyReader. Used internally for file downloads to avoid buffering large files.
+func WithStreamBody(stream bool) RequestOption {
+	return func(r *engine.Request) error {
+		r.SetStreamBody(stream)
+		return nil
+	}
+}
+
+// WithMaxRedirects sets the maximum number of redirects to follow for this request.
 func WithMaxRedirects(maxRedirects int) RequestOption {
 	return func(r *engine.Request) error {
 		if maxRedirects < 0 {
@@ -568,6 +447,7 @@ func WithMaxRedirects(maxRedirects int) RequestOption {
 	}
 }
 
+// WithBinary sets binary data as the request body with an optional content type.
 func WithBinary(data []byte, contentType ...string) RequestOption {
 	return func(r *engine.Request) error {
 		if data == nil {
@@ -585,6 +465,7 @@ func WithBinary(data []byte, contentType ...string) RequestOption {
 	}
 }
 
+// WithCookie adds a cookie to the request after validation.
 func WithCookie(cookie http.Cookie) RequestOption {
 	return func(r *engine.Request) error {
 		if err := validation.ValidateCookie(&cookie); err != nil {
@@ -643,6 +524,7 @@ func WithCookieMap(cookies map[string]string) RequestOption {
 	}
 }
 
+// WithCookieString adds cookies from a raw Cookie header string to the request.
 func WithCookieString(cookieString string) RequestOption {
 	return func(r *engine.Request) error {
 		if cookieString == "" {

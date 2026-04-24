@@ -29,8 +29,8 @@ func TestRetry_Behavior(t *testing.T) {
 		defer server.Close()
 
 		config := DefaultConfig()
-		config.MaxRetries = 3
-		config.AllowPrivateIPs = true
+		config.Retry.MaxRetries = 3
+		config.Security.AllowPrivateIPs = true
 		client, _ := New(config)
 		defer client.Close()
 
@@ -56,9 +56,9 @@ func TestRetry_Behavior(t *testing.T) {
 		defer server.Close()
 
 		config := DefaultConfig()
-		config.MaxRetries = 3
-		config.RetryDelay = 10 * time.Millisecond
-		config.AllowPrivateIPs = true
+		config.Retry.MaxRetries = 3
+		config.Retry.Delay = 10 * time.Millisecond
+		config.Security.AllowPrivateIPs = true
 		client, _ := New(config)
 		defer client.Close()
 
@@ -80,9 +80,9 @@ func TestRetry_Behavior(t *testing.T) {
 		defer server.Close()
 
 		config := DefaultConfig()
-		config.MaxRetries = 3
-		config.RetryDelay = 10 * time.Millisecond
-		config.AllowPrivateIPs = true
+		config.Retry.MaxRetries = 3
+		config.Retry.Delay = 10 * time.Millisecond
+		config.Security.AllowPrivateIPs = true
 		client, _ := New(config)
 		defer client.Close()
 
@@ -108,8 +108,8 @@ func TestRetry_Behavior(t *testing.T) {
 		defer server.Close()
 
 		config := DefaultConfig()
-		config.MaxRetries = 0
-		config.AllowPrivateIPs = true
+		config.Retry.MaxRetries = 0
+		config.Security.AllowPrivateIPs = true
 		client, _ := New(config)
 		defer client.Close()
 
@@ -151,9 +151,9 @@ func TestRetry_StatusCodes(t *testing.T) {
 				defer server.Close()
 
 				config := DefaultConfig()
-				config.MaxRetries = 2
-				config.RetryDelay = 10 * time.Millisecond
-				config.AllowPrivateIPs = true
+				config.Retry.MaxRetries = 2
+				config.Retry.Delay = 10 * time.Millisecond
+				config.Security.AllowPrivateIPs = true
 				client, _ := New(config)
 				defer client.Close()
 
@@ -193,9 +193,9 @@ func TestRetry_StatusCodes(t *testing.T) {
 				defer server.Close()
 
 				config := DefaultConfig()
-				config.MaxRetries = 2
-				config.RetryDelay = 10 * time.Millisecond
-				config.AllowPrivateIPs = true
+				config.Retry.MaxRetries = 2
+				config.Retry.Delay = 10 * time.Millisecond
+				config.Security.AllowPrivateIPs = true
 				client, _ := New(config)
 				defer client.Close()
 
@@ -233,11 +233,11 @@ func TestRetry_Backoff(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.MaxRetries = 3
-	config.RetryDelay = 100 * time.Millisecond
-	config.BackoffFactor = 2.0
-	config.EnableJitter = false // Disable jitter for predictable testing
-	config.AllowPrivateIPs = true
+	config.Retry.MaxRetries = 3
+	config.Retry.Delay = 100 * time.Millisecond
+	config.Retry.BackoffFactor = 2.0
+	config.Retry.EnableJitter = false // Disable jitter for predictable testing
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -269,7 +269,7 @@ func TestRetry_Backoff(t *testing.T) {
 		expectedMax := time.Duration(float64(expectedDelays[i-1]) * 1.1)
 
 		if delay < expectedMin || delay > expectedMax {
-			t.Logf("Delay %d: %v (expected ~%v)", i, delay, expectedDelays[i-1])
+			t.Errorf("Delay %d: %v (expected ~%v)", i, delay, expectedDelays[i-1])
 		}
 	}
 }
@@ -290,9 +290,9 @@ func TestRetry_ContextCancellation(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.MaxRetries = 10 // Set higher retry count
-	config.RetryDelay = 200 * time.Millisecond
-	config.AllowPrivateIPs = true
+	config.Retry.MaxRetries = 10 // Set higher retry count
+	config.Retry.Delay = 200 * time.Millisecond
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -350,9 +350,9 @@ func TestRetry_RetryAfterHeader(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.MaxRetries = 3
-	config.RetryDelay = 100 * time.Millisecond
-	config.AllowPrivateIPs = true
+	config.Retry.MaxRetries = 3
+	config.Retry.Delay = 100 * time.Millisecond
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -408,9 +408,9 @@ func TestRetry_AttemptCount(t *testing.T) {
 		defer server.Close()
 
 		config := DefaultConfig()
-		config.MaxRetries = 5
-		config.RetryDelay = 10 * time.Millisecond
-		config.AllowPrivateIPs = true
+		config.Retry.MaxRetries = 5
+		config.Retry.Delay = 10 * time.Millisecond
+		config.Security.AllowPrivateIPs = true
 		client, _ := New(config)
 		defer client.Close()
 

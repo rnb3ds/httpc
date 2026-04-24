@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -29,7 +30,7 @@ func TestSanitizeURL(t *testing.T) {
 		{
 			name:     "No credentials with fragment",
 			input:    "https://example.com/path#section",
-			expected: "https://example.com/path#section",
+			expected: "https://example.com/path",
 		},
 
 		// Username only
@@ -63,7 +64,7 @@ func TestSanitizeURL(t *testing.T) {
 		{
 			name:     "Credentials with query and fragment",
 			input:    "https://user:pass@example.com/path?q=1#section",
-			expected: "https://***:***@example.com/path?q=1#section",
+			expected: "https://***:***@example.com/path?q=1",
 		},
 		{
 			name:     "Credentials with port",
@@ -122,9 +123,9 @@ func TestSanitizeURL(t *testing.T) {
 
 		// Security edge cases
 		{
-			name:     "Credentials in query should not be modified",
+			name:     "Sensitive query params are redacted",
 			input:    "https://example.com/api?token=secret123",
-			expected: "https://example.com/api?token=secret123",
+			expected: "https://example.com/api?token=%5BREDACTED%5D",
 		},
 		{
 			name:     "Special characters in username",
@@ -179,20 +180,10 @@ func TestSanitizeURL_CredentialRemoval(t *testing.T) {
 			// Result should contain masked credentials pattern
 			if len(result) > 0 && result[0] != ':' {
 				// Should have ***:*** pattern for user:pass
-				if !contains(result, "***:***@") && !contains(result, "***@") {
+				if !strings.Contains(result, "***:***@") && !strings.Contains(result, "***@") {
 					t.Errorf("Expected masked credentials in result: %q", result)
 				}
 			}
 		})
 	}
-}
-
-// contains is a helper function to check if a string contains a substring
-func contains(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

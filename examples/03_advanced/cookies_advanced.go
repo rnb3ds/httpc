@@ -83,7 +83,22 @@ func demonstrateRequestCookies() {
 		log.Printf("Error: %v\n", err)
 		return
 	}
-	fmt.Printf("✓ Multiple cookies (string): Status %d\n\n", resp.StatusCode())
+	fmt.Printf("✓ Multiple cookies (string): Status %d\n", resp.StatusCode())
+
+	// Method 4: Multiple cookies using map
+	cookieMap := map[string]string{
+		"theme":    "dark",
+		"language": "en",
+		"region":   "us",
+	}
+	resp, err = client.Get("https://httpbin.org/cookies",
+		httpc.WithCookieMap(cookieMap),
+	)
+	if err != nil {
+		log.Printf("Error: %v\n", err)
+		return
+	}
+	fmt.Printf("✓ Cookie map: Status %d\n\n", resp.StatusCode())
 }
 
 // demonstrateResponseCookies shows how to read cookies from responses
@@ -130,7 +145,7 @@ func demonstrateCookieJar() {
 
 	// Create client with cookie jar enabled
 	config := httpc.DefaultConfig()
-	config.EnableCookies = true
+	config.Connection.EnableCookies = true
 	client, err := httpc.New(config)
 	if err != nil {
 		log.Fatal(err)
@@ -144,7 +159,7 @@ func demonstrateCookieJar() {
 		log.Printf("Error: %v\n", err)
 		return
 	}
-	fmt.Printf("✓ Status: %d (cookies stored in jar)\n", resp1.StatusCode)
+	fmt.Printf("✓ Status: %d (cookies stored in jar)\n", resp1.StatusCode())
 
 	// Step 2: Cookies automatically sent in subsequent requests
 	fmt.Println("\nStep 2: Cookies automatically sent")
@@ -153,7 +168,7 @@ func demonstrateCookieJar() {
 		log.Printf("Error: %v\n", err)
 		return
 	}
-	fmt.Printf("✓ Status: %d\n", resp2.StatusCode)
+	fmt.Printf("✓ Status: %d\n", resp2.StatusCode())
 	fmt.Printf("✓ Cookies persisted across requests\n\n")
 }
 
@@ -242,4 +257,23 @@ func demonstrateAdvancedScenarios() {
 		return
 	}
 	fmt.Printf("✓ Cookies with auth: Status %d\n", resp.StatusCode())
+
+	// Scenario 4: Secure cookie with validation
+	// Note: WithSecureCookie validates cookies already on the request,
+	// so add cookies first, then validate.
+	resp, err = client.Get("https://httpbin.org/cookies",
+		httpc.WithCookie(http.Cookie{
+			Name:     "secure_session",
+			Value:    "encrypted_value",
+			Secure:   true,
+			HttpOnly: true,
+			SameSite: http.SameSiteStrictMode,
+		}),
+		httpc.WithSecureCookie(httpc.DefaultCookieSecurityConfig()),
+	)
+	if err != nil {
+		log.Printf("Error: %v\n", err)
+		return
+	}
+	fmt.Printf("✓ Secure cookie: Status %d\n", resp.StatusCode())
 }

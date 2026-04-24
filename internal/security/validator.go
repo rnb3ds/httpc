@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/cybergodev/httpc/internal/types"
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
@@ -13,11 +14,11 @@ type Validator struct {
 	config *Config
 }
 
-// Compile-time interface check for RequestValidator
-var _ RequestValidator = (*Validator)(nil)
+// Compile-time interface check for requestValidator
+var _ requestValidator = (*Validator)(nil)
 
-// RequestValidator defines the interface for request validation.
-type RequestValidator interface {
+// requestValidator defines the interface for request validation.
+type requestValidator interface {
 	ValidateRequest(req *Request) error
 }
 
@@ -26,6 +27,7 @@ type Config struct {
 	ValidateHeaders     bool
 	MaxResponseBodySize int64
 	AllowPrivateIPs     bool
+	ExemptNets          []*net.IPNet
 }
 
 type Request struct {
@@ -41,7 +43,7 @@ func NewValidator() *Validator {
 		ValidateURL:         true,
 		ValidateHeaders:     true,
 		MaxResponseBodySize: 50 * 1024 * 1024,
-		AllowPrivateIPs:     true,
+		AllowPrivateIPs:     false,
 	}
 
 	return &Validator{
@@ -54,8 +56,14 @@ func NewValidatorWithConfig(config *Config) *Validator {
 		return NewValidator()
 	}
 
+	cfg := *config
+	if config.ExemptNets != nil {
+		cfg.ExemptNets = make([]*net.IPNet, len(config.ExemptNets))
+		copy(cfg.ExemptNets, config.ExemptNets)
+	}
+
 	return &Validator{
-		config: config,
+		config: &cfg,
 	}
 }
 
@@ -75,7 +83,7 @@ func (v *Validator) ValidateRequest(req *Request) error {
 	}
 
 	if req.Body != nil {
-		if err := v.validateRequestSize(req.Body); err != nil {
+		if err := v.validateRequestBodySize(req.Body); err != nil {
 			return err
 		}
 	}
@@ -90,7 +98,10 @@ func (v *Validator) validateURL(urlStr string) error {
 	}
 
 	// Parse URL for host validation (already validated above)
-	parsedURL, _ := url.Parse(urlStr)
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return fmt.Errorf("URL parse failed: %w", err)
+	}
 	return v.validateHost(parsedURL.Host)
 }
 
@@ -114,7 +125,7 @@ func (v *Validator) validateHost(host string) error {
 
 	// If hostname is an IP address, validate it directly
 	if ip := net.ParseIP(hostname); ip != nil {
-		if err := validation.ValidateIP(ip); err != nil {
+		if err := validation.ValidateIPWithExemptions(ip, v.config.ExemptNets); err != nil {
 			return fmt.Errorf("private/reserved IP blocked: %s", ip.String())
 		}
 		return nil
@@ -151,27 +162,36 @@ func validateCommonHeaderValue(key, value string) error {
 	return nil
 }
 
-func (v *Validator) validateRequestSize(body any) error {
+// validateRequestBodySize checks the request body against the configured size limit.
+// MaxResponseBodySize serves as a general body-size cap for both request and response payloads.
+func (v *Validator) validateRequestBodySize(body any) error {
 	if v.config.MaxResponseBodySize <= 0 {
 		return nil
 	}
 
 	var size int64
-	switch v := body.(type) {
+	switch b := body.(type) {
 	case string:
-		size = int64(len(v))
+		size = int64(len(b))
 	case []byte:
-		size = int64(len(v))
+		size = int64(len(b))
 	case url.Values:
-		size = int64(len(v.Encode()))
+		size = int64(len(b.Encode()))
+	case *types.FormData:
+		for _, v := range b.Fields {
+			size += int64(len(v))
+		}
+		for _, f := range b.Files {
+			size += int64(len(f.Content))
+		}
 	default:
-		// For complex types (FormData, io.Reader, etc.), size validation
-		// occurs during request serialization in the request processor
+		// For io.Reader and other types, caller is responsible for size control.
+		// Consider wrapping with io.LimitReader for untrusted sources.
 		return nil
 	}
 
 	if size > v.config.MaxResponseBodySize {
-		return fmt.Errorf("request body exceeds %d bytes", v.config.MaxResponseBodySize)
+		return fmt.Errorf("request body size %d exceeds limit %d bytes", size, v.config.MaxResponseBodySize)
 	}
 
 	return nil

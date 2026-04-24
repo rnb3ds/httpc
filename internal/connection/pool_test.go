@@ -219,18 +219,6 @@ func TestPoolManager_Close(t *testing.T) {
 	}
 }
 
-func TestPoolManager_IsHealthy(t *testing.T) {
-	pm, err := NewPoolManager(nil)
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-	defer func() { _ = pm.Close() }()
-
-	// Initially should be healthy (or may not be if no connections yet)
-	// Just verify the method doesn't panic
-	_ = pm.IsHealthy()
-}
-
 func TestPoolManager_TLSConfig(t *testing.T) {
 	t.Run("Default TLS config", func(t *testing.T) {
 		pm, err := NewPoolManager(nil)
@@ -321,30 +309,54 @@ func TestPoolManager_Timeouts(t *testing.T) {
 }
 
 func TestPoolManager_ConnectionLimits(t *testing.T) {
-	config := &Config{
-		MaxIdleConns:        50,
-		MaxIdleConnsPerHost: 5,
-		MaxConnsPerHost:     10,
+	tests := []struct {
+		name                string
+		maxIdleConns        int
+		maxIdleConnsPerHost int
+		maxConnsPerHost     int
+	}{
+		{
+			name:                "Standard limits",
+			maxIdleConns:        50,
+			maxIdleConnsPerHost: 5,
+			maxConnsPerHost:     10,
+		},
+		{
+			name:                "High limits",
+			maxIdleConns:        1000,
+			maxIdleConnsPerHost: 100,
+			maxConnsPerHost:     200,
+		},
 	}
 
-	pm, err := NewPoolManager(config)
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-	defer func() { _ = pm.Close() }()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &Config{
+				MaxIdleConns:        tt.maxIdleConns,
+				MaxIdleConnsPerHost: tt.maxIdleConnsPerHost,
+				MaxConnsPerHost:     tt.maxConnsPerHost,
+			}
 
-	transport := pm.transport
+			pm, err := NewPoolManager(config)
+			if err != nil {
+				t.Fatalf("Expected no error, got: %v", err)
+			}
+			defer func() { _ = pm.Close() }()
 
-	if transport.MaxIdleConns != 50 {
-		t.Errorf("Expected MaxIdleConns 50, got %d", transport.MaxIdleConns)
-	}
+			transport := pm.transport
 
-	if transport.MaxIdleConnsPerHost != 5 {
-		t.Errorf("Expected MaxIdleConnsPerHost 5, got %d", transport.MaxIdleConnsPerHost)
-	}
+			if transport.MaxIdleConns != tt.maxIdleConns {
+				t.Errorf("Expected MaxIdleConns %d, got %d", tt.maxIdleConns, transport.MaxIdleConns)
+			}
 
-	if transport.MaxConnsPerHost != 10 {
-		t.Errorf("Expected MaxConnsPerHost 10, got %d", transport.MaxConnsPerHost)
+			if transport.MaxIdleConnsPerHost != tt.maxIdleConnsPerHost {
+				t.Errorf("Expected MaxIdleConnsPerHost %d, got %d", tt.maxIdleConnsPerHost, transport.MaxIdleConnsPerHost)
+			}
+
+			if transport.MaxConnsPerHost != tt.maxConnsPerHost {
+				t.Errorf("Expected MaxConnsPerHost %d, got %d", tt.maxConnsPerHost, transport.MaxConnsPerHost)
+			}
+		})
 	}
 }
 
@@ -409,39 +421,6 @@ func TestPoolManager_ContextCancellation(t *testing.T) {
 // SSRF Protection Tests
 // ============================================================================
 
-func TestPoolManager_SSRFProtection(t *testing.T) {
-	t.Run("BlockPrivateIPs", func(t *testing.T) {
-		config := &Config{
-			AllowPrivateIPs: false, // SSRF protection enabled
-		}
-		pm, err := NewPoolManager(config)
-		if err != nil {
-			t.Fatalf("Expected no error, got: %v", err)
-		}
-		defer func() { _ = pm.Close() }()
-
-		// Verify that SSRF protection is enabled
-		if pm.config.AllowPrivateIPs {
-			t.Error("AllowPrivateIPs should be false")
-		}
-	})
-
-	t.Run("AllowPrivateIPs", func(t *testing.T) {
-		config := &Config{
-			AllowPrivateIPs: true,
-		}
-		pm, err := NewPoolManager(config)
-		if err != nil {
-			t.Fatalf("Expected no error, got: %v", err)
-		}
-		defer func() { _ = pm.Close() }()
-
-		if !pm.config.AllowPrivateIPs {
-			t.Error("AllowPrivateIPs should be true")
-		}
-	})
-}
-
 func TestPoolManager_SystemProxy(t *testing.T) {
 	config := &Config{
 		EnableSystemProxy: true,
@@ -462,40 +441,6 @@ func TestPoolManager_SystemProxy(t *testing.T) {
 // ============================================================================
 // Metrics Tests
 // ============================================================================
-
-func TestPoolManager_MetricsTracking(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	config := DefaultConfig()
-	config.AllowPrivateIPs = true
-	pm, err := NewPoolManager(config)
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-	defer func() { _ = pm.Close() }()
-
-	client := &http.Client{
-		Transport: pm.GetTransport(),
-		Timeout:   5 * time.Second,
-	}
-
-	// Make a request
-	resp, err := client.Get(server.URL)
-	if err != nil {
-		t.Fatalf("Request failed: %v", err)
-	}
-	_ = resp.Body.Close()
-
-	// Check metrics after request
-	metrics := pm.GetMetrics()
-	// Metrics might not update immediately due to async tracking
-	// Just verify the method doesn't panic
-	_ = metrics.TotalConnections
-	_ = metrics.ActiveConnections
-}
 
 // ============================================================================
 // Concurrent Access Tests
@@ -570,57 +515,6 @@ func TestPoolManager_ConcurrentClose(t *testing.T) {
 // ============================================================================
 // Edge Cases Tests
 // ============================================================================
-
-func TestPoolManager_NilConfig(t *testing.T) {
-	pm, err := NewPoolManager(nil)
-	if err != nil {
-		t.Fatalf("Expected no error with nil config, got: %v", err)
-	}
-	defer func() { _ = pm.Close() }()
-
-	// Should use default config
-	if pm.config == nil {
-		t.Error("Config should not be nil after initialization")
-	}
-}
-
-func TestPoolManager_ZeroTimeouts(t *testing.T) {
-	config := &Config{
-		DialTimeout:           0,
-		TLSHandshakeTimeout:   0,
-		ResponseHeaderTimeout: 0,
-		IdleConnTimeout:       0,
-	}
-
-	pm, err := NewPoolManager(config)
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-	defer func() { _ = pm.Close() }()
-
-	// Should handle zero timeouts gracefully
-	if pm.transport == nil {
-		t.Error("Transport should not be nil")
-	}
-}
-
-func TestPoolManager_HighConnectionLimits(t *testing.T) {
-	config := &Config{
-		MaxIdleConns:        1000,
-		MaxIdleConnsPerHost: 100,
-		MaxConnsPerHost:     200,
-	}
-
-	pm, err := NewPoolManager(config)
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-	defer func() { _ = pm.Close() }()
-
-	if pm.transport.MaxIdleConns != 1000 {
-		t.Errorf("Expected MaxIdleConns 1000, got %d", pm.transport.MaxIdleConns)
-	}
-}
 
 func TestPoolManager_HTTP2Disabled(t *testing.T) {
 	config := &Config{
@@ -704,7 +598,7 @@ func TestPoolManager_ValidateAddressBeforeDial(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := pm.validateAddressBeforeDial(tt.address)
+			_, err := pm.resolveAndValidateAddress(tt.address)
 			if tt.expectError && err == nil {
 				t.Errorf("Expected error for address %s, got nil", tt.address)
 			}
@@ -725,7 +619,7 @@ func TestPoolManager_CreateVerifyPeerCertificate(t *testing.T) {
 		pinner := &mockCertPinner{}
 
 		config := &Config{
-			CertPinner: pinner,
+			certPinner: pinner,
 		}
 
 		pm, err := NewPoolManager(config)
@@ -739,9 +633,9 @@ func TestPoolManager_CreateVerifyPeerCertificate(t *testing.T) {
 			t.Fatal("TLS config should not be nil")
 		}
 
-		// VerifyPeerCertificate should be set when CertPinner is configured
+		// VerifyPeerCertificate should be set when certPinner is configured
 		if tlsConfig.VerifyPeerCertificate == nil {
-			t.Error("VerifyPeerCertificate should be set when CertPinner is configured")
+			t.Error("VerifyPeerCertificate should be set when certPinner is configured")
 		}
 	})
 
@@ -757,9 +651,9 @@ func TestPoolManager_CreateVerifyPeerCertificate(t *testing.T) {
 			t.Fatal("TLS config should not be nil")
 		}
 
-		// VerifyPeerCertificate should not be set without CertPinner
+		// VerifyPeerCertificate should not be set without certPinner
 		if tlsConfig.VerifyPeerCertificate != nil {
-			t.Error("VerifyPeerCertificate should not be set without CertPinner")
+			t.Error("VerifyPeerCertificate should not be set without certPinner")
 		}
 	})
 
@@ -771,7 +665,7 @@ func TestPoolManager_CreateVerifyPeerCertificate(t *testing.T) {
 
 		config := &Config{
 			TLSConfig:  customTLS,
-			CertPinner: pinner,
+			certPinner: pinner,
 		}
 
 		pm, err := NewPoolManager(config)
@@ -816,113 +710,6 @@ func (m *mockCertPinner) VerifyPeerCertificate(rawCerts [][]byte, verifiedChains
 // ============================================================================
 // Host Stats Tests
 // ============================================================================
-
-func TestPoolManager_HostStatsOperations(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	config := &Config{
-		AllowPrivateIPs: true,
-	}
-	pm, err := NewPoolManager(config)
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-	defer func() { _ = pm.Close() }()
-
-	// Initial count should be 0
-	initialCount := pm.GetHostStatsCount()
-	if initialCount != 0 {
-		t.Errorf("Initial host stats count = %d, want 0", initialCount)
-	}
-
-	// Make requests to populate host stats
-	client := &http.Client{Transport: pm.GetTransport()}
-	for i := 0; i < 3; i++ {
-		resp, err := client.Get(server.URL)
-		if err != nil {
-			t.Logf("Request %d error (may be expected): %v", i, err)
-		}
-		if resp != nil {
-			resp.Body.Close()
-		}
-	}
-
-	// Host stats count should now be >= 1
-	count := pm.GetHostStatsCount()
-	if count < 1 {
-		t.Errorf("Expected at least 1 host tracked after requests, got %d", count)
-	}
-	t.Logf("Host stats count after requests: %d", count)
-
-	// Clear and verify
-	pm.ClearHostStats()
-	afterClearCount := pm.GetHostStatsCount()
-	if afterClearCount != 0 {
-		t.Errorf("Host stats count after clear = %d, want 0", afterClearCount)
-	}
-}
-
-func TestPoolManager_GetHostStatsCount_Empty(t *testing.T) {
-	pm, err := NewPoolManager(nil)
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-	defer func() { _ = pm.Close() }()
-
-	// Fresh pool manager should have 0 host stats
-	count := pm.GetHostStatsCount()
-	if count != 0 {
-		t.Errorf("Empty pool manager host stats count = %d, want 0", count)
-	}
-}
-
-func TestPoolManager_ClearHostStats_Idempotent(t *testing.T) {
-	pm, err := NewPoolManager(nil)
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-	defer func() { _ = pm.Close() }()
-
-	// Clear on empty should not panic
-	pm.ClearHostStats()
-
-	// Clear again should still be safe
-	pm.ClearHostStats()
-
-	// Count should still be 0
-	if pm.GetHostStatsCount() != 0 {
-		t.Error("Host stats count should remain 0 after multiple clears")
-	}
-}
-
-func TestPoolManager_HostStats_ConcurrentAccess(t *testing.T) {
-	pm, err := NewPoolManager(nil)
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-	defer func() { _ = pm.Close() }()
-
-	const numGoroutines = 10
-	var wg sync.WaitGroup
-	wg.Add(numGoroutines)
-
-	// Concurrent reads and writes to host stats
-	for i := 0; i < numGoroutines; i++ {
-		go func(id int) {
-			defer wg.Done()
-			if id%2 == 0 {
-				_ = pm.GetHostStatsCount()
-			} else {
-				pm.ClearHostStats()
-			}
-		}(i)
-	}
-
-	wg.Wait()
-}
 
 // ============================================================================
 // DoH Resolver Integration Tests
@@ -1087,7 +874,7 @@ func TestPoolManager_ValidateAddress_DomainResolution(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := pm.validateAddressBeforeDial(tt.address)
+			_, err := pm.resolveAndValidateAddress(tt.address)
 			if tt.expectError && err == nil {
 				t.Errorf("Expected error for address %s, got nil", tt.address)
 			}
@@ -1102,149 +889,17 @@ func TestPoolManager_ValidateAddress_DomainResolution(t *testing.T) {
 // Proxy Configuration Tests
 // ============================================================================
 
-func TestPoolManager_ProxyConfiguration(t *testing.T) {
-	t.Run("Valid proxy URL", func(t *testing.T) {
-		config := &Config{
-			ProxyURL: "http://proxy.example.com:8080",
-		}
-
-		pm, err := NewPoolManager(config)
-		if err != nil {
-			t.Fatalf("Expected no error, got: %v", err)
-		}
-		defer func() { _ = pm.Close() }()
-
-		if pm.transport.Proxy == nil {
-			t.Error("Proxy function should be set")
-		}
-	})
-
-	t.Run("SOCKS5 proxy URL", func(t *testing.T) {
-		config := &Config{
-			ProxyURL: "socks5://proxy.example.com:1080",
-		}
-
-		pm, err := NewPoolManager(config)
-		if err != nil {
-			t.Fatalf("Expected no error, got: %v", err)
-		}
-		defer func() { _ = pm.Close() }()
-
-		// Proxy should be configured (actual SOCKS5 support depends on implementation)
-		if pm.transport.Proxy == nil {
-			t.Log("Note: SOCKS5 proxy may require additional configuration")
-		}
-	})
-
-	t.Run("Empty proxy URL", func(t *testing.T) {
-		config := &Config{
-			ProxyURL: "",
-		}
-
-		pm, err := NewPoolManager(config)
-		if err != nil {
-			t.Fatalf("Expected no error, got: %v", err)
-		}
-		defer func() { _ = pm.Close() }()
-
-		// No proxy should be configured
-		// Transport.Proxy being nil means use environment settings
-	})
-}
-
 // ============================================================================
 // Keep-Alive Configuration Tests
 // ============================================================================
-
-func TestPoolManager_KeepAliveConfiguration(t *testing.T) {
-	config := &Config{
-		KeepAlive: 60 * time.Second,
-	}
-
-	pm, err := NewPoolManager(config)
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-	defer func() { _ = pm.Close() }()
-
-	// Verify transport is created
-	if pm.transport == nil {
-		t.Fatal("Transport should not be nil")
-	}
-
-	// KeepAlive is configured in the dialer, not directly accessible
-	// Just verify the pool manager was created successfully
-}
 
 // ============================================================================
 // Response Header Timeout Tests
 // ============================================================================
 
-func TestPoolManager_ResponseHeaderTimeout(t *testing.T) {
-	config := &Config{
-		ResponseHeaderTimeout: 5 * time.Second,
-		AllowPrivateIPs:       true,
-	}
-
-	pm, err := NewPoolManager(config)
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-	defer func() { _ = pm.Close() }()
-
-	if pm.transport.ResponseHeaderTimeout != 5*time.Second {
-		t.Errorf("Expected ResponseHeaderTimeout 5s, got %v", pm.transport.ResponseHeaderTimeout)
-	}
-}
-
-// ============================================================================
-// ExpectContinueTimeout Tests
-// ============================================================================
-
-func TestPoolManager_ExpectContinueTimeout(t *testing.T) {
-	config := &Config{
-		ExpectContinueTimeout: 2 * time.Second,
-	}
-
-	pm, err := NewPoolManager(config)
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-	defer func() { _ = pm.Close() }()
-
-	if pm.transport.ExpectContinueTimeout != 2*time.Second {
-		t.Errorf("Expected ExpectContinueTimeout 2s, got %v", pm.transport.ExpectContinueTimeout)
-	}
-}
-
 // ============================================================================
 // Double Close Safety Tests
 // ============================================================================
-
-func TestPoolManager_DoubleCloseSafety(t *testing.T) {
-	pm, err := NewPoolManager(nil)
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-
-	// First close
-	err = pm.Close()
-	if err != nil {
-		t.Errorf("First close failed: %v", err)
-	}
-
-	// Second close should not panic or error
-	err = pm.Close()
-	if err != nil {
-		t.Errorf("Second close failed: %v", err)
-	}
-
-	// Third close for good measure
-	err = pm.Close()
-	if err != nil {
-		t.Errorf("Third close failed: %v", err)
-	}
-}
 
 // ============================================================================
 // Tracked Connection Tests

@@ -20,6 +20,7 @@ Methods to access cookies returned by the server via `Set-Cookie` header:
 | Method | Description | Example |
 |--------|-------------|---------|
 | `result.Response.Cookies` | All response cookies | `for _, c := range result.Response.Cookies { ... }` |
+| `result.ResponseCookies()` | All response cookies (method) | `cookies := result.ResponseCookies()` |
 | `result.GetCookie(name)` | Get specific cookie | `cookie := result.GetCookie("session")` |
 | `result.HasCookie(name)` | Check if cookie exists | `if result.HasCookie("session") { ... }` |
 
@@ -30,6 +31,7 @@ Methods to inspect cookies that were sent in the request via `Cookie` header:
 | Method | Description | Example |
 |--------|-------------|---------|
 | `result.Request.Cookies` | All request cookies | `for _, c := range result.Request.Cookies { ... }` |
+| `result.RequestCookies()` | All request cookies (method) | `cookies := result.RequestCookies()` |
 | `result.GetRequestCookie(name)` | Get specific cookie | `cookie := result.GetRequestCookie("session")` |
 | `result.HasRequestCookie(name)` | Check if cookie was sent | `if result.HasRequestCookie("session") { ... }` |
 
@@ -45,7 +47,10 @@ import (
 )
 
 func main() {
-    client, _ := httpc.New()
+    client, err := httpc.New()
+    if err != nil {
+        log.Fatal(err)
+    }
     defer client.Close()
 
     // Send request with cookies
@@ -141,8 +146,11 @@ Enable cookie jar for automatic cookie persistence:
 
 ```go
 config := httpc.DefaultConfig()
-config.EnableCookies = true
-client, _ := httpc.New(config)
+config.Connection.EnableCookies = true
+client, err := httpc.New(config)
+if err != nil {
+    log.Fatal(err)
+}
 
 // First request - server sets cookies
 result1, _ := client.Get("https://api.example.com/login")
@@ -258,3 +266,89 @@ exists := result.HasRequestCookie("session")
 - [Request Inspection](./08_request-inspection.md) - Detailed guide on inspecting requests
 - [cookies_advanced.go](../examples/03_advanced/cookies_advanced.go) - More cookie examples
 - [Configuration](./02_configuration.md) - Cookie jar configuration
+
+## SessionManager Cookie API
+
+For cross-request cookie persistence without a cookie jar, use `SessionManager`:
+
+```go
+// Create a session manager
+session, err := httpc.NewSessionManager()
+if err != nil {
+    log.Fatal(err)
+}
+
+// Set cookies in the session
+session.SetCookie(&http.Cookie{Name: "session", Value: "abc123"})
+session.SetCookies([]*http.Cookie{
+    {Name: "token", Value: "xyz789"},
+})
+
+// Retrieve cookies
+allCookies := session.GetCookies()
+singleCookie := session.GetCookie("session")
+
+// Update session from a response
+session.UpdateFromResult(result)
+
+// Cookie security validation
+config := httpc.DefaultSessionConfig()
+config.CookieSecurity = httpc.StrictCookieSecurityConfig()
+session, err := httpc.NewSessionManager(config)
+
+// Remove cookies
+session.DeleteCookie("session")
+session.ClearCookies()
+```
+
+**SessionManager Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `SetCookie(cookie *http.Cookie) error` | Add or update a cookie |
+| `SetCookies(cookies []*http.Cookie) error` | Add multiple cookies |
+| `GetCookie(name string) *http.Cookie` | Get a specific cookie |
+| `GetCookies() []*http.Cookie` | Get all cookies |
+| `DeleteCookie(name string)` | Remove a cookie by name |
+| `ClearCookies()` | Remove all cookies |
+| `UpdateFromResult(result *Result)` | Update session cookies from a response |
+| `UpdateFromCookies(cookies []*http.Cookie)` | Update session from cookie list |
+| `SetCookieSecurity(config *CookieSecurityConfig)` | Set cookie security validation rules (use `httpc.DefaultCookieSecurityConfig()` or `httpc.StrictCookieSecurityConfig()`) |
+
+## DomainClient Cookie API
+
+`DomainClient` provides built-in cookie management through its session:
+
+```go
+dc, err := httpc.NewDomain("https://api.example.com")
+if err != nil {
+    log.Fatal(err)
+}
+
+// Set cookies (safe for concurrent use)
+dc.SetCookie(&http.Cookie{Name: "session", Value: "abc123"})
+
+// Set multiple cookies
+dc.SetCookies([]*http.Cookie{
+    {Name: "token", Value: "xyz789"},
+})
+
+// Retrieve cookies
+cookies := dc.GetCookies()
+cookie := dc.GetCookie("session")
+
+// Remove cookies
+dc.DeleteCookie("session")
+dc.ClearCookies()
+```
+
+**DomainClienter Cookie Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `SetCookie(cookie *http.Cookie) error` | Add or update a cookie |
+| `SetCookies(cookies []*http.Cookie) error` | Add multiple cookies |
+| `GetCookie(name string) *http.Cookie` | Get a specific cookie |
+| `GetCookies() []*http.Cookie` | Get all cookies |
+| `DeleteCookie(name string)` | Remove a cookie by name |
+| `ClearCookies()` | Remove all cookies |

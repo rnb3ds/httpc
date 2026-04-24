@@ -9,6 +9,73 @@ import (
 	"time"
 )
 
+// buildDNSWireResponse constructs a valid DNS wire-format response for testing.
+// Parameters:
+//   - id: transaction ID (2 bytes)
+//   - domain: question domain name (e.g., "example.com")
+//   - answers: slice of {recordType, ttl, rdata} for each answer
+func buildDNSWireResponse(id uint16, domain string, answers []struct {
+	recordType uint16
+	ttl        uint32
+	rdata      []byte
+}) []byte {
+	var buf []byte
+
+	// Header (12 bytes)
+	buf = append(buf, byte(id>>8), byte(id))                     // ID
+	buf = append(buf, 0x81, 0x80)                                // Flags: standard response, no error
+	buf = append(buf, 0x00, 0x01)                                // QDCOUNT = 1
+	buf = append(buf, byte(len(answers)>>8), byte(len(answers))) // ANCOUNT
+	buf = append(buf, 0x00, 0x00)                                // NSCOUNT = 0
+	buf = append(buf, 0x00, 0x00)                                // ARCOUNT = 0
+
+	// Question section
+	for _, label := range append(splitDomain(domain), "") {
+		if label == "" {
+			buf = append(buf, 0x00) // null terminator
+		} else {
+			buf = append(buf, byte(len(label)))
+			buf = append(buf, []byte(label)...)
+		}
+	}
+	buf = append(buf, 0x00, 0x01) // QTYPE = A
+	buf = append(buf, 0x00, 0x01) // QCLASS = IN
+
+	// Answer section
+	for _, ans := range answers {
+		// Name pointer to offset 12 (the question name)
+		buf = append(buf, 0xC0, 0x0C)
+		// TYPE
+		buf = append(buf, byte(ans.recordType>>8), byte(ans.recordType))
+		// CLASS = IN
+		buf = append(buf, 0x00, 0x01)
+		// TTL
+		buf = append(buf, byte(ans.ttl>>24), byte(ans.ttl>>16), byte(ans.ttl>>8), byte(ans.ttl))
+		// RDLENGTH
+		buf = append(buf, byte(len(ans.rdata)>>8), byte(len(ans.rdata)))
+		// RDATA
+		buf = append(buf, ans.rdata...)
+	}
+
+	return buf
+}
+
+// splitDomain splits "example.com" into ["example", "com"].
+func splitDomain(domain string) []string {
+	var labels []string
+	start := 0
+	for i := 0; i < len(domain); i++ {
+		if domain[i] == '.' {
+			labels = append(labels, domain[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(domain) {
+		labels = append(labels, domain[start:])
+	}
+	return labels
+}
+
 func TestParseDomain(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -143,6 +210,7 @@ func TestDoHResolver_CacheExpiration(t *testing.T) {
 
 func TestDoHResolver_CacheSize(t *testing.T) {
 	resolver := NewDoHResolver(nil, 5*time.Minute)
+	defer resolver.Close()
 
 	// Initial cache size should be 0
 	if size := resolver.CacheSize(); size != 0 {
@@ -164,6 +232,28 @@ func TestDoHResolver_CacheSize(t *testing.T) {
 
 	if size := resolver.CacheSize(); size != 0 {
 		t.Errorf("Cache size after clear = %d, want 0", size)
+	}
+
+	// Populate cache with multiple entries to verify multi-host tracking
+	hosts := []string{
+		"www.google.com",
+		"www.example.com",
+		"www.cloudflare.com",
+		"www.github.com",
+		"www.microsoft.com",
+	}
+
+	for _, host := range hosts {
+		_, _ = resolver.LookupIPAddr(ctx, host)
+	}
+
+	size = resolver.CacheSize()
+	t.Logf("Cache size after %d lookups: %d", len(hosts), size)
+
+	// Clear cache and verify counter resets
+	resolver.ClearCache()
+	if resolver.CacheSize() != 0 {
+		t.Errorf("Cache size after clear = %d, want 0", resolver.CacheSize())
 	}
 }
 
@@ -427,6 +517,201 @@ func TestParseWireFormatResponse_Errors(t *testing.T) {
 }
 
 // ============================================================================
+// parseWireFormatResponse Unit Tests - Success Cases
+// ============================================================================
+
+// TestParseWireFormatResponse_Success verifies successful parsing of a valid DNS
+// wire-format response with a single A record answer.
+func TestParseWireFormatResponse_Success(t *testing.T) {
+	r := &DoHResolver{}
+
+	// Construct DNS wire-format response manually:
+	// Header: ID=0x1234, Flags=0x8180, QDCOUNT=1, ANCOUNT=1, NSCOUNT=0, ARCOUNT=0
+	// Question: "example.com", type A, class IN
+	// Answer: name pointer, type A, class IN, TTL=300, rdlen=4, rdata=93.184.216.34
+	body := []byte{
+		// Header (12 bytes)
+		0x12, 0x34, // ID
+		0x81, 0x80, // Flags: standard query response, no error
+		0x00, 0x01, // QDCOUNT = 1
+		0x00, 0x01, // ANCOUNT = 1
+		0x00, 0x00, // NSCOUNT = 0
+		0x00, 0x00, // ARCOUNT = 0
+		// Question section
+		0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e', // label "example"
+		0x03, 'c', 'o', 'm', // label "com"
+		0x00,       // null terminator
+		0x00, 0x01, // QTYPE = A (1)
+		0x00, 0x01, // QCLASS = IN (1)
+		// Answer section
+		0xC0, 0x0C, // name: compression pointer to offset 12
+		0x00, 0x01, // TYPE = A (1)
+		0x00, 0x01, // CLASS = IN (1)
+		0x00, 0x00, 0x01, 0x2C, // TTL = 300
+		0x00, 0x04, // RDLENGTH = 4
+		0x5D, 0xB8, 0xD8, 0x22, // RDATA = 93.184.216.34
+	}
+
+	ips, err := r.parseWireFormatResponse(body, "example.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ips) != 1 {
+		t.Fatalf("expected 1 IP, got %d", len(ips))
+	}
+	expected := net.IP([]byte{93, 184, 216, 34})
+	if !ips[0].IP.Equal(expected) {
+		t.Errorf("IP = %v, want %v", ips[0].IP, expected)
+	}
+}
+
+// TestParseWireFormatResponse_MultipleAnswers verifies parsing of a DNS response
+// with multiple A record answers.
+func TestParseWireFormatResponse_MultipleAnswers(t *testing.T) {
+	r := &DoHResolver{}
+
+	answers := []struct {
+		recordType uint16
+		ttl        uint32
+		rdata      []byte
+	}{
+		{1, 300, []byte{1, 1, 1, 1}}, // 1.1.1.1
+		{1, 300, []byte{8, 8, 8, 8}}, // 8.8.8.8
+	}
+	body := buildDNSWireResponse(0x0001, "example.com", answers)
+
+	ips, err := r.parseWireFormatResponse(body, "example.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ips) != 2 {
+		t.Fatalf("expected 2 IPs, got %d", len(ips))
+	}
+	if !ips[0].IP.Equal(net.IP([]byte{1, 1, 1, 1})) {
+		t.Errorf("IP[0] = %v, want 1.1.1.1", ips[0].IP)
+	}
+	if !ips[1].IP.Equal(net.IP([]byte{8, 8, 8, 8})) {
+		t.Errorf("IP[1] = %v, want 8.8.8.8", ips[1].IP)
+	}
+}
+
+// TestParseWireFormatResponse_AAAARecord verifies parsing of a AAAA (IPv6) record.
+func TestParseWireFormatResponse_AAAARecord(t *testing.T) {
+	r := &DoHResolver{}
+
+	ipv6 := net.ParseIP("2001:4860:4860::8888")
+	answers := []struct {
+		recordType uint16
+		ttl        uint32
+		rdata      []byte
+	}{
+		{28, 300, ipv6.To16()}, // Type AAAA
+	}
+	body := buildDNSWireResponse(0x0001, "example.com", answers)
+
+	ips, err := r.parseWireFormatResponse(body, "example.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ips) != 1 {
+		t.Fatalf("expected 1 IP, got %d", len(ips))
+	}
+	if !ips[0].IP.Equal(ipv6) {
+		t.Errorf("IP = %v, want %v", ips[0].IP, ipv6)
+	}
+}
+
+// TestParseWireFormatResponse_TruncatedAnswerSection verifies that a truncated
+// response body where offset+10 exceeds len(body) returns no IPs found error.
+func TestParseWireFormatResponse_TruncatedAnswerSection(t *testing.T) {
+	r := &DoHResolver{}
+
+	// Build a valid header with ANCOUNT=1 but truncate the body before the answer
+	body := []byte{
+		0x00, 0x01, // ID
+		0x81, 0x80, // Flags
+		0x00, 0x01, // QDCOUNT=1
+		0x00, 0x01, // ANCOUNT=1
+		0x00, 0x00, // NSCOUNT=0
+		0x00, 0x00, // ARCOUNT=0
+		// Question: example.com
+		0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+		0x03, 'c', 'o', 'm',
+		0x00,       // null terminator
+		0x00, 0x01, // QTYPE=A
+		0x00, 0x01, // QCLASS=IN
+		// Answer starts here but is truncated — only name pointer, no TYPE/CLASS/TTL/RDLENGTH
+		0xC0, 0x0C, // name pointer
+		// Missing remaining 10 bytes (TYPE, CLASS, TTL, RDLENGTH)
+	}
+
+	_, err := r.parseWireFormatResponse(body, "example.com")
+	if err == nil {
+		t.Error("expected error for truncated answer section")
+	}
+}
+
+// TestParseWireFormatResponse_TruncatedRData verifies that a response where the
+// rdata extends beyond the body boundary returns no IPs found error.
+func TestParseWireFormatResponse_TruncatedRData(t *testing.T) {
+	r := &DoHResolver{}
+
+	body := []byte{
+		0x00, 0x01, // ID
+		0x81, 0x80, // Flags
+		0x00, 0x01, // QDCOUNT=1
+		0x00, 0x01, // ANCOUNT=1
+		0x00, 0x00, // NSCOUNT=0
+		0x00, 0x00, // ARCOUNT=0
+		// Question: example.com
+		0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+		0x03, 'c', 'o', 'm',
+		0x00,       // null terminator
+		0x00, 0x01, // QTYPE=A
+		0x00, 0x01, // QCLASS=IN
+		// Answer
+		0xC0, 0x0C, // name pointer
+		0x00, 0x01, // TYPE=A
+		0x00, 0x01, // CLASS=IN
+		0x00, 0x00, 0x01, 0x2C, // TTL=300
+		0x00, 0x04, // RDLENGTH=4
+		// RDATA is missing (should be 4 bytes) — truncated
+	}
+
+	_, err := r.parseWireFormatResponse(body, "example.com")
+	if err == nil {
+		t.Error("expected error for truncated rdata")
+	}
+}
+
+// TestParseWireFormatResponse_SkipsNonIPRecords verifies that non-A/AAAA records
+// (e.g., CNAME type 5) are skipped without error, and only IP records are returned.
+func TestParseWireFormatResponse_SkipsNonIPRecords(t *testing.T) {
+	r := &DoHResolver{}
+
+	answers := []struct {
+		recordType uint16
+		ttl        uint32
+		rdata      []byte
+	}{
+		{5, 300, []byte{'t', 'e', 's', 't'}}, // Type CNAME (should be skipped)
+		{1, 300, []byte{1, 2, 3, 4}},         // Type A
+	}
+	body := buildDNSWireResponse(0x0001, "example.com", answers)
+
+	ips, err := r.parseWireFormatResponse(body, "example.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ips) != 1 {
+		t.Fatalf("expected 1 IP (CNAME skipped), got %d", len(ips))
+	}
+	if !ips[0].IP.Equal(net.IP([]byte{1, 2, 3, 4})) {
+		t.Errorf("IP = %v, want 1.2.3.4", ips[0].IP)
+	}
+}
+
+// ============================================================================
 // parseJSONResponse Unit Tests - Error Cases
 // ============================================================================
 
@@ -495,41 +780,6 @@ func TestParseJSONResponse_Errors(t *testing.T) {
 				t.Error("Expected at least one IP address")
 			}
 		})
-	}
-}
-
-// ============================================================================
-// Cache Limit Tests
-// ============================================================================
-
-func TestDoHResolver_CacheLimit(t *testing.T) {
-	// Create resolver with a custom configuration
-	resolver := NewDoHResolver(nil, 5*time.Minute)
-	defer resolver.Close()
-
-	ctx := context.Background()
-
-	// Populate cache with multiple entries
-	hosts := []string{
-		"www.google.com",
-		"www.example.com",
-		"www.cloudflare.com",
-		"www.github.com",
-		"www.microsoft.com",
-	}
-
-	for _, host := range hosts {
-		_, _ = resolver.LookupIPAddr(ctx, host)
-	}
-
-	// Verify cache has entries
-	size := resolver.CacheSize()
-	t.Logf("Cache size after %d lookups: %d", len(hosts), size)
-
-	// Clear cache and verify
-	resolver.ClearCache()
-	if resolver.CacheSize() != 0 {
-		t.Errorf("Cache size after clear = %d, want 0", resolver.CacheSize())
 	}
 }
 

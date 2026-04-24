@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 
@@ -13,7 +14,7 @@ import (
 // For GET/POST/PUT/DELETE basics, see 01_quickstart/basic_usage.go
 
 func main() {
-	fmt.Println("=== HTTP Methods Examples ===\n")
+	fmt.Println("=== HTTP Methods Examples ===")
 
 	client, err := httpc.New()
 	if err != nil {
@@ -30,7 +31,10 @@ func main() {
 	// 3. PATCH - Partial update
 	demonstratePATCH(client)
 
-	// 4. Method comparison
+	// 4. Generic Request() method
+	demonstrateGenericRequest(client)
+
+	// 5. Method comparison
 	demonstrateMethodComparison()
 
 	fmt.Println("\n=== All Examples Completed ===")
@@ -55,7 +59,7 @@ func demonstrateHEAD(client httpc.Client) {
 	fmt.Println("  - Check if resource exists (404 vs 200)")
 	fmt.Println("  - Get file size before downloading")
 	fmt.Println("  - Check Last-Modified for caching")
-	fmt.Println("  - Verify resource metadata without transfer overhead\n")
+	fmt.Println("  - Verify resource metadata without transfer overhead")
 }
 
 // demonstrateOPTIONS shows OPTIONS request usage
@@ -79,7 +83,7 @@ func demonstrateOPTIONS(client httpc.Client) {
 	fmt.Println("\nUse cases:")
 	fmt.Println("  - CORS preflight requests")
 	fmt.Println("  - Discover API capabilities")
-	fmt.Println("  - Check allowed methods before making actual request\n")
+	fmt.Println("  - Check allowed methods before making actual request")
 }
 
 // demonstratePATCH shows PATCH request usage
@@ -113,7 +117,41 @@ func demonstratePATCH(client httpc.Client) {
 	fmt.Println("\nPATCH vs PUT:")
 	fmt.Println("  - PATCH: Update only specified fields")
 	fmt.Println("  - PUT: Replace entire resource")
-	fmt.Println("  - Use PATCH for partial updates to reduce payload\n")
+	fmt.Println("  - Use PATCH for partial updates to reduce payload")
+}
+
+// demonstrateGenericRequest shows the generic Request() method
+func demonstrateGenericRequest(client httpc.Client) {
+	fmt.Println("--- Example 4: Generic Request() Method ---")
+
+	ctx := context.Background()
+
+	// The generic Request() method accepts method, URL, and options
+	// Useful when the HTTP method is dynamic (e.g., from config)
+	methods := []struct {
+		method string
+		url    string
+	}{
+		{"GET", "https://httpbin.org/get"},
+		{"POST", "https://httpbin.org/post"},
+		{"PUT", "https://httpbin.org/put"},
+	}
+
+	for _, m := range methods {
+		resp, err := client.Request(ctx, m.method, m.url,
+			httpc.WithJSON(map[string]string{"key": "value"}),
+		)
+		if err != nil {
+			log.Printf("%s error: %v\n", m.method, err)
+			continue
+		}
+		fmt.Printf("  %s %s -> %d\n", m.method, m.url, resp.StatusCode())
+	}
+
+	fmt.Println("\nUse Request() when:")
+	fmt.Println("  - HTTP method is determined at runtime")
+	fmt.Println("  - Building generic API wrappers")
+	fmt.Println("  - Implementing request builders or proxies")
 }
 
 // demonstrateMethodComparison shows method comparison table

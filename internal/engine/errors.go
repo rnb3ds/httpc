@@ -12,6 +12,17 @@ import (
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
+// retryableStatusCodes is the single source of truth for HTTP status codes
+// that warrant automatic retry. Used by both retry.go and errors.go.
+var retryableStatusCodes = map[int]bool{
+	408: true, // Request Timeout
+	429: true, // Too Many Requests
+	500: true, // Internal Server Error
+	502: true, // Bad Gateway
+	503: true, // Service Unavailable
+	504: true, // Gateway Timeout
+}
+
 // containsFold reports whether substr is contained within s, case-insensitively.
 // This is more efficient than strings.Contains(strings.ToLower(s), substr)
 // because it performs ASCII-only case folding without allocating a new string.
@@ -23,19 +34,19 @@ func containsFold(s, substr string) bool {
 		return false
 	}
 
-	// Convert substr to lowercase once
-	substrLower := strings.ToLower(substr)
-
-	// Sliding window comparison
+	// Sliding window comparison with ASCII case folding (zero allocation)
 	for i := 0; i <= len(s)-len(substr); i++ {
 		match := true
 		for j := 0; j < len(substr); j++ {
-			c := s[i+j]
-			// ASCII lowercase: 'A'-'Z' -> 'a'-'z'
-			if c >= 'A' && c <= 'Z' {
-				c += 32
+			sc := s[i+j]
+			tc := substr[j]
+			if sc >= 'A' && sc <= 'Z' {
+				sc += 32
 			}
-			if byte(c) != substrLower[j] {
+			if tc >= 'A' && tc <= 'Z' {
+				tc += 32
+			}
+			if sc != tc {
 				match = false
 				break
 			}
@@ -84,6 +95,10 @@ func (e *ClientError) Error() string {
 		baseMsg = e.Message
 	}
 
+	if e.Cause != nil {
+		baseMsg = fmt.Sprintf("%s: %v", baseMsg, e.Cause)
+	}
+
 	if e.Attempts > 0 {
 		return fmt.Sprintf("%s (attempt %d)", baseMsg, e.Attempts)
 	}
@@ -93,6 +108,13 @@ func (e *ClientError) Error() string {
 
 func (e *ClientError) Unwrap() error {
 	return e.Cause
+}
+
+// WithType returns a copy of the error with the specified type set.
+func (e *ClientError) WithType(t ErrorType) *ClientError {
+	cp := *e
+	cp.Type = t
+	return &cp
 }
 
 // IsRetryable determines if the error is retryable based on its type and cause.
@@ -158,10 +180,13 @@ func (e *ClientError) isRetryableNetworkError() bool {
 		return e.isRetryableOpError(opErr)
 	}
 
-	// Check for generic net.Error
+	// Check for generic net.Error — network errors with net.Error causes
+	// are retryable by default (transient network failures like server
+	// connection close, EOF, etc.). Context errors are handled by the
+	// isContextError check in IsRetryable().
 	var netErr net.Error
 	if errors.As(e.Cause, &netErr) {
-		return netErr.Timeout()
+		return true
 	}
 
 	// Check error message patterns
@@ -216,14 +241,14 @@ func isRetryableSyscallError(errno syscall.Errno) bool {
 }
 
 // isRetryableNetworkMessage checks if an error message indicates a retryable network condition.
+// Uses containsFold for zero-allocation case-insensitive matching.
 func isRetryableNetworkMessage(errMsg string) bool {
-	msg := strings.ToLower(errMsg)
-	return strings.Contains(msg, "connection reset") ||
-		strings.Contains(msg, "eof") ||
-		strings.Contains(msg, "connection closed") ||
-		strings.Contains(msg, "broken pipe") ||
-		strings.Contains(msg, "network error") ||
-		strings.Contains(msg, "transport failed")
+	return containsFold(errMsg, "connection reset") ||
+		containsFold(errMsg, "eof") ||
+		containsFold(errMsg, "connection closed") ||
+		containsFold(errMsg, "broken pipe") ||
+		containsFold(errMsg, "network error") ||
+		containsFold(errMsg, "transport failed")
 }
 
 // isRetryableResponseReadError determines if a response read error is retryable.
@@ -236,15 +261,23 @@ func (e *ClientError) isRetryableResponseReadError() bool {
 		return true
 	}
 	errMsg := e.Cause.Error()
-	return strings.Contains(errMsg, "EOF") || strings.Contains(errMsg, "connection") || strings.Contains(errMsg, "timeout")
+	return containsFold(errMsg, "eof") || containsFold(errMsg, "connection") || containsFold(errMsg, "timeout")
 }
 
 // isRetryableHTTPStatus checks if HTTP status code indicates a retryable condition.
 func (e *ClientError) isRetryableHTTPStatus() bool {
-	msg := e.Message
-	return strings.Contains(msg, "HTTP 429") || strings.Contains(msg, "HTTP 500") ||
-		strings.Contains(msg, "HTTP 502") || strings.Contains(msg, "HTTP 503") ||
-		strings.Contains(msg, "HTTP 504")
+	if retryableStatusCodes[e.StatusCode] {
+		return true
+	}
+	// Fallback: extract status code from message when StatusCode is not set
+	if e.StatusCode == 0 {
+		for code := range retryableStatusCodes {
+			if strings.Contains(e.Message, fmt.Sprintf("HTTP %d", code)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (e *ClientError) Code() string {
@@ -276,7 +309,7 @@ func (e *ClientError) Code() string {
 	}
 }
 
-func ClassifyError(err error, reqURL, method string, attempts int) *ClientError {
+func classifyError(err error, reqURL, method string, attempts int) *ClientError {
 	if err == nil {
 		return nil
 	}
@@ -289,6 +322,18 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 		URL:      sanitizedURL,
 		Method:   method,
 		Attempts: attempts,
+	}
+
+	// Return a copy for already-classified errors to prevent shared-pointer mutation.
+	var existingErr *ClientError
+	if errors.As(err, &existingErr) {
+		cp := *existingErr
+		cp.URL = sanitizedURL
+		cp.Method = method
+		if attempts > 0 {
+			cp.Attempts = attempts
+		}
+		return &cp
 	}
 
 	if errors.Is(err, context.Canceled) {
@@ -315,6 +360,13 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 			clientErr.Type = ErrorTypeValidation
 			clientErr.Message = "URL validation failed"
 			return clientErr
+		}
+		// Unwrap *url.Error to classify the actual underlying error.
+		// *url.Error implements net.Error, which would match the net.Error
+		// check below and produce a generic "network error occurred" message.
+		// By unwrapping here, we get to the real error type.
+		if urlErr.Err != nil {
+			err = urlErr.Err
 		}
 	}
 
@@ -363,6 +415,15 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 	case containsFold(errMsg, "context deadline exceeded"):
 		clientErr.Type = ErrorTypeTimeout
 		clientErr.Message = "request context deadline exceeded"
+	case containsFold(errMsg, "stopped after") && containsFold(errMsg, "redirect"):
+		clientErr.Type = ErrorTypeValidation
+		clientErr.Message = "redirect limit exceeded"
+	case containsFold(errMsg, "circular redirect"):
+		clientErr.Type = ErrorTypeValidation
+		clientErr.Message = "circular redirect detected"
+	case containsFold(errMsg, "redirect blocked"):
+		clientErr.Type = ErrorTypeValidation
+		clientErr.Message = "redirect blocked by policy"
 	case containsFold(errMsg, "http2") && containsFold(errMsg, "invalid"):
 		clientErr.Type = ErrorTypeValidation
 		clientErr.Message = "invalid HTTP/2 request header"
@@ -370,7 +431,7 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 		clientErr.Type = ErrorTypeNetwork
 		clientErr.Message = "connection refused by server"
 	case containsFold(errMsg, "no such host"):
-		clientErr.Type = ErrorTypeNetwork
+		clientErr.Type = ErrorTypeDNS
 		clientErr.Message = "DNS resolution failed"
 	case containsFold(errMsg, "connection reset"):
 		clientErr.Type = ErrorTypeNetwork
@@ -413,6 +474,7 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 		clientErr.Message = "URL validation failed"
 	case containsFold(errMsg, "http 4") || containsFold(errMsg, "http 5"):
 		clientErr.Type = ErrorTypeHTTP
+		clientErr.StatusCode = extractStatusCode(errMsg)
 	case containsFold(errMsg, "timeout") || containsFold(errMsg, "timed out"):
 		if !containsFold(errMsg, "context") {
 			clientErr.Type = ErrorTypeTimeout
@@ -420,5 +482,37 @@ func ClassifyError(err error, reqURL, method string, attempts int) *ClientError 
 		}
 	}
 
+	// Fallback: if we unwrapped a *url.Error but the inner error didn't match
+	// any specific type or string pattern, classify as network error.
+	// This handles cases like io.EOF from server connection close where
+	// the inner error is not a typed net error but the outer *url.Error
+	// (which implements net.Error) indicates a network-level failure.
+	if clientErr.Type == ErrorTypeUnknown && urlErr != nil {
+		clientErr.Type = ErrorTypeNetwork
+		clientErr.Message = "network error occurred"
+	}
+
 	return clientErr
 }
+
+// extractStatusCode extracts a 3-digit HTTP status code from an error message.
+// Uses direct byte comparison instead of strings.ToLower to avoid allocation.
+func extractStatusCode(msg string) int {
+	for i := 0; i <= len(msg)-3; i++ {
+		c := msg[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 32
+		}
+		if c >= '4' && c <= '5' && isDigit(msg[i+1]) && isDigit(msg[i+2]) {
+			code := int(c-'0')*100 + int(msg[i+1]-'0')*10 + int(msg[i+2]-'0')
+			if code >= 400 && code <= 599 {
+				if i > 0 && msg[i-1] == ' ' {
+					return code
+				}
+			}
+		}
+	}
+	return 0
+}
+
+func isDigit(b byte) bool { return b >= '0' && b <= '9' }

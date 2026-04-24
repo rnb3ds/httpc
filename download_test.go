@@ -1,11 +1,13 @@
 package httpc
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +28,7 @@ func TestDownload_Basic(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -58,6 +60,39 @@ func TestDownload_Basic(t *testing.T) {
 	}
 }
 
+func TestDownload_EmptyFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Length", "0")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.Security.AllowPrivateIPs = true
+	client, _ := New(config)
+	defer client.Close()
+
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "empty.txt")
+
+	result, err := client.DownloadFile(server.URL, filePath)
+	if err != nil {
+		t.Fatalf("Download of empty file failed: %v", err)
+	}
+	if result.BytesWritten != 0 {
+		t.Errorf("Expected 0 bytes, got %d", result.BytesWritten)
+	}
+
+	fileInfo, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatalf("File not created: %v", err)
+	}
+	if fileInfo.Size() != 0 {
+		t.Errorf("File should be empty, got %d bytes", fileInfo.Size())
+	}
+}
+
 func TestDownload_LargeFile(t *testing.T) {
 	largeContent := []byte(strings.Repeat("x", 1024*1024)) // 1MB
 
@@ -70,7 +105,7 @@ func TestDownload_LargeFile(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -101,7 +136,7 @@ func TestDownload_WithProgress(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -141,8 +176,8 @@ func TestDownload_WithTimeout(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
-	config.Timeout = 100 * time.Millisecond
+	config.Security.AllowPrivateIPs = true
+	config.Timeouts.Request = 100 * time.Millisecond
 	client, _ := New(config)
 	defer client.Close()
 
@@ -166,7 +201,7 @@ func TestDownload_ResumeNotSupported(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -212,7 +247,7 @@ func TestDownload_PartialContent(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -245,7 +280,7 @@ func TestDownload_InvalidPath(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -265,7 +300,7 @@ func TestDownload_FileAlreadyExists(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -304,7 +339,7 @@ func TestDownload_HTTPError(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -326,7 +361,7 @@ func TestDownload_CreateDirectories(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -357,7 +392,7 @@ func TestResult_SaveToFile(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultConfig()
-	config.AllowPrivateIPs = true
+	config.Security.AllowPrivateIPs = true
 	client, _ := New(config)
 	defer client.Close()
 
@@ -461,7 +496,7 @@ func TestDownload_PackageLevel(t *testing.T) {
 func TestDownload_EdgeCases(t *testing.T) {
 	t.Run("EmptyFilePath", func(t *testing.T) {
 		config := DefaultConfig()
-		config.AllowPrivateIPs = true
+		config.Security.AllowPrivateIPs = true
 		client, _ := New(config)
 		defer client.Close()
 
@@ -473,7 +508,7 @@ func TestDownload_EdgeCases(t *testing.T) {
 
 	t.Run("NilOptions", func(t *testing.T) {
 		config := DefaultConfig()
-		config.AllowPrivateIPs = true
+		config.Security.AllowPrivateIPs = true
 		client, _ := New(config)
 		defer client.Close()
 
@@ -655,8 +690,37 @@ func TestIsSystemPath(t *testing.T) {
 		path     string
 		isSystem bool
 	}{
-		// These tests are platform-dependent, so we check behavior not specific paths
 		{"Temp directory", os.TempDir(), false},
+		{"Relative path", "myapp/data/file.txt", false},
+		{"Dot path", "./config.yaml", false},
+	}
+
+	if runtime.GOOS == "windows" {
+		tests = append(tests,
+			[]struct {
+				name     string
+				path     string
+				isSystem bool
+			}{
+				{"Windows system32", `C:\Windows\System32\cmd.exe`, true},
+				{"Windows system dir", `C:\Windows\Fonts\arial.ttf`, true},
+				{"Windows user path", `C:\Users\user\file.txt`, false},
+				{"Windows program files", `C:\Program Files\App\app.exe`, true},
+			}...,
+		)
+	} else {
+		tests = append(tests,
+			[]struct {
+				name     string
+				path     string
+				isSystem bool
+			}{
+				{"Unix system bin", "/usr/bin/ls", true},
+				{"Unix system lib", "/lib/x86_64-linux-gnu/libc.so", true},
+				{"Unix user path", "/home/user/file.txt", false},
+				{"Unix etc", "/etc/hosts", true},
+			}...,
+		)
 	}
 
 	for _, tt := range tests {
@@ -666,5 +730,71 @@ func TestIsSystemPath(t *testing.T) {
 				t.Errorf("isSystemPath(%q) = %v, want %v", tt.path, result, tt.isSystem)
 			}
 		})
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Package-Level Download Functions
+// ----------------------------------------------------------------------------
+
+func TestPackageLevel_DownloadFileWithContext(t *testing.T) {
+	config := DefaultConfig()
+	config.Security.AllowPrivateIPs = true
+	client, _ := New(config)
+	_ = SetDefaultClient(client)
+	defer CloseDefaultClient()
+
+	content := []byte("download with context test")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write(content)
+	}))
+	defer server.Close()
+
+	filePath := filepath.Join(t.TempDir(), "ctx_test.txt")
+	result, err := DownloadFileWithContext(context.Background(), server.URL, filePath)
+	if err != nil {
+		t.Fatalf("DownloadFileWithContext failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result should not be nil")
+	}
+
+	data, _ := os.ReadFile(filePath)
+	if string(data) != string(content) {
+		t.Errorf("file content mismatch")
+	}
+}
+
+func TestPackageLevel_DownloadWithOptionsWithContext(t *testing.T) {
+	config := DefaultConfig()
+	config.Security.AllowPrivateIPs = true
+	client, _ := New(config)
+	_ = SetDefaultClient(client)
+	defer CloseDefaultClient()
+
+	content := []byte("download with options and context test")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write(content)
+	}))
+	defer server.Close()
+
+	filePath := filepath.Join(t.TempDir(), "ctx_opts_test.txt")
+	opts := DefaultDownloadConfig()
+	opts.FilePath = filePath
+
+	result, err := DownloadWithOptionsWithContext(context.Background(), server.URL, opts)
+	if err != nil {
+		t.Fatalf("DownloadWithOptionsWithContext failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result should not be nil")
+	}
+}
+
+func TestCalculateSpeed_ZeroDuration(t *testing.T) {
+	if calculateSpeed(100, 0) != 0 {
+		t.Error("calculateSpeed with zero duration should return 0")
 	}
 }
