@@ -15,7 +15,6 @@ import (
 	"sync"
 
 	"github.com/cybergodev/httpc/internal/types"
-	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // stringsReaderPool reduces allocations for strings.Reader used in request bodies
@@ -201,9 +200,10 @@ func getPooledBytesReader(b []byte) io.Reader {
 // urlCache provides a thread-safe LRU-like cache for parsed URLs
 // to avoid expensive url.Parse() calls for repeated URLs.
 //
-// SECURITY: The cache uses a sanitized cache key (without sensitive query parameters)
-// to prevent credential leakage. The actual parsed URL (with all parameters) is still
-// returned to the caller, but the cache key excludes sensitive data.
+// SECURITY: The cache uses the raw URL as the key to prevent collisions
+// when URLs differ only in sensitive query parameter values (e.g., ?token=A vs ?token=B).
+// The cache is internal and never logged — sensitive data stays in memory only.
+// Callers always receive a clone of the cached entry to prevent mutation.
 type urlCache struct {
 	mu      sync.RWMutex
 	entries map[string]*url.URL
@@ -218,54 +218,14 @@ var globalURLCache = &urlCache{
 	maxSize: 1024,
 }
 
-// sanitizeCacheKey creates a cache-safe version of the URL by removing sensitive
-// query parameters. This prevents credentials from being stored in cache keys.
-func sanitizeCacheKey(rawURL string) string {
-	// Fast path: check if URL contains query parameters
-	if !strings.Contains(rawURL, "?") {
-		return rawURL // No query params, safe to use as-is
-	}
-
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return rawURL // Fallback to original on parse error
-	}
-
-	// Check if any sensitive params exist
-	query := parsed.Query()
-	hasSensitive := false
-	for key := range query {
-		if validation.IsSensitiveQueryParam(key) {
-			hasSensitive = true
-			break
-		}
-	}
-
-	if !hasSensitive {
-		return rawURL // No sensitive params, safe to use as-is
-	}
-
-	// Clone URL and remove sensitive params
-	cloned := cloneURL(parsed)
-	newQuery := cloned.Query()
-	for key := range newQuery {
-		if validation.IsSensitiveQueryParam(key) {
-			newQuery.Set(key, "[REDACTED]")
-		}
-	}
-	cloned.RawQuery = newQuery.Encode()
-	return cloned.String()
-}
-
 // Get retrieves a parsed URL from cache or parses and caches it.
-// SECURITY: Uses sanitized cache key to prevent credential leakage.
+// SECURITY: Uses raw URL as cache key. The cache is internal-only and never exposed
+// to logs or external systems — sensitive data remains in process memory.
 func (c *urlCache) Get(rawURL string) (*url.URL, error) {
-	// SECURITY: Use sanitized key for cache lookup
-	cacheKey := sanitizeCacheKey(rawURL)
 
 	// Fast path: read lock for cache hit
 	c.mu.RLock()
-	if parsed, ok := c.entries[cacheKey]; ok {
+	if parsed, ok := c.entries[rawURL]; ok {
 		c.mu.RUnlock()
 		// SECURITY: Return a clone to prevent modification of cached entry
 		return cloneURL(parsed), nil
@@ -277,7 +237,7 @@ func (c *urlCache) Get(rawURL string) (*url.URL, error) {
 	defer c.mu.Unlock()
 
 	// Double-check after acquiring write lock
-	if parsed, ok := c.entries[cacheKey]; ok {
+	if parsed, ok := c.entries[rawURL]; ok {
 		return cloneURL(parsed), nil
 	}
 
@@ -302,9 +262,13 @@ func (c *urlCache) Get(rawURL string) (*url.URL, error) {
 		}
 	}
 
+	// SECURITY: Strip credentials before caching to prevent
+	// sensitive data persisting in memory indefinitely.
+	parsed.User = nil
+
 	// Store the parsed URL directly — callers always receive a clone
-	c.entries[cacheKey] = parsed
-	c.keys = append(c.keys, cacheKey)
+	c.entries[rawURL] = parsed
+	c.keys = append(c.keys, rawURL)
 
 	return cloneURL(parsed), nil
 }
@@ -327,15 +291,8 @@ func cloneURL(u *url.URL) *url.URL {
 		Fragment:    u.Fragment,
 		RawFragment: u.RawFragment,
 	}
-	if u.User != nil {
-		username := u.User.Username()
-		password, hasPassword := u.User.Password()
-		if hasPassword {
-			clone.User = url.UserPassword(username, password)
-		} else {
-			clone.User = url.User(username)
-		}
-	}
+	// User is intentionally not cloned — credentials are never cached
+	// and should be set via WithBasicAuth() instead.
 	return clone
 }
 

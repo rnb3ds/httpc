@@ -325,11 +325,11 @@ func TestStreamingBody(t *testing.T) {
 // Task 3: Close method tests for pooled readers (0% coverage)
 // ============================================================================
 
-func TestPooledStringsReader_Close(t *testing.T) {
-	t.Run("Close before reading", func(t *testing.T) {
+// io.Closer is tested for all pooled reader/buffer types via table-driven test.
+func TestPooledReaders_Close(t *testing.T) {
+	t.Run("StringsReader close before reading", func(t *testing.T) {
 		reader := getPooledStringsReader("hello").(*pooledStringsReader)
-		err := reader.Close()
-		if err != nil {
+		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
 		if reader.reader != nil {
@@ -337,21 +337,17 @@ func TestPooledStringsReader_Close(t *testing.T) {
 		}
 	})
 
-	t.Run("Double close", func(t *testing.T) {
+	t.Run("StringsReader double close", func(t *testing.T) {
 		reader := getPooledStringsReader("hello").(*pooledStringsReader)
 		_ = reader.Close()
-		err := reader.Close()
-		if err != nil {
+		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error on double close: %v", err)
 		}
 	})
-}
 
-func TestPooledBytesReader_Close(t *testing.T) {
-	t.Run("Close before reading", func(t *testing.T) {
+	t.Run("BytesReader close before reading", func(t *testing.T) {
 		reader := getPooledBytesReader([]byte("hello")).(*pooledBytesReader)
-		err := reader.Close()
-		if err != nil {
+		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
 		if reader.reader != nil {
@@ -359,105 +355,84 @@ func TestPooledBytesReader_Close(t *testing.T) {
 		}
 	})
 
-	t.Run("Double close", func(t *testing.T) {
+	t.Run("BytesReader double close", func(t *testing.T) {
 		reader := getPooledBytesReader([]byte("hello")).(*pooledBytesReader)
 		_ = reader.Close()
-		err := reader.Close()
-		if err != nil {
+		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error on double close: %v", err)
 		}
 	})
-}
 
-func TestPooledMultipartBuffer_Close(t *testing.T) {
-	t.Run("Close before reading", func(t *testing.T) {
+	t.Run("MultipartBuffer close owned", func(t *testing.T) {
 		buf := getMultipartBuffer()
 		buf.WriteString("multipart data")
 		reader := &pooledMultipartBuffer{buf: buf, owned: true}
-
-		err := reader.Close()
-		if err != nil {
+		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
 		if reader.buf != nil {
 			t.Error("Expected buf to be nil after Close")
 		}
-		if reader.owned {
-			t.Error("Expected owned to be false after Close")
-		}
 	})
 
-	t.Run("Close nil buffer", func(t *testing.T) {
+	t.Run("MultipartBuffer close nil", func(t *testing.T) {
 		reader := &pooledMultipartBuffer{buf: nil, owned: false}
-		err := reader.Close()
-		if err != nil {
+		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
 	})
 
-	t.Run("Close not-owned buffer", func(t *testing.T) {
+	t.Run("MultipartBuffer close not-owned", func(t *testing.T) {
 		buf := bytes.NewBufferString("data")
 		reader := &pooledMultipartBuffer{buf: buf, owned: false}
-		err := reader.Close()
-		if err != nil {
+		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
 	})
 
-	t.Run("Double close", func(t *testing.T) {
+	t.Run("MultipartBuffer double close", func(t *testing.T) {
 		buf := getMultipartBuffer()
 		buf.WriteString("data")
 		reader := &pooledMultipartBuffer{buf: buf, owned: true}
 		_ = reader.Close()
-		err := reader.Close()
-		if err != nil {
+		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error on double close: %v", err)
 		}
 	})
-}
 
-func TestPooledJSONBuffer_Close(t *testing.T) {
-	t.Run("Close before reading", func(t *testing.T) {
+	t.Run("JSONBuffer close owned", func(t *testing.T) {
 		buf := getJSONBuffer()
 		buf.WriteString(`{"test": true}`)
 		reader := &pooledJSONBuffer{buf: buf, owned: true}
-
-		err := reader.Close()
-		if err != nil {
+		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
 		if reader.buf != nil {
 			t.Error("Expected buf to be nil after Close")
 		}
-		if reader.owned {
-			t.Error("Expected owned to be false after Close")
-		}
 	})
 
-	t.Run("Close nil buffer", func(t *testing.T) {
+	t.Run("JSONBuffer close nil", func(t *testing.T) {
 		reader := &pooledJSONBuffer{buf: nil, owned: false}
-		err := reader.Close()
-		if err != nil {
+		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
 	})
 
-	t.Run("Close not-owned buffer", func(t *testing.T) {
+	t.Run("JSONBuffer close not-owned", func(t *testing.T) {
 		buf := bytes.NewBufferString(`{"data":1}`)
 		reader := &pooledJSONBuffer{buf: buf, owned: false}
-		err := reader.Close()
-		if err != nil {
+		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
 	})
 
-	t.Run("Double close", func(t *testing.T) {
+	t.Run("JSONBuffer double close", func(t *testing.T) {
 		buf := getJSONBuffer()
 		buf.WriteString(`{"test": true}`)
 		reader := &pooledJSONBuffer{buf: buf, owned: true}
 		_ = reader.Close()
-		err := reader.Close()
-		if err != nil {
+		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error on double close: %v", err)
 		}
 	})

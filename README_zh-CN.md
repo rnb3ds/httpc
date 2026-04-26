@@ -1,4 +1,4 @@
-# HTTPC - 生产级 Go HTTP 客户端
+# HTTPC - 安全的 Go HTTP 客户端
 
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://golang.org)
 [![Go Reference](https://pkg.go.dev/badge/github.com/cybergodev/httpc.svg)](https://pkg.go.dev/github.com/cybergodev/httpc)
@@ -7,7 +7,7 @@
 [![Zero Deps](https://img.shields.io/badge/deps-zero-brightgreen.svg)](go.mod)
 [![Thread Safe](https://img.shields.io/badge/thread%20safe-%E2%9C%93-brightgreen.svg)](docs/09_concurrency-safety.md)
 
-一个高性能的 Go HTTP 客户端库，具备企业级安全性、极简依赖，以及生产就绪的默认配置。
+一个快速、安全的 Go HTTP 客户端库，具备合理的默认配置、极简依赖和内置弹性机制。
 
 **[English Document](README.md)**
 
@@ -22,7 +22,7 @@
 | **内置弹性** | 智能重试，支持指数退避和抖动 |
 | **开发者友好** | 简洁的 API、直观的选项模式、完善的文档 |
 | **极简依赖** | 仅依赖 `golang.org/x/sys` 用于系统级操作 |
-| **生产就绪** | 经过实战检验的默认配置，广泛的测试覆盖 |
+| **可靠的默认配置** | 经过充分测试的默认配置，广泛的测试覆盖 |
 | **Cookie 管理** | 完整的 Cookie Jar 支持，带安全验证 |
 | **文件操作** | 安全的文件下载，支持进度跟踪和断点续传 |
 
@@ -557,7 +557,7 @@ sm.SetCookieSecurity(httpc.StrictCookieSecurityConfig())
 ### 预设配置
 
 ```go
-// 生产就绪的默认配置 (推荐)
+// 推荐的默认配置
 client, _ := httpc.New(httpc.DefaultConfig())
 
 // 最高安全性 (启用 SSRF 防护)

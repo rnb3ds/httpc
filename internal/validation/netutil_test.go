@@ -2,6 +2,7 @@ package validation
 
 import (
 	"net"
+	"strings"
 	"testing"
 )
 
@@ -301,6 +302,90 @@ func TestValidateIPWithExemptions(t *testing.T) {
 			}
 			if !tt.wantErr && err != nil {
 				t.Errorf("ValidateIPWithExemptions(%s) unexpected error: %v", tt.ip, err)
+			}
+		})
+	}
+}
+
+func TestValidateSSRFHost(t *testing.T) {
+	tests := []struct {
+		name       string
+		host       string
+		exemptNets []string
+		resolveDNS bool
+		wantErr    bool
+		errContain string
+	}{
+		{"localhost blocked", "localhost", nil, false, true, "localhost"},
+		{"localhost with port blocked", "localhost:8080", nil, false, true, "localhost"},
+		{"127.0.0.1 blocked", "127.0.0.1", nil, false, true, "localhost"},
+		{"private IP blocked", "192.168.1.1", nil, false, true, "private/reserved"},
+		{"public IP allowed", "8.8.8.8", nil, false, false, ""},
+		{"public IP with port allowed", "8.8.8.8:443", nil, false, false, ""},
+		{"exempt private IP allowed", "10.0.0.1", []string{"10.0.0.0/8"}, false, false, ""},
+		{"non-exempt private IP blocked", "192.168.1.1", []string{"10.0.0.0/8"}, false, true, "private/reserved"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var nets []*net.IPNet
+			if len(tt.exemptNets) > 0 {
+				var err error
+				nets, err = ParseExemptCIDRs(tt.exemptNets)
+				if err != nil {
+					t.Fatalf("ParseExemptCIDRs error: %v", err)
+				}
+			}
+			err := ValidateSSRFHost(tt.host, nets, tt.resolveDNS)
+			if tt.wantErr && err == nil {
+				t.Errorf("ValidateSSRFHost(%q) expected error, got nil", tt.host)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("ValidateSSRFHost(%q) unexpected error: %v", tt.host, err)
+			}
+			if tt.wantErr && err != nil && tt.errContain != "" {
+				if !strings.Contains(err.Error(), tt.errContain) {
+					t.Errorf("ValidateSSRFHost(%q) error %q should contain %q", tt.host, err.Error(), tt.errContain)
+				}
+			}
+		})
+	}
+}
+
+func TestIsPrivateOrReservedIP_BoundaryConditions(t *testing.T) {
+	tests := []struct {
+		name     string
+		ip       string
+		expected bool
+	}{
+		// IPv4 boundary addresses
+		{"IPv4 broadcast 255.255.255.255", "255.255.255.255", true},
+		{"IPv4 private A network boundary", "10.0.0.0", true},
+		{"IPv4 private A network end", "10.255.255.255", true},
+		{"IPv4 private B start", "172.16.0.0", true},
+		{"IPv4 private B end", "172.31.255.255", true},
+		{"IPv4 private B just before", "172.15.255.255", false},
+		{"IPv4 private B just after", "172.32.0.0", false},
+		{"IPv4 private C start", "192.168.0.0", true},
+		{"IPv4 private C end", "192.168.255.255", true},
+		{"IPv4 link-local start", "169.254.0.0", true},
+		{"IPv4 link-local end", "169.254.255.255", true},
+
+		// IPv6 boundary
+		{"IPv6 multicast", "ff00::1", true},
+		{"IPv6 documentation end", "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff", true},
+		{"IPv6 public just past documentation", "2001:db9::1", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ip := net.ParseIP(tt.ip)
+			if ip == nil {
+				t.Fatalf("Failed to parse IP: %s", tt.ip)
+			}
+			result := IsPrivateOrReservedIP(ip)
+			if result != tt.expected {
+				t.Errorf("IsPrivateOrReservedIP(%s) = %v, want %v", tt.ip, result, tt.expected)
 			}
 		})
 	}

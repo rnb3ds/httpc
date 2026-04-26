@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -940,4 +941,127 @@ func TestTrackedConn_DoubleClose(t *testing.T) {
 	err = resp.Body.Close()
 	// This may or may not return an error depending on implementation
 	_ = err
+}
+
+// ============================================================================
+// HOST CONNECTION TRACKING EVICTION TESTS
+// ============================================================================
+
+func TestPoolManager_EvictStaleHosts(t *testing.T) {
+	pm, err := NewPoolManager(DefaultConfig())
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	// Add multiple host entries directly
+	hosts := []string{"host1.example.com", "host2.example.com", "host3.example.com"}
+	for _, host := range hosts {
+		pm.updateConnectionMetrics(host, 100, true)
+	}
+
+	// Verify entries exist
+	count := 0
+	pm.hostConns.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	if count != len(hosts) {
+		t.Fatalf("expected %d host entries, got %d", len(hosts), count)
+	}
+
+	// Manually age out entries by setting LastUsed to the past
+	// and clearing active connections (normally done by trackedConn.Close)
+	oldTime := time.Now().Add(-hostConnMaxAge - time.Minute).Unix()
+	pm.hostConns.Range(func(key, value any) bool {
+		if stats, ok := value.(*hostStats); ok {
+			atomic.StoreInt64(&stats.LastUsed, oldTime)
+			atomic.StoreInt64(&stats.ActiveConns, 0)
+		}
+		return true
+	})
+
+	// Reset eviction timer so next call triggers eviction
+	atomic.StoreInt64(&pm.lastEviction, 0)
+
+	// Trigger eviction via updateConnectionMetrics
+	pm.updateConnectionMetrics("newhost.example.com", 100, true)
+
+	// Stale entries should be evicted, only newhost remains
+	remaining := 0
+	pm.hostConns.Range(func(_, _ any) bool {
+		remaining++
+		return true
+	})
+	if remaining != 1 {
+		t.Errorf("expected 1 remaining host entry after eviction, got %d", remaining)
+	}
+}
+
+func TestPoolManager_EvictStaleHostsPreservesActive(t *testing.T) {
+	pm, err := NewPoolManager(DefaultConfig())
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	// Add a stale entry with active connections
+	stats := &hostStats{
+		Host:        "active-stale.example.com",
+		LastUsed:    time.Now().Add(-hostConnMaxAge - time.Minute).Unix(),
+		ActiveConns: 3,
+	}
+	pm.hostConns.Store("active-stale.example.com", stats)
+
+	// Reset eviction timer
+	atomic.StoreInt64(&pm.lastEviction, 0)
+
+	// Trigger eviction
+	pm.updateConnectionMetrics("trigger.example.com", 100, true)
+
+	// The stale-but-active entry should NOT be evicted
+	_, exists := pm.hostConns.Load("active-stale.example.com")
+	if !exists {
+		t.Error("stale host with active connections should not be evicted")
+	}
+}
+
+func TestPoolManager_EvictionThrottling(t *testing.T) {
+	pm, err := NewPoolManager(DefaultConfig())
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	defer func() { _ = pm.Close() }()
+
+	// Set eviction as recently run
+	atomic.StoreInt64(&pm.lastEviction, time.Now().Unix())
+
+	// Add many hosts - eviction should be skipped
+	for i := 0; i < 100; i++ {
+		pm.updateConnectionMetrics(fmt.Sprintf("host%d.example.com", i), 100, true)
+	}
+
+	// All 100 hosts should still exist (eviction was throttled)
+	count := 0
+	pm.hostConns.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	if count != 100 {
+		t.Errorf("expected 100 entries (eviction throttled), got %d", count)
+	}
+}
+
+func TestConfig_SetCertPinner(t *testing.T) {
+	cfg := DefaultConfig()
+
+	if cfg.certPinner != nil {
+		t.Error("certPinner should be nil by default")
+	}
+
+	cfg.SetCertPinner(nil)
+
+	if cfg.certPinner != nil {
+		t.Error("certPinner should remain nil after setting nil")
+	}
 }

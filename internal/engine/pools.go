@@ -69,14 +69,17 @@ func putHeader(h *http.Header) {
 // cloneHeader creates a deep copy of headers using batch allocation.
 // Returns a newly allocated header map that can be safely modified.
 // SECURITY: Always allocates new slices to prevent data leakage between requests.
-// The header map itself uses pooled allocation, but values are always copied.
 // OPTIMIZATION: Uses batch allocation to reduce N allocations (one per header) to 1 allocation.
+//
+// Note: Does NOT use headerPool because the returned map is stored in Response objects
+// whose lifetime is controlled by the caller. Pooling here would leak entries since
+// putHeader is never called on the cloned map.
 func cloneHeader(src http.Header) http.Header {
 	if src == nil {
 		return nil
 	}
 
-	dst := *getHeader()
+	dst := make(http.Header, len(src))
 
 	// Count total values for batch allocation
 	totalValues := 0
@@ -210,13 +213,12 @@ func queryEscape(s string) string {
 	}
 
 	result := string(buf)
-	// Always return bufPtr to pool; detach large buffers to prevent bloat.
+	// Return bufPtr to pool only if buffer is reasonably sized.
+	// Discard oversized buffers to prevent pool bloat.
 	if cap(buf) <= 1024 {
 		*bufPtr = buf
-	} else {
-		*bufPtr = nil
+		queryEscapePool.Put(bufPtr)
 	}
-	queryEscapePool.Put(bufPtr)
 	return result
 }
 

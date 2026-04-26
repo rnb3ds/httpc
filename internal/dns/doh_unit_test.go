@@ -3,6 +3,7 @@ package dns
 import (
 	"context"
 	"encoding/hex"
+	"fmt"
 	"net"
 	"sync"
 	"testing"
@@ -936,5 +937,86 @@ func TestDoHResolver_MultipleProvidersFailover(t *testing.T) {
 		t.Logf("Lookup error (may be expected in test env): %v", err)
 	} else {
 		t.Logf("Successfully resolved with failover: %d IPs", len(ips))
+	}
+}
+
+
+// ============================================================================
+// EXPIRED CACHE ENTRY EVICTION TESTS
+// ============================================================================
+
+func TestDoHResolver_EvictExpiredEntries(t *testing.T) {
+	r := NewDoHResolver(nil, 5*time.Minute)
+	defer func() { _ = r.Close() }()
+
+	// Manually populate cache with expired and fresh entries
+	now := time.Now()
+
+	// Expired entries
+	expired := []string{"expired1.com", "expired2.com", "expired3.com"}
+	for _, host := range expired {
+		r.cache.Store(host, &cacheEntry{
+			IPs:     []net.IPAddr{{IP: net.ParseIP("1.2.3.4")}},
+			Expires: now.Add(-time.Hour), // expired 1 hour ago
+		})
+		r.cacheSize.Add(1)
+	}
+
+	// Fresh entries
+	fresh := []string{"fresh1.com", "fresh2.com"}
+	for _, host := range fresh {
+		r.cache.Store(host, &cacheEntry{
+			IPs:     []net.IPAddr{{IP: net.ParseIP("5.6.7.8")}},
+			Expires: now.Add(time.Hour), // expires in 1 hour
+		})
+		r.cacheSize.Add(1)
+	}
+
+	// Run eviction
+	r.evictExpiredEntries()
+
+	// Verify expired entries are removed
+	for _, host := range expired {
+		if _, ok := r.cache.Load(host); ok {
+			t.Errorf("expired entry %q should have been evicted", host)
+		}
+	}
+
+	// Verify fresh entries remain
+	for _, host := range fresh {
+		if _, ok := r.cache.Load(host); !ok {
+			t.Errorf("fresh entry %q should still exist", host)
+		}
+	}
+
+	// Verify counter reflects only fresh entries
+	if size := r.CacheSize(); size != int64(len(fresh)) {
+		t.Errorf("expected cache size %d, got %d", len(fresh), size)
+	}
+}
+
+func TestDoHResolver_CacheFullTriggersEviction(t *testing.T) {
+	r := NewDoHResolver(nil, 100*time.Millisecond)
+	defer func() { _ = r.Close() }()
+
+	// Fill cache to max with entries that will expire quickly
+	for i := 0; i < maxDoHCacheSize; i++ {
+		host := fmt.Sprintf("host%d.com", i)
+		r.cache.Store(host, &cacheEntry{
+			IPs:     []net.IPAddr{{IP: net.ParseIP("1.2.3.4")}},
+			Expires: time.Now().Add(50 * time.Millisecond),
+		})
+		r.cacheSize.Add(1)
+	}
+
+	// Wait for entries to expire
+	time.Sleep(150 * time.Millisecond)
+
+	// Now cache is full of expired entries. Calling evictExpiredEntries
+	// should clear them all
+	r.evictExpiredEntries()
+
+	if size := r.CacheSize(); size != 0 {
+		t.Errorf("expected cache size 0 after all expired, got %d", size)
 	}
 }

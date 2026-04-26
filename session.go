@@ -147,10 +147,8 @@ func (s *SessionManager) SetCookie(cookie *http.Cookie) error {
 	defer s.mu.Unlock()
 
 	// Apply cookie security validation if configured (inside lock for thread safety)
-	if s.cookieSecurity != nil {
-		if err := validation.ValidateCookieSecurity(cookie, s.cookieSecurity); err != nil {
-			return fmt.Errorf("cookie security validation failed: %w", err)
-		}
+	if err := s.validateCookieSecurity(cookie); err != nil {
+		return fmt.Errorf("cookie security validation failed: %w", err)
 	}
 
 	s.cookies[cookie.Name] = cookie
@@ -176,10 +174,8 @@ func (s *SessionManager) SetCookies(cookies []*http.Cookie) error {
 
 	// Apply cookie security validation and store (inside lock for thread safety)
 	for _, cookie := range cookies {
-		if s.cookieSecurity != nil {
-			if err := validation.ValidateCookieSecurity(cookie, s.cookieSecurity); err != nil {
-				return fmt.Errorf("cookie security validation failed for %s: %w", cookie.Name, err)
-			}
+		if err := s.validateCookieSecurity(cookie); err != nil {
+			return fmt.Errorf("cookie security validation failed for %s: %w", cookie.Name, err)
 		}
 		s.cookies[cookie.Name] = cookie
 	}
@@ -271,6 +267,7 @@ func (s *SessionManager) prepareOptions() []RequestOption {
 
 // validateCookieSecurity checks cookie against the session's security config.
 // Returns nil if no security config is set or if the cookie passes validation.
+// This is the single entry point for all cookie security checks in SessionManager.
 func (s *SessionManager) validateCookieSecurity(cookie *http.Cookie) error {
 	if s.cookieSecurity == nil {
 		return nil
@@ -319,6 +316,12 @@ func (s *SessionManager) storeCookies(cookies []*http.Cookie) {
 
 // captureFromOptions extracts cookies and headers from RequestOptions
 // and stores them in the session.
+//
+// CAVEAT: RequestOption is an opaque function, so all options are applied to a
+// temporary request. Options with side effects beyond setting fields (e.g.,
+// WithOnRequest callbacks, body reads from IO) will execute during this capture
+// pass in addition to the real request path. Options that only set cookies,
+// headers, query params, or simple body values are safe.
 func (s *SessionManager) captureFromOptions(options []RequestOption) {
 	if len(options) == 0 {
 		return
@@ -333,6 +336,11 @@ func (s *SessionManager) captureFromOptions(options []RequestOption) {
 		*tempReq = engine.Request{}
 		tempReqPool.Put(tempReq)
 	}()
+
+	// Clear callbacks to prevent any that were set by options from firing
+	// if the temp request were accidentally used for execution.
+	tempReq.SetOnRequest(nil)
+	tempReq.SetOnResponse(nil)
 
 	for _, opt := range options {
 		if opt != nil {

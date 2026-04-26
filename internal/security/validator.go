@@ -26,6 +26,7 @@ type Config struct {
 	ValidateURL         bool
 	ValidateHeaders     bool
 	MaxResponseBodySize int64
+	MaxRequestBodySize  int64
 	AllowPrivateIPs     bool
 	ExemptNets          []*net.IPNet
 }
@@ -106,34 +107,15 @@ func (v *Validator) validateURL(urlStr string) error {
 }
 
 // validateHost performs comprehensive host validation to prevent SSRF attacks.
-// Validates both before and after DNS resolution for maximum security.
+// Delegates to the shared validation.ValidateSSRFHost for consistent behavior.
 func (v *Validator) validateHost(host string) error {
 	if v.config.AllowPrivateIPs {
 		return nil
 	}
 
-	// Extract hostname from host:port format
-	hostname := host
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		hostname = h
-	}
-
-	// Check for localhost variations
-	if validation.IsLocalhost(hostname) {
-		return fmt.Errorf("localhost access blocked for security")
-	}
-
-	// If hostname is an IP address, validate it directly
-	if ip := net.ParseIP(hostname); ip != nil {
-		if err := validation.ValidateIPWithExemptions(ip, v.config.ExemptNets); err != nil {
-			return fmt.Errorf("private/reserved IP blocked: %s", ip.String())
-		}
-		return nil
-	}
-
-	// For domain names, we rely on the connection pool's DNS resolution validation
-	// This provides defense in depth against DNS rebinding attacks
-	return nil
+	// Do not resolve DNS here; the connection pool dialer resolves and
+	// validates to prevent DNS rebinding TOCTOU.
+	return validation.ValidateSSRFHost(host, v.config.ExemptNets, false)
 }
 
 func (v *Validator) validateHeader(key, value string) error {
@@ -163,9 +145,12 @@ func validateCommonHeaderValue(key, value string) error {
 }
 
 // validateRequestBodySize checks the request body against the configured size limit.
-// MaxResponseBodySize serves as a general body-size cap for both request and response payloads.
 func (v *Validator) validateRequestBodySize(body any) error {
-	if v.config.MaxResponseBodySize <= 0 {
+	limit := v.config.MaxRequestBodySize
+	if limit <= 0 {
+		limit = v.config.MaxResponseBodySize
+	}
+	if limit <= 0 {
 		return nil
 	}
 
@@ -190,8 +175,8 @@ func (v *Validator) validateRequestBodySize(body any) error {
 		return nil
 	}
 
-	if size > v.config.MaxResponseBodySize {
-		return fmt.Errorf("request body size %d exceeds limit %d bytes", size, v.config.MaxResponseBodySize)
+	if size > limit {
+		return fmt.Errorf("request body size %d exceeds limit %d bytes", size, limit)
 	}
 
 	return nil

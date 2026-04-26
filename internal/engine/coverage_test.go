@@ -48,54 +48,36 @@ func formDataHelper(fields map[string]string, files map[string]*fileDataHelper) 
 // URL CACHE TESTS
 // ============================================================================
 
-// TestSanitizeCacheKey validates that sensitive query parameters are redacted in cache keys.
-func TestSanitizeCacheKey(t *testing.T) {
-	tests := []struct {
-		name        string
-		input       string
-		notContains string
-		contains    string
-	}{
-		{
-			name:     "URL without query params",
-			input:    "https://api.example.com/users",
-			contains: "https://api.example.com/users",
-		},
-		{
-			name:     "URL with non-sensitive params",
-			input:    "https://api.example.com/users?page=1&limit=10",
-			contains: "page=1",
-		},
-		{
-			name:        "URL with token param",
-			input:       "https://api.example.com/data?token=secret123&page=1",
-			notContains: "secret123",
-			contains:    "REDACTED",
-		},
-		{
-			name:        "URL with api_key param",
-			input:       "https://api.example.com/data?api_key=mykey&query=test",
-			notContains: "mykey",
-			contains:    "REDACTED",
-		},
-		{
-			name:        "URL with password param",
-			input:       "https://api.example.com/data?password=hunter2&user=bob",
-			notContains: "hunter2",
-			contains:    "REDACTED",
-		},
+// TestURLCache_RawKey validates that URLs differing only in sensitive query params
+// are cached separately (no key collision).
+func TestURLCache_RawKey(t *testing.T) {
+	clearURLCache()
+
+	url1 := "https://api.example.com/data?token=secretA&page=1"
+	url2 := "https://api.example.com/data?token=secretB&page=1"
+
+	parsed1, err := globalURLCache.Get(url1)
+	if err != nil {
+		t.Fatalf("Failed to parse URL1: %v", err)
+	}
+	parsed2, err := globalURLCache.Get(url2)
+	if err != nil {
+		t.Fatalf("Failed to parse URL2: %v", err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := sanitizeCacheKey(tt.input)
-			if tt.notContains != "" && strings.Contains(result, tt.notContains) {
-				t.Errorf("sanitizeCacheKey(%q) = %q, should not contain %q", tt.input, result, tt.notContains)
-			}
-			if tt.contains != "" && !strings.Contains(result, tt.contains) {
-				t.Errorf("sanitizeCacheKey(%q) = %q, should contain %q", tt.input, result, tt.contains)
-			}
-		})
+	// Both URLs should be cached independently
+	if getURLCacheSize() != 2 {
+		t.Errorf("Expected 2 cache entries, got %d", getURLCacheSize())
+	}
+
+	// Each should return its own token value
+	q1 := parsed1.Query()
+	q2 := parsed2.Query()
+	if q1.Get("token") != "secretA" {
+		t.Errorf("URL1 token = %q, want %q", q1.Get("token"), "secretA")
+	}
+	if q2.Get("token") != "secretB" {
+		t.Errorf("URL2 token = %q, want %q", q2.Get("token"), "secretB")
 	}
 }
 
@@ -133,13 +115,14 @@ func TestURLCache_Operations(t *testing.T) {
 // TestCloneURL validates deep copying of URL structures.
 func TestCloneURL(t *testing.T) {
 	tests := []struct {
-		name  string
-		input string
+		name     string
+		input    string
+		expected string
 	}{
-		{"Nil input", ""},
-		{"URL with user and password", "https://user:pass@example.com/path?q=1#frag"},
-		{"URL without user", "https://example.com/path"},
-		{"URL with query and fragment", "https://example.com/search?q=golang#results"},
+		{"Nil input", "", ""},
+		{"URL with user stripped", "https://user:pass@example.com/path?q=1#frag", "https://example.com/path?q=1#frag"},
+		{"URL without user", "https://example.com/path", "https://example.com/path"},
+		{"URL with query and fragment", "https://example.com/search?q=golang#results", "https://example.com/search?q=golang#results"},
 	}
 
 	for _, tt := range tests {
@@ -159,8 +142,13 @@ func TestCloneURL(t *testing.T) {
 
 			cloned := cloneURL(parsed)
 
-			if cloned.String() != parsed.String() {
-				t.Errorf("Clone String() = %q, want %q", cloned.String(), parsed.String())
+			if cloned.String() != tt.expected {
+				t.Errorf("Clone String() = %q, want %q", cloned.String(), tt.expected)
+			}
+
+			// Verify credentials are stripped
+			if cloned.User != nil {
+				t.Error("cloneURL should not preserve credentials (User field)")
 			}
 
 			// Verify independence: modify clone should not affect original
@@ -1149,10 +1137,6 @@ func TestResponseDecompression(t *testing.T) {
 // CLEAR POOLS TEST
 // ============================================================================
 
-// TestClearPools validates that clearPools does not panic.
-func TestClearPools(t *testing.T) {
-	clearPools()
-}
 
 // ============================================================================
 // RETRY SCENARIO TESTS

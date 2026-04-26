@@ -36,7 +36,7 @@ type Client struct {
 	securityRequestPool sync.Pool
 
 	// metrics tracks request statistics
-	metrics *Metrics
+	metrics *metrics
 
 	closed int32
 
@@ -65,6 +65,7 @@ type Config struct {
 	MaxTLSVersion           uint16
 	InsecureSkipVerify      bool
 	MaxResponseBodySize     int64
+	MaxRequestBodySize      int64
 	MaxDecompressedBodySize int64
 	ValidateURL             bool
 	ValidateHeaders         bool
@@ -219,6 +220,10 @@ func (r *Response) RequestURL() string           { return r.requestURL }
 func (r *Response) RequestMethod() string        { return r.requestMethod }
 func (r *Response) RawBodyReader() io.ReadCloser { return r.rawBodyReader }
 
+// SetRawBodyReader replaces the raw body reader. Passing nil transfers ownership
+// away from the response so that ReleaseResponse will not close it.
+func (r *Response) SetRawBodyReader(rc io.ReadCloser) { r.rawBodyReader = rc }
+
 // Mutators (implement ResponseMutator)
 func (r *Response) SetStatusCode(v int)             { r.statusCode = v }
 func (r *Response) SetStatus(v string)              { r.status = v }
@@ -257,7 +262,7 @@ func NewClient(config *Config, opts ...clientOption) (*Client, error) {
 
 	client := &Client{
 		config:  config,
-		metrics: &Metrics{},
+		metrics: &metrics{},
 		requestPool: sync.Pool{
 			New: func() any {
 				return &Request{maxRetries: -1}
@@ -326,6 +331,7 @@ func NewClient(config *Config, opts ...clientOption) (*Client, error) {
 		ValidateURL:         config.ValidateURL,
 		ValidateHeaders:     config.ValidateHeaders,
 		MaxResponseBodySize: config.MaxResponseBodySize,
+		MaxRequestBodySize:  config.MaxRequestBodySize,
 		AllowPrivateIPs:     config.AllowPrivateIPs,
 		ExemptNets:          config.ExemptNets,
 	}
@@ -356,7 +362,7 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 	for _, option := range options {
 		if option != nil {
 			if err := option(req); err != nil {
-				c.metrics.RecordRequest(time.Since(startTime).Nanoseconds(), false)
+				c.metrics.recordRequest(time.Since(startTime).Nanoseconds(), false)
 				return nil, fmt.Errorf("failed to apply request option: %w", err)
 			}
 		}
@@ -374,7 +380,7 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 	c.putSecurityRequest(secReq)
 
 	if validationErr != nil {
-		c.metrics.RecordRequest(time.Since(startTime).Nanoseconds(), false)
+		c.metrics.recordRequest(time.Since(startTime).Nanoseconds(), false)
 		return nil, fmt.Errorf("request validation failed: %w", validationErr)
 	}
 
@@ -382,11 +388,11 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 	duration := time.Since(startTime)
 
 	if err != nil {
-		c.metrics.RecordRequest(duration.Nanoseconds(), false)
+		c.metrics.recordRequest(duration.Nanoseconds(), false)
 		return nil, err
 	}
 
-	c.metrics.RecordRequest(duration.Nanoseconds(), true)
+	c.metrics.recordRequest(duration.Nanoseconds(), true)
 	response.SetDuration(duration)
 	return response, nil
 }
@@ -453,6 +459,7 @@ func (c *Client) createDefaultContext() (context.Context, context.CancelFunc) {
 	return backgroundCtx, nopCancelFunc
 }
 
+// Internal convenience methods — thin wrappers over Request for use by tests within this package.
 func (c *Client) get(url string, options ...RequestOption) (*Response, error) {
 	return c.Request(context.Background(), "GET", url, options...)
 }
@@ -605,7 +612,7 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 	if lastErr != nil {
 		if clientErr, ok := lastErr.(*ClientError); ok {
 			clientErr.Attempts = maxRetries + 1
-			_ = clientErr.WithType(ErrorTypeRetryExhausted)
+			clientErr.Type = ErrorTypeRetryExhausted
 			return nil, clientErr
 		}
 		return nil, fmt.Errorf("request failed after %d attempts: %w", maxRetries+1, lastErr)
@@ -665,11 +672,20 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 			execCtx, streamCancel = context.WithTimeout(execCtx, timeout)
 		}
 	}
-	// For non-streaming requests, ensure cancel is always called on exit.
-	// For streaming requests, cancelFunc is stored in the Response and called on Release.
-	if streamCancel != nil && !req.StreamBody() {
-		defer streamCancel()
+	// Always defer cancel to prevent timer leaks on early error returns.
+	// For streaming requests, cancelFunc is stored in the Response and the
+	// defer becomes a no-op after setCancelFuncToNil is called.
+	cancelCtx := streamCancel
+	if cancelCtx != nil {
+		defer func() {
+			if cancelCtx != nil {
+				cancelCtx()
+			}
+		}()
 	}
+	// setCancelFuncToNil is called after storing the cancel in the streaming
+	// response, preventing the deferred cleanup from double-cancelling.
+	setCancelFuncToNil := func() { cancelCtx = nil }
 
 	select {
 	case <-execCtx.Done():
@@ -735,9 +751,7 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 		return nil, classifyError(fmt.Errorf("build request failed: %w", err), req.URL(), req.Method(), 0)
 	}
 
-	start := time.Now()
 	httpResp, err := c.transport.RoundTrip(httpReq)
-	duration := time.Since(start)
 
 	if err != nil {
 		return nil, classifyError(fmt.Errorf("transport failed: %w", err), req.URL(), req.Method(), 0)
@@ -755,6 +769,7 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 		resp.SetCookies(httpResp.Cookies())
 		resp.rawBodyReader = httpResp.Body
 		resp.cancelFunc = streamCancel
+		setCancelFuncToNil() // Prevent deferred cancel; ReleaseResponse handles cleanup
 
 		if httpResp.Request != nil {
 			if len(httpResp.Request.Header) > 0 {
@@ -765,7 +780,6 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 			}
 			resp.SetRequestMethod(httpResp.Request.Method)
 		}
-		resp.SetDuration(duration)
 		return resp, nil
 	}
 
@@ -803,11 +817,11 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 		resp.SetRequestMethod(httpResp.Request.Method)
 	}
 
-	resp.SetDuration(duration)
 
 	// Invoke OnResponse callback after response processing
 	if reqCopy.onResponse != nil {
 		if err := reqCopy.onResponse(resp); err != nil {
+			ReleaseResponse(resp)
 			return nil, classifyError(fmt.Errorf("onResponse callback failed: %w", err), req.URL(), req.Method(), 0)
 		}
 	}
@@ -815,14 +829,14 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 	return resp, nil
 }
 
-// GetHealthStatus returns the current health status of the client.
-func (c *Client) GetHealthStatus() HealthStatus {
-	return c.metrics.GetHealthStatus()
+// getHealthStatus returns the current health status of the client.
+func (c *Client) getHealthStatus() healthStatus {
+	return c.metrics.getHealthStatus()
 }
 
-// IsHealthy returns true if the client is healthy (error rate < 10%).
-func (c *Client) IsHealthy() bool {
-	return c.metrics.IsHealthy()
+// isHealthy returns true if the client is healthy (error rate < 10%).
+func (c *Client) isHealthy() bool {
+	return c.metrics.isHealthy()
 }
 
 // IsClosed returns true if the client has been closed.

@@ -237,3 +237,40 @@ func ValidateURL(urlStr string) error {
 	}
 	return nil
 }
+
+// ValidateSSRFHost checks whether a hostname (which may include a port) should be
+// blocked under SSRF protection rules. It checks localhost, direct IP addresses,
+// and optionally resolves DNS for domain names.
+// Returns nil if the host is allowed, or an error describing why it was blocked.
+func ValidateSSRFHost(host string, exemptNets []*net.IPNet, resolveDNS bool) error {
+	// Extract hostname from host:port format
+	hostname := host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		hostname = h
+	}
+
+	if IsLocalhost(hostname) {
+		return fmt.Errorf("localhost access blocked for security")
+	}
+
+	if ip := net.ParseIP(hostname); ip != nil {
+		if err := ValidateIPWithExemptions(ip, exemptNets); err != nil {
+			return fmt.Errorf("private/reserved IP blocked: %s", ip.String())
+		}
+		return nil
+	}
+
+	if resolveDNS {
+		ips, err := net.LookupIP(hostname)
+		if err != nil {
+			return fmt.Errorf("DNS resolution failed: %w", err)
+		}
+		for _, ip := range ips {
+			if err := ValidateIPWithExemptions(ip, exemptNets); err != nil {
+				return fmt.Errorf("domain resolves to blocked address")
+			}
+		}
+	}
+
+	return nil
+}

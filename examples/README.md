@@ -1,6 +1,6 @@
 # HTTPC Examples
 
-Comprehensive, production-ready examples for the httpc library. Learn by doing!
+Practical examples for the httpc library. Learn by doing!
 
 ---
 

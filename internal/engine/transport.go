@@ -115,7 +115,7 @@ func putRedirectSettings(s *redirectSettings) {
 		for i := range s.overflowChain {
 			s.overflowChain[i] = ""
 		}
-		s.overflowChain = s.overflowChain[:0]
+		s.overflowChain = nil
 	}
 	redirectSettingsPool.Put(s)
 }
@@ -206,6 +206,15 @@ func (t *transport) checkRedirect(req *http.Request, via []*http.Request) error 
 		settings.addRedirect(via[len(via)-1].URL.String())
 	}
 
+	// SECURITY: Strip sensitive headers on cross-origin redirects to prevent
+	// credential leakage. When the redirect target host differs from the original
+	// request host, remove Authorization, Cookie, and Proxy-Authorization headers.
+	if len(via) > 0 && req.URL.Hostname() != via[0].URL.Hostname() {
+		req.Header.Del("Authorization")
+		req.Header.Del("Proxy-Authorization")
+		req.Header.Del("Cookie")
+	}
+
 	// SECURITY: Detect circular redirects to prevent infinite loops.
 	// A circular redirect occurs when the target URL appeared earlier in the chain
 	// but was reached from a DIFFERENT URL (true cycle). Same-URL repeats (A→A→A)
@@ -253,7 +262,6 @@ func (t *transport) validateRedirectTarget(targetURL *url.URL) error {
 		return fmt.Errorf("nil redirect URL")
 	}
 
-	// SECURITY: Check URL scheme first (lightweight) before expensive DNS resolution
 	scheme := strings.ToLower(targetURL.Scheme)
 	if scheme != "http" && scheme != "https" {
 		return fmt.Errorf("unsupported redirect scheme: %s", targetURL.Scheme)
@@ -264,34 +272,9 @@ func (t *transport) validateRedirectTarget(targetURL *url.URL) error {
 		return fmt.Errorf("empty host in redirect URL")
 	}
 
-	// Check for localhost variations
-	if validation.IsLocalhost(host) {
-		return fmt.Errorf("localhost access blocked")
-	}
-
-	// If host is an IP address, validate it directly
-	if ip := net.ParseIP(host); ip != nil {
-		if err := validation.ValidateIPWithExemptions(ip, t.exemptNets); err != nil {
-			return fmt.Errorf("private/reserved IP blocked")
-		}
-		return nil
-	}
-
-	// For domain names, resolve and check all IPs.
-	// The connection pool dialer provides a second layer of protection by resolving
-	// DNS once and dialing the validated IP directly, preventing DNS rebinding TOCTOU.
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return fmt.Errorf("DNS resolution failed for redirect target: %w", err)
-	}
-
-	for _, ip := range ips {
-		if err := validation.ValidateIPWithExemptions(ip, t.exemptNets); err != nil {
-			return fmt.Errorf("redirect domain resolves to blocked address")
-		}
-	}
-
-	return nil
+	// Resolve DNS for redirect targets to prevent SSRF via DNS-rebinding.
+	// The connection pool dialer provides a second layer of defense.
+	return validation.ValidateSSRFHost(host, t.exemptNets, true)
 }
 
 // redirectContextKey is a typed context key for redirect settings.

@@ -1,4 +1,4 @@
-# HTTPC - Production-Ready HTTP Client for Go
+# HTTPC - Secure HTTP Client for Go
 
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://golang.org)
 [![Go Reference](https://pkg.go.dev/badge/github.com/cybergodev/httpc.svg)](https://pkg.go.dev/github.com/cybergodev/httpc)
@@ -7,7 +7,7 @@
 [![Zero Deps](https://img.shields.io/badge/deps-zero-brightgreen.svg)](go.mod)
 [![Thread Safe](https://img.shields.io/badge/thread%20safe-%E2%9C%93-brightgreen.svg)](docs/09_concurrency-safety.md)
 
-A high-performance HTTP client library for Go with enterprise-grade security, minimal dependencies, and production-ready defaults.
+A fast, secure HTTP client library for Go with sensible defaults, minimal dependencies, and built-in resilience.
 
 **[中文文档](README_zh-CN.md)**
 
@@ -22,7 +22,7 @@ A high-performance HTTP client library for Go with enterprise-grade security, mi
 | **Built-in Resilience** | Smart retry with exponential backoff and jitter |
 | **Developer Friendly** | Clean API, intuitive options pattern, comprehensive documentation |
 | **Minimal Dependencies** | Only `golang.org/x/sys` for system-level operations |
-| **Production Ready** | Battle-tested defaults, extensive test coverage |
+| **Reliable Defaults** | Well-tested defaults, extensive test coverage |
 | **Cookie Management** | Full cookie jar support with security validation |
 | **File Operations** | Secure file download with progress tracking and resume support |
 
@@ -557,7 +557,7 @@ sm.SetCookieSecurity(httpc.StrictCookieSecurityConfig())
 ### Preset Configurations
 
 ```go
-// Production-ready defaults (recommended)
+// Recommended defaults
 client, _ := httpc.New(httpc.DefaultConfig())
 
 // Maximum security (SSRF protection enabled)

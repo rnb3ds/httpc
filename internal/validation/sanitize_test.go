@@ -173,17 +173,84 @@ func TestSanitizeURL_CredentialRemoval(t *testing.T) {
 	for _, url := range urls {
 		t.Run(url, func(t *testing.T) {
 			result := SanitizeURL(url)
-			// Result should never contain original credentials
 			if result == url {
 				t.Errorf("Credentials were not removed from URL")
 			}
-			// Result should contain masked credentials pattern
 			if len(result) > 0 && result[0] != ':' {
-				// Should have ***:*** pattern for user:pass
 				if !strings.Contains(result, "***:***@") && !strings.Contains(result, "***@") {
 					t.Errorf("Expected masked credentials in result: %q", result)
 				}
 			}
 		})
 	}
+}
+
+func TestSanitizeURL_BoundaryConditions(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"IPv6 with zone ID", "https://user:pass@[fe80::1%25eth0]:8080/path", "https://***:***@[fe80::1%25eth0]:8080/path"},
+		{"Double URL encoding", "https://example.com/api?q=%25xx", "https://example.com/api?q=%25xx"},
+		{"Very long hostname", "https://" + strings.Repeat("a", 253) + ".com/path", ""},
+		{"Multiple sensitive params", "https://example.com?token=secret&api_key=key123&password=pass", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := SanitizeURL(tt.input)
+			// For URLs with credentials, verify they are masked
+			if strings.Contains(tt.input, "user:pass@") && !strings.Contains(result, "***:***@") {
+				t.Errorf("Credentials not masked in %q -> %q", tt.input, result)
+			}
+			// For long URLs, just verify no panic
+			t.Logf("SanitizeURL(%q) = %q", tt.input[:min(50, len(tt.input))], result[:min(50, len(result))])
+		})
+	}
+}
+
+func TestIsSensitiveQueryParam(t *testing.T) {
+	tests := []struct {
+		name     string
+		param    string
+		expected bool
+	}{
+		// Sensitive params
+		{"token", "token", true},
+		{"access_token", "access_token", true},
+		{"api_key", "api_key", true},
+		{"password", "password", true},
+		{"secret", "secret", true},
+		{"jwt", "jwt", true},
+		{"session_id", "session_id", true},
+
+		// Case insensitive
+		{"TOKEN uppercase", "TOKEN", true},
+		{"Token mixed", "Token", true},
+		{"API_KEY upper", "API_KEY", true},
+
+		// Non-sensitive params
+		{"page not sensitive", "page", false},
+		{"limit not sensitive", "limit", false},
+		{"id not sensitive", "id", false},
+		{"q not sensitive", "q", false},
+		{"empty not sensitive", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := IsSensitiveQueryParam(tt.param)
+			if result != tt.expected {
+				t.Errorf("IsSensitiveQueryParam(%q) = %v, want %v", tt.param, result, tt.expected)
+			}
+		})
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

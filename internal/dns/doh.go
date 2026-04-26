@@ -141,7 +141,12 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 			for {
 				current := r.cacheSize.Load()
 				if current >= maxDoHCacheSize {
-					break // Cache full, don't store but still return result
+					// Cache full â evict expired entries to make room
+					r.evictExpiredEntries()
+					if r.cacheSize.Load() >= maxDoHCacheSize {
+						break // Still full after eviction, skip caching
+					}
+					continue
 				}
 				if r.cacheSize.CompareAndSwap(current, current+1) {
 					cacheTTL := time.Duration(r.cacheTTL.Load())
@@ -196,7 +201,13 @@ func (r *DoHResolver) lookupWithProvider(ctx context.Context, provider *DoHProvi
 	if err != nil {
 		return nil, fmt.Errorf("DoH request failed: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }() // best-effort cleanup
+	defer func() {
+		// Drain remaining body to allow HTTP transport connection reuse.
+		// Without draining, unread data prevents the connection from being
+		// returned to the idle pool, forcing a new connection on next lookup.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxDoHResponseSize))
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("DoH request returned status %d", resp.StatusCode)
@@ -441,8 +452,24 @@ func (r *DoHResolver) ClearCache() {
 	r.cacheSize.Store(0)
 	// Then delete all entries - any new entries added during this time
 	// will correctly increment the counter from 0
-	r.cache.Range(func(key, value interface{}) bool {
+	r.cache.Range(func(key, value any) bool {
 		r.cache.Delete(key)
+		return true
+	})
+}
+
+// evictExpiredEntries removes expired cache entries to free space.
+// Called proactively when the cache is full to avoid discarding fresh results.
+func (r *DoHResolver) evictExpiredEntries() {
+	now := time.Now()
+	r.cache.Range(func(key, value any) bool {
+		if entry, ok := value.(*cacheEntry); ok && entry != nil {
+			if now.After(entry.Expires) {
+				if _, deleted := r.cache.LoadAndDelete(key); deleted {
+						r.cacheSize.Add(-1)
+				}
+			}
+		}
 		return true
 	})
 }

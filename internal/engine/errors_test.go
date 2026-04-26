@@ -10,8 +10,6 @@ import (
 	"net/url"
 	"testing"
 	"time"
-
-	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // ============================================================================
@@ -89,59 +87,6 @@ func TestClientError_Error(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := tt.err.Error()
-			if result != tt.expected {
-				t.Errorf("Expected %q, got %q", tt.expected, result)
-			}
-		})
-	}
-}
-
-func TestSanitizeURL(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name:     "URL without credentials",
-			input:    "https://example.com/path",
-			expected: "https://example.com/path",
-		},
-		{
-			name:     "URL with username and password",
-			input:    "https://user:password@example.com/path",
-			expected: "https://***:***@example.com/path",
-		},
-		{
-			name:     "URL with only username",
-			input:    "https://user@example.com/path",
-			expected: "https://***@example.com/path",
-		},
-		{
-			name:     "URL with query parameters",
-			input:    "https://user:pass@example.com/path?key=value",
-			expected: "https://***:***@example.com/path?key=value",
-		},
-		{
-			name:     "URL with fragment",
-			input:    "https://user:pass@example.com/path#section",
-			expected: "https://***:***@example.com/path",
-		},
-		{
-			name:     "URL without scheme (relative path)",
-			input:    "not a valid url",
-			expected: "not%20a%20valid%20url",
-		},
-		{
-			name:     "HTTP URL with credentials",
-			input:    "http://admin:secret@localhost:8080/api",
-			expected: "http://***:***@localhost:8080/api",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := validation.SanitizeURL(tt.input)
 			if result != tt.expected {
 				t.Errorf("Expected %q, got %q", tt.expected, result)
 			}
@@ -489,31 +434,6 @@ func TestClientError_Code(t *testing.T) {
 				t.Errorf("Code() = %q, want %q", got, tt.expectCode)
 			}
 		})
-	}
-}
-
-func TestContainsFold(t *testing.T) {
-	tests := []struct {
-		s, substr string
-		want      bool
-	}{
-		{"Hello World", "world", true},
-		{"hello world", "WORLD", true},
-		{"Hello", "ello", true},
-		{"Hello", "xyz", false},
-		{"", "", true},
-		{"abc", "", true},
-		{"", "a", false},
-		{"ab", "abc", false},
-		{"HTTP/2 invalid", "INVALID", true},
-		{"connection refused", "REFUSED", true},
-	}
-
-	for _, tt := range tests {
-		got := containsFold(tt.s, tt.substr)
-		if got != tt.want {
-			t.Errorf("containsFold(%q, %q) = %v, want %v", tt.s, tt.substr, got, tt.want)
-		}
 	}
 }
 

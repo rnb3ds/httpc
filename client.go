@@ -58,7 +58,7 @@ package httpc
 //
 // # Request Options
 //
-// Core options (25+ functions):
+// Core options (26 functions):
 //
 //	// Headers
 //	httpc.WithHeader("Authorization", "Bearer token")
@@ -85,6 +85,8 @@ package httpc
 //	// Cookies
 //	httpc.WithCookie(http.Cookie{Name: "session", Value: "abc"})
 //	httpc.WithCookieString("session=abc; token=xyz")
+//	httpc.WithCookieMap(map[string]string{"session": "abc"})
+//	httpc.WithSecureCookie(securityConfig)
 //
 //	// Request control
 //	httpc.WithContext(ctx)
@@ -92,6 +94,7 @@ package httpc
 //	httpc.WithMaxRetries(3)
 //	httpc.WithFollowRedirects(false)
 //	httpc.WithMaxRedirects(5)
+//	httpc.WithStreamBody(true)
 //
 //	// Callbacks
 //	httpc.WithOnRequest(callback)
@@ -128,6 +131,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"maps"
+	"net"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -199,8 +203,19 @@ type DomainClienter interface {
 	Session() *SessionManager
 }
 
+// engineClient defines the interface for the internal engine.Client.
+// This enables testing clientImpl without a real engine.Client.
+type engineClient interface {
+	Request(ctx context.Context, method, url string, opts ...engine.RequestOption) (*engine.Response, error)
+	Close() error
+	IsClosed() bool
+}
+
+// Compile-time check that engine.Client satisfies engineClient.
+var _ engineClient = (*engine.Client)(nil)
+
 type clientImpl struct {
-	engine          *engine.Client
+	engine          engineClient
 	middlewareChain Handler
 	hasMiddlewares  bool
 }
@@ -303,17 +318,19 @@ func deepCopyConfig(src *Config) *Config {
 }
 
 // buildMiddlewareChain constructs a middleware chain from the provided middlewares.
-// The final handler executes the actual HTTP request via the engine.
+// The final handler copies the middleware-modified request fields into a fresh engine
+// request and executes it. This avoids re-applying user options (double execution) and
+// uses a single option closure to forward all mutable state including callbacks.
 func (c *clientImpl) buildMiddlewareChain(middlewares []MiddlewareFunc) Handler {
-	// Final handler that executes the actual request
 	finalHandler := func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
-		// Use the context from the request (may have been modified by middleware)
 		reqCtx := req.Context()
 		if reqCtx == nil {
 			reqCtx = ctx
 		}
 
-		// Execute the request via engine using interface methods
+		// Single option closure forwards all mutable fields from the middleware-modified request.
+		// The engine.Request type assertion for callbacks is safe: executeRequest always
+		// constructs *engine.Request objects, and middleware receives that same pointer.
 		resp, err := c.engine.Request(reqCtx, req.Method(), req.URL(),
 			func(r *engine.Request) error {
 				r.SetHeaders(req.Headers())
@@ -322,12 +339,21 @@ func (c *clientImpl) buildMiddlewareChain(middlewares []MiddlewareFunc) Handler 
 				r.SetTimeout(req.Timeout())
 				r.SetMaxRetries(req.MaxRetries())
 				r.SetCookies(req.Cookies())
-				r.SetFollowRedirects(req.FollowRedirects())
-				r.SetMaxRedirects(req.MaxRedirects())
-				// Forward callbacks via type assertion
+				if fr := req.FollowRedirects(); fr != nil {
+					r.SetFollowRedirects(fr)
+				}
+				if mr := req.MaxRedirects(); mr != nil {
+					r.SetMaxRedirects(mr)
+				}
+				r.SetStreamBody(req.StreamBody())
+				// Forward callbacks — safe because we always pass *engine.Request to the chain
 				if engReq, ok := req.(*engine.Request); ok {
-					r.SetOnRequest(engReq.OnRequest())
-					r.SetOnResponse(engReq.OnResponse())
+					if cb := engReq.OnRequest(); cb != nil {
+						r.SetOnRequest(cb)
+					}
+					if cb := engReq.OnResponse(); cb != nil {
+						r.SetOnResponse(cb)
+					}
 				}
 				return nil
 			})
@@ -337,7 +363,6 @@ func (c *clientImpl) buildMiddlewareChain(middlewares []MiddlewareFunc) Handler 
 		return resp, nil
 	}
 
-	// Build the chain by wrapping middlewares in reverse order
 	return Chain(middlewares...)(finalHandler)
 }
 
@@ -390,10 +415,20 @@ func (c *clientImpl) Request(ctx context.Context, method, url string, options ..
 		return nil, err
 	}
 	result := convertResponseToResult(resp)
+	releaseResponseMutator(resp)
+	return result, nil
+}
+
+// releaseResponseMutator safely releases a ResponseMutator back to the engine pool.
+// If the response is an *engine.Response, it is returned via ReleaseResponse.
+// Other implementations are silently ignored (no pool to return to).
+func releaseResponseMutator(resp ResponseMutator) {
+	if resp == nil {
+		return
+	}
 	if engineResp, ok := resp.(*engine.Response); ok {
 		engine.ReleaseResponse(engineResp)
 	}
-	return result, nil
 }
 
 // middlewareRequestPool reduces allocations for engine.Request objects in the middleware path
@@ -415,9 +450,12 @@ func (c *clientImpl) executeRequest(ctx context.Context, method, url string, opt
 	if !ok || engineReq == nil {
 		engineReq = &engine.Request{}
 	}
-	defer middlewareRequestPool.Put(engineReq)
+	// Clear sensitive data (cookies, headers, auth tokens) before returning to pool
+	defer func() {
+		*engineReq = engine.Request{}
+		middlewareRequestPool.Put(engineReq)
+	}()
 
-	*engineReq = engine.Request{}
 	engineReq.SetMethod(method)
 	engineReq.SetURL(url)
 	engineReq.SetContext(ctx)
@@ -587,7 +625,7 @@ func SetDefaultClient(client Client) error {
 const (
 	minIdleConnsPerHost    = 2  // Minimum idle connections per host
 	maxIdleConnsPerHostCap = 10 // Maximum cap for idle connections per host
-	retryDelayMultiplier   = 3  // Retry delay multiplication factor
+	maxRetryDelayBackoffMultiplier = 3  // Multiplier for Delay*BackoffFactor to cap max retry delay
 )
 
 // calculateIdleConnsPerHost calculates the optimal number of idle connections per host
@@ -633,7 +671,7 @@ func calculateMaxRetryDelay(cfg *Config) time.Duration {
 		return defaultMaxRetryDelay
 	}
 
-	calculated := time.Duration(float64(cfg.Retry.Delay) * cfg.Retry.BackoffFactor * retryDelayMultiplier)
+	calculated := time.Duration(float64(cfg.Retry.Delay) * cfg.Retry.BackoffFactor * maxRetryDelayBackoffMultiplier)
 	if calculated > absoluteMaxRetryDelay {
 		return absoluteMaxRetryDelay
 	}
@@ -686,6 +724,7 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		MaxTLSVersion:           maxTLSVersion,
 		InsecureSkipVerify:      cfg.Security.InsecureSkipVerify,
 		MaxResponseBodySize:     cfg.Security.MaxResponseBodySize,
+		MaxRequestBodySize:      cfg.Security.MaxRequestBodySize,
 		MaxDecompressedBodySize: cfg.Security.MaxDecompressedBodySize,
 		ValidateURL:             cfg.Security.ValidateURL,
 		ValidateHeaders:         cfg.Security.ValidateHeaders,
@@ -712,15 +751,25 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 	}
 
 	// Parse SSRF exempt CIDRs
-	if len(cfg.Security.SSRFExemptCIDRs) > 0 {
-		exemptNets, err := validation.ParseExemptCIDRs(cfg.Security.SSRFExemptCIDRs)
-		if err != nil {
-			return nil, fmt.Errorf("invalid SSRF exempt CIDRs: %w", err)
-		}
-		engineConfig.ExemptNets = exemptNets
+	exemptNets, err := parseExemptCIDRs(cfg.Security.SSRFExemptCIDRs)
+	if err != nil {
+		return nil, err
 	}
+	engineConfig.ExemptNets = exemptNets
 
 	return engineConfig, nil
+}
+
+// parseExemptCIDRs parses and validates SSRF exempt CIDR strings.
+func parseExemptCIDRs(cidrs []string) ([]*net.IPNet, error) {
+	if len(cidrs) == 0 {
+		return nil, nil
+	}
+	exemptNets, err := validation.ParseExemptCIDRs(cidrs)
+	if err != nil {
+		return nil, fmt.Errorf("invalid SSRF exempt CIDRs: %w", err)
+	}
+	return exemptNets, nil
 }
 
 // resultPool reduces heap allocations for Result objects.
@@ -793,8 +842,13 @@ func convertResponseToResult(resp ResponseMutator) *Result {
 	result.Response.Status = resp.Status()
 	result.Response.Proto = resp.Proto()
 	result.Response.Headers = resp.Headers()
-	result.Response.Body = resp.Body()
+	// Convert body directly from raw bytes, bypassing the engine's lazy
+	// string conversion (sync.Once). The engine Response is released right
+	// after this call, so its cached body string would be wasted.
 	result.Response.RawBody = resp.RawBody()
+	if len(result.Response.RawBody) > 0 {
+		result.Response.Body = string(result.Response.RawBody)
+	}
 	result.Response.ContentLength = resp.ContentLength()
 	result.Response.Cookies = resp.Cookies()
 	result.Meta.Duration = resp.Duration()

@@ -1,8 +1,6 @@
 package security
 
 import (
-	"fmt"
-	"net/url"
 	"strings"
 	"sync"
 )
@@ -233,28 +231,4 @@ func (w *DomainWhitelist) Domains() (exact []string, wildcards []string) {
 	copy(wildcards, w.wildcards)
 
 	return exact, wildcards
-}
-
-// ValidateRedirectWhitelist validates that a redirect target URL is allowed
-// based on the provided whitelist.
-// Returns an error if the redirect target hostname is not in the whitelist.
-func ValidateRedirectWhitelist(targetURL *url.URL, whitelist *DomainWhitelist) error {
-	if whitelist == nil {
-		return nil // No whitelist means all redirects are allowed
-	}
-
-	if targetURL == nil {
-		return fmt.Errorf("redirect URL is nil")
-	}
-
-	hostname := targetURL.Hostname()
-	if hostname == "" {
-		return fmt.Errorf("redirect URL has empty hostname")
-	}
-
-	if !whitelist.IsAllowed(hostname) {
-		return fmt.Errorf("redirect to '%s' is not in the whitelist", hostname)
-	}
-
-	return nil
 }

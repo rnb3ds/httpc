@@ -136,6 +136,7 @@ func ValidateCookieSecurity(cookie *http.Cookie, config *CookieSecurityConfig) e
 }
 
 // ValidateCookieStrict validates a cookie with strict security requirements.
+// Deprecated: unused in production code — kept for internal utility API surface.
 // This delegates Secure/HttpOnly checks to ValidateCookieSecurity, then applies
 // additional strict checks for SameSite and Path attributes.
 // Accepts SameSite=Strict or SameSite=Lax (but not Default/None).
@@ -208,6 +209,7 @@ func validateSameSite(cookie *http.Cookie, required string, allowNone bool) erro
 }
 
 // EnforceCookieSecurity applies security attributes to a cookie based on the configuration.
+// Deprecated: unused in production code — kept for internal utility API surface.
 // This modifies the cookie in place to meet the security requirements.
 func EnforceCookieSecurity(cookie *http.Cookie, config *CookieSecurityConfig) {
 	if cookie == nil || config == nil {

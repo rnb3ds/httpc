@@ -1,7 +1,6 @@
 package security
 
 import (
-	"net/url"
 	"testing"
 )
 
@@ -173,75 +172,6 @@ func TestDomainWhitelist_Remove(t *testing.T) {
 	if !wl.IsAllowed("other.com") {
 		t.Error("expected other.com to still be allowed")
 	}
-}
-
-func TestValidateRedirectWhitelist(t *testing.T) {
-	wl := NewDomainWhitelist("example.com", "*.trusted.org")
-
-	tests := []struct {
-		name    string
-		url     string
-		wantErr bool
-	}{
-		{
-			name:    "exact match",
-			url:     "https://example.com/path",
-			wantErr: false,
-		},
-		{
-			name:    "wildcard match",
-			url:     "https://sub.trusted.org/path",
-			wantErr: false,
-		},
-		{
-			name:    "not in whitelist",
-			url:     "https://evil.com/path",
-			wantErr: true,
-		},
-		{
-			name:    "nil URL",
-			url:     "",
-			wantErr: true,
-		},
-		{
-			name:    "empty hostname",
-			url:     "https:///path",
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var targetURL *url.URL
-			if tt.url != "" {
-				var err error
-				targetURL, err = url.Parse(tt.url)
-				if err != nil {
-					t.Fatalf("failed to parse URL: %v", err)
-				}
-			}
-
-			err := ValidateRedirectWhitelist(targetURL, wl)
-			if tt.wantErr {
-				if err == nil {
-					t.Error("expected error, got nil")
-				}
-			} else {
-				if err != nil {
-					t.Errorf("expected no error, got %v", err)
-				}
-			}
-		})
-	}
-
-	// Test nil whitelist
-	t.Run("nil whitelist", func(t *testing.T) {
-		targetURL, _ := url.Parse("https://anydomain.com/path")
-		err := ValidateRedirectWhitelist(targetURL, nil)
-		if err != nil {
-			t.Errorf("nil whitelist should allow all domains, got error: %v", err)
-		}
-	})
 }
 
 func TestDomainWhitelist_Concurrency(t *testing.T) {

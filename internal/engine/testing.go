@@ -110,6 +110,13 @@ func (m *mockTransport) GetLastRequest() *http.Request {
 	return m.Requests[len(m.Requests)-1]
 }
 
+// withMockTransport returns a clientOption that injects a mock transport.
+func withMockTransport(mt *mockTransport) clientOption {
+	return func(opts *clientOptions) {
+		opts.customTransport = mt
+	}
+}
+
 // Reset clears all recorded state.
 func (m *mockTransport) Reset() {
 	m.mu.Lock()

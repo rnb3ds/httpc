@@ -18,6 +18,16 @@ import (
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
+// ErrPoolExhausted is returned when the connection pool has reached its
+// maximum capacity and cannot accept new connections. Callers can detect
+// this condition with errors.Is(err, connection.ErrPoolExhausted).
+var ErrPoolExhausted = fmt.Errorf("connection pool exhausted")
+
+// hostConnMaxAge is the maximum age for a hostStats entry before it is
+// eligible for eviction. Stale entries (no recent connections) are removed
+// during periodic cleanup to prevent unbounded map growth.
+const hostConnMaxAge = 30 * time.Minute
+
 // PoolManager provides intelligent connection pool management with monitoring
 type PoolManager struct {
 	config *Config
@@ -36,6 +46,8 @@ type PoolManager struct {
 
 	closed int32
 	mu     sync.RWMutex
+
+	lastEviction int64 // Unix timestamp of last eviction run (atomic)
 }
 
 // certPinner defines the interface for certificate pinning
@@ -214,7 +226,7 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 		// Enforce total connection limit
 		if pm.config.MaxTotalConns > 0 && atomic.LoadInt64(&pm.totalConns) >= int64(pm.config.MaxTotalConns) {
 			atomic.AddInt64(&pm.rejectedConns, 1)
-			return nil, fmt.Errorf("connection pool exhausted (max %d)", pm.config.MaxTotalConns)
+			return nil, fmt.Errorf("%w (max %d)", ErrPoolExhausted, pm.config.MaxTotalConns)
 		}
 		startTime := time.Now()
 
@@ -463,6 +475,9 @@ func (tc *trackedConn) Close() error {
 // updateConnectionMetrics efficiently updates per-host connection statistics.
 // Returns the hostStats pointer so callers can capture it for trackedConn.
 func (pm *PoolManager) updateConnectionMetrics(host string, connTime int64, success bool) *hostStats {
+	// Trigger lazy eviction of stale host entries to prevent unbounded map growth.
+	pm.evictStaleHosts()
+
 	// Use a pre-allocated stats pointer to avoid allocation in the hot path
 	value, _ := pm.hostConns.LoadOrStore(host, &hostStats{
 		Host:     host,
@@ -495,6 +510,33 @@ func (pm *PoolManager) updateConnectionMetrics(host string, connTime int64, succ
 
 	atomic.StoreInt64(&stats.LastUsed, time.Now().Unix())
 	return stats
+}
+
+// evictStaleHosts removes hostStats entries that haven't been used recently.
+// Uses atomic CAS to ensure only one goroutine performs eviction at a time,
+// avoiding contention in the hot path. Eviction runs at most once per minute.
+func (pm *PoolManager) evictStaleHosts() {
+	const evictionInterval int64 = 60 // seconds between eviction runs
+	now := time.Now().Unix()
+
+	last := atomic.LoadInt64(&pm.lastEviction)
+	if now-last < evictionInterval {
+		return
+	}
+
+	if !atomic.CompareAndSwapInt64(&pm.lastEviction, last, now) {
+		return // Another goroutine is already evicting
+	}
+
+	cutoff := now - int64(hostConnMaxAge/time.Second)
+	pm.hostConns.Range(func(key, value any) bool {
+		if stats, ok := value.(*hostStats); ok && stats != nil {
+			if atomic.LoadInt64(&stats.LastUsed) < cutoff && atomic.LoadInt64(&stats.ActiveConns) == 0 {
+				pm.hostConns.Delete(key)
+			}
+		}
+		return true
+	})
 }
 
 func (pm *PoolManager) GetTransport() *http.Transport {
@@ -539,7 +581,7 @@ func (pm *PoolManager) Close() error {
 	}
 
 	// Clean up per-host connection tracking map to prevent memory leak
-	pm.hostConns.Range(func(key, _ interface{}) bool {
+	pm.hostConns.Range(func(key, _ any) bool {
 		pm.hostConns.Delete(key)
 		return true
 	})

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"strings"
 	"time"
 
@@ -21,10 +22,14 @@ type DownloadProgressCallback func(downloaded, total int64, speed float64)
 // DownloadConfig configures file download behavior.
 // Use DefaultDownloadConfig() to get a configuration with sensible defaults.
 type DownloadConfig struct {
-	FilePath         string
+	// FilePath is the destination path for the downloaded file.
+	FilePath string
+	// ProgressCallback is called periodically during download to report progress.
 	ProgressCallback DownloadProgressCallback
-	Overwrite        bool
-	ResumeDownload   bool
+	// Overwrite allows overwriting an existing file at FilePath.
+	Overwrite bool
+	// ResumeDownload attempts to resume a previously interrupted download.
+	ResumeDownload bool
 }
 
 // DefaultDownloadConfig returns a DownloadConfig with default settings.
@@ -46,13 +51,21 @@ func DefaultDownloadConfig() *DownloadConfig {
 
 // DownloadResult contains information about a completed download.
 type DownloadResult struct {
-	FilePath        string
-	BytesWritten    int64
-	Duration        time.Duration
-	AverageSpeed    float64
-	StatusCode      int
-	ContentLength   int64
-	Resumed         bool
+	// FilePath is the path where the file was saved.
+	FilePath string
+	// BytesWritten is the total number of bytes written to disk.
+	BytesWritten int64
+	// Duration is the total time taken for the download.
+	Duration time.Duration
+	// AverageSpeed is the average download speed in bytes/second.
+	AverageSpeed float64
+	// StatusCode is the HTTP status code of the download response.
+	StatusCode int
+	// ContentLength is the Content-Length reported by the server.
+	ContentLength int64
+	// Resumed indicates whether the download was resumed from a previous partial download.
+	Resumed bool
+	// ResponseCookies contains cookies returned by the download response.
 	ResponseCookies []*http.Cookie
 }
 
@@ -149,7 +162,6 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	}
 
 	// Use streaming mode to avoid buffering the entire response body into memory.
-	// The body is streamed directly from the network to the file via io.Copy.
 	streamOptions := make([]RequestOption, len(options)+1)
 	copy(streamOptions, options)
 	streamOptions[len(options)] = WithStreamBody(true)
@@ -165,9 +177,10 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	if !ok {
 		return nil, fmt.Errorf("unexpected response type from download request")
 	}
+	bodyReader := engResp.RawBodyReader()
+	engResp.SetRawBodyReader(nil) // Transfer ownership; prevent ReleaseResponse from closing
 	defer engine.ReleaseResponse(engResp)
 
-	bodyReader := engResp.RawBodyReader()
 	if bodyReader != nil {
 		defer func() { _ = bodyReader.Close() }()
 	}
@@ -178,31 +191,57 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	responseCookies := engResp.Cookies()
 
 	resumed := resumeOffset > 0 && statusCode == http.StatusPartialContent
-	if resumeOffset > 0 && statusCode == http.StatusRequestedRangeNotSatisfiable {
-		return &DownloadResult{
-			FilePath:        opts.FilePath,
-			BytesWritten:    0,
-			Duration:        duration,
-			AverageSpeed:    0,
-			StatusCode:      statusCode,
-			ContentLength:   resumeOffset,
-			Resumed:         false,
-			ResponseCookies: responseCookies,
-		}, nil
-	}
 
-	if statusCode != http.StatusOK && statusCode != http.StatusPartialContent {
-		if bodyReader != nil {
-			_, _ = io.Copy(io.Discard, io.LimitReader(bodyReader, 1<<20))
-		}
-		return nil, fmt.Errorf("unexpected status code: %d", statusCode)
+	// Validate response status
+	if err := handleDownloadStatus(statusCode, bodyReader, resumeOffset); err != nil {
+		return nil, err
 	}
 
 	if bodyReader == nil {
 		return nil, fmt.Errorf("download response has no body reader")
 	}
 
+	return writeDownloadBody(bodyReader, opts, resumed, resumeOffset, statusCode, contentLength, duration, responseCookies)
+}
+
+// handleDownloadStatus validates the HTTP response status for a download request.
+// Returns a DownloadResult for 416 Range Not Satisfiable (safe to continue),
+// an error for unexpected status codes, or nil for 200/206 (success).
+func handleDownloadStatus(statusCode int, bodyReader io.Reader, resumeOffset int64) error {
+	if resumeOffset > 0 && statusCode == http.StatusRequestedRangeNotSatisfiable {
+		// Drain body for connection reuse
+		if bodyReader != nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(bodyReader, 1<<20))
+		}
+		return fmt.Errorf("server cannot satisfy range request (416)")
+	}
+
+	if statusCode != http.StatusOK && statusCode != http.StatusPartialContent {
+		var bodyPreview string
+		if bodyReader != nil {
+			previewBuf := make([]byte, 512)
+			n, _ := bodyReader.Read(previewBuf)
+			if n > 0 {
+				bodyPreview = string(previewBuf[:n])
+				if len(bodyPreview) > 200 {
+					bodyPreview = bodyPreview[:200] + "..."
+				}
+			}
+			_, _ = io.Copy(io.Discard, io.LimitReader(bodyReader, 1<<20))
+		}
+		if bodyPreview != "" {
+			return fmt.Errorf("unexpected status code: %d: %s", statusCode, bodyPreview)
+		}
+		return fmt.Errorf("unexpected status code: %d", statusCode)
+	}
+
+	return nil
+}
+
+// writeDownloadBody streams the response body to a file and returns download statistics.
+func writeDownloadBody(bodyReader io.Reader, opts *DownloadConfig, resumed bool, resumeOffset int64, statusCode int, contentLength int64, duration time.Duration, responseCookies []*http.Cookie) (*DownloadResult, error) {
 	var file *os.File
+	var err error
 	if resumed {
 		file, err = os.OpenFile(opts.FilePath, os.O_WRONLY|os.O_APPEND, filePermissions)
 	} else {
@@ -218,13 +257,33 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	}()
 
 	// Stream body directly from network to file — no full-body buffering.
-	bytesWritten, err := io.Copy(file, bodyReader)
+	var writer io.Writer = file
+	if opts.ProgressCallback != nil {
+		totalSize := contentLength
+		if resumed {
+			totalSize += resumeOffset
+		}
+		writer = &progressWriter{
+			w:            file,
+			callback:     opts.ProgressCallback,
+			total:        totalSize,
+			offset:       resumeOffset,
+			startTime:    time.Now(),
+			lastCallback: time.Now(),
+		}
+	}
+
+	bytesWritten, err := io.Copy(writer, bodyReader)
 	if err != nil {
+		if !resumed {
+			_ = os.Remove(opts.FilePath) // best-effort cleanup of partial file
+		}
 		return nil, fmt.Errorf("failed to write file: %w", err)
 	}
 
 	avgSpeed := calculateSpeed(bytesWritten, duration)
 
+	// Final callback with complete stats
 	if opts.ProgressCallback != nil {
 		totalSize := contentLength
 		if resumed {
@@ -271,18 +330,26 @@ func getSystemPaths() []string {
 		fallthrough
 	default:
 		return []string{
-			// Critical system configuration and kernel
 			"/etc/", "/sys/", "/proc/", "/dev/", "/boot/",
-			// Root user directory
 			"/root/",
-			// System executables
 			"/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/",
-			// System libraries
 			"/lib/", "/lib32/", "/lib64/", "/usr/lib/", "/usr/lib32/", "/usr/lib64/",
-			// Runtime directories
 			"/run/", "/var/run/", "/sys/fs/",
 		}
 	}
+}
+
+// systemPathsOnce ensures getSystemPaths() is called only once.
+var (
+	systemPathsOnce  sync.Once
+	cachedSystemPaths []string
+)
+
+func getSystemPathsCached() []string {
+	systemPathsOnce.Do(func() {
+		cachedSystemPaths = getSystemPaths()
+	})
+	return cachedSystemPaths
 }
 
 func calculateSpeed(bytes int64, duration time.Duration) float64 {
@@ -343,8 +410,9 @@ func prepareFilePath(filePath string) error {
 		return fmt.Errorf("system path access denied for security")
 	}
 
-	// Check for path traversal
-	if !filepath.IsAbs(filePath) && strings.Contains(cleanPath, "..") {
+	// Check for path traversal: after filepath.Clean, only paths starting with ".."
+	// indicate traversal above CWD. Filenames like "backup..zip" are safe.
+	if !filepath.IsAbs(filePath) && strings.HasPrefix(cleanPath, "..") {
 		wd, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("failed to get working directory: %w", err)
@@ -413,9 +481,7 @@ func isSystemPath(path string) bool {
 
 	cleanPath := filepath.Clean(absPath)
 
-	// On Windows, do case-insensitive comparison
-	// On Unix systems, do case-sensitive comparison
-	systemPaths := getSystemPaths()
+	systemPaths := getSystemPathsCached()
 
 	for _, sysPath := range systemPaths {
 		// Handle environment variable patterns on Windows
@@ -451,5 +517,36 @@ func isSystemPath(path string) bool {
 	}
 
 	return false
+}
+
+// progressWriter wraps an io.Writer to invoke progress callbacks during download.
+// Callbacks fire at most once per progressInterval to avoid overhead on fast networks.
+type progressWriter struct {
+	w            io.Writer
+	callback     DownloadProgressCallback
+	total        int64
+	offset       int64
+	written      int64
+	startTime    time.Time
+	lastCallback time.Time
+}
+
+const progressInterval = 200 * time.Millisecond
+
+func (pw *progressWriter) Write(p []byte) (int, error) {
+	n, err := pw.w.Write(p)
+	if n > 0 {
+		pw.written += int64(n)
+		if now := time.Now(); now.Sub(pw.lastCallback) >= progressInterval {
+			elapsed := now.Sub(pw.startTime).Seconds()
+			var speed float64
+			if elapsed > 0 {
+				speed = float64(pw.written) / elapsed
+			}
+			pw.callback(pw.offset+pw.written, pw.total, speed)
+			pw.lastCallback = now
+		}
+	}
+	return n, err
 }
 

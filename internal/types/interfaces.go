@@ -24,6 +24,7 @@ type RequestReader interface {
 	Cookies() []http.Cookie
 	FollowRedirects() *bool
 	MaxRedirects() *int
+	StreamBody() bool
 }
 
 // RequestWriter provides write-only access to request data for middleware.
@@ -42,6 +43,7 @@ type RequestWriter interface {
 	SetCookies([]http.Cookie)
 	SetFollowRedirects(*bool)
 	SetMaxRedirects(*int)
+	SetStreamBody(bool)
 }
 
 // RequestMutator provides read-write access to request data for middleware.

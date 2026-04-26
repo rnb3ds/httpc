@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"runtime/debug"
 	"time"
 
@@ -25,7 +26,9 @@ type AuditEvent struct {
 	Error         error         `json:"error,omitempty"`
 	SourceIP      string        `json:"sourceIP,omitempty"`
 	UserID        string        `json:"userID,omitempty"`
-	RedirectChain []string      `json:"redirectChain,omitempty"`
+	RedirectChain  []string      `json:"redirectChain,omitempty"`
+	ReqHeaders     map[string][]string `json:"reqHeaders,omitempty"`
+	RespHeaders    map[string][]string `json:"respHeaders,omitempty"`
 }
 
 // MarshalJSON implements custom JSON marshaling for AuditEvent.
@@ -97,6 +100,9 @@ func Chain(middlewares ...MiddlewareFunc) MiddlewareFunc {
 // The log function receives formatted log messages (similar to log.Printf).
 // SECURITY: URLs are sanitized to remove credentials before logging.
 func LoggingMiddleware(log func(format string, args ...any)) MiddlewareFunc {
+	if log == nil {
+		log = func(string, ...any) {}
+	}
 	return func(next Handler) Handler {
 		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 			start := time.Now()
@@ -237,7 +243,8 @@ func MetricsMiddleware(onMetrics func(method, url string, statusCode int, durati
 				if resp != nil {
 					statusCode = resp.StatusCode()
 				}
-				onMetrics(req.Method(), req.URL(), statusCode, duration, err)
+				sanitizedURL := validation.SanitizeURL(req.URL())
+				onMetrics(req.Method(), sanitizedURL, statusCode, duration, err)
 			}
 
 			return resp, err
@@ -312,6 +319,14 @@ func AuditMiddlewareWithConfig(onAudit func(event AuditEvent), config *AuditMidd
 				event.RedirectChain = resp.RedirectChain()
 			}
 
+			// Include headers if configured
+			if config.IncludeHeaders {
+				event.ReqHeaders = maskStringHeaders(req.Headers(), config.MaskHeaders)
+				if resp != nil {
+					event.RespHeaders = maskHTTPHeaders(resp.Headers(), config.MaskHeaders)
+				}
+			}
+
 			// Sanitize error if configured
 			if config.SanitizeError && event.Error != nil {
 				event.Error = fmt.Errorf("[sanitized]")
@@ -324,4 +339,48 @@ func AuditMiddlewareWithConfig(onAudit func(event AuditEvent), config *AuditMidd
 			return resp, err
 		}
 	}
+}
+
+// buildMaskSet creates a set of canonical header names for masking.
+func buildMaskSet(maskList []string) map[string]bool {
+	maskSet := make(map[string]bool, len(maskList))
+	for _, h := range maskList {
+		maskSet[http.CanonicalHeaderKey(h)] = true
+	}
+	return maskSet
+}
+
+// maskStringHeaders masks sensitive values in a map[string]string header map.
+// Converts string values to single-element slices for uniform output format.
+func maskStringHeaders(headers map[string]string, maskList []string) map[string][]string {
+	if len(headers) == 0 {
+		return nil
+	}
+	maskSet := buildMaskSet(maskList)
+	result := make(map[string][]string, len(headers))
+	for k, v := range headers {
+		if maskSet[http.CanonicalHeaderKey(k)] {
+			result[k] = []string{"[REDACTED]"}
+		} else {
+			result[k] = []string{v}
+		}
+	}
+	return result
+}
+
+// maskHTTPHeaders masks sensitive values in an http.Header.
+func maskHTTPHeaders(headers http.Header, maskList []string) map[string][]string {
+	if len(headers) == 0 {
+		return nil
+	}
+	maskSet := buildMaskSet(maskList)
+	result := make(map[string][]string, len(headers))
+	for k, vv := range headers {
+		if maskSet[http.CanonicalHeaderKey(k)] {
+			result[k] = []string{"[REDACTED]"}
+		} else {
+			result[k] = vv
+		}
+	}
+	return result
 }

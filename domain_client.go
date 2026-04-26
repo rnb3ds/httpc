@@ -69,9 +69,10 @@ func NewDomain(baseURL string, config ...*Config) (DomainClienter, error) {
 	}
 	cfg.Connection.EnableCookies = true
 
+	// New() handles ValidateConfig + deepCopyConfig internally
 	client, err := New(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create client: %w", err)
+		return nil, err
 	}
 
 	session, err := NewSessionManager()
@@ -235,12 +236,6 @@ func (dc *DomainClient) buildURL(pathStr string) (string, error) {
 	if strings.HasPrefix(pathStr, "http://") || strings.HasPrefix(pathStr, "https://") {
 		parsedURL, err := url.Parse(pathStr)
 		if err == nil && parsedURL.Scheme != "" && parsedURL.Host != "" {
-			// Validate URL scheme for security
-			// Only allow http and https schemes to prevent potential SSRF attacks
-			if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-				// Reject URLs with disallowed schemes (file:, data:, javascript:, etc.)
-				return "", fmt.Errorf("invalid URL scheme: %q: only http and https are allowed", parsedURL.Scheme)
-			}
 			return pathStr, nil
 		}
 	}
@@ -259,8 +254,18 @@ func (dc *DomainClient) buildURL(pathStr string) (string, error) {
 		return "", fmt.Errorf("invalid path %q: %w", pathStr, err)
 	}
 	result.Path = stdpath.Join(dc.parsedURL.Path, parsed.Path)
+	// Preserve trailing slash from base URL when request path is empty
+	if parsed.Path == "" && strings.HasSuffix(dc.parsedURL.Path, "/") &&
+		!strings.HasSuffix(result.Path, "/") {
+		result.Path += "/"
+	}
+	// Merge query params: base URL params + path params
 	if parsed.RawQuery != "" {
-		result.RawQuery = parsed.RawQuery
+		if result.RawQuery != "" {
+			result.RawQuery = result.RawQuery + "&" + parsed.RawQuery
+		} else {
+			result.RawQuery = parsed.RawQuery
+		}
 	}
 	if parsed.Fragment != "" {
 		result.Fragment = parsed.Fragment
@@ -268,14 +273,30 @@ func (dc *DomainClient) buildURL(pathStr string) (string, error) {
 	return result.String(), nil
 }
 
-// URL returns the base URL
-func (dc *DomainClient) URL() string { return dc.baseURL }
+// URL returns the base URL.
+// Returns empty string if the receiver is nil.
+func (dc *DomainClient) URL() string {
+	if dc == nil {
+		return ""
+	}
+	return dc.baseURL
+}
 
-// Domain returns the domain name (host without port)
-func (dc *DomainClient) Domain() string { return dc.domain }
+// Domain returns the domain name (host without port).
+// Returns empty string if the receiver is nil.
+func (dc *DomainClient) Domain() string {
+	if dc == nil {
+		return ""
+	}
+	return dc.domain
+}
 
 // Session returns the underlying SessionManager for advanced session management.
+// Returns nil if the receiver is nil.
 func (dc *DomainClient) Session() *SessionManager {
+	if dc == nil {
+		return nil
+	}
 	return dc.SessionManager
 }
 
@@ -286,6 +307,10 @@ var _ Client = (*DomainClient)(nil)
 var _ DomainClienter = (*DomainClient)(nil)
 
 // Close closes the underlying HTTP client and releases resources.
+// Returns nil if the receiver is nil.
 func (dc *DomainClient) Close() error {
+	if dc == nil {
+		return nil
+	}
 	return dc.client.Close()
 }

@@ -51,6 +51,8 @@ func (m *mockRequest) SetContext(v context.Context)    { m.context = v }
 func (m *mockRequest) SetCookies(v []http.Cookie)      { m.cookies = v }
 func (m *mockRequest) SetFollowRedirects(v *bool)      { m.followRedirects = v }
 func (m *mockRequest) SetMaxRedirects(v *int)          { m.maxRedirects = v }
+func (m *mockRequest) StreamBody() bool                  { return false }
+func (m *mockRequest) SetStreamBody(bool)                {}
 
 // mockResponse implements ResponseMutator for testing
 type mockResponse struct {

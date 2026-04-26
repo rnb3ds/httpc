@@ -15,7 +15,6 @@ import (
 	"github.com/cybergodev/httpc"
 	"github.com/cybergodev/httpc/internal/connection"
 	"github.com/cybergodev/httpc/internal/dns"
-	"github.com/cybergodev/httpc/internal/engine"
 	"github.com/cybergodev/httpc/internal/security"
 	"github.com/cybergodev/httpc/internal/validation"
 )
@@ -727,69 +726,6 @@ func hashString(s string) int {
 		h = -h
 	}
 	return h
-}
-
-// TestConcurrentMetricsRecording tests concurrent metrics recording.
-func TestConcurrentMetricsRecording(t *testing.T) {
-	metrics := &engine.Metrics{}
-	const numGoroutines = 100
-	const numRecords = 100
-
-	var wg sync.WaitGroup
-	wg.Add(numGoroutines)
-
-	for i := 0; i < numGoroutines; i++ {
-		go func(success bool) {
-			defer wg.Done()
-			for j := 0; j < numRecords; j++ {
-				metrics.RecordRequest(int64(j*1000), success)
-			}
-		}(i%2 == 0)
-	}
-
-	wg.Wait()
-
-	snapshot := metrics.Snapshot()
-	expectedTotal := int64(numGoroutines * numRecords)
-	if snapshot.TotalRequests != expectedTotal {
-		t.Errorf("Expected %d total requests, got %d", expectedTotal, snapshot.TotalRequests)
-	}
-}
-
-// TestConcurrentMetricsReadAndWrite tests concurrent read and write operations on metrics.
-func TestConcurrentMetricsReadAndWrite(t *testing.T) {
-	metrics := &engine.Metrics{}
-	const duration = 100 * time.Millisecond
-
-	var stop int32
-	var wg sync.WaitGroup
-
-	// Writers
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for atomic.LoadInt32(&stop) == 0 {
-			metrics.RecordRequest(1000, true)
-		}
-	}()
-
-	// Readers
-	for i := 0; i < 5; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for atomic.LoadInt32(&stop) == 0 {
-				snapshot := metrics.Snapshot()
-				_ = snapshot.TotalRequests
-				_ = metrics.GetHealthStatus()
-				_ = metrics.IsHealthy()
-			}
-		}()
-	}
-
-	time.Sleep(duration)
-	atomic.StoreInt32(&stop, 1)
-	wg.Wait()
 }
 
 // TestConcurrentMiddlewareExecution tests concurrent middleware execution.

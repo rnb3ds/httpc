@@ -247,36 +247,44 @@ func (p *responseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 	decompressedLr = getLimitReader(reader, maxSize+1)
 	reader = decompressedLr
 
-	// Optimization: Use Content-Length hint for buffer pre-allocation when available
-	// This reduces buffer growth overhead for responses with known size
-	contentLength := httpResp.ContentLength
-	var buf *bytes.Buffer
-	fromPool := false // Track if buffer came from pool
-
-	// For responses with known content length that fit in stolen threshold,
-	// allocate directly to avoid pool overhead
-	if !isCompressed && contentLength > 0 && contentLength <= int64(bufferStealThreshold) {
-		// Direct allocation: we know the exact size needed
-		body := make([]byte, 0, contentLength)
-		buf = bytes.NewBuffer(body)
-	} else {
-		buf = getBuffer()
-		fromPool = true
-	}
-
+	// Cleanup decompressor and limit readers
 	defer func() {
-		// Only return buffer to pool if it came from pool and we're not stealing it
-		if fromPool && buf != nil && buf.Cap() <= maxBufferSize {
-			putBuffer(buf)
-		}
 		if decompressor != nil {
-			_ = decompressor.Close() // Close returns pooled reader to pool
+			_ = decompressor.Close()
 		}
 		if compressedLr != nil {
 			putLimitReader(compressedLr)
 		}
 		if decompressedLr != nil {
 			putLimitReader(decompressedLr)
+		}
+	}()
+
+	contentLength := httpResp.ContentLength
+
+	// Fast path: known Content-Length, not compressed, within safe size.
+	// Read directly into a pre-sized slice — avoids bytes.Buffer allocation entirely.
+	if !isCompressed && contentLength > 0 && contentLength <= int64(bufferStealThreshold) {
+		body := make([]byte, contentLength)
+		n, err := io.ReadFull(reader, body)
+		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+			return nil, fmt.Errorf("failed to read response body: %w", err)
+		}
+		body = body[:n]
+
+		if int64(len(body)) > maxSize {
+			return nil, fmt.Errorf("response body exceeds limit of %d bytes", maxSize)
+		}
+		return body, nil
+	}
+
+	// Slow path: unknown size, compressed, or large response
+	buf := getBuffer()
+	fromPool := true
+
+	defer func() {
+		if fromPool && buf != nil && buf.Cap() <= maxBufferSize {
+			putBuffer(buf)
 		}
 	}()
 
@@ -288,26 +296,16 @@ func (p *responseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 	body := buf.Bytes()
 
 	// SECURITY: After decompression, check body size for zip bomb protection.
-	// The compressed input is already limited by compressedLr above.
-	// This catches cases where small compressed payloads decompress to excessively large output.
 	if isCompressed && int64(len(body)) > maxCompressedSize {
 		return nil, fmt.Errorf("decompressed response body exceeds security limit of %d bytes (potential zip bomb)", maxCompressedSize)
 	}
 
-	// Check decompressed size limit (uses same maxSize calculation as limit reader above)
 	if int64(len(body)) > maxSize {
 		return nil, fmt.Errorf("response body exceeds limit of %d bytes", maxSize)
 	}
 
-	// Optimization path for small responses (most common case)
-	// For directly allocated buffers (fromPool=false), just return the bytes directly
-	// For pooled buffers within steal threshold, steal the backing array
+	// Optimization path for pooled buffers within steal threshold
 	if len(body) <= bufferStealThreshold {
-		if !fromPool {
-			return body, nil
-		}
-		// stealThreshold: for bodies under 4KB, copy is cheaper than
-		// allocating a 4KB replacement buffer. Steal for larger ones.
 		if len(body) <= defaultBufferSize/2 {
 			result := make([]byte, len(body))
 			copy(result, body)
@@ -428,7 +426,7 @@ func (r *pooledFlateReader) Close() error {
 	// Get the Resetter interface to reset and return to pool
 	if resetter, ok := r.reader.(flate.Resetter); ok {
 		_ = resetter.Reset(bytes.NewReader(nil), nil) // reset before returning to pool
-		flateReaderPool.Put(resetter)
+		flateReaderPool.Put(r.reader) // return original io.ReadCloser, not the Resetter interface
 	} else {
 		// SECURITY: If the reader doesn't implement Resetter, close it directly
 		// to prevent resource leaks. This shouldn't happen with standard library,

@@ -19,10 +19,6 @@ import (
 // The key and value are validated for security (CRLF injection prevention).
 func WithHeader(key, value string) RequestOption {
 	return func(r *engine.Request) error {
-		if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
-			return fmt.Errorf("invalid header: %w", err)
-		}
-
 		r.SetHeader(key, value)
 		return nil
 	}
@@ -32,9 +28,6 @@ func WithHeader(key, value string) RequestOption {
 func WithHeaderMap(headers map[string]string) RequestOption {
 	return func(r *engine.Request) error {
 		for k, v := range headers {
-			if err := validation.ValidateHeaderKeyValue(k, v); err != nil {
-				return fmt.Errorf("invalid header %s: %w", k, err)
-			}
 			r.SetHeader(k, v)
 		}
 		return nil
@@ -235,6 +228,15 @@ func WithBody(data any, kind ...BodyKind) RequestOption {
 	}
 }
 
+// encodeFormFields encodes a map[string]string to url-encoded form string.
+func encodeFormFields(data map[string]string) string {
+	values := make(url.Values, len(data))
+	for k, v := range data {
+		values.Set(k, v)
+	}
+	return values.Encode()
+}
+
 // convertToForm converts data to url-encoded form string.
 func convertToForm(data any) (string, error) {
 	switch v := data.(type) {
@@ -242,11 +244,7 @@ func convertToForm(data any) (string, error) {
 		if v == nil {
 			return "", fmt.Errorf("form data cannot be nil")
 		}
-		values := make(url.Values, len(v))
-		for k, val := range v {
-			values.Set(k, val)
-		}
-		return values.Encode(), nil
+		return encodeFormFields(v), nil
 	case url.Values:
 		if v == nil {
 			return "", fmt.Errorf("form data cannot be nil")
@@ -303,11 +301,7 @@ func setAutoDetectedBody(r *engine.Request, data any) (string, error) {
 		if v == nil {
 			return "", fmt.Errorf("form data cannot be nil")
 		}
-		values := make(url.Values, len(v))
-		for k, val := range v {
-			values.Set(k, val)
-		}
-		r.SetBody(values.Encode())
+		r.SetBody(encodeFormFields(v))
 		return "application/x-www-form-urlencoded", nil
 	default:
 		// Default to JSON for all other types
@@ -322,12 +316,7 @@ func WithForm(data map[string]string) RequestOption {
 		if data == nil {
 			return fmt.Errorf("form data cannot be nil")
 		}
-		// Pre-allocate url.Values with capacity to avoid map growth
-		values := make(url.Values, len(data))
-		for k, v := range data {
-			values.Set(k, v)
-		}
-		r.SetBody(values.Encode())
+		r.SetBody(encodeFormFields(data))
 		r.SetHeader("Content-Type", "application/x-www-form-urlencoded")
 		return nil
 	}
