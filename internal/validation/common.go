@@ -1,3 +1,5 @@
+// Package validation provides input sanitization and validation utilities
+// for credentials, headers, cookies, URLs, and network addresses.
 package validation
 
 import (
@@ -23,11 +25,6 @@ const (
 	MaxHeaderValueLen = 8192
 	maxURLLen         = 2048 // Maximum URL length
 )
-
-// dangerousChars contains characters that may be used for injection attacks.
-// These characters are commonly used in command injection, SQL injection,
-// XSS, and other attack vectors.
-const dangerousChars = `"'<>&;` + "`|" + `$\{}[]^~`
 
 // validateInputString performs common string validation to prevent injection attacks.
 func validateInputString(input string, maxLen int, name string, additionalChecks func(rune) error) error {
@@ -119,8 +116,9 @@ func ValidateHeaderKeyValue(key, value string) error {
 		return fmt.Errorf("header value too long")
 	}
 
-	for _, r := range value {
-		if (r < 0x20 && r != 0x09) || r == 0x7F {
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if (c < 0x20 && c != 0x09) || c == 0x7F {
 			return fmt.Errorf("header value contains invalid characters")
 		}
 	}
@@ -193,8 +191,8 @@ func ValidateCookieValue(value string) error {
 		return fmt.Errorf("cookie value too long")
 	}
 
-	for _, r := range value {
-		if r < 0x20 || r == 0x7F {
+	for i := 0; i < len(value); i++ {
+		if value[i] < 0x20 || value[i] == 0x7F {
 			return fmt.Errorf("cookie value contains invalid characters")
 		}
 	}

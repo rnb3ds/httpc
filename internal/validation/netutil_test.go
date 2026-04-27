@@ -49,8 +49,8 @@ func TestIsPrivateOrReservedIP(t *testing.T) {
 		// IPv4 reserved ranges
 		{"IPv4 Class E", "240.0.0.1", true},
 		{"IPv4 This network", "0.1.2.3", true},
-		{"IPv4 CGNAT", "100.64.0.1", true},
-		{"IPv4 Benchmarking", "198.18.0.1", false},
+		{"IPv4 CGNAT (allowed - Tailscale/WireGuard)", "100.64.0.1", false},
+		{"IPv4 Benchmarking (allowed - Clash/Surge fake-IP)", "198.18.0.1", false},
 
 		// IPv4 public addresses
 		{"IPv4 public Google DNS", "8.8.8.8", false},
@@ -76,7 +76,7 @@ func TestIsPrivateOrReservedIP(t *testing.T) {
 		{"IPv4-mapped private C", "::ffff:192.168.1.1", true},
 		{"IPv4-mapped public", "::ffff:8.8.8.8", false},
 		{"IPv4-mapped link-local", "::ffff:169.254.1.1", true},
-		{"IPv4-mapped CGNAT", "::ffff:100.64.0.1", true},
+		{"IPv4-mapped CGNAT (allowed - Tailscale/WireGuard)", "::ffff:100.64.0.1", false},
 
 		// NAT64 well-known prefix (RFC 6052)
 		{"NAT64 mapped loopback", "64:ff9b::7f00:1", true},
@@ -149,10 +149,17 @@ func TestIsLocalhost(t *testing.T) {
 		{"0.0.0.0", "0.0.0.0", true},
 		{"::", "::", true},
 
-		// Localhost subdomains
-		{"localhost.local", "localhost.local", true},
-		{"localhost.example.com", "localhost.example.com", true},
-		{"LOCALHOST.LOCAL", "LOCALHOST.LOCAL", true},
+		// Known local DNS names (still blocked)
+		{"localhost.localdomain", "localhost.localdomain", true},
+		{"LOCALHOST.LOCALDOMAIN", "LOCALHOST.LOCALDOMAIN", true},
+		{"localhost.localdomain.", "localhost.localdomain.", true},
+		{"LOCALHOST.LOCALDOMAIN.", "LOCALHOST.LOCALDOMAIN.", true},
+
+		// Legitimate localhost.* public domains (no longer blocked at this layer;
+		// if they resolve to loopback IPs, the dialer will still block them)
+		{"localhost.local", "localhost.local", false},
+		{"localhost.example.com", "localhost.example.com", false},
+		{"localhost.dev.mycompany.com", "localhost.dev.mycompany.com", false},
 
 		// Non-localhost
 		{"example.com", "example.com", false},
@@ -386,6 +393,72 @@ func TestIsPrivateOrReservedIP_BoundaryConditions(t *testing.T) {
 			result := IsPrivateOrReservedIP(ip)
 			if result != tt.expected {
 				t.Errorf("IsPrivateOrReservedIP(%s) = %v, want %v", tt.ip, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestFilterAllowedIPs(t *testing.T) {
+	exemptNets, _ := ParseExemptCIDRs([]string{"10.0.0.0/8"})
+
+	tests := []struct {
+		name     string
+		ips      []string
+		exempt   []*net.IPNet
+		expected int
+	}{
+		{
+			name:     "All public IPs",
+			ips:      []string{"8.8.8.8", "1.1.1.1"},
+			exempt:   nil,
+			expected: 2,
+		},
+		{
+			name:     "All private IPs no exemption",
+			ips:      []string{"192.168.1.1", "10.0.0.1"},
+			exempt:   nil,
+			expected: 0,
+		},
+		{
+			name:     "Mixed public and private - filters to public only",
+			ips:      []string{"10.0.0.1", "8.8.8.8", "192.168.1.1"},
+			exempt:   nil,
+			expected: 1,
+		},
+		{
+			name:     "Private IPs with exemption - exempted ones pass",
+			ips:      []string{"10.0.0.1", "192.168.1.1"},
+			exempt:   exemptNets,
+			expected: 1,
+		},
+		{
+			name:     "Split-Horizon DNS: private and public",
+			ips:      []string{"10.0.0.5", "93.184.216.34", "192.168.1.1"},
+			exempt:   nil,
+			expected: 1,
+		},
+		{
+			name:     "Empty input",
+			ips:      []string{},
+			exempt:   nil,
+			expected: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ips := make([]net.IP, 0, len(tt.ips))
+			for _, s := range tt.ips {
+				ip := net.ParseIP(s)
+				if ip == nil {
+					t.Fatalf("Failed to parse IP: %s", s)
+				}
+				ips = append(ips, ip)
+			}
+
+			result := FilterAllowedIPs(ips, tt.exempt)
+			if len(result) != tt.expected {
+				t.Errorf("FilterAllowedIPs returned %d IPs, want %d", len(result), tt.expected)
 			}
 		})
 	}

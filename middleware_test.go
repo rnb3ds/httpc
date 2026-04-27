@@ -377,6 +377,7 @@ func BenchmarkMiddlewareOverhead(b *testing.B) {
 		client, _ := New(cfg)
 		defer client.Close()
 
+		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			_, _ = client.Get(ts.URL)
@@ -395,6 +396,7 @@ func BenchmarkMiddlewareOverhead(b *testing.B) {
 		client, _ := New(cfg)
 		defer client.Close()
 
+		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			_, _ = client.Get(ts.URL)
@@ -423,6 +425,7 @@ func BenchmarkMiddlewareOverhead(b *testing.B) {
 		client, _ := New(cfg)
 		defer client.Close()
 
+		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			_, _ = client.Get(ts.URL)
@@ -871,21 +874,21 @@ func TestAuditEventMarshalJSON(t *testing.T) {
 
 func TestMaskStringHeaders(t *testing.T) {
 	tests := []struct {
-		name        string
-		headers     map[string]string
-		maskList    []string
-		wantMasked  []string
-		wantPlain   []string
+		name       string
+		headers    map[string]string
+		maskList   []string
+		wantMasked []string
+		wantPlain  []string
 	}{
 		{
-			name:       "nil headers returns nil",
-			headers:    nil,
-			maskList:   []string{"Authorization"},
+			name:     "nil headers returns nil",
+			headers:  nil,
+			maskList: []string{"Authorization"},
 		},
 		{
-			name:       "empty headers returns nil",
-			headers:    map[string]string{},
-			maskList:   []string{"Authorization"},
+			name:     "empty headers returns nil",
+			headers:  map[string]string{},
+			maskList: []string{"Authorization"},
 		},
 		{
 			name:       "mask authorization",

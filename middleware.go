@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/cybergodev/httpc/internal/validation"
@@ -17,18 +18,18 @@ import (
 // It captures request/response details for compliance logging in financial,
 // medical, and government applications.
 type AuditEvent struct {
-	Timestamp     time.Time     `json:"timestamp"`
-	Method        string        `json:"method"`
-	URL           string        `json:"url"` // Sanitized (credentials removed)
-	StatusCode    int           `json:"statusCode"`
-	Duration      time.Duration `json:"duration"`
-	Attempts      int           `json:"attempts"`
-	Error         error         `json:"error,omitempty"`
-	SourceIP      string        `json:"sourceIP,omitempty"`
-	UserID        string        `json:"userID,omitempty"`
-	RedirectChain  []string      `json:"redirectChain,omitempty"`
-	ReqHeaders     map[string][]string `json:"reqHeaders,omitempty"`
-	RespHeaders    map[string][]string `json:"respHeaders,omitempty"`
+	Timestamp     time.Time           `json:"timestamp"`
+	Method        string              `json:"method"`
+	URL           string              `json:"url"` // Sanitized (credentials removed)
+	StatusCode    int                 `json:"statusCode"`
+	Duration      time.Duration       `json:"duration"`
+	Attempts      int                 `json:"attempts"`
+	Error         error               `json:"error,omitempty"`
+	SourceIP      string              `json:"sourceIP,omitempty"`
+	UserID        string              `json:"userID,omitempty"`
+	RedirectChain []string            `json:"redirectChain,omitempty"`
+	ReqHeaders    map[string][]string `json:"reqHeaders,omitempty"`
+	RespHeaders   map[string][]string `json:"respHeaders,omitempty"`
 }
 
 // MarshalJSON implements custom JSON marshaling for AuditEvent.
@@ -244,12 +245,27 @@ func MetricsMiddleware(onMetrics func(method, url string, statusCode int, durati
 					statusCode = resp.StatusCode()
 				}
 				sanitizedURL := validation.SanitizeURL(req.URL())
-				onMetrics(req.Method(), sanitizedURL, statusCode, duration, err)
+				sanitizedErr := sanitizeCallbackError(err, req.URL(), sanitizedURL)
+				onMetrics(req.Method(), sanitizedURL, statusCode, duration, sanitizedErr)
 			}
 
 			return resp, err
 		}
 	}
+}
+
+// sanitizeCallbackError prevents credential leakage in callback errors.
+// ClientError already sanitizes URLs; for other error types, it replaces
+// the raw URL in the error message with the sanitized version.
+func sanitizeCallbackError(err error, rawURL, sanitizedURL string) error {
+	if err == nil || rawURL == "" || rawURL == sanitizedURL {
+		return err
+	}
+	errStr := err.Error()
+	if strings.Contains(errStr, rawURL) {
+		return fmt.Errorf("%s", strings.ReplaceAll(errStr, rawURL, sanitizedURL))
+	}
+	return err
 }
 
 // AuditMiddleware creates a middleware that generates security audit events.

@@ -45,8 +45,9 @@ func demonstrateGzipDecompression() {
 
 	fmt.Printf("   Status: %d\n", resp.StatusCode())
 	fmt.Printf("   Content-Encoding: %s\n", resp.Response.Headers.Get("Content-Encoding"))
-	fmt.Printf("   Decompressed body length: %d bytes\n", len(resp.Body()))
-	fmt.Printf("   Body preview: %.200s...\n\n", resp.Body())
+	body := resp.Body()
+	fmt.Printf("   Decompressed body length: %d bytes\n", len(body))
+	fmt.Printf("   Body preview: %.200s...\n\n", body)
 }
 
 // demonstrateGzipFromServer shows gzip decompression from another server
@@ -65,8 +66,9 @@ func demonstrateGzipFromServer() {
 
 	fmt.Printf("   Status: %d\n", resp.StatusCode())
 	fmt.Printf("   Content-Encoding: %s\n", resp.Response.Headers.Get("Content-Encoding"))
-	fmt.Printf("   Decompressed body length: %d bytes\n", len(resp.Body()))
-	fmt.Printf("   Body preview: \n%.200s...\n\n", resp.Body())
+	body := resp.Body()
+	fmt.Printf("   Decompressed body length: %d bytes\n", len(body))
+	fmt.Printf("   Body preview: \n%.200s...\n\n", body)
 }
 
 // demonstrateNoCompression shows response without compression
@@ -81,6 +83,7 @@ func demonstrateNoCompression() {
 
 	fmt.Printf("   Status: %d\n", resp.StatusCode())
 	fmt.Printf("   Content-Encoding: %s\n", resp.Response.Headers.Get("Content-Encoding"))
-	fmt.Printf("   Body length: %d bytes\n", len(resp.Body()))
-	fmt.Printf("   Body preview: %.200s...\n\n", resp.Body())
+	body := resp.Body()
+	fmt.Printf("   Body length: %d bytes\n", len(body))
+	fmt.Printf("   Body preview: %.200s...\n\n", body)
 }

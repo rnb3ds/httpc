@@ -294,7 +294,7 @@ func main() {
 | `IsRedirect()` | `bool` | True for 3xx status codes |
 | `IsClientError()` | `bool` | True for 4xx status codes |
 | `IsServerError()` | `bool` | True for 5xx status codes |
-| `Unmarshal(v any)` | `error` | Parse JSON/XML response into struct |
+| `Unmarshal(v any)` | `error` | Parse JSON response into struct |
 | `GetCookie(name)` | `*http.Cookie` | Get response cookie by name |
 | `HasCookie(name)` | `bool` | Check if response cookie exists |
 | `GetRequestCookie(name)` | `*http.Cookie` | Get request cookie by name |

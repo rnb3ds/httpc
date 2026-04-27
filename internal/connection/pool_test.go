@@ -439,14 +439,6 @@ func TestPoolManager_SystemProxy(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// Metrics Tests
-// ============================================================================
-
-// ============================================================================
-// Concurrent Access Tests
-// ============================================================================
-
 func TestPoolManager_ConcurrentRequests(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -708,14 +700,6 @@ func (m *mockCertPinner) VerifyPeerCertificate(rawCerts [][]byte, verifiedChains
 	return nil
 }
 
-// ============================================================================
-// Host Stats Tests
-// ============================================================================
-
-// ============================================================================
-// DoH Resolver Integration Tests
-// ============================================================================
-
 func TestPoolManager_WithDoHResolver(t *testing.T) {
 	config := &Config{
 		AllowPrivateIPs: true,
@@ -885,26 +869,6 @@ func TestPoolManager_ValidateAddress_DomainResolution(t *testing.T) {
 		})
 	}
 }
-
-// ============================================================================
-// Proxy Configuration Tests
-// ============================================================================
-
-// ============================================================================
-// Keep-Alive Configuration Tests
-// ============================================================================
-
-// ============================================================================
-// Response Header Timeout Tests
-// ============================================================================
-
-// ============================================================================
-// Double Close Safety Tests
-// ============================================================================
-
-// ============================================================================
-// Tracked Connection Tests
-// ============================================================================
 
 func TestTrackedConn_DoubleClose(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

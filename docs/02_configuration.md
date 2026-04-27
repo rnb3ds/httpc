@@ -421,6 +421,7 @@ client, err := httpc.New(config)
 | `Security.MaxTLSVersion`        | `uint16`      | TLS 1.3 | Maximum TLS version                |
 | `Security.InsecureSkipVerify`   | `bool`        | false   | Skip TLS verification (dangerous)  |
 | `Security.MaxResponseBodySize`  | `int64`       | 10 MB   | Max response body size             |
+| `Security.MaxRequestBodySize`   | `int64`       | 0 (uses MaxResponseBodySize) | Max request body size |
 | `Security.MaxDecompressedBodySize` | `int64`    | 100 MB  | Max decompressed response body size (decompression bomb protection) |
 | `Security.AllowPrivateIPs`      | `bool`        | false   | Allow private IP addresses (SSRF protection) |
 | `Security.SSRFExemptCIDRs`      | `[]string`    | nil     | CIDR ranges exempt from private IP blocking |

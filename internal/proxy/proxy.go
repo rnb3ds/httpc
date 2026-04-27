@@ -1,3 +1,4 @@
+// Package proxy detects system proxy configuration for the httpc library.
 package proxy
 
 import (

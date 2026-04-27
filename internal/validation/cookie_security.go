@@ -32,16 +32,22 @@ type CookieSecurityConfig struct {
 	// If false and RequireSameSite is empty, cookies with SameSite=None are rejected.
 	// Recommended: false for high-security applications.
 	AllowSameSiteNone bool
+
+	// RequireSecureForSameSiteNone requires the Secure attribute when
+	// SameSite=None. Modern browsers reject SameSite=None without Secure,
+	// so this catches misconfigured cookies early. Default: true.
+	RequireSecureForSameSiteNone bool
 }
 
 // DefaultCookieSecurityConfig returns a recommended security configuration.
 // This provides a good balance between security and compatibility.
 func DefaultCookieSecurityConfig() *CookieSecurityConfig {
 	return &CookieSecurityConfig{
-		RequireSecure:     false, // Allow non-HTTPS for development
-		RequireHttpOnly:   false, // Allow JavaScript access for flexibility
-		RequireSameSite:   "",    // No SameSite requirement
-		AllowSameSiteNone: true,  // Allow cross-site cookies
+		RequireSecure:                false, // Allow non-HTTPS for development
+		RequireHttpOnly:              false, // Allow JavaScript access for flexibility
+		RequireSameSite:              "",    // No SameSite requirement
+		AllowSameSiteNone:            true,  // Allow cross-site cookies
+		RequireSecureForSameSiteNone: true,  // SameSite=None requires Secure per RFC 6265bis
 	}
 }
 
@@ -69,22 +75,6 @@ func sameSiteToString(sameSite http.SameSite) string {
 		return "None"
 	default:
 		return ""
-	}
-}
-
-// stringToSameSite converts a string to http.SameSite.
-func stringToSameSite(s string) http.SameSite {
-	switch strings.ToLower(s) {
-	case "strict":
-		return http.SameSiteStrictMode
-	case "lax":
-		return http.SameSiteLaxMode
-	case "none":
-		return http.SameSiteNoneMode
-	case "default":
-		return http.SameSiteDefaultMode
-	default:
-		return http.SameSiteDefaultMode
 	}
 }
 
@@ -128,54 +118,13 @@ func ValidateCookieSecurity(cookie *http.Cookie, config *CookieSecurityConfig) e
 		errors = append(errors, "SameSite=None is not allowed")
 	}
 
+	// Require Secure when SameSite=None (RFC 6265bis requirement)
+	if config.RequireSecureForSameSiteNone && isSameSiteNone(cookie.SameSite) && !cookie.Secure {
+		errors = append(errors, "SameSite=None requires Secure attribute")
+	}
+
 	if len(errors) > 0 {
 		return fmt.Errorf("cookie '%s' failed security validation: %s", cookie.Name, strings.Join(errors, ", "))
-	}
-
-	return nil
-}
-
-// ValidateCookieStrict validates a cookie with strict security requirements.
-// Deprecated: unused in production code — kept for internal utility API surface.
-// This delegates Secure/HttpOnly checks to ValidateCookieSecurity, then applies
-// additional strict checks for SameSite and Path attributes.
-// Accepts SameSite=Strict or SameSite=Lax (but not Default/None).
-// Use this for high-security applications.
-func ValidateCookieStrict(cookie *http.Cookie, config *CookieSecurityConfig) error {
-	if cookie == nil {
-		return fmt.Errorf("cookie is nil")
-	}
-
-	// Build config for base checks: enforce Secure and HttpOnly, but handle SameSite ourselves
-	baseCfg := config
-	if baseCfg == nil {
-		baseCfg = &CookieSecurityConfig{
-			RequireSecure:     true,
-			RequireHttpOnly:   true,
-			AllowSameSiteNone: false,
-		}
-	}
-	if err := ValidateCookieSecurity(cookie, baseCfg); err != nil {
-		return err
-	}
-
-	// Strict-specific SameSite check: must be explicitly set to Strict or Lax
-	var errs []string
-	if cookie.SameSite == http.SameSiteDefaultMode || cookie.SameSite == 0 {
-		errs = append(errs, "missing explicit SameSite attribute")
-	} else if isSameSiteNone(cookie.SameSite) {
-		if !baseCfg.AllowSameSiteNone {
-			errs = append(errs, "SameSite=None is not allowed in strict mode")
-		}
-	}
-
-	// Require Path attribute
-	if cookie.Path == "" {
-		errs = append(errs, "missing Path attribute")
-	}
-
-	if len(errs) > 0 {
-		return fmt.Errorf("cookie '%s' failed strict security validation: %s", cookie.Name, strings.Join(errs, ", "))
 	}
 
 	return nil
@@ -206,30 +155,4 @@ func validateSameSite(cookie *http.Cookie, required string, allowNone bool) erro
 	}
 
 	return nil
-}
-
-// EnforceCookieSecurity applies security attributes to a cookie based on the configuration.
-// Deprecated: unused in production code — kept for internal utility API surface.
-// This modifies the cookie in place to meet the security requirements.
-func EnforceCookieSecurity(cookie *http.Cookie, config *CookieSecurityConfig) {
-	if cookie == nil || config == nil {
-		return
-	}
-
-	if config.RequireSecure {
-		cookie.Secure = true
-	}
-
-	if config.RequireHttpOnly {
-		cookie.HttpOnly = true
-	}
-
-	if config.RequireSameSite != "" {
-		cookie.SameSite = stringToSameSite(config.RequireSameSite)
-	}
-
-	// Set default path if not set
-	if cookie.Path == "" {
-		cookie.Path = "/"
-	}
 }

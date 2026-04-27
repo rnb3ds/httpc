@@ -48,11 +48,13 @@ func formDataHelper(fields map[string]string, files map[string]*fileDataHelper) 
 // URL CACHE TESTS
 // ============================================================================
 
-// TestURLCache_RawKey validates that URLs differing only in sensitive query params
-// are cached separately (no key collision).
-func TestURLCache_RawKey(t *testing.T) {
+// TestURLCache_SanitizedKey validates that URLs differing only in sensitive query params
+// share a single cache entry (sanitized key deduplication), while URLs with different
+// non-sensitive params are cached separately.
+func TestURLCache_SanitizedKey(t *testing.T) {
 	clearURLCache()
 
+	// These URLs differ only in the sensitive "token" param — should map to one cache entry
 	url1 := "https://api.example.com/data?token=secretA&page=1"
 	url2 := "https://api.example.com/data?token=secretB&page=1"
 
@@ -65,19 +67,29 @@ func TestURLCache_RawKey(t *testing.T) {
 		t.Fatalf("Failed to parse URL2: %v", err)
 	}
 
-	// Both URLs should be cached independently
-	if getURLCacheSize() != 2 {
-		t.Errorf("Expected 2 cache entries, got %d", getURLCacheSize())
+	// Both URLs should share a single sanitized cache entry
+	if getURLCacheSize() != 1 {
+		t.Errorf("Expected 1 cache entry (sanitized key dedup), got %d", getURLCacheSize())
 	}
 
-	// Each should return its own token value
+	// Both lookups return the first cached entry's token value (dedup by sanitized key)
 	q1 := parsed1.Query()
 	q2 := parsed2.Query()
 	if q1.Get("token") != "secretA" {
 		t.Errorf("URL1 token = %q, want %q", q1.Get("token"), "secretA")
 	}
-	if q2.Get("token") != "secretB" {
-		t.Errorf("URL2 token = %q, want %q", q2.Get("token"), "secretB")
+	if q2.Get("token") != "secretA" {
+		t.Errorf("URL2 token = %q, want %q (dedup: shares first entry's value)", q2.Get("token"), "secretA")
+	}
+
+	// URLs with different non-sensitive params should be cached separately
+	url3 := "https://api.example.com/data?page=2"
+	_, err = globalURLCache.Get(url3)
+	if err != nil {
+		t.Fatalf("Failed to parse URL3: %v", err)
+	}
+	if getURLCacheSize() != 2 {
+		t.Errorf("Expected 2 cache entries after adding non-sensitive variant, got %d", getURLCacheSize())
 	}
 }
 
@@ -1136,7 +1148,6 @@ func TestResponseDecompression(t *testing.T) {
 // ============================================================================
 // CLEAR POOLS TEST
 // ============================================================================
-
 
 // ============================================================================
 // RETRY SCENARIO TESTS

@@ -238,7 +238,7 @@ func (t *transport) checkRedirect(req *http.Request, via []*http.Request) error 
 	}
 
 	// Check redirect limit (0 means unlimited)
-	if settings.maxRedirects > 0 && len(via) > settings.maxRedirects {
+	if settings.maxRedirects > 0 && len(via) >= settings.maxRedirects {
 		return fmt.Errorf("stopped after %d redirects", settings.maxRedirects)
 	}
 
@@ -272,9 +272,11 @@ func (t *transport) validateRedirectTarget(targetURL *url.URL) error {
 		return fmt.Errorf("empty host in redirect URL")
 	}
 
-	// Resolve DNS for redirect targets to prevent SSRF via DNS-rebinding.
-	// The connection pool dialer provides a second layer of defense.
-	return validation.ValidateSSRFHost(host, t.exemptNets, true)
+	// Check SSRF without DNS resolution. The connection pool dialer (pool.go
+	// createDialer → resolveAndValidateAddress) performs full SSRF validation
+	// with DNS rebinding prevention (resolves once, validates, dials IP directly).
+	// Skipping DNS here avoids a redundant resolution and a TOCTOU window.
+	return validation.ValidateSSRFHost(host, t.exemptNets, false)
 }
 
 // redirectContextKey is a typed context key for redirect settings.

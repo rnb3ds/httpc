@@ -186,28 +186,38 @@ func TestSanitizeURL_CredentialRemoval(t *testing.T) {
 }
 
 func TestSanitizeURL_BoundaryConditions(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{"IPv6 with zone ID", "https://user:pass@[fe80::1%25eth0]:8080/path", "https://***:***@[fe80::1%25eth0]:8080/path"},
-		{"Double URL encoding", "https://example.com/api?q=%25xx", "https://example.com/api?q=%25xx"},
-		{"Very long hostname", "https://" + strings.Repeat("a", 253) + ".com/path", ""},
-		{"Multiple sensitive params", "https://example.com?token=secret&api_key=key123&password=pass", ""},
-	}
+	t.Run("IPv6 with zone ID", func(t *testing.T) {
+		result := SanitizeURL("https://user:pass@[fe80::1%25eth0]:8080/path")
+		if !strings.Contains(result, "***:***@") {
+			t.Errorf("Credentials not masked: %q", result)
+		}
+	})
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := SanitizeURL(tt.input)
-			// For URLs with credentials, verify they are masked
-			if strings.Contains(tt.input, "user:pass@") && !strings.Contains(result, "***:***@") {
-				t.Errorf("Credentials not masked in %q -> %q", tt.input, result)
-			}
-			// For long URLs, just verify no panic
-			t.Logf("SanitizeURL(%q) = %q", tt.input[:min(50, len(tt.input))], result[:min(50, len(result))])
-		})
-	}
+	t.Run("Double URL encoding", func(t *testing.T) {
+		result := SanitizeURL("https://example.com/api?q=%25xx")
+		if result != "https://example.com/api?q=%25xx" {
+			t.Errorf("Expected unchanged, got: %q", result)
+		}
+	})
+
+	t.Run("Very long hostname", func(t *testing.T) {
+		input := "https://" + strings.Repeat("a", 253) + ".com/path"
+		result := SanitizeURL(input)
+		if len(result) == 0 {
+			t.Error("Expected non-empty result for long hostname")
+		}
+	})
+
+	t.Run("Multiple sensitive params", func(t *testing.T) {
+		result := SanitizeURL("https://example.com?token=secretvalue&api_key=mykey123&password=mypass")
+		if !strings.Contains(result, "REDACTED") {
+			t.Errorf("Expected sensitive params to be redacted, got: %q", result)
+		}
+		// Verify the sensitive values are not present
+		if strings.Contains(result, "secretvalue") || strings.Contains(result, "mykey123") || strings.Contains(result, "mypass") {
+			t.Errorf("Sensitive values leaked in URL: %q", result)
+		}
+	})
 }
 
 func TestIsSensitiveQueryParam(t *testing.T) {

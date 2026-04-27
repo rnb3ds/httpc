@@ -1,3 +1,5 @@
+// Package security provides request validation, SSRF protection,
+// domain whitelisting, and certificate pinning for the httpc library.
 package security
 
 import (
@@ -10,6 +12,7 @@ import (
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
+// Validator validates HTTP requests for URL, header, and SSRF security.
 type Validator struct {
 	config *Config
 }
@@ -22,6 +25,7 @@ type requestValidator interface {
 	ValidateRequest(req *Request) error
 }
 
+// Config defines security validation settings.
 type Config struct {
 	ValidateURL         bool
 	ValidateHeaders     bool
@@ -31,6 +35,7 @@ type Config struct {
 	ExemptNets          []*net.IPNet
 }
 
+// Request represents a security validation request with method, URL, headers, and body.
 type Request struct {
 	Method      string
 	URL         string
@@ -39,6 +44,7 @@ type Request struct {
 	Body        any
 }
 
+// NewValidator creates a new Validator with default security settings.
 func NewValidator() *Validator {
 	secConfig := &Config{
 		ValidateURL:         true,
@@ -52,6 +58,7 @@ func NewValidator() *Validator {
 	}
 }
 
+// NewValidatorWithConfig creates a new Validator with the given security configuration.
 func NewValidatorWithConfig(config *Config) *Validator {
 	if config == nil {
 		return NewValidator()
@@ -68,6 +75,7 @@ func NewValidatorWithConfig(config *Config) *Validator {
 	}
 }
 
+// ValidateRequest validates an HTTP request against the configured security rules.
 func (v *Validator) ValidateRequest(req *Request) error {
 	if v.config.ValidateURL {
 		if err := v.validateURL(req.URL); err != nil {
@@ -93,15 +101,10 @@ func (v *Validator) ValidateRequest(req *Request) error {
 }
 
 func (v *Validator) validateURL(urlStr string) error {
-	// Use centralized URL validation from validation package
-	if err := validation.ValidateURL(urlStr); err != nil {
-		return err
-	}
-
-	// Parse URL for host validation (already validated above)
-	parsedURL, err := url.Parse(urlStr)
+	// Validate and parse in one call to avoid double url.Parse
+	parsedURL, err := validation.ValidateAndParseURL(urlStr)
 	if err != nil {
-		return fmt.Errorf("URL parse failed: %w", err)
+		return err
 	}
 	return v.validateHost(parsedURL.Host)
 }
@@ -128,18 +131,39 @@ func (v *Validator) validateHeader(key, value string) error {
 	return validateCommonHeaderValue(key, value)
 }
 
+// validateHeaderValueTokens validates that all comma-separated tokens in a header
+// value are within the allowed set. Supports RFC 9110 multi-token header values
+// (e.g., "Connection: keep-alive, Upgrade").
+func validateHeaderValueTokens(value string, allowed []string, headerName string) error {
+	for _, token := range strings.Split(value, ",") {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			return fmt.Errorf("invalid %s header value: %q", headerName, value)
+		}
+		found := false
+		for _, a := range allowed {
+			if strings.EqualFold(token, a) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("invalid %s header value: %q", headerName, value)
+		}
+	}
+	return nil
+}
+
+var (
+	connectionAllowed       = []string{"keep-alive", "close", "upgrade"}
+	transferEncodingAllowed = []string{"chunked", "compress", "deflate", "gzip", "identity"}
+)
+
 func validateCommonHeaderValue(key, value string) error {
-	switch strings.ToLower(key) {
-	case "connection":
-		v := strings.ToLower(value)
-		if v != "keep-alive" && v != "close" && v != "upgrade" {
-			return fmt.Errorf("invalid Connection header value: %q", value)
-		}
-	case "transfer-encoding":
-		v := strings.ToLower(value)
-		if v != "chunked" && v != "compress" && v != "deflate" && v != "gzip" && v != "identity" {
-			return fmt.Errorf("invalid Transfer-Encoding header value: %q", value)
-		}
+	if strings.EqualFold(key, "connection") {
+		return validateHeaderValueTokens(value, connectionAllowed, "Connection")
+	} else if strings.EqualFold(key, "transfer-encoding") {
+		return validateHeaderValueTokens(value, transferEncodingAllowed, "Transfer-Encoding")
 	}
 	return nil
 }
@@ -161,7 +185,12 @@ func (v *Validator) validateRequestBodySize(body any) error {
 	case []byte:
 		size = int64(len(b))
 	case url.Values:
-		size = int64(len(b.Encode()))
+		for k, vs := range b {
+			size += int64(len(k)) + 1
+			for _, v := range vs {
+				size += int64(len(v)) + 1
+			}
+		}
 	case *types.FormData:
 		for _, v := range b.Fields {
 			size += int64(len(v))
@@ -171,7 +200,8 @@ func (v *Validator) validateRequestBodySize(body any) error {
 		}
 	default:
 		// For io.Reader and other types, caller is responsible for size control.
-		// Consider wrapping with io.LimitReader for untrusted sources.
+		// Use io.LimitReader to cap untrusted io.Reader sources:
+		//   limited := io.LimitReader(untrustedReader, maxBytes)
 		return nil
 	}
 

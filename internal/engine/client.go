@@ -1,3 +1,5 @@
+// Package engine implements the core HTTP client engine with request processing,
+// response handling, connection pooling, retry logic, and middleware support.
 package engine
 
 import (
@@ -15,8 +17,40 @@ import (
 	"github.com/cybergodev/httpc/internal/connection"
 	"github.com/cybergodev/httpc/internal/security"
 	"github.com/cybergodev/httpc/internal/types"
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
+// requestPool is a typed pool for Request objects that eliminates
+// repetitive get/put/zeroing boilerplate.
+type requestPool struct {
+	pool sync.Pool
+}
+
+func newRequestPool() requestPool {
+	return requestPool{
+		pool: sync.Pool{
+			New: func() any {
+				return &Request{maxRetries: -1}
+			},
+		},
+	}
+}
+
+func (p *requestPool) get() *Request {
+	req, ok := p.pool.Get().(*Request)
+	if !ok || req == nil {
+		return &Request{maxRetries: -1}
+	}
+	return req
+}
+
+func (p *requestPool) put(req *Request) {
+	*req = Request{maxRetries: -1}
+	p.pool.Put(req)
+}
+
+// Client is the internal HTTP client that manages requests, responses, retries,
+// and connection pooling.
 type Client struct {
 	config *Config
 
@@ -29,9 +63,9 @@ type Client struct {
 	connectionPool *connection.PoolManager
 
 	// requestPool reduces allocations for Request objects
-	requestPool sync.Pool
+	requestPool requestPool
 	// execRequestPool reduces allocations for Request copies in executeRequest
-	execRequestPool sync.Pool
+	execRequestPool requestPool
 	// securityRequestPool reduces allocations for security.Request objects
 	securityRequestPool sync.Pool
 
@@ -46,16 +80,17 @@ type Client struct {
 // Config defines the HTTP client configuration.
 // Config should be treated as immutable after creation.
 type Config struct {
-	Timeout               time.Duration
-	DialTimeout           time.Duration
-	KeepAlive             time.Duration
-	TLSHandshakeTimeout   time.Duration
-	ResponseHeaderTimeout time.Duration
-	IdleConnTimeout       time.Duration
-	MaxIdleConns          int
-	MaxIdleConnsPerHost   int
-	MaxConnsPerHost       int
-	ProxyURL              string
+	Timeout                time.Duration
+	DialTimeout            time.Duration
+	KeepAlive              time.Duration
+	TLSHandshakeTimeout    time.Duration
+	ResponseHeaderTimeout  time.Duration
+	IdleConnTimeout        time.Duration
+	MaxResponseHeaderBytes int64
+	MaxIdleConns           int
+	MaxIdleConnsPerHost    int
+	MaxConnsPerHost        int
+	ProxyURL               string
 
 	// System proxy configuration
 	EnableSystemProxy bool // Automatically detect and use system proxy settings
@@ -109,6 +144,7 @@ type requestCallback func(req *Request) error
 // responseCallback is a callback function invoked after a response is received.
 type responseCallback func(resp *Response) error
 
+// Request represents an HTTP request with method, URL, headers, body, and options.
 type Request struct {
 	method          string
 	url             string
@@ -249,6 +285,7 @@ func (r *Response) SetHeader(key string, values ...string) {
 	r.headers[key] = values
 }
 
+// NewClient creates a new engine Client with the given configuration and optional client options.
 func NewClient(config *Config, opts ...clientOption) (*Client, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config cannot be nil")
@@ -261,18 +298,10 @@ func NewClient(config *Config, opts ...clientOption) (*Client, error) {
 	}
 
 	client := &Client{
-		config:  config,
-		metrics: &metrics{},
-		requestPool: sync.Pool{
-			New: func() any {
-				return &Request{maxRetries: -1}
-			},
-		},
-		execRequestPool: sync.Pool{
-			New: func() any {
-				return &Request{maxRetries: -1}
-			},
-		},
+		config:          config,
+		metrics:         &metrics{},
+		requestPool:     newRequestPool(),
+		execRequestPool: newRequestPool(),
 		securityRequestPool: sync.Pool{
 			New: func() any {
 				return &security.Request{}
@@ -399,18 +428,12 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 
 // getRequest retrieves a Request object from the pool with safe type assertion
 func (c *Client) getRequest() *Request {
-	req, ok := c.requestPool.Get().(*Request)
-	if !ok || req == nil {
-		// Fallback to new allocation if pool returns wrong type (defensive)
-		return &Request{maxRetries: -1}
-	}
-	return req
+	return c.requestPool.get()
 }
 
 // putRequest returns a Request object to the pool
 func (c *Client) putRequest(req *Request) {
-	*req = Request{maxRetries: -1}
-	c.requestPool.Put(req)
+	c.requestPool.put(req)
 }
 
 // getSecurityRequest retrieves a security.Request from the pool
@@ -433,31 +456,14 @@ func (c *Client) putSecurityRequest(req *security.Request) {
 
 // getExecRequest retrieves a Request object from the exec pool for request copies with safe type assertion
 func (c *Client) getExecRequest() *Request {
-	req, ok := c.execRequestPool.Get().(*Request)
-	if !ok || req == nil {
-		// Fallback to new allocation if pool returns wrong type (defensive)
-		return &Request{maxRetries: -1}
-	}
-	return req
+	return c.execRequestPool.get()
 }
 
 // putExecRequest returns a Request object to the exec pool
 func (c *Client) putExecRequest(req *Request) {
-	*req = Request{maxRetries: -1}
-	c.execRequestPool.Put(req)
+	c.execRequestPool.put(req)
 }
 
-// nopCancelFunc is a no-op cancel function that avoids allocation
-// when no timeout is configured
-var nopCancelFunc = func() {}
-
-func (c *Client) createDefaultContext() (context.Context, context.CancelFunc) {
-	if c.config.Timeout > 0 {
-		return context.WithTimeout(backgroundCtx, c.config.Timeout)
-	}
-	// Return cached background context with no-op cancel to avoid allocation
-	return backgroundCtx, nopCancelFunc
-}
 
 // Internal convenience methods — thin wrappers over Request for use by tests within this package.
 func (c *Client) get(url string, options ...RequestOption) (*Response, error) {
@@ -538,6 +544,10 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 		policy = c.config.CustomRetryPolicy
 	}
 
+	// Cache sanitized URL once — URL doesn't change across retry attempts
+	sanitizedURL := validation.SanitizeURL(req.URL())
+	reqMethod := req.Method()
+
 	var lastErr error
 	var lastResp *Response
 
@@ -545,7 +555,7 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 		resp, err := c.executeRequest(req, false)
 
 		if err != nil {
-			clientErr := classifyError(err, req.URL(), req.Method(), attempt+1)
+			clientErr := classifyErrorWithSanitizedURL(err, sanitizedURL, reqMethod, attempt+1)
 			lastErr = clientErr
 
 			// Fast path: non-retryable errors or max retries reached
@@ -590,7 +600,7 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 				}
 				if sleepErr := c.sleepWithContext(req.Context(), delay); sleepErr != nil {
 					releaseLastResp(&lastResp)
-					return nil, classifyError(sleepErr, req.URL(), req.Method(), attempt+1)
+					return nil, classifyErrorWithSanitizedURL(sleepErr, sanitizedURL, reqMethod, attempt+1)
 				}
 				continue
 			}
@@ -689,9 +699,12 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 
 	select {
 	case <-execCtx.Done():
-		return nil, classifyError(execCtx.Err(), req.URL(), req.Method(), 0)
+		return nil, classifyErrorWithSanitizedURL(execCtx.Err(), validation.SanitizeURL(req.URL()), req.Method(), 0)
 	default:
 	}
+
+	// Cache sanitized URL once for all error paths in this execution
+	sanitizedURL := validation.SanitizeURL(req.URL())
 
 	// Get a pooled Request copy — deep copy reference types to prevent cross-retry mutation
 	// Optimization: skip deep copy in no-retry fast path (skipCopy=true) to avoid
@@ -742,19 +755,19 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 	// Invoke OnRequest callback before building the HTTP request
 	if reqCopy.onRequest != nil {
 		if err := reqCopy.onRequest(reqCopy); err != nil {
-			return nil, classifyError(fmt.Errorf("onRequest callback failed: %w", err), req.URL(), req.Method(), 0)
+			return nil, classifyErrorWithSanitizedURL(fmt.Errorf("onRequest callback failed: %w", err), sanitizedURL, req.Method(), 0)
 		}
 	}
 
 	httpReq, err := c.requestProcessor.Build(reqCopy)
 	if err != nil {
-		return nil, classifyError(fmt.Errorf("build request failed: %w", err), req.URL(), req.Method(), 0)
+		return nil, classifyErrorWithSanitizedURL(fmt.Errorf("build request failed: %w", err), sanitizedURL, req.Method(), 0)
 	}
 
 	httpResp, err := c.transport.RoundTrip(httpReq)
 
 	if err != nil {
-		return nil, classifyError(fmt.Errorf("transport failed: %w", err), req.URL(), req.Method(), 0)
+		return nil, classifyErrorWithSanitizedURL(fmt.Errorf("transport failed: %w", err), sanitizedURL, req.Method(), 0)
 	}
 
 	// Streaming mode: skip body buffering, hand raw reader to caller.
@@ -789,6 +802,8 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 			if c.config.MaxResponseBodySize > 0 && c.config.MaxResponseBodySize < maxDrain {
 				maxDrain = c.config.MaxResponseBodySize
 			}
+			// io.Discard implements io.ReaderFrom with its own internal pooled buffer,
+			// so io.Copy(io.Discard, ...) already avoids per-call heap allocation.
 			_, _ = io.Copy(io.Discard, io.LimitReader(httpResp.Body, maxDrain))
 			_ = httpResp.Body.Close()
 		}
@@ -796,7 +811,7 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 
 	resp, err := c.responseProcessor.Process(httpResp)
 	if err != nil {
-		return nil, classifyError(fmt.Errorf("process response failed: %w", err), req.URL(), req.Method(), 0)
+		return nil, classifyErrorWithSanitizedURL(fmt.Errorf("process response failed: %w", err), sanitizedURL, req.Method(), 0)
 	}
 
 	if redirectChain := c.transport.GetRedirectChain(reqCopy.context); len(redirectChain) > 0 {
@@ -817,12 +832,11 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 		resp.SetRequestMethod(httpResp.Request.Method)
 	}
 
-
 	// Invoke OnResponse callback after response processing
 	if reqCopy.onResponse != nil {
 		if err := reqCopy.onResponse(resp); err != nil {
 			ReleaseResponse(resp)
-			return nil, classifyError(fmt.Errorf("onResponse callback failed: %w", err), req.URL(), req.Method(), 0)
+			return nil, classifyErrorWithSanitizedURL(fmt.Errorf("onResponse callback failed: %w", err), sanitizedURL, req.Method(), 0)
 		}
 	}
 
@@ -866,6 +880,7 @@ func (c *Client) Close() error {
 	return closeErr
 }
 
+// RequestOption is a function that modifies a Request before it is sent.
 type RequestOption func(*Request) error
 
 // clientOption is a functional option for configuring the Client.

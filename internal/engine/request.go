@@ -95,66 +95,72 @@ var jsonBufferPool = sync.Pool{
 
 // pooledStringsReader wraps a strings.Reader and returns it to the pool on EOF or Close.
 type pooledStringsReader struct {
-	reader *strings.Reader
+	reader   *strings.Reader
+	released bool
 }
 
 func (r *pooledStringsReader) Read(p []byte) (n int, err error) {
-	// SAFETY: Check for nil reader to prevent panic after EOF
-	// io.Reader contract allows multiple reads after EOF
 	if r.reader == nil {
 		return 0, io.EOF
 	}
 	n, err = r.reader.Read(p)
 	if err == io.EOF {
-		// Reset and return to pool when fully read
-		r.reader.Reset("")
-		stringsReaderPool.Put(r.reader)
-		r.reader = nil
-		stringsReaderWrapperPool.Put(r)
+		r.release()
 	}
 	return n, err
 }
 
 func (r *pooledStringsReader) Close() error {
+	r.release()
+	return nil
+}
+
+func (r *pooledStringsReader) release() {
+	if r.released {
+		return
+	}
+	r.released = true
 	if r.reader != nil {
 		r.reader.Reset("")
 		stringsReaderPool.Put(r.reader)
 		r.reader = nil
 	}
 	stringsReaderWrapperPool.Put(r)
-	return nil
 }
 
 // pooledBytesReader wraps a bytes.Reader and returns it to the pool on EOF or Close.
 type pooledBytesReader struct {
-	reader *bytes.Reader
+	reader   *bytes.Reader
+	released bool
 }
 
 func (r *pooledBytesReader) Read(p []byte) (n int, err error) {
-	// SAFETY: Check for nil reader to prevent panic after EOF
-	// io.Reader contract allows multiple reads after EOF
 	if r.reader == nil {
 		return 0, io.EOF
 	}
 	n, err = r.reader.Read(p)
 	if err == io.EOF {
-		// Reset and return to pool when fully read
-		r.reader.Reset(nil)
-		bytesReaderPool.Put(r.reader)
-		r.reader = nil
-		bytesReaderWrapperPool.Put(r)
+		r.release()
 	}
 	return n, err
 }
 
 func (r *pooledBytesReader) Close() error {
+	r.release()
+	return nil
+}
+
+func (r *pooledBytesReader) release() {
+	if r.released {
+		return
+	}
+	r.released = true
 	if r.reader != nil {
 		r.reader.Reset(nil)
 		bytesReaderPool.Put(r.reader)
 		r.reader = nil
 	}
 	bytesReaderWrapperPool.Put(r)
-	return nil
 }
 
 // stringsReaderWrapperPool reduces allocations for pooledStringsReader wrapper structs.
@@ -179,6 +185,7 @@ func getPooledStringsReader(s string) io.Reader {
 		wrapper = &pooledStringsReader{}
 	}
 	wrapper.reader = reader
+	wrapper.released = false
 	return wrapper
 }
 
@@ -194,15 +201,15 @@ func getPooledBytesReader(b []byte) io.Reader {
 		wrapper = &pooledBytesReader{}
 	}
 	wrapper.reader = reader
+	wrapper.released = false
 	return wrapper
 }
 
 // urlCache provides a thread-safe LRU-like cache for parsed URLs
 // to avoid expensive url.Parse() calls for repeated URLs.
 //
-// SECURITY: The cache uses the raw URL as the key to prevent collisions
-// when URLs differ only in sensitive query parameter values (e.g., ?token=A vs ?token=B).
-// The cache is internal and never logged — sensitive data stays in memory only.
+// SECURITY: The cache uses a sanitized URL as the key (sensitive query parameter
+// values redacted) to prevent credentials from persisting in memory.
 // Callers always receive a clone of the cached entry to prevent mutation.
 type urlCache struct {
 	mu      sync.RWMutex
@@ -218,43 +225,77 @@ var globalURLCache = &urlCache{
 	maxSize: 1024,
 }
 
+// sanitizeURLKey produces a cache-safe URL string by redacting sensitive
+// query parameter values (token, api_key, password, etc.).
+// This prevents sensitive data from persisting in cache keys.
+func sanitizeURLKey(u *url.URL) string {
+	if u.RawQuery == "" {
+		return u.String()
+	}
+	q := u.Query()
+	redacted := false
+	for key := range q {
+		if sensitiveQueryParams[strings.ToLower(key)] {
+			q.Set(key, "[REDACTED]")
+			redacted = true
+		}
+	}
+	clone := *u
+	clone.User = nil
+	if redacted {
+		clone.RawQuery = q.Encode()
+	}
+	return clone.String()
+}
+
+// sensitiveQueryParams contains query parameter names whose values should be
+// redacted from URL cache keys to prevent credential persistence in memory.
+var sensitiveQueryParams = map[string]bool{
+	"token": true, "access_token": true, "refresh_token": true,
+	"id_token": true, "bearer": true,
+	"api_key": true, "apikey": true,
+	"secret": true, "secret_key": true, "client_secret": true,
+	"private_key": true, "privatekey": true,
+	"password": true, "passwd": true, "pass": true, "pwd": true,
+	"credential": true, "credentials": true,
+	"session_id": true, "sessionid": true,
+	"jwt": true, "signature": true, "sign": true, "sig": true,
+}
+
 // Get retrieves a parsed URL from cache or parses and caches it.
-// SECURITY: Uses raw URL as cache key. The cache is internal-only and never exposed
-// to logs or external systems — sensitive data remains in process memory.
+// SECURITY: Uses sanitized URL as cache key to prevent sensitive data persistence.
 func (c *urlCache) Get(rawURL string) (*url.URL, error) {
 
-	// Fast path: read lock for cache hit
-	c.mu.RLock()
-	if parsed, ok := c.entries[rawURL]; ok {
-		c.mu.RUnlock()
-		// SECURITY: Return a clone to prevent modification of cached entry
-		return cloneURL(parsed), nil
-	}
-	c.mu.RUnlock()
-
-	// Slow path: parse and cache
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Double-check after acquiring write lock
-	if parsed, ok := c.entries[rawURL]; ok {
-		return cloneURL(parsed), nil
-	}
-
+	// Parse URL first to produce sanitized cache key
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, err
 	}
+	parsed.User = nil
+	cacheKey := sanitizeURLKey(parsed)
+
+	// Fast path: read lock for cache hit
+	c.mu.RLock()
+	if cached, ok := c.entries[cacheKey]; ok {
+		c.mu.RUnlock()
+		return cloneURL(cached), nil
+	}
+	c.mu.RUnlock()
+
+	// Slow path: cache the parsed URL
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Double-check after acquiring write lock
+	if cached, ok := c.entries[cacheKey]; ok {
+		return cloneURL(cached), nil
+	}
 
 	// SECURITY: Evict oldest entry if cache is full
-	// Check len(c.keys) > 0 to prevent index out of bounds in race conditions
 	if len(c.entries) >= c.maxSize && len(c.keys) > 0 {
-		// Remove oldest key (simple FIFO eviction)
 		oldestKey := c.keys[0]
 		delete(c.entries, oldestKey)
 		c.keys = c.keys[1:]
-		// Compact backing array when capacity is significantly larger than length
-		// to prevent unbounded memory growth under sustained unique URL traffic
 		if cap(c.keys) > len(c.keys)*2 {
 			newKeys := make([]string, len(c.keys), len(c.keys)*2)
 			copy(newKeys, c.keys)
@@ -262,13 +303,8 @@ func (c *urlCache) Get(rawURL string) (*url.URL, error) {
 		}
 	}
 
-	// SECURITY: Strip credentials before caching to prevent
-	// sensitive data persisting in memory indefinitely.
-	parsed.User = nil
-
-	// Store the parsed URL directly — callers always receive a clone
-	c.entries[rawURL] = parsed
-	c.keys = append(c.keys, rawURL)
+	c.entries[cacheKey] = parsed
+	c.keys = append(c.keys, cacheKey)
 
 	return cloneURL(parsed), nil
 }
@@ -375,24 +411,27 @@ func (r *pooledMultipartBuffer) Read(p []byte) (n int, err error) {
 		return 0, io.EOF
 	}
 	n, err = r.buf.Read(p)
-	if err == io.EOF && r.owned {
-		// Return to pool when fully read
-		putMultipartBuffer(r.buf)
-		r.buf = nil
-		r.owned = false
-		multipartBufferWrapperPool.Put(r)
+	if err == io.EOF {
+		r.release()
 	}
 	return n, err
 }
 
 func (r *pooledMultipartBuffer) Close() error {
-	if r.buf != nil && r.owned {
+	r.release()
+	return nil
+}
+
+func (r *pooledMultipartBuffer) release() {
+	if !r.owned {
+		return
+	}
+	r.owned = false
+	if r.buf != nil {
 		putMultipartBuffer(r.buf)
 		r.buf = nil
-		r.owned = false
 	}
 	multipartBufferWrapperPool.Put(r)
-	return nil
 }
 
 // getJSONBuffer retrieves a bytes.Buffer from the pool for JSON encoding.
@@ -443,23 +482,27 @@ func (r *pooledJSONBuffer) Read(p []byte) (n int, err error) {
 		return 0, io.EOF
 	}
 	n, err = r.buf.Read(p)
-	if err == io.EOF && r.owned {
-		putJSONBuffer(r.buf)
-		r.buf = nil
-		r.owned = false
-		jsonBufferWrapperPool.Put(r)
+	if err == io.EOF {
+		r.release()
 	}
 	return n, err
 }
 
 func (r *pooledJSONBuffer) Close() error {
-	if r.buf != nil && r.owned {
+	r.release()
+	return nil
+}
+
+func (r *pooledJSONBuffer) release() {
+	if !r.owned {
+		return
+	}
+	r.owned = false
+	if r.buf != nil {
 		putJSONBuffer(r.buf)
 		r.buf = nil
-		r.owned = false
 	}
 	jsonBufferWrapperPool.Put(r)
-	return nil
 }
 
 type requestProcessor struct {

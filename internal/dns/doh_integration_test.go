@@ -119,13 +119,11 @@ func TestDoHResolverFallback(t *testing.T) {
 	// Should fall back to system resolver
 	ips, err := resolver.LookupIPAddr(ctx, "localhost")
 	if err != nil {
-		t.Logf("System resolver lookup error (may be expected): %v", err)
-		return
+		t.Skipf("System resolver lookup error: %v", err)
 	}
 
 	if len(ips) == 0 {
-		t.Log("System resolver returned no IPs for localhost")
-		return
+		t.Skip("System resolver returned no IPs for localhost")
 	}
 
 	t.Logf("System resolver (fallback) found %d IPs for localhost:", len(ips))

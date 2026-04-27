@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime"
 	"sync"
 	"testing"
 )
@@ -203,12 +204,13 @@ func TestDetect_NoEnvVarsNoPlatformProxy(t *testing.T) {
 	detector := NewDetector()
 	proxyFunc := detector.GetProxyFunc()
 
-	// On Windows with a system proxy configured, this may be non-nil
-	// On clean test environments, this should be nil
-	if proxyFunc == nil {
-		t.Log("GetProxyFunc with no env vars returned nil (expected)")
-	} else {
-		t.Log("GetProxyFunc with no env vars returned a function (platform-specific detection)")
+	// On Windows, platform-specific proxy detection may return non-nil
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows platform proxy detection may return non-nil")
+	}
+
+	if proxyFunc != nil {
+		t.Error("GetProxyFunc with no env vars should return nil on platforms without system proxy")
 	}
 }
 

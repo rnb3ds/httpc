@@ -30,31 +30,31 @@ func TestCheckRedirect_CrossOriginHeaderStripping(t *testing.T) {
 	defer func() { _ = trans.Close() }()
 
 	tests := []struct {
-		name                string
-		originalHost        string
-		redirectHost        string
-		expectAuthStripped  bool
+		name                 string
+		originalHost         string
+		redirectHost         string
+		expectAuthStripped   bool
 		expectCookieStripped bool
 	}{
 		{
-			name:                "different hosts strips sensitive headers",
-			originalHost:        "api.example.com",
-			redirectHost:        "evil.com",
-			expectAuthStripped:  true,
+			name:                 "different hosts strips sensitive headers",
+			originalHost:         "api.example.com",
+			redirectHost:         "evil.com",
+			expectAuthStripped:   true,
 			expectCookieStripped: true,
 		},
 		{
-			name:                "same host preserves headers",
-			originalHost:        "example.com",
-			redirectHost:        "example.com",
-			expectAuthStripped:  false,
+			name:                 "same host preserves headers",
+			originalHost:         "example.com",
+			redirectHost:         "example.com",
+			expectAuthStripped:   false,
 			expectCookieStripped: false,
 		},
 		{
-			name:                "different subdomain strips headers",
-			originalHost:        "api.example.com",
-			redirectHost:        "www.example.com",
-			expectAuthStripped:  true,
+			name:                 "different subdomain strips headers",
+			originalHost:         "api.example.com",
+			redirectHost:         "www.example.com",
+			expectAuthStripped:   true,
 			expectCookieStripped: true,
 		},
 	}

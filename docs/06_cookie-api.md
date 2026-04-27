@@ -264,7 +264,7 @@ exists := result.HasRequestCookie("session")
 ## See Also
 
 - [Request Inspection](./08_request-inspection.md) - Detailed guide on inspecting requests
-- [cookies_advanced.go](../examples/03_advanced/cookies_advanced.go) - More cookie examples
+- [10_cookies_advanced.go](../examples/10_cookies_advanced.go) - More cookie examples
 - [Configuration](./02_configuration.md) - Cookie jar configuration
 
 ## SessionManager Cookie API

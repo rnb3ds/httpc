@@ -1,9 +1,12 @@
+// Package connection manages HTTP connection pooling, TLS configuration,
+// and proxy detection for the httpc library.
 package connection
 
 import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -27,6 +30,10 @@ var ErrPoolExhausted = fmt.Errorf("connection pool exhausted")
 // eligible for eviction. Stale entries (no recent connections) are removed
 // during periodic cleanup to prevent unbounded map growth.
 const hostConnMaxAge = 30 * time.Minute
+
+// maxHostEntries is the maximum number of per-host tracking entries.
+// When exceeded, aggressive eviction runs regardless of the normal interval.
+const maxHostEntries = 10000
 
 // PoolManager provides intelligent connection pool management with monitoring
 type PoolManager struct {
@@ -55,19 +62,20 @@ type certPinner interface {
 	VerifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error
 }
 
-// Config defines connection pool configuration
+// Config defines connection pool configuration.
 type Config struct {
 	MaxIdleConns        int
 	MaxIdleConnsPerHost int
 	MaxConnsPerHost     int
 	MaxTotalConns       int
 
-	DialTimeout           time.Duration
-	KeepAlive             time.Duration
-	TLSHandshakeTimeout   time.Duration
-	ResponseHeaderTimeout time.Duration
-	IdleConnTimeout       time.Duration
-	ExpectContinueTimeout time.Duration
+	DialTimeout            time.Duration
+	KeepAlive              time.Duration
+	TLSHandshakeTimeout    time.Duration
+	ResponseHeaderTimeout  time.Duration
+	IdleConnTimeout        time.Duration
+	ExpectContinueTimeout  time.Duration
+	MaxResponseHeaderBytes int64
 
 	TLSConfig          *tls.Config
 	MinTLSVersion      uint16
@@ -121,7 +129,7 @@ type metrics struct {
 	LastUpdate          int64
 }
 
-// DefaultConfig returns optimized default configuration
+// DefaultConfig returns optimized default configuration.
 func DefaultConfig() *Config {
 	return &Config{
 		MaxIdleConns:        200,
@@ -150,7 +158,7 @@ func DefaultConfig() *Config {
 	}
 }
 
-// NewPoolManager creates a new connection pool manager
+// NewPoolManager creates a new connection pool manager with the given configuration.
 func NewPoolManager(config *Config) (*PoolManager, error) {
 	if config == nil {
 		config = DefaultConfig()
@@ -167,18 +175,19 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 	}
 
 	transport := &http.Transport{
-		DialContext:           pm.createDialer(),
-		TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
-		TLSClientConfig:       pm.createTLSConfig(),
-		ResponseHeaderTimeout: config.ResponseHeaderTimeout,
-		IdleConnTimeout:       config.IdleConnTimeout,
-		ExpectContinueTimeout: config.ExpectContinueTimeout,
-		MaxIdleConns:          config.MaxIdleConns,
-		MaxIdleConnsPerHost:   config.MaxIdleConnsPerHost,
-		MaxConnsPerHost:       config.MaxConnsPerHost,
-		ForceAttemptHTTP2:     config.ForceAttemptHTTP2,
-		DisableCompression:    true, // Always disable automatic decompression - we handle it manually
-		DisableKeepAlives:     config.DisableKeepAlives,
+		DialContext:            pm.createDialer(),
+		TLSHandshakeTimeout:    config.TLSHandshakeTimeout,
+		TLSClientConfig:        pm.createTLSConfig(),
+		ResponseHeaderTimeout:  config.ResponseHeaderTimeout,
+		IdleConnTimeout:        config.IdleConnTimeout,
+		ExpectContinueTimeout:  config.ExpectContinueTimeout,
+		MaxResponseHeaderBytes: config.MaxResponseHeaderBytes,
+		MaxIdleConns:           config.MaxIdleConns,
+		MaxIdleConnsPerHost:    config.MaxIdleConnsPerHost,
+		MaxConnsPerHost:        config.MaxConnsPerHost,
+		ForceAttemptHTTP2:      config.ForceAttemptHTTP2,
+		DisableCompression:     true, // Always disable automatic decompression - we handle it manually
+		DisableKeepAlives:      config.DisableKeepAlives,
 	}
 	// Configure proxy settings with priority:
 	// 1. Manual proxy URL (highest priority)
@@ -223,10 +232,14 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 	}
 
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
-		// Enforce total connection limit
-		if pm.config.MaxTotalConns > 0 && atomic.LoadInt64(&pm.totalConns) >= int64(pm.config.MaxTotalConns) {
-			atomic.AddInt64(&pm.rejectedConns, 1)
-			return nil, fmt.Errorf("%w (max %d)", ErrPoolExhausted, pm.config.MaxTotalConns)
+		// Atomically reserve a connection slot to prevent TOCTOU race
+		if pm.config.MaxTotalConns > 0 {
+			newCount := atomic.AddInt64(&pm.totalConns, 1)
+			if newCount > int64(pm.config.MaxTotalConns) {
+				atomic.AddInt64(&pm.totalConns, -1)
+				atomic.AddInt64(&pm.rejectedConns, 1)
+				return nil, fmt.Errorf("%w (max %d)", ErrPoolExhausted, pm.config.MaxTotalConns)
+			}
 		}
 		startTime := time.Now()
 
@@ -239,10 +252,12 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 
 			if err != nil {
 				atomic.AddInt64(&pm.rejectedConns, 1)
+				if pm.config.MaxTotalConns > 0 {
+					atomic.AddInt64(&pm.totalConns, -1)
+				}
 				return nil, fmt.Errorf("proxy connection failed: %w", err)
 			}
 
-			atomic.AddInt64(&pm.totalConns, 1)
 			atomic.AddInt64(&pm.activeConns, 1)
 			return &trackedConn{
 				Conn:  conn,
@@ -264,30 +279,39 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 			ips, err := pm.dohResolver.LookupIPAddr(ctx, host)
 			if err != nil {
 				atomic.AddInt64(&pm.rejectedConns, 1)
+				if pm.config.MaxTotalConns > 0 {
+					atomic.AddInt64(&pm.totalConns, -1)
+				}
 				return nil, fmt.Errorf("DoH DNS resolution failed: %w", err)
 			}
 
-			// SSRF protection check
+			// SSRF protection: filter to allowed IPs (supports Split-Horizon DNS)
+			resolvedIPs := make([]net.IP, len(ips))
+			for i, addr := range ips {
+				resolvedIPs[i] = addr.IP
+			}
 			if !pm.config.AllowPrivateIPs {
-				for _, ip := range ips {
-					if err := validation.ValidateIPWithExemptions(ip.IP, pm.config.ExemptNets); err != nil {
-						atomic.AddInt64(&pm.rejectedConns, 1)
-						return nil, fmt.Errorf("SSRF protection: %w", err)
+				allowedIPs := validation.FilterAllowedIPs(resolvedIPs, pm.config.ExemptNets)
+				if len(allowedIPs) == 0 {
+					atomic.AddInt64(&pm.rejectedConns, 1)
+					if pm.config.MaxTotalConns > 0 {
+						atomic.AddInt64(&pm.totalConns, -1)
 					}
+					return nil, fmt.Errorf("SSRF protection: domain resolves only to blocked addresses")
 				}
+				resolvedIPs = allowedIPs
 			}
 
-			// Try to connect to each resolved IP until one succeeds
+			// Try to connect to each allowed IP until one succeeds
 			var lastErr error
-			for _, ipAddr := range ips {
-				ipAddress := net.JoinHostPort(ipAddr.IP.String(), port)
+			for _, ip := range resolvedIPs {
+				ipAddress := net.JoinHostPort(ip.String(), port)
 				attemptStart := time.Now()
 				conn, err := dialer.DialContext(ctx, network, ipAddress)
 				connTime := time.Since(attemptStart).Nanoseconds()
 				stats := pm.updateConnectionMetrics(address, connTime, err == nil)
 
 				if err == nil {
-					atomic.AddInt64(&pm.totalConns, 1)
 					atomic.AddInt64(&pm.activeConns, 1)
 					return &trackedConn{
 						Conn:  conn,
@@ -300,7 +324,10 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 			}
 
 			atomic.AddInt64(&pm.rejectedConns, 1)
-			return nil, fmt.Errorf("connection failed after trying %d IPs: %w", len(ips), lastErr)
+			if pm.config.MaxTotalConns > 0 {
+				atomic.AddInt64(&pm.totalConns, -1)
+			}
+			return nil, fmt.Errorf("connection failed after trying %d IPs: %w", len(resolvedIPs), lastErr)
 		}
 
 		// Standard path without DoH
@@ -311,6 +338,9 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 			validatedAddr, err := pm.resolveAndValidateAddress(address)
 			if err != nil {
 				atomic.AddInt64(&pm.rejectedConns, 1)
+				if pm.config.MaxTotalConns > 0 {
+					atomic.AddInt64(&pm.totalConns, -1)
+				}
 				return nil, fmt.Errorf("SSRF protection: %w", err)
 			}
 			address = validatedAddr
@@ -322,10 +352,12 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 
 		if err != nil {
 			atomic.AddInt64(&pm.rejectedConns, 1)
+			if pm.config.MaxTotalConns > 0 {
+				atomic.AddInt64(&pm.totalConns, -1)
+			}
 			return nil, fmt.Errorf("connection failed: %w", err)
 		}
 
-		atomic.AddInt64(&pm.totalConns, 1)
 		atomic.AddInt64(&pm.activeConns, 1)
 
 		return &trackedConn{
@@ -359,25 +391,21 @@ func (pm *PoolManager) resolveAndValidateAddress(address string) (string, error)
 		return address, nil
 	}
 
-	// For domain names, resolve and validate all IPs
+	// For domain names, resolve and filter to allowed IPs
 	ips, err := net.LookupIP(host)
 	if err != nil {
 		return "", fmt.Errorf("DNS resolution failed for SSRF validation of %s: %w", host, err)
 	}
 
-	// Check all resolved IPs — if any point to a private/reserved address, block it
-	for _, ip := range ips {
-		if err := validation.ValidateIPWithExemptions(ip, pm.config.ExemptNets); err != nil {
-			return "", fmt.Errorf("domain %s resolves to blocked address: %w", host, err)
-		}
+	// Filter to public/exempted IPs — supports Split-Horizon DNS environments
+	// where a domain may resolve to both public and private IPs.
+	allowedIPs := validation.FilterAllowedIPs(ips, pm.config.ExemptNets)
+	if len(allowedIPs) == 0 {
+		return "", fmt.Errorf("domain %s resolves only to blocked addresses", host)
 	}
 
-	if len(ips) == 0 {
-		return "", fmt.Errorf("DNS resolution returned no addresses for %s", host)
-	}
-
-	// Return the first validated IP for direct dialing to prevent DNS rebinding
-	return net.JoinHostPort(ips[0].String(), port), nil
+	// Return the first allowed IP for direct dialing to prevent DNS rebinding
+	return net.JoinHostPort(allowedIPs[0].String(), port), nil
 }
 
 func (pm *PoolManager) isProxyAddr(address string) bool {
@@ -479,10 +507,22 @@ func (pm *PoolManager) updateConnectionMetrics(host string, connTime int64, succ
 	pm.evictStaleHosts()
 
 	// Use a pre-allocated stats pointer to avoid allocation in the hot path
-	value, _ := pm.hostConns.LoadOrStore(host, &hostStats{
+	value, loaded := pm.hostConns.LoadOrStore(host, &hostStats{
 		Host:     host,
 		LastUsed: time.Now().Unix(),
 	})
+
+	// Enforce max host entries to prevent unbounded map growth from unique hosts
+	if !loaded {
+		var count int
+		pm.hostConns.Range(func(_, _ any) bool {
+			count++
+			return count < maxHostEntries+1
+		})
+		if count > maxHostEntries {
+			pm.evictStaleHosts()
+		}
+	}
 
 	// Safe type assertion with defensive check
 	stats, ok := value.(*hostStats)
@@ -568,11 +608,12 @@ func (pm *PoolManager) Close() error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
+	var closeErr error
+
 	// Close DoH resolver first to release its HTTP client resources
 	if pm.dohResolver != nil {
 		if err := pm.dohResolver.Close(); err != nil {
-			// Log but don't fail - continue closing other resources
-			// In production, this could be logged to a proper logger
+			closeErr = errors.Join(closeErr, fmt.Errorf("failed to close DoH resolver: %w", err))
 		}
 	}
 
@@ -586,5 +627,5 @@ func (pm *PoolManager) Close() error {
 		return true
 	})
 
-	return nil
+	return closeErr
 }

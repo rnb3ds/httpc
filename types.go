@@ -86,6 +86,11 @@ type ConnectionConfig struct {
 	// DoHCacheTTL is the cache duration for DoH DNS responses.
 	// Default: 5 minutes.
 	DoHCacheTTL time.Duration
+
+	// MaxResponseHeaderBytes limits the maximum size of the server's response headers.
+	// This protects against malicious servers sending excessively large headers.
+	// Default: 0 (uses Go stdlib default of 10MB).
+	MaxResponseHeaderBytes int64
 }
 
 // SecurityConfig configures TLS, validation, and SSRF protection.
@@ -117,9 +122,12 @@ type SecurityConfig struct {
 	// MaxResponseBodySize takes precedence as the stricter limit.
 	MaxDecompressedBodySize int64
 
-	// AllowPrivateIPs permits connections to private IP addresses.
+	// AllowPrivateIPs disables ALL SSRF protection when set to true, including
+	// localhost, loopback, link-local, and private/reserved IP checks.
 	// Default: false (SSRF protection enabled). Set to true only when
 	// connecting to internal services (VPNs, proxies, corporate networks).
+	// WARNING: This completely bypasses the connection-level SSRF dialer validation,
+	// not just private IP blocking. Use SSRFExemptCIDRs for selective allowlisting instead.
 	AllowPrivateIPs bool
 
 	// SSRFExemptCIDRs specifies CIDR ranges exempted from SSRF blocking.
@@ -320,8 +328,8 @@ const (
 //
 // SSRF Protection:
 // AllowPrivateIPs defaults to false, blocking connections to private/reserved IPs
-// (127.0.0.1, 10.x, 192.168.x, 169.254.x, etc.). Set to true only when connecting
-// to internal services that use private IP addresses.
+// (127.0.0.1, 10.x, 192.168.x, 169.254.x, etc.). Setting to true disables ALL SSRF
+// protection including localhost checks — use SSRFExemptCIDRs for selective allowlisting.
 func DefaultConfig() *Config {
 	return &Config{
 		Timeouts: TimeoutConfig{
@@ -430,6 +438,9 @@ func ValidateConfig(cfg *Config) error {
 	if cfg.Connection.DoHCacheTTL < 0 {
 		return fmt.Errorf("%w: Connection.DoHCacheTTL cannot be negative, got %v", ErrInvalidConnection, cfg.Connection.DoHCacheTTL)
 	}
+	if cfg.Connection.MaxResponseHeaderBytes < 0 {
+		return fmt.Errorf("%w: Connection.MaxResponseHeaderBytes cannot be negative, got %d", ErrInvalidConnection, cfg.Connection.MaxResponseHeaderBytes)
+	}
 
 	// Validate security settings
 	if cfg.Security.MaxResponseBodySize < 0 || cfg.Security.MaxResponseBodySize > maxResponseBodySize {
@@ -437,6 +448,9 @@ func ValidateConfig(cfg *Config) error {
 	}
 	if cfg.Security.MaxDecompressedBodySize < 0 || cfg.Security.MaxDecompressedBodySize > maxDecompressedBodySize {
 		return fmt.Errorf("%w: Security.MaxDecompressedBodySize must be 0-100MB, got %d", ErrInvalidSecurity, cfg.Security.MaxDecompressedBodySize)
+	}
+	if cfg.Security.MaxRequestBodySize < 0 || cfg.Security.MaxRequestBodySize > maxResponseBodySize {
+		return fmt.Errorf("%w: Security.MaxRequestBodySize must be 0-%d, got %d", ErrInvalidSecurity, maxResponseBodySize, cfg.Security.MaxRequestBodySize)
 	}
 
 	// Validate TLS version ordering

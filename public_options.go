@@ -16,18 +16,27 @@ import (
 )
 
 // WithHeader sets a single HTTP header on the request.
-// The key and value are validated for security (CRLF injection prevention).
+// Returns ErrInvalidHeader if the key or value contains invalid characters
+// (CRLF injection prevention).
 func WithHeader(key, value string) RequestOption {
 	return func(r *engine.Request) error {
+		if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
+			return fmt.Errorf("invalid header: %w", err)
+		}
 		r.SetHeader(key, value)
 		return nil
 	}
 }
 
 // WithHeaderMap sets multiple headers from a map.
+// Returns ErrInvalidHeader if any key or value contains invalid characters
+// (CRLF injection prevention).
 func WithHeaderMap(headers map[string]string) RequestOption {
 	return func(r *engine.Request) error {
 		for k, v := range headers {
+			if err := validation.ValidateHeaderKeyValue(k, v); err != nil {
+				return fmt.Errorf("invalid header %q: %w", k, err)
+			}
 			r.SetHeader(k, v)
 		}
 		return nil
@@ -162,6 +171,11 @@ func WithXML(data any) RequestOption {
 //   - io.Reader → passed through (no Content-Type set)
 //   - other types → application/json (default)
 //
+// Note: io.Reader bodies bypass request body size validation. For untrusted sources,
+// wrap with io.LimitReader to prevent resource exhaustion:
+//
+//	limited := io.LimitReader(untrustedReader, 10<<20) // 10 MB cap
+//
 // Explicit kinds (BodyJSON, BodyXML, BodyForm, BodyBinary, BodyMultipart) override auto-detection.
 //
 // Example:
@@ -259,8 +273,8 @@ func convertToForm(data any) (string, error) {
 func convertToBinary(data any) ([]byte, error) {
 	switch v := data.(type) {
 	case []byte:
-		if v == nil {
-			return nil, fmt.Errorf("binary data cannot be nil")
+		if len(v) == 0 {
+			return nil, fmt.Errorf("binary data cannot be empty")
 		}
 		return v, nil
 	case string:

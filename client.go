@@ -1,145 +1,15 @@
 package httpc
 
-// Package httpc provides a high-performance HTTP client library with enterprise-grade
-// security and production-ready defaults.
-//
-// # Key Features
-//
-//   - Secure by default with TLS 1.2+, CRLF injection prevention, header validation
-//   - High performance with connection pooling, HTTP/2, and goroutine-safe operations
-//   - Built-in resilience with smart retry and exponential backoff
-//   - Clean API with simplified request options
-//
-// # Quick Start
-//
-// Basic usage with package-level functions:
-//
-//	result, err := httpc.Get("https://api.example.com/data")
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-//	fmt.Println(result.Body())
-//
-// # Client Creation
-//
-// Create a client with default configuration:
-//
-//	client, err := httpc.New()
-//	defer client.Close()
-//
-// Create a client with custom configuration:
-//
-//	cfg := httpc.DefaultConfig()
-//	cfg.Timeouts.Request = 60 * time.Second
-//	cfg.Retry.MaxRetries = 5
-//	client, err := httpc.New(cfg)
-//
-// Use preset configurations:
-//
-//	client, err := httpc.New(httpc.SecureConfig())      // Security-focused
-//	client, err := httpc.New(httpc.PerformanceConfig()) // High-throughput
-//	client, err := httpc.New(httpc.TestingConfig())     // Testing only!
-//
-// # SSRF Protection
-//
-// By default, AllowPrivateIPs is false, blocking connections to private/reserved
-// IP addresses (127.0.0.1, 10.x, 192.168.x, 169.254.x, etc.). This protects
-// against Server-Side Request Forgery attacks.
-//
-// Set AllowPrivateIPs to true only when connecting to internal services:
-//
-//	// Allow internal service access (VPNs, proxies, corporate networks)
-//	cfg := httpc.DefaultConfig()
-//	cfg.Security.AllowPrivateIPs = true
-//	client, err := httpc.New(cfg)
-//
-//	// Or use the secure preset (SSRF protection already enabled)
-//	client, err := httpc.New(httpc.SecureConfig())
-//
-// # Request Options
-//
-// Core options (26 functions):
-//
-//	// Headers
-//	httpc.WithHeader("Authorization", "Bearer token")
-//	httpc.WithHeaderMap(map[string]string{"X-Custom": "value"})
-//	httpc.WithUserAgent("my-app/1.0")
-//
-//	// Body
-//	httpc.WithJSON(data)
-//	httpc.WithXML(data)
-//	httpc.WithForm(map[string]string{"key": "value"})
-//	httpc.WithFormData(multipartData)
-//	httpc.WithFile("file", "document.pdf", fileBytes)
-//	httpc.WithBody(rawData)
-//	httpc.WithBinary(binaryData)
-//
-//	// Query parameters
-//	httpc.WithQuery("page", 1)
-//	httpc.WithQueryMap(map[string]any{"page": 1, "limit": 10})
-//
-//	// Authentication
-//	httpc.WithBearerToken(token)
-//	httpc.WithBasicAuth(username, password)
-//
-//	// Cookies
-//	httpc.WithCookie(http.Cookie{Name: "session", Value: "abc"})
-//	httpc.WithCookieString("session=abc; token=xyz")
-//	httpc.WithCookieMap(map[string]string{"session": "abc"})
-//	httpc.WithSecureCookie(securityConfig)
-//
-//	// Request control
-//	httpc.WithContext(ctx)
-//	httpc.WithTimeout(30 * time.Second)
-//	httpc.WithMaxRetries(3)
-//	httpc.WithFollowRedirects(false)
-//	httpc.WithMaxRedirects(5)
-//	httpc.WithStreamBody(true)
-//
-//	// Callbacks
-//	httpc.WithOnRequest(callback)
-//	httpc.WithOnResponse(callback)
-//
-// # DomainClient
-//
-// For session management across requests to the same domain:
-//
-//	dc, err := httpc.NewDomain("https://api.example.com")
-//	defer dc.Close()
-//
-//	dc.SetHeader("Authorization", "Bearer "+token)
-//
-//	// Headers automatically included
-//	result, err := dc.Request(ctx, "GET", "/users")
-//
-// # Context Handling
-//
-// Use context for timeout and cancellation:
-//
-//	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-//	defer cancel()
-//
-//	result, err := client.Request(ctx, "GET", "https://api.example.com/data")
-//
-// # Migration
-//
-// For migration from older versions, see MIGRATION.md.
-//
-// For more information, see https://github.com/cybergodev/httpc
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"maps"
-	"net"
 	"net/http"
+	"os"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/cybergodev/httpc/internal/engine"
-	"github.com/cybergodev/httpc/internal/security"
-	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // Doer is a minimal interface for executing HTTP requests.
@@ -252,6 +122,12 @@ func New(config ...*Config) (Client, error) {
 	engineConfig, err := convertToEngineConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert configuration: %w", err)
+	}
+
+	// Warn if InsecureSkipVerify is enabled outside test environment.
+	if cfg.Security.InsecureSkipVerify && !isTestEnvironment() {
+		fmt.Fprintf(os.Stderr, "[SECURITY WARNING] InsecureSkipVerify is enabled - TLS certificate verification is DISABLED\n")
+		fmt.Fprintf(os.Stderr, "[SECURITY WARNING] This should only be used in testing. Use SecureConfig() for production.\n")
 	}
 
 	engineClient, err := engine.NewClient(engineConfig)
@@ -620,156 +496,6 @@ func SetDefaultClient(client Client) error {
 		closeErr = oldClient.Close()
 	}
 	return closeErr
-}
-
-const (
-	minIdleConnsPerHost    = 2  // Minimum idle connections per host
-	maxIdleConnsPerHostCap = 10 // Maximum cap for idle connections per host
-	maxRetryDelayBackoffMultiplier = 3  // Multiplier for Delay*BackoffFactor to cap max retry delay
-)
-
-// calculateIdleConnsPerHost calculates the optimal number of idle connections per host
-// based on MaxConnsPerHost configuration.
-func calculateIdleConnsPerHost(maxConnsPerHost int) int {
-	if maxConnsPerHost == 0 {
-		// Unlimited max connections - use reasonable default for idle
-		return maxIdleConnsPerHostCap
-	}
-	idleConns := maxConnsPerHost / 2
-	if idleConns < minIdleConnsPerHost {
-		return minIdleConnsPerHost
-	}
-	if idleConns > maxIdleConnsPerHostCap {
-		return maxIdleConnsPerHostCap
-	}
-	return idleConns
-}
-
-// resolveTLSVersions returns the minimum and maximum TLS versions from config.
-// Falls back to TLS 1.2 and TLS 1.3 if not specified.
-func resolveTLSVersions(cfg *Config) (min, max uint16) {
-	min = cfg.Security.MinTLSVersion
-	if min == 0 {
-		min = tls.VersionTLS12
-	}
-	max = cfg.Security.MaxTLSVersion
-	if max == 0 {
-		max = tls.VersionTLS13
-	}
-	return min, max
-}
-
-// calculateMaxRetryDelay calculates the maximum retry delay based on configuration.
-// Formula: min(RetryDelay * BackoffFactor * 3, 30s)
-func calculateMaxRetryDelay(cfg *Config) time.Duration {
-	const (
-		defaultMaxRetryDelay  = 5 * time.Second
-		absoluteMaxRetryDelay = 30 * time.Second
-	)
-
-	if cfg.Retry.Delay <= 0 || cfg.Retry.BackoffFactor <= 0 {
-		return defaultMaxRetryDelay
-	}
-
-	calculated := time.Duration(float64(cfg.Retry.Delay) * cfg.Retry.BackoffFactor * maxRetryDelayBackoffMultiplier)
-	if calculated > absoluteMaxRetryDelay {
-		return absoluteMaxRetryDelay
-	}
-	if calculated < defaultMaxRetryDelay {
-		return defaultMaxRetryDelay
-	}
-	return calculated
-}
-
-// convertToEngineConfig converts public Config to engine Config.
-// It uses helper functions for cleaner separation of concerns.
-func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
-	if cfg == nil {
-		cfg = DefaultConfig()
-	}
-
-	idleConnsPerHost := calculateIdleConnsPerHost(cfg.Connection.MaxConnsPerHost)
-	minTLSVersion, maxTLSVersion := resolveTLSVersions(cfg)
-	maxRetryDelay := calculateMaxRetryDelay(cfg)
-
-	cookieJar, err := createCookieJar(cfg.Connection.EnableCookies)
-	if err != nil {
-		return nil, err
-	}
-
-	engineConfig := &engine.Config{
-		// Timeout settings
-		Timeout:               cfg.Timeouts.Request,
-		DialTimeout:           cfg.Timeouts.Dial,
-		KeepAlive:             30 * time.Second,
-		TLSHandshakeTimeout:   cfg.Timeouts.TLSHandshake,
-		ResponseHeaderTimeout: cfg.Timeouts.ResponseHeader,
-		IdleConnTimeout:       cfg.Timeouts.IdleConn,
-
-		// Connection settings
-		MaxIdleConns:        cfg.Connection.MaxIdleConns,
-		MaxIdleConnsPerHost: idleConnsPerHost,
-		MaxConnsPerHost:     cfg.Connection.MaxConnsPerHost,
-		ProxyURL:            cfg.Connection.ProxyURL,
-		EnableSystemProxy:   cfg.Connection.EnableSystemProxy,
-		EnableHTTP2:         cfg.Connection.EnableHTTP2,
-		CookieJar:           cookieJar,
-		EnableCookies:       cfg.Connection.EnableCookies,
-		EnableDoH:           cfg.Connection.EnableDoH,
-		DoHCacheTTL:         cfg.Connection.DoHCacheTTL,
-
-		// Security settings
-		TLSConfig:               cfg.Security.TLSConfig,
-		MinTLSVersion:           minTLSVersion,
-		MaxTLSVersion:           maxTLSVersion,
-		InsecureSkipVerify:      cfg.Security.InsecureSkipVerify,
-		MaxResponseBodySize:     cfg.Security.MaxResponseBodySize,
-		MaxRequestBodySize:      cfg.Security.MaxRequestBodySize,
-		MaxDecompressedBodySize: cfg.Security.MaxDecompressedBodySize,
-		ValidateURL:             cfg.Security.ValidateURL,
-		ValidateHeaders:         cfg.Security.ValidateHeaders,
-		AllowPrivateIPs:         cfg.Security.AllowPrivateIPs,
-		StrictContentLength:     cfg.Security.StrictContentLength,
-
-		// Retry settings
-		MaxRetries:        cfg.Retry.MaxRetries,
-		RetryDelay:        cfg.Retry.Delay,
-		MaxRetryDelay:     maxRetryDelay,
-		BackoffFactor:     cfg.Retry.BackoffFactor,
-		Jitter:            cfg.Retry.EnableJitter,
-		CustomRetryPolicy: cfg.Retry.CustomPolicy,
-
-		// Middleware settings
-		UserAgent:       cfg.Middleware.UserAgent,
-		Headers:         cfg.Middleware.Headers,
-		FollowRedirects: cfg.Middleware.FollowRedirects,
-		MaxRedirects:    cfg.Middleware.MaxRedirects,
-	}
-
-	if len(cfg.Security.RedirectWhitelist) > 0 {
-		engineConfig.RedirectWhitelist = security.NewDomainWhitelist(cfg.Security.RedirectWhitelist...)
-	}
-
-	// Parse SSRF exempt CIDRs
-	exemptNets, err := parseExemptCIDRs(cfg.Security.SSRFExemptCIDRs)
-	if err != nil {
-		return nil, err
-	}
-	engineConfig.ExemptNets = exemptNets
-
-	return engineConfig, nil
-}
-
-// parseExemptCIDRs parses and validates SSRF exempt CIDR strings.
-func parseExemptCIDRs(cidrs []string) ([]*net.IPNet, error) {
-	if len(cidrs) == 0 {
-		return nil, nil
-	}
-	exemptNets, err := validation.ParseExemptCIDRs(cidrs)
-	if err != nil {
-		return nil, fmt.Errorf("invalid SSRF exempt CIDRs: %w", err)
-	}
-	return exemptNets, nil
 }
 
 // resultPool reduces heap allocations for Result objects.

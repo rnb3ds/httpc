@@ -3,9 +3,9 @@ package engine
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -21,6 +21,13 @@ var retryableStatusCodes = map[int]bool{
 	502: true, // Bad Gateway
 	503: true, // Service Unavailable
 	504: true, // Gateway Timeout
+}
+
+// retryableStatusPrefixes are pre-built search strings for fallback status detection.
+// Avoids fmt.Sprintf allocation in isRetryableHTTPStatus fallback path.
+var retryableStatusPrefixes = []string{
+	"HTTP 408", "HTTP 429",
+	"HTTP 500", "HTTP 502", "HTTP 503", "HTTP 504",
 }
 
 // containsFold reports whether substr is contained within s, case-insensitively.
@@ -58,23 +65,37 @@ func containsFold(s, substr string) bool {
 	return false
 }
 
+// ErrorType represents the classification of an HTTP client error.
 type ErrorType int
 
 const (
+	// ErrorTypeUnknown indicates an unknown or unclassified error.
 	ErrorTypeUnknown ErrorType = iota
+	// ErrorTypeNetwork indicates a network-level error.
 	ErrorTypeNetwork
+	// ErrorTypeTimeout indicates a timeout occurred during the request.
 	ErrorTypeTimeout
+	// ErrorTypeContextCanceled indicates the request context was canceled.
 	ErrorTypeContextCanceled
+	// ErrorTypeResponseRead indicates an error reading the response body.
 	ErrorTypeResponseRead
+	// ErrorTypeTransport indicates an HTTP transport-level error.
 	ErrorTypeTransport
+	// ErrorTypeRetryExhausted indicates all retry attempts have been exhausted.
 	ErrorTypeRetryExhausted
+	// ErrorTypeTLS indicates a TLS handshake or protocol error.
 	ErrorTypeTLS
+	// ErrorTypeCertificate indicates a certificate validation error.
 	ErrorTypeCertificate
+	// ErrorTypeDNS indicates a DNS resolution error.
 	ErrorTypeDNS
+	// ErrorTypeValidation indicates a request validation error.
 	ErrorTypeValidation
+	// ErrorTypeHTTP indicates an HTTP-level error (4xx, 5xx responses).
 	ErrorTypeHTTP
 )
 
+// ClientError represents a classified HTTP client error with context about the failed request.
 type ClientError struct {
 	Type       ErrorType
 	Message    string
@@ -87,23 +108,33 @@ type ClientError struct {
 }
 
 func (e *ClientError) Error() string {
-	var baseMsg string
+	// Estimate capacity: method (~8) + URL (~64) + message (~64) + cause (~64) + overhead
+	var b strings.Builder
+	b.Grow(220)
+
 	if e.URL != "" && e.Method != "" {
 		sanitizedURL := validation.SanitizeURL(e.URL)
-		baseMsg = fmt.Sprintf("%s %s: %s", e.Method, sanitizedURL, e.Message)
+		b.WriteString(e.Method)
+		b.WriteByte(' ')
+		b.WriteString(sanitizedURL)
+		b.WriteString(": ")
+		b.WriteString(e.Message)
 	} else {
-		baseMsg = e.Message
+		b.WriteString(e.Message)
 	}
 
 	if e.Cause != nil {
-		baseMsg = fmt.Sprintf("%s: %v", baseMsg, e.Cause)
+		b.WriteString(": ")
+		b.WriteString(e.Cause.Error())
 	}
 
 	if e.Attempts > 0 {
-		return fmt.Sprintf("%s (attempt %d)", baseMsg, e.Attempts)
+		b.WriteString(" (attempt ")
+		b.WriteString(strconv.Itoa(e.Attempts))
+		b.WriteByte(')')
 	}
 
-	return baseMsg
+	return b.String()
 }
 
 func (e *ClientError) Unwrap() error {
@@ -269,10 +300,10 @@ func (e *ClientError) isRetryableHTTPStatus() bool {
 	if retryableStatusCodes[e.StatusCode] {
 		return true
 	}
-	// Fallback: extract status code from message when StatusCode is not set
+	// Fallback: check message for retryable status patterns using pre-built strings
 	if e.StatusCode == 0 {
-		for code := range retryableStatusCodes {
-			if strings.Contains(e.Message, fmt.Sprintf("HTTP %d", code)) {
+		for _, prefix := range retryableStatusPrefixes {
+			if containsFold(e.Message, prefix) {
 				return true
 			}
 		}
@@ -280,6 +311,7 @@ func (e *ClientError) isRetryableHTTPStatus() bool {
 	return false
 }
 
+// Code returns a short string code identifying the error type (e.g., "NETWORK_ERROR", "TIMEOUT").
 func (e *ClientError) Code() string {
 	switch e.Type {
 	case ErrorTypeNetwork:
@@ -316,6 +348,15 @@ func classifyError(err error, reqURL, method string, attempts int) *ClientError 
 
 	// Sanitize URL to prevent credential leakage in error storage
 	sanitizedURL := validation.SanitizeURL(reqURL)
+	return classifyErrorWithSanitizedURL(err, sanitizedURL, method, attempts)
+}
+
+// classifyErrorWithSanitizedURL classifies an error using a pre-sanitized URL.
+// Use this when the same URL is reused across retry attempts to avoid re-sanitizing.
+func classifyErrorWithSanitizedURL(err error, sanitizedURL, method string, attempts int) *ClientError {
+	if err == nil {
+		return nil
+	}
 
 	clientErr := &ClientError{
 		Cause:    err,
@@ -496,19 +537,23 @@ func classifyError(err error, reqURL, method string, attempts int) *ClientError 
 }
 
 // extractStatusCode extracts a 3-digit HTTP status code from an error message.
-// Uses direct byte comparison instead of strings.ToLower to avoid allocation.
+// Matches a space-prefixed 3-digit code in the 400-599 range that is not
+// part of a longer number (e.g., avoids matching "404" inside "4043").
 func extractStatusCode(msg string) int {
 	for i := 0; i <= len(msg)-3; i++ {
 		c := msg[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 32
-		}
 		if c >= '4' && c <= '5' && isDigit(msg[i+1]) && isDigit(msg[i+2]) {
+			// Must be preceded by space (or start of string)
+			if i > 0 && msg[i-1] != ' ' {
+				continue
+			}
+			// Must NOT be followed by another digit (avoid matching inside "4043")
+			if i+3 < len(msg) && isDigit(msg[i+3]) {
+				continue
+			}
 			code := int(c-'0')*100 + int(msg[i+1]-'0')*10 + int(msg[i+2]-'0')
 			if code >= 400 && code <= 599 {
-				if i > 0 && msg[i-1] == ' ' {
-					return code
-				}
+				return code
 			}
 		}
 	}

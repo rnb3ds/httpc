@@ -33,8 +33,7 @@ func IsPrivateOrReservedIP(ip net.IP) bool {
 			(ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 2) || // Documentation TEST-NET-1 (192.0.2.0/24)
 			(ip4[0] == 192 && ip4[1] == 88 && ip4[2] == 99) || // 6to4 Relay Anycast (192.88.99.0/24)
 			(ip4[0] == 198 && ip4[1] == 51 && ip4[2] == 100) || // Documentation TEST-NET-2 (198.51.100.0/24)
-			(ip4[0] == 203 && ip4[1] == 0 && ip4[2] == 113) || // Documentation TEST-NET-3 (203.0.113.0/24)
-			(ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127) { // CGNAT Shared (100.64.0.0/10) RFC 6598
+			(ip4[0] == 203 && ip4[1] == 0 && ip4[2] == 113) { // Documentation TEST-NET-3 (203.0.113.0/24)
 			return true
 		}
 		return false
@@ -63,7 +62,7 @@ func IsPrivateOrReservedIP(ip net.IP) bool {
 // Returns an error if the IP is blocked by security policy.
 func ValidateIP(ip net.IP) error {
 	if IsPrivateOrReservedIP(ip) {
-		return fmt.Errorf("blocked IP: %s", ip.String())
+		return fmt.Errorf("blocked IP address")
 	}
 	return nil
 }
@@ -99,9 +98,24 @@ func IsIPExempted(ip net.IP, nets []*net.IPNet) bool {
 // IPs that are private/reserved but match an exempt CIDR are allowed.
 func ValidateIPWithExemptions(ip net.IP, exemptNets []*net.IPNet) error {
 	if IsPrivateOrReservedIP(ip) && !IsIPExempted(ip, exemptNets) {
-		return fmt.Errorf("blocked IP: %s", ip.String())
+		return fmt.Errorf("blocked IP address")
 	}
 	return nil
+}
+
+// FilterAllowedIPs filters a list of IPs to only those allowed under SSRF rules.
+// Private/reserved IPs are excluded unless they match an exempt CIDR range.
+// Returns nil slice when no IPs are allowed.
+// This supports Split-Horizon DNS environments where a domain may resolve to
+// both public and private IPs — only public (or exempted) IPs are used for dialing.
+func FilterAllowedIPs(ips []net.IP, exemptNets []*net.IPNet) []net.IP {
+	allowed := make([]net.IP, 0, len(ips))
+	for _, ip := range ips {
+		if !IsPrivateOrReservedIP(ip) || IsIPExempted(ip, exemptNets) {
+			allowed = append(allowed, ip)
+		}
+	}
+	return allowed
 }
 
 // IsLocalhost detects localhost variations including:
@@ -144,10 +158,17 @@ func IsLocalhost(hostname string) bool {
 		}
 	}
 
-	// Check for localhost.* subdomains (case-insensitive)
-	// "localhost." is 10 characters
-	if hlen > 10 && (hostname[0] == 'l' || hostname[0] == 'L') {
-		if hasPrefixFold(hostname, "localhost.") {
+	// Check for known local DNS names derived from localhost
+	// Only match specific local DNS suffixes, not arbitrary localhost.* subdomains
+	// which may be legitimate public domains (e.g., localhost.example.com).
+	// Domains resolving to loopback IPs are still blocked at the dialer layer.
+	if hlen == 21 && (hostname[0] == 'l' || hostname[0] == 'L') {
+		if equalFold(hostname, "localhost.localdomain") {
+			return true
+		}
+	}
+	if hlen == 22 && (hostname[0] == 'l' || hostname[0] == 'L') {
+		if equalFold(hostname, "localhost.localdomain.") {
 			return true
 		}
 	}
@@ -181,31 +202,6 @@ func equalFold(s, t string) bool {
 	return true
 }
 
-// hasPrefixFold checks if s has prefix p case-insensitively (ASCII only)
-func hasPrefixFold(s, prefix string) bool {
-	if len(s) < len(prefix) {
-		return false
-	}
-	for i := 0; i < len(prefix); i++ {
-		c1 := s[i]
-		c2 := prefix[i]
-		if c1 == c2 {
-			continue
-		}
-		// Convert to lowercase for comparison
-		if c1 >= 'A' && c1 <= 'Z' {
-			c1 += 'a' - 'A'
-		}
-		if c2 >= 'A' && c2 <= 'Z' {
-			c2 += 'a' - 'A'
-		}
-		if c1 != c2 {
-			return false
-		}
-	}
-	return true
-}
-
 // ValidateURL performs comprehensive URL validation including:
 // - Empty check
 // - Length check
@@ -215,27 +211,34 @@ func hasPrefixFold(s, prefix string) bool {
 //
 // This function centralizes URL validation logic for use by security.Validator.
 func ValidateURL(urlStr string) error {
+	_, err := ValidateAndParseURL(urlStr)
+	return err
+}
+
+// ValidateAndParseURL validates a URL and returns the parsed result.
+// This avoids callers needing to parse the URL again after validation.
+func ValidateAndParseURL(urlStr string) (*url.URL, error) {
 	if urlStr == "" {
-		return fmt.Errorf("URL cannot be empty")
+		return nil, fmt.Errorf("URL cannot be empty")
 	}
 	if len(urlStr) > maxURLLen {
-		return fmt.Errorf("URL too long (max %d)", maxURLLen)
+		return nil, fmt.Errorf("URL too long (max %d)", maxURLLen)
 	}
 
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
-		return fmt.Errorf("invalid URL: %w", err)
+		return nil, fmt.Errorf("invalid URL: %w", err)
 	}
 	if parsedURL.Scheme == "" {
-		return fmt.Errorf("URL scheme is required")
+		return nil, fmt.Errorf("URL scheme is required")
 	}
 	if parsedURL.Host == "" {
-		return fmt.Errorf("URL host is required")
+		return nil, fmt.Errorf("URL host is required")
 	}
 	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		return fmt.Errorf("unsupported URL scheme: %s", parsedURL.Scheme)
+		return nil, fmt.Errorf("unsupported URL scheme: %s", parsedURL.Scheme)
 	}
-	return nil
+	return parsedURL, nil
 }
 
 // ValidateSSRFHost checks whether a hostname (which may include a port) should be
@@ -255,7 +258,7 @@ func ValidateSSRFHost(host string, exemptNets []*net.IPNet, resolveDNS bool) err
 
 	if ip := net.ParseIP(hostname); ip != nil {
 		if err := ValidateIPWithExemptions(ip, exemptNets); err != nil {
-			return fmt.Errorf("private/reserved IP blocked: %s", ip.String())
+			return fmt.Errorf("private/reserved IP address blocked")
 		}
 		return nil
 	}

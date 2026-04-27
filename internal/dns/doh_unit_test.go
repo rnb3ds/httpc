@@ -940,7 +940,6 @@ func TestDoHResolver_MultipleProvidersFailover(t *testing.T) {
 	}
 }
 
-
 // ============================================================================
 // EXPIRED CACHE ENTRY EVICTION TESTS
 // ============================================================================

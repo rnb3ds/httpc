@@ -11,7 +11,6 @@ import (
 )
 
 // This example demonstrates DomainClient for automatic state management
-// Consolidates: 06_domain_client/* (all domain client examples)
 
 func main() {
 	fmt.Println("=== DomainClient Examples ===\n ")

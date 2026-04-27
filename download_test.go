@@ -1,8 +1,12 @@
 package httpc
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -217,13 +221,14 @@ func TestDownload_ResumeNotSupported(t *testing.T) {
 	}
 
 	result, err := client.DownloadWithOptions(server.URL, opts)
-	if err != nil {
-		t.Fatalf("Download failed: %v", err)
+	if err == nil {
+		t.Fatal("Expected error when server does not support range requests")
 	}
-
-	// Should download full file since resume not supported
-	if result.BytesWritten != int64(len(content)) {
-		t.Errorf("Expected %d bytes, got %d", len(content), result.BytesWritten)
+	if result != nil {
+		t.Fatal("Expected nil result when server does not support range requests")
+	}
+	if !strings.Contains(err.Error(), "does not support range requests") {
+		t.Errorf("Error should mention range requests, got: %v", err)
 	}
 }
 
@@ -796,5 +801,175 @@ func TestPackageLevel_DownloadWithOptionsWithContext(t *testing.T) {
 func TestCalculateSpeed_ZeroDuration(t *testing.T) {
 	if calculateSpeed(100, 0) != 0 {
 		t.Error("calculateSpeed with zero duration should return 0")
+	}
+}
+
+// ----------------------------------------------------------------------------
+// handleDownloadStatus unit tests
+// ----------------------------------------------------------------------------
+
+func TestHandleDownloadStatus_416(t *testing.T) {
+	t.Run("RangeNotSatisfiable_WithBody", func(t *testing.T) {
+		err := handleDownloadStatus(http.StatusRequestedRangeNotSatisfiable, bytes.NewReader([]byte("data")), 100)
+		if err == nil {
+			t.Fatal("expected error for 416 with resumeOffset > 0")
+		}
+		if !strings.Contains(err.Error(), "416") {
+			t.Errorf("error should contain '416', got: %v", err)
+		}
+	})
+
+	t.Run("RangeNotSatisfiable_NilBody", func(t *testing.T) {
+		err := handleDownloadStatus(http.StatusRequestedRangeNotSatisfiable, nil, 100)
+		if err == nil {
+			t.Fatal("expected error for 416 with nil body and resumeOffset > 0")
+		}
+		if !strings.Contains(err.Error(), "416") {
+			t.Errorf("error should contain '416', got: %v", err)
+		}
+	})
+
+	t.Run("RangeNotSatisfiable_ZeroOffset_FallsThrough", func(t *testing.T) {
+		err := handleDownloadStatus(http.StatusRequestedRangeNotSatisfiable, bytes.NewReader([]byte("data")), 0)
+		if err == nil {
+			t.Fatal("expected error when 416 falls through with resumeOffset=0")
+		}
+		// With resumeOffset=0, the 416 early-return is skipped, so it hits the
+		// "unexpected status code" path instead.
+		if !strings.Contains(err.Error(), "unexpected status code") {
+			t.Errorf("error should contain 'unexpected status code', got: %v", err)
+		}
+	})
+}
+
+func TestHandleDownloadStatus_EmptyBody(t *testing.T) {
+	t.Run("InternalServerError_NilBody", func(t *testing.T) {
+		err := handleDownloadStatus(http.StatusInternalServerError, nil, 0)
+		if err == nil {
+			t.Fatal("expected error for 500 status")
+		}
+		want := "unexpected status code: 500"
+		if err.Error() != want {
+			t.Errorf("error = %q, want %q", err.Error(), want)
+		}
+	})
+
+	t.Run("Forbidden_WithBody", func(t *testing.T) {
+		err := handleDownloadStatus(http.StatusForbidden, bytes.NewReader([]byte("forbidden")), 0)
+		if err == nil {
+			t.Fatal("expected error for 403 status")
+		}
+		if !strings.Contains(err.Error(), "forbidden") {
+			t.Errorf("error should contain 'forbidden', got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "403") {
+			t.Errorf("error should contain '403', got: %v", err)
+		}
+	})
+
+	t.Run("OK_NilBody_Success", func(t *testing.T) {
+		err := handleDownloadStatus(http.StatusOK, nil, 0)
+		if err != nil {
+			t.Errorf("expected nil error for 200 status, got: %v", err)
+		}
+	})
+
+	t.Run("PartialContent_Success", func(t *testing.T) {
+		err := handleDownloadStatus(http.StatusPartialContent, bytes.NewReader([]byte("partial data")), 0)
+		if err != nil {
+			t.Errorf("expected nil error for 206 status, got: %v", err)
+		}
+	})
+
+	t.Run("BodyPreview_Truncated", func(t *testing.T) {
+		longBody := strings.Repeat("a", 300)
+		err := handleDownloadStatus(http.StatusBadGateway, bytes.NewReader([]byte(longBody)), 0)
+		if err == nil {
+			t.Fatal("expected error for 502 status")
+		}
+		// Body preview should be truncated to 200 chars + "..."
+		if !strings.Contains(err.Error(), "...") {
+			t.Errorf("error should contain truncated body preview with '...', got: %v", err)
+		}
+	})
+}
+
+// verifyBytesReaderConsumed is a helper that verifies a bytes.Reader was
+// fully consumed by handleDownloadStatus (it drains the body for reuse).
+func verifyBytesReaderConsumed(t *testing.T, r *bytes.Reader) {
+	t.Helper()
+	remaining, _ := io.ReadAll(r)
+	if len(remaining) > 0 {
+		t.Errorf("expected body to be fully consumed, but %d bytes remain", len(remaining))
+	}
+}
+
+// ============================================================================
+// CHECKSUM VERIFICATION TESTS
+// ============================================================================
+
+func TestWriteDownloadBody_ChecksumVerification(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "test.bin")
+	content := []byte("hello world checksum test")
+
+	// Compute expected checksum
+	hash := sha256.Sum256(content)
+	expectedChecksum := hex.EncodeToString(hash[:])
+
+	t.Run("ValidChecksum", func(t *testing.T) {
+		opts := &DownloadConfig{
+			FilePath:          filePath,
+			Checksum:          expectedChecksum,
+			ChecksumAlgorithm: ChecksumSHA256,
+		}
+		result, err := writeDownloadBody(bytes.NewReader(content), opts, false, 0, 200, int64(len(content)), time.Now(), nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result.ActualChecksum != expectedChecksum {
+			t.Errorf("checksum mismatch: got %s, want %s", result.ActualChecksum, expectedChecksum)
+		}
+	})
+
+	t.Run("InvalidChecksum", func(t *testing.T) {
+		filePath2 := filepath.Join(tmpDir, "test2.bin")
+		opts := &DownloadConfig{
+			FilePath:          filePath2,
+			Checksum:          "0000000000000000000000000000000000000000000000000000000000000000",
+			ChecksumAlgorithm: ChecksumSHA256,
+		}
+		_, err := writeDownloadBody(bytes.NewReader(content), opts, false, 0, 200, int64(len(content)), time.Now(), nil)
+		if err == nil {
+			t.Fatal("expected checksum mismatch error")
+		}
+		if !strings.Contains(err.Error(), "checksum mismatch") {
+			t.Errorf("error should mention checksum mismatch, got: %v", err)
+		}
+		// File should be removed on checksum failure
+		if _, statErr := os.Stat(filePath2); !os.IsNotExist(statErr) {
+			t.Error("file should be removed after checksum mismatch")
+		}
+	})
+
+	t.Run("NoChecksum", func(t *testing.T) {
+		filePath3 := filepath.Join(tmpDir, "test3.bin")
+		opts := &DownloadConfig{
+			FilePath: filePath3,
+		}
+		result, err := writeDownloadBody(bytes.NewReader(content), opts, false, 0, 200, int64(len(content)), time.Now(), nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result.ActualChecksum != "" {
+			t.Errorf("checksum should be empty when not requested, got: %s", result.ActualChecksum)
+		}
+	})
+}
+
+func TestDownloadConfig_DefaultChecksumAlgorithm(t *testing.T) {
+	cfg := DefaultDownloadConfig()
+	if cfg.ChecksumAlgorithm != ChecksumSHA256 {
+		t.Errorf("default checksum algorithm should be sha256, got: %s", cfg.ChecksumAlgorithm)
 	}
 }

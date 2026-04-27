@@ -102,8 +102,8 @@ import (
 )
 
 func main() {
-    // 创建可复用的客户端
-    client, err := httpc.New(httpc.DefaultConfig())
+    // 创建可复用的客户端 (无参数时 New() 内部使用 DefaultConfig())
+    client, err := httpc.New()
     if err != nil {
         log.Fatal(err)
     }
@@ -203,11 +203,23 @@ httpc.WithXML(data)
 httpc.WithForm(map[string]string{"key": "value"})
 
 // Multipart 表单数据 (文件上传)
+formData := &httpc.FormData{
+    Fields: map[string]string{"key": "value"},
+    Files: map[string]*httpc.FileData{
+        "upload": {Filename: "doc.pdf", Content: fileBytes, ContentType: "application/pdf"},
+    },
+}
 httpc.WithFormData(formData)
+
+// 或使用快捷方式上传单个文件
 httpc.WithFile("file", "document.pdf", fileBytes)
 
 // 原始请求体 (自动检测 Content-Type)
 httpc.WithBody([]byte("raw data"))
+httpc.WithBody(data, httpc.BodyJSON) // 显式指定 BodyKind
+
+// BodyKind 常量: BodyAuto, BodyJSON, BodyXML, BodyForm, BodyBinary, BodyMultipart
+
 httpc.WithBinary(binaryData, "application/pdf")
 
 // 流式请求体 (用于大型请求体)
@@ -230,7 +242,9 @@ httpc.WithCookieMap(map[string]string{
 httpc.WithCookieString("session=abc123; token=xyz")
 
 // 安全 Cookie 验证 (验证 Cookie 安全属性)
-httpc.WithSecureCookie(securityConfig)
+cfg := httpc.DefaultCookieSecurityConfig()
+cfg.RequireSecure = true
+httpc.WithSecureCookie(cfg)
 ```
 
 ### 请求控制
@@ -273,7 +287,7 @@ httpc.WithOnResponse(func(resp httpc.ResponseMutator) error {
 | **请求头** | `WithHeader(key, value)`, `WithHeaderMap(map)`, `WithUserAgent(ua)` |
 | **认证** | `WithBearerToken(token)`, `WithBasicAuth(user, pass)` |
 | **查询参数** | `WithQuery(key, value)`, `WithQueryMap(map)` |
-| **请求体** | `WithJSON(data)`, `WithXML(data)`, `WithForm(map)`, `WithFormData(form)`, `WithFile(field, filename, content)`, `WithBody(data, kind?)`, `WithBinary([]byte, contentType?)`, `WithStreamBody(bool)` |
+| **请求体** | `WithJSON(data)`, `WithXML(data)`, `WithForm(map)`, `WithFormData(*FormData)`, `WithFile(field, filename, content)`, `WithBody(data, ...BodyKind)`, `WithBinary([]byte, ...contentType)`, `WithStreamBody(bool)` |
 | **Cookie** | `WithCookie(cookie)`, `WithCookieMap(map)`, `WithCookieString("a=1; b=2")`, `WithSecureCookie(config)` |
 | **控制** | `WithTimeout(dur)`, `WithMaxRetries(n)`, `WithContext(ctx)` |
 | **重定向** | `WithFollowRedirects(bool)`, `WithMaxRedirects(n)` |
@@ -286,7 +300,12 @@ httpc.WithOnResponse(func(resp httpc.ResponseMutator) error {
 ```go
 result, _ := httpc.Get("https://api.example.com/users/123")
 
-// 快速访问
+// Result 结构组成:
+// result.Request  -> *RequestInfo  (URL, Method, Headers, Cookies)
+// result.Response -> *ResponseInfo (StatusCode, Status, Proto, Headers, Body, RawBody, ContentLength, Cookies)
+// result.Meta     -> *RequestMeta  (Duration, Attempts, RedirectCount, RedirectChain)
+
+// 快速访问方法 (nil 安全)
 fmt.Println(result.StatusCode())     // 200
 fmt.Println(result.Proto())          // "HTTP/1.1" 或 "HTTP/2.0"
 fmt.Println(result.RawBody())        // 响应体 ([]byte)
@@ -407,6 +426,15 @@ result, _ := httpc.DownloadFileWithContext(ctx,
 // 使用下载配置 + Context 完全控制
 result, _ := httpc.DownloadWithOptionsWithContext(ctx, url, opts)
 ```
+
+### DownloadConfig 字段
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| `FilePath` | `string` | 下载文件保存路径 |
+| `ProgressCallback` | `DownloadProgressCallback` | 进度回调: `func(downloaded, total int64, speed float64)` |
+| `Overwrite` | `bool` | 覆盖已存在文件 (默认: `false`) |
+| `ResumeDownload` | `bool` | 断点续传 (默认: `false`) |
 
 ### 下载函数
 
@@ -557,7 +585,7 @@ sm.SetCookieSecurity(httpc.StrictCookieSecurityConfig())
 ### 预设配置
 
 ```go
-// 推荐的默认配置
+// 推荐的默认配置 (等同于无参数调用 httpc.New())
 client, _ := httpc.New(httpc.DefaultConfig())
 
 // 最高安全性 (启用 SSRF 防护)
@@ -617,10 +645,25 @@ config := &httpc.Config{
         MaxRedirects:    10,
     },
 }
+
+// 创建客户端前验证配置 (New() 内部也会自动验证)
+if err := httpc.ValidateConfig(config); err != nil {
+    log.Fatal(err)
+}
+
 client, _ := httpc.New(config)
 ```
 
 ### 配置选项
+
+| 函数 | 描述 |
+|------|------|
+| `DefaultConfig()` | 推荐的默认配置 |
+| `SecureConfig()` | 最高安全性 (启用 SSRF 防护) |
+| `PerformanceConfig()` | 高吞吐量 |
+| `MinimalConfig()` | 轻量级 (无重试) |
+| `TestingConfig()` | 仅限测试 - 禁用安全特性 |
+| `ValidateConfig(cfg)` | 验证配置，返回错误 |
 
 | 选项 | 类型 | 默认值 | 描述 |
 |------|------|--------|------|
@@ -645,6 +688,7 @@ client, _ := httpc.New(config)
 | `Security.MaxTLSVersion` | `uint16` | `TLS 1.3` | 最高 TLS 版本 |
 | `Security.InsecureSkipVerify` | `bool` | `false` | 跳过 TLS 验证 (仅限测试！) |
 | `Security.MaxResponseBodySize` | `int64` | `10MB` | 最大响应体大小 |
+| `Security.MaxRequestBodySize` | `int64` | `0` | 最大请求体大小 (0 = 使用 MaxResponseBodySize) |
 | `Security.AllowPrivateIPs` | `bool` | `false` | 允许私有 IP (默认启用 SSRF 防护) |
 | `Security.ValidateURL` | `bool` | `true` | 启用 URL 验证 |
 | `Security.ValidateHeaders` | `bool` | `true` | 启用请求头验证 |
@@ -708,6 +752,23 @@ httpc.AuditMiddlewareWithConfig(func(a httpc.AuditEvent) {
     log.Printf("[AUDIT] %v", a)
 }, auditCfg)
 ```
+
+### AuditEvent 字段
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| `Timestamp` | `time.Time` | 请求时间戳 |
+| `Method` | `string` | HTTP 方法 |
+| `URL` | `string` | 请求 URL |
+| `StatusCode` | `int` | 响应状态码 |
+| `Duration` | `time.Duration` | 请求耗时 |
+| `Attempts` | `int` | 重试次数 |
+| `Error` | `error` | 错误信息 |
+| `SourceIP` | `string` | 来源 IP (通过上下文键 `SourceIPKey` 设置) |
+| `UserID` | `string` | 用户 ID (通过上下文键 `UserIDKey` 设置) |
+| `RedirectChain` | `[]string` | 重定向 URL 链 |
+| `ReqHeaders` | `map[string][]string` | 请求头 (当 `IncludeHeaders: true` 时) |
+| `RespHeaders` | `map[string][]string` | 响应头 (当 `IncludeHeaders: true` 时) |
 
 ### 链式中间件
 
@@ -902,7 +963,7 @@ wg.Wait()
 ### 性能优化
 
 ```go
-// 使用后释放 Result 回对象池 (减少 GC 压力)
+// 使用后释放 Result 回对象池 (高吞吐场景下减少 GC 压力)
 result, _ := httpc.Get(url)
 defer httpc.ReleaseResult(result)
 ```
@@ -945,11 +1006,20 @@ _ = httpc.CloseDefaultClient()
 
 ### 示例代码
 
-| 目录 | 描述 |
+19 个可运行的示例覆盖所有功能，按从基础到高级排序。
+
+| 类别 | 示例 |
 |------|------|
-| [01_quickstart](examples/01_quickstart) | 基础用法 |
-| [02_core_features](examples/02_core_features) | 请求头、认证、请求体格式 |
-| [03_advanced](examples/03_advanced) | 文件上传、下载、重试、中间件 |
+| **基础** | [01_basic_usage](examples/01_basic_usage.go), [02_http_methods](examples/02_http_methods.go), [03_response_handling](examples/03_response_handling.go), [04_compression](examples/04_compression.go) |
+| **核心功能** | [05_request_options](examples/05_request_options.go), [06_error_handling](examples/06_error_handling.go), [07_timeout_retry](examples/07_timeout_retry.go), [08_client_configuration](examples/08_client_configuration.go), [09_redirects](examples/09_redirects.go), [10_cookies_advanced](examples/10_cookies_advanced.go) |
+| **有状态客户端** | [11_session](examples/11_session.go), [12_domain_client](examples/12_domain_client.go), [13_proxy_configuration](examples/13_proxy_configuration.go), [14_doh](examples/14_doh.go) |
+| **高级** | [15_middleware](examples/15_middleware.go), [16_concurrent_requests](examples/16_concurrent_requests.go), [17_file_operations](examples/17_file_operations.go), [18_rest_api_client](examples/18_rest_api_client.go), [19_advanced_patterns](examples/19_advanced_patterns.go) |
+
+运行示例：
+
+```bash
+go run examples/01_basic_usage.go
+```
 
 ---
 

@@ -786,3 +786,67 @@ func TestValidateURL_Boundaries(t *testing.T) {
 	})
 }
 
+// TestValidateCookie_NilCookie verifies that ValidateCookie returns an error
+// when called with a nil cookie pointer.
+func TestValidateCookie_NilCookie(t *testing.T) {
+	err := ValidateCookie(nil)
+	if err == nil {
+		t.Fatal("ValidateCookie(nil) expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "nil") {
+		t.Errorf("error should contain 'nil', got: %v", err)
+	}
+}
+
+// TestValidateCookie_ControlCharsInDomain verifies that control characters
+// in the cookie Domain field are rejected.
+func TestValidateCookie_ControlCharsInDomain(t *testing.T) {
+	tests := []struct {
+		name   string
+		domain string
+	}{
+		{"Nul byte", "\x00"},
+		{"DEL character", "\x7f"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cookie := &http.Cookie{
+				Name:   "session",
+				Value:  "abc123",
+				Domain: tt.domain,
+			}
+			err := ValidateCookie(cookie)
+			if err == nil {
+				t.Errorf("ValidateCookie() expected error for domain %q, got nil", tt.domain)
+			}
+		})
+	}
+}
+
+// TestValidateCookie_ControlCharsInPath verifies that control characters
+// in the cookie Path field are rejected.
+func TestValidateCookie_ControlCharsInPath(t *testing.T) {
+	cookie := &http.Cookie{
+		Name:  "session",
+		Value: "abc123",
+		Path:  "/\x01path",
+	}
+	err := ValidateCookie(cookie)
+	if err == nil {
+		t.Error("ValidateCookie() expected error for path with control character, got nil")
+	}
+}
+
+// TestValidateHeaderKeyValue_PseudoHeader verifies that HTTP/2 pseudo-headers
+// (keys starting with ":") are rejected. The colon character fails the header
+// character validation before reaching the explicit pseudo-header check.
+func TestValidateHeaderKeyValue_PseudoHeader(t *testing.T) {
+	err := ValidateHeaderKeyValue(":method", "GET")
+	if err == nil {
+		t.Fatal("ValidateHeaderKeyValue() expected error for pseudo-header ':method', got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid character") {
+		t.Errorf("error should mention invalid character, got: %v", err)
+	}
+}

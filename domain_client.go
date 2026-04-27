@@ -57,22 +57,19 @@ func NewDomain(baseURL string, config ...*Config) (DomainClienter, error) {
 		return nil, fmt.Errorf("base URL must include scheme and host")
 	}
 
-	// Create config with cookies enabled
+	// Create config with cookies enabled.
+	// New() handles ValidateConfig + deepCopyConfig internally, so we only
+	// need to prepare the config without redundant validation/copy.
 	var cfg *Config
 	if len(config) > 0 && config[0] != nil {
-		if err := ValidateConfig(config[0]); err != nil {
-			return nil, fmt.Errorf("invalid configuration: %w", err)
-		}
-		cfg = deepCopyConfig(config[0])
+		cfg = config[0]
 	} else {
 		cfg = DefaultConfig()
 	}
 	cfg.Connection.EnableCookies = true
-
-	// New() handles ValidateConfig + deepCopyConfig internally
 	client, err := New(cfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create domain client: %w", err)
 	}
 
 	session, err := NewSessionManager()
@@ -150,7 +147,7 @@ func (dc *DomainClient) Request(ctx context.Context, method, path string, option
 	}
 
 	if result != nil {
-		dc.SessionManager.UpdateFromResult(result)
+		dc.UpdateFromResult(result)
 	}
 
 	return result, nil
@@ -208,16 +205,16 @@ func (dc *DomainClient) DownloadWithOptionsWithContext(ctx context.Context, path
 
 // prepareSessionOptions merges session state (headers, cookies) with user-provided options.
 func (dc *DomainClient) prepareSessionOptions(options []RequestOption) []RequestOption {
-	managedOptions := dc.SessionManager.prepareOptions()
+	managedOptions := dc.prepareOptions()
 	allOptions := append(managedOptions, options...)
-	dc.SessionManager.captureFromOptions(options)
+	dc.captureFromOptions(options)
 	return allOptions
 }
 
 // captureDownloadCookies captures response cookies from a download result into the session.
 func (dc *DomainClient) captureDownloadCookies(result *DownloadResult) {
 	if result != nil {
-		dc.SessionManager.UpdateFromCookies(result.ResponseCookies)
+		dc.UpdateFromCookies(result.ResponseCookies)
 	}
 }
 

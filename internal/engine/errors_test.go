@@ -478,6 +478,63 @@ func TestClassifyError_AdditionalPatterns(t *testing.T) {
 	}
 }
 
+// TestClassifyError_MessagePatterns_Extra covers additional untested error message
+// patterns in classifyError to increase branch coverage.
+func TestClassifyError_MessagePatterns_Extra(t *testing.T) {
+	tests := []struct {
+		name         string
+		errMsg       string
+		expectedType ErrorType
+	}{
+		{"CircularRedirect", "circular redirect detected", ErrorTypeValidation},
+		{"RedirectBlockedByPolicy", "redirect blocked by policy", ErrorTypeValidation},
+		{"BrokenPipe", "broken pipe", ErrorTypeNetwork},
+		{"TLSHandshakeFailure", "TLS handshake failure", ErrorTypeTLS},
+		{"SSLHandshakeError", "SSL handshake error", ErrorTypeTLS},
+		{"CertificateVerifyFailed", "certificate verify failed", ErrorTypeCertificate},
+		{"X509CertUnknownAuthority", "x509: certificate signed by unknown authority", ErrorTypeCertificate},
+		{"TransportConnectionReset", "transport connection reset", ErrorTypeNetwork},
+		{"ProtocolErrorDuringConnection", "protocol error during connection", ErrorTypeTransport},
+		{"UnexpectedEOF", "unexpected EOF", ErrorTypeResponseRead},
+		{"ValidationFailedInvalidHeader", "validation failed: invalid header", ErrorTypeValidation},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := errors.New(tt.errMsg)
+			result := classifyError(err, "", "", 0)
+
+			if result.Type != tt.expectedType {
+				t.Errorf("classifyError(%q) type = %v, want %v", tt.errMsg, result.Type, tt.expectedType)
+			}
+		})
+	}
+}
+
+// TestExtractStatusCode_EdgeCases tests edge-case inputs for extractStatusCode.
+func TestExtractStatusCode_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected int
+	}{
+		{"Space before code at non-zero position", "HTTP 503", 503},
+		{"Status with code and text", "status 429 rate limited", 429},
+		{"No space before code", "HTTP503", 0},
+		{"Below 400", "got 399", 0},
+		{"Above 599", "got 600", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractStatusCode(tt.input)
+			if got != tt.expected {
+				t.Errorf("extractStatusCode(%q) = %d, want %d", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestClientError_IsRetryable_Additional(t *testing.T) {
 	tests := []struct {
 		name      string

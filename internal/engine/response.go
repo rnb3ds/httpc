@@ -280,10 +280,9 @@ func (p *responseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 
 	// Slow path: unknown size, compressed, or large response
 	buf := getBuffer()
-	fromPool := true
 
 	defer func() {
-		if fromPool && buf != nil && buf.Cap() <= maxBufferSize {
+		if buf != nil && buf.Cap() <= maxBufferSize {
 			putBuffer(buf)
 		}
 	}()
@@ -393,7 +392,7 @@ func (r *pooledGzipReader) Close() error {
 	}
 	err := r.Reader.Close()
 	// Reset to nil reader for safety before returning to pool
-	_ = r.Reader.Reset(bytes.NewReader(nil)) // reset before returning to pool
+	_ = r.Reset(bytes.NewReader(nil)) // reset before returning to pool
 	gzipReaderPool.Put(r.Reader)
 	r.Reader = nil
 	// Return wrapper to pool
@@ -426,7 +425,7 @@ func (r *pooledFlateReader) Close() error {
 	// Get the Resetter interface to reset and return to pool
 	if resetter, ok := r.reader.(flate.Resetter); ok {
 		_ = resetter.Reset(bytes.NewReader(nil), nil) // reset before returning to pool
-		flateReaderPool.Put(r.reader) // return original io.ReadCloser, not the Resetter interface
+		flateReaderPool.Put(r.reader)                 // return original io.ReadCloser, not the Resetter interface
 	} else {
 		// SECURITY: If the reader doesn't implement Resetter, close it directly
 		// to prevent resource leaks. This shouldn't happen with standard library,

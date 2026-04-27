@@ -12,8 +12,8 @@ import (
 // This example demonstrates the quickest way to get started with httpc
 // Perfect for: Quick testing, simple scripts, learning the basics
 
-// User represents a user data structure
-type User struct {
+// UserList represents a user data structure
+type UserList struct {
 	ID    int    `json:"id"`
 	Name  string `json:"name"`
 	Email string `json:"email"`
@@ -69,7 +69,7 @@ func simpleGET() {
 func postJSON() {
 	fmt.Println("--- Example 2: POST with JSON Data ---")
 
-	user := User{
+	user := UserList{
 		Name:  "John Doe",
 		Email: "john@example.com",
 	}

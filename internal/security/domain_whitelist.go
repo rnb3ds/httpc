@@ -94,9 +94,9 @@ func NewDomainWhitelist(domains ...string) *DomainWhitelist {
 		}
 
 		if strings.HasPrefix(domain, "*.") {
-			// Wildcard pattern: store without the "*." prefix for matching
-			pattern := domain[2:]
-			if pattern != "" {
+			// Wildcard pattern: store with "." prefix for zero-alloc HasSuffix matching
+			pattern := domain[1:] // "*." becomes "."
+			if len(pattern) > 1 {
 				dw.wildcards = append(dw.wildcards, pattern)
 			}
 		} else {
@@ -140,15 +140,15 @@ func (w *DomainWhitelist) IsAllowed(hostname string) bool {
 }
 
 // matchWildcard checks if a hostname matches a wildcard pattern.
-// pattern should be the domain part after "*." (e.g., "example.com")
+// pattern includes the "." prefix (e.g., ".example.com") for zero-alloc matching.
 func (w *DomainWhitelist) matchWildcard(hostname, pattern string) bool {
-	// Exact match with wildcard domain
-	if hostname == pattern {
+	// Exact match with wildcard domain (pattern[1:] strips the leading ".")
+	if hostname == pattern[1:] {
 		return true
 	}
 
 	// Subdomain match: hostname ends with .pattern
-	if strings.HasSuffix(hostname, "."+pattern) {
+	if strings.HasSuffix(hostname, pattern) {
 		return true
 	}
 
@@ -171,8 +171,13 @@ func (w *DomainWhitelist) Add(domain string) {
 	defer w.mu.Unlock()
 
 	if strings.HasPrefix(domain, "*.") {
-		pattern := domain[2:]
-		if pattern != "" {
+		pattern := domain[1:] // "*." becomes "."
+		if len(pattern) > 1 {
+			for _, existing := range w.wildcards {
+				if existing == pattern {
+					return
+				}
+			}
 			w.wildcards = append(w.wildcards, pattern)
 		}
 	} else {
@@ -196,7 +201,7 @@ func (w *DomainWhitelist) Remove(domain string) {
 	defer w.mu.Unlock()
 
 	if strings.HasPrefix(domain, "*.") {
-		pattern := domain[2:]
+		pattern := domain[1:] // "*." becomes "."
 		// Remove from wildcards
 		newWildcards := make([]string, 0, len(w.wildcards))
 		for _, p := range w.wildcards {

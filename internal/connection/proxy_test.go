@@ -207,6 +207,7 @@ func BenchmarkProxyConfiguration(b *testing.B) {
 		DialTimeout: 10 * time.Second,
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		pm, err := NewPoolManager(config)
@@ -223,6 +224,7 @@ func BenchmarkSystemProxyDetection(b *testing.B) {
 		DialTimeout:       10 * time.Second,
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		pm, err := NewPoolManager(config)

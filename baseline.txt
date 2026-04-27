@@ -1,0 +1,128 @@
+goos: windows
+goarch: amd64
+pkg: github.com/cybergodev/httpc
+cpu: Intel(R) Core(TM) Ultra 9 185H
+BenchmarkClient_SimpleGET-22                         	    5280	    222656 ns/op	    7758 B/op	      89 allocs/op
+BenchmarkClient_POST_JSON-22                         	    4436	    267606 ns/op	   10411 B/op	     119 allocs/op
+BenchmarkClient_Concurrent_Requests/Concurrency_1-22 	   18492	     66175 ns/op	   10138 B/op	      90 allocs/op
+BenchmarkClient_Concurrent_Requests/Concurrency_10-22         	   18694	     64645 ns/op	   10683 B/op	      90 allocs/op
+BenchmarkClient_Concurrent_Requests/Concurrency_50-22         	   18736	     65049 ns/op	   10788 B/op	      90 allocs/op
+BenchmarkClient_Concurrent_Requests/Concurrency_100-22        	   18435	     65851 ns/op	   10616 B/op	      90 allocs/op
+BenchmarkMicro_URLCache-22                                    	       1	1120286700 ns/op	  205768 B/op	    1084 allocs/op
+BenchmarkMicro_Headers-22                                     	    5341	    222108 ns/op	    8382 B/op	      97 allocs/op
+BenchmarkMicro_ManyQueryParams-22                             	    4912	    227254 ns/op	   10069 B/op	     102 allocs/op
+BenchmarkMicro_ResultReuse-22                                 	    5422	    216833 ns/op	    7626 B/op	      86 allocs/op
+BenchmarkClient_MemoryAllocation_SmallResponse-22             	    5409	    217988 ns/op	    7836 B/op	      90 allocs/op
+BenchmarkClient_MemoryAllocation_LargeResponse-22             	    2000	    572132 ns/op	  292128 B/op	     106 allocs/op
+BenchmarkClient_WithRetry-22                                  	     258	   4755506 ns/op	   22589 B/op	     233 allocs/op
+BenchmarkClient_WithTimeout-22                                	     205	   5898388 ns/op	    7657 B/op	      81 allocs/op
+BenchmarkClient_ContextCancellation-22                        	      98	  11433715 ns/op	   21316 B/op	     149 allocs/op
+BenchmarkDefaultClient_Get-22                                 	    5269	    240477 ns/op	    7823 B/op	      89 allocs/op
+BenchmarkClient_WithHeaders-22                                	    5254	    217271 ns/op	    8233 B/op	      98 allocs/op
+BenchmarkResult_ConvenienceMethods-22                         	1000000000	         0.1237 ns/op	       0 B/op	       0 allocs/op
+BenchmarkResult_CookieAccess-22                               	57081154	        20.95 ns/op	       0 B/op	       0 allocs/op
+BenchmarkResult_Unmarshal-22                                  	 1031144	      1201 ns/op	     640 B/op	      18 allocs/op
+BenchmarkResult_String-22                                     	 6394024	       184.3 ns/op	     248 B/op	       3 allocs/op
+BenchmarkClient_MultipartForm-22                              	    4154	    272033 ns/op	   13477 B/op	     170 allocs/op
+BenchmarkClient_MultipartForm_LargeFiles-22                   	    2647	    427982 ns/op	   52013 B/op	     125 allocs/op
+BenchmarkClient_QueryParams-22                                	    5395	    217571 ns/op	    8436 B/op	      89 allocs/op
+BenchmarkClient_QueryParams_Typed-22                          	    5604	    221525 ns/op	    8320 B/op	      90 allocs/op
+BenchmarkJSONMarshal-22                                       	 1000000	      1063 ns/op	     528 B/op	      15 allocs/op
+BenchmarkQueryEncode-22                                       	    5074	    231741 ns/op	    8391 B/op	      90 allocs/op
+BenchmarkMultipartBuild-22                                    	    4249	    286527 ns/op	   16620 B/op	     156 allocs/op
+BenchmarkResult_Unmarshal_Opt-22                              	    5037	    233588 ns/op	    9350 B/op	     108 allocs/op
+BenchmarkConcurrent_SameURL-22                                	   17829	     67172 ns/op	   10827 B/op	      90 allocs/op
+BenchmarkConcurrent_DifferentURLs-22                          	   16224	     67964 ns/op	   11066 B/op	      97 allocs/op
+BenchmarkMiddlewareOverhead/NoMiddleware-22                   	    5086	    222321 ns/op	    7339 B/op	      78 allocs/op
+BenchmarkMiddlewareOverhead/WithMiddleware-22                 	    5674	    208451 ns/op	    7436 B/op	      80 allocs/op
+BenchmarkMiddlewareOverhead/WithThreeMiddlewares-22           	    5688	    223392 ns/op	    7386 B/op	      80 allocs/op
+PASS
+ok  	github.com/cybergodev/httpc	78.781s
+?   	github.com/cybergodev/httpc/dev_test	[no test files]
+PASS
+ok  	github.com/cybergodev/httpc/internal/concurrency	0.459s
+goos: windows
+goarch: amd64
+pkg: github.com/cybergodev/httpc/internal/connection
+cpu: Intel(R) Core(TM) Ultra 9 185H
+BenchmarkProxyConfiguration-22      	 1403709	       832.7 ns/op	    1776 B/op	      15 allocs/op
+BenchmarkSystemProxyDetection-22    	   60157	     19335 ns/op	    2648 B/op	      25 allocs/op
+PASS
+ok  	github.com/cybergodev/httpc/internal/connection	5.535s
+goos: windows
+goarch: amd64
+pkg: github.com/cybergodev/httpc/internal/dns
+cpu: Intel(R) Core(TM) Ultra 9 185H
+BenchmarkDoHVsSystemResolver/DoH-22         	       3	 555000500 ns/op	  255597 B/op	    1984 allocs/op
+PASS
+ok  	github.com/cybergodev/httpc/internal/dns	14.424s
+goos: windows
+goarch: amd64
+pkg: github.com/cybergodev/httpc/internal/engine
+cpu: Intel(R) Core(TM) Ultra 9 185H
+BenchmarkClassifyError-22                             	  632547	      1895 ns/op	    1016 B/op	      22 allocs/op
+BenchmarkClassifyError_ContextCanceled-22             	 2942787	       400.5 ns/op	     160 B/op	       6 allocs/op
+BenchmarkClassifyErrorWithSanitizedURL-22             	 2222772	       549.1 ns/op	     160 B/op	       6 allocs/op
+BenchmarkCloneHeader_Small-22                         	 4314502	       281.3 ns/op	     464 B/op	       3 allocs/op
+BenchmarkCloneHeader_Large-22                         	 1000000	      1007 ns/op	    1816 B/op	       5 allocs/op
+BenchmarkQueryEscape_NoEscape-22                      	36498792	        31.31 ns/op	       0 B/op	       0 allocs/op
+BenchmarkQueryEscape_NeedsEscape-22                   	 6331497	       189.2 ns/op	      72 B/op	       4 allocs/op
+BenchmarkFormatQueryParam-22                          	12176065	        95.10 ns/op	       8 B/op	       2 allocs/op
+BenchmarkContainsFold-22                              	 3228979	       374.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAppendQueryParams_Typed-22                   	 3628288	       332.3 ns/op	     208 B/op	       2 allocs/op
+BenchmarkAppendQueryParams_Strings-22                 	 5805141	       204.6 ns/op	     160 B/op	       1 allocs/op
+BenchmarkClientError_Error-22                         	 1665735	       728.3 ns/op	     832 B/op	       6 allocs/op
+BenchmarkResponseProcessor_GzipDecompression-22       	   83738	     12819 ns/op	   59889 B/op	      20 allocs/op
+BenchmarkResponseProcessor_DeflateDecompression-22    	  198932	      6033 ns/op	   17873 B/op	      14 allocs/op
+PASS
+ok  	github.com/cybergodev/httpc/internal/engine	29.039s
+PASS
+ok  	github.com/cybergodev/httpc/internal/proxy	0.030s
+goos: windows
+goarch: amd64
+pkg: github.com/cybergodev/httpc/internal/security
+cpu: Intel(R) Core(TM) Ultra 9 185H
+BenchmarkNewDomainWhitelist-22                    	 5997714	       206.0 ns/op	     368 B/op	       4 allocs/op
+BenchmarkNewDomainWhitelist_Large-22              	  438582	      2641 ns/op	    4024 B/op	       6 allocs/op
+BenchmarkDomainWhitelist_IsAllowed/exact_match-22 	53079964	        21.42 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDomainWhitelist_IsAllowed/wildcard_match-22         	34410081	        36.04 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDomainWhitelist_IsAllowed/no_match-22               	20897112	        59.33 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDomainWhitelist_IsAllowed/uppercase-22              	19927033	        61.24 ns/op	      16 B/op	       1 allocs/op
+BenchmarkDomainWhitelist_IsAllowed/with_whitespace-22        	50995906	        23.59 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDomainWhitelist_IsAllowed_Parallel-22               	14710496	        85.08 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDomainWhitelist_Add-22                              	36371350	        31.00 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDomainWhitelist_Remove-22                           	40722277	        28.67 ns/op	       0 B/op	       0 allocs/op
+BenchmarkNormalizeDomain/already_normalized-22               	158651671	         7.530 ns/op	       0 B/op	       0 allocs/op
+BenchmarkNormalizeDomain/uppercase-22                        	24815024	        47.36 ns/op	      16 B/op	       1 allocs/op
+BenchmarkNormalizeDomain/with_whitespace-22                  	133337984	         8.972 ns/op	       0 B/op	       0 allocs/op
+BenchmarkNormalizeDomain/complex-22                          	22768496	        52.12 ns/op	      16 B/op	       1 allocs/op
+BenchmarkNormalizeDomain/empty-22                            	1000000000	         0.9848 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValidateURL_Valid-22                                	 4197351	       290.6 ns/op	     224 B/op	       3 allocs/op
+BenchmarkValidateURL_Invalid-22                              	 4961822	       243.8 ns/op	     224 B/op	       5 allocs/op
+BenchmarkValidateRequest_Minimal-22                          	 4231790	       288.6 ns/op	     224 B/op	       3 allocs/op
+BenchmarkValidateRequest_WithHeaders-22                      	 1675981	       715.4 ns/op	     256 B/op	       5 allocs/op
+PASS
+ok  	github.com/cybergodev/httpc/internal/security	26.948s
+?   	github.com/cybergodev/httpc/internal/testutil	[no test files]
+PASS
+ok  	github.com/cybergodev/httpc/internal/types	0.029s
+goos: windows
+goarch: amd64
+pkg: github.com/cybergodev/httpc/internal/validation
+cpu: Intel(R) Core(TM) Ultra 9 185H
+BenchmarkIsLocalhost/localhost-22             	753363769	         1.555 ns/op	       0 B/op	       0 allocs/op
+BenchmarkIsLocalhost/LOCALHOST-22             	828456370	         1.430 ns/op	       0 B/op	       0 allocs/op
+BenchmarkIsLocalhost/LocalHost-22             	244915402	         4.895 ns/op	       0 B/op	       0 allocs/op
+BenchmarkIsLocalhost/127.0.0.1-22             	1000000000	         1.071 ns/op	       0 B/op	       0 allocs/op
+BenchmarkIsLocalhost/127.1.1.1-22             	1000000000	         1.066 ns/op	       0 B/op	       0 allocs/op
+BenchmarkIsLocalhost/localhost.local-22       	849531058	         1.372 ns/op	       0 B/op	       0 allocs/op
+BenchmarkIsLocalhost/example.com-22           	884188933	         1.387 ns/op	       0 B/op	       0 allocs/op
+BenchmarkIsLocalhost/notlocalhost.com-22      	840366146	         1.370 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSanitizeURL_Plain-22                 	84523112	        15.77 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSanitizeURL_WithQuery-22             	 1493036	       797.2 ns/op	     672 B/op	       7 allocs/op
+BenchmarkSanitizeURL_WithSensitiveQuery-22    	  753711	      1543 ns/op	    1104 B/op	      21 allocs/op
+BenchmarkSanitizeURL_WithCredentials-22       	 1944760	       622.6 ns/op	     672 B/op	       6 allocs/op
+BenchmarkSanitizeURL_FastPath-22              	68179880	        15.84 ns/op	       0 B/op	       0 allocs/op
+BenchmarkIsSensitiveQueryParamCI-22           	 8784985	       140.6 ns/op	      32 B/op	       2 allocs/op
+PASS
+ok  	github.com/cybergodev/httpc/internal/validation	19.594s

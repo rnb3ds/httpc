@@ -56,6 +56,8 @@ type SessionManager struct {
 //	cfg := httpc.DefaultSessionConfig()
 //	cfg.CookieSecurity = mySecurityConfig
 //	sm, err := httpc.NewSessionManager(cfg)
+//
+// Currently always returns a nil error; the error return is reserved for future validation.
 func NewSessionManager(config ...*SessionConfig) (*SessionManager, error) {
 	cfg := DefaultSessionConfig()
 	if len(config) > 0 && config[0] != nil {

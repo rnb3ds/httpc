@@ -57,7 +57,8 @@ func demonstrateDirectConnection() {
 	}
 
 	fmt.Printf("Status: %d\n", resp.StatusCode())
-	fmt.Printf("Response: %s\n", resp.Body()[:min(100, len(resp.Body()))])
+	body := resp.Body()
+	fmt.Printf("Response: %s\n", body[:min(100, len(body))])
 	fmt.Println("Connection: Direct (no proxy)\n ")
 }
 
@@ -90,7 +91,8 @@ func demonstrateSystemProxy() {
 	}
 
 	fmt.Printf("Status: %d\n", resp.StatusCode())
-	fmt.Printf("Response: %s\n", resp.Body()[:min(100, len(resp.Body()))])
+	body := resp.Body()
+	fmt.Printf("Response: %s\n", body[:min(100, len(body))])
 	fmt.Println("Connection: System proxy (if configured) or direct\n ")
 
 	// Show environment variables that affect system proxy
@@ -137,7 +139,8 @@ func demonstrateManualProxy() {
 	}
 
 	fmt.Printf("Status: %d\n", resp.StatusCode())
-	fmt.Printf("Response: %s\n", resp.Body()[:min(100, len(resp.Body()))])
+	body := resp.Body()
+	fmt.Printf("Response: %s\n", body[:min(100, len(body))])
 	fmt.Printf("Connection: Via proxy %s\n\n", proxyURL)
 }
 
