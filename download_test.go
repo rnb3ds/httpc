@@ -546,7 +546,7 @@ func TestDownload_EdgeCases(t *testing.T) {
 
 func TestPrepareFilePath_Security(t *testing.T) {
 	t.Run("Empty path", func(t *testing.T) {
-		err := prepareFilePath("")
+		_, err := prepareFilePath("")
 		if err == nil {
 			t.Error("Expected error for empty path")
 		}
@@ -562,7 +562,7 @@ func TestPrepareFilePath_Security(t *testing.T) {
 		}
 
 		for _, path := range uncPaths {
-			err := prepareFilePath(path)
+			_, err := prepareFilePath(path)
 			if err == nil {
 				t.Errorf("Expected UNC path rejection for: %s", path)
 			}
@@ -581,7 +581,7 @@ func TestPrepareFilePath_Security(t *testing.T) {
 		}
 
 		for _, path := range controlCharPaths {
-			err := prepareFilePath(path)
+			_, err := prepareFilePath(path)
 			if err == nil {
 				t.Errorf("Expected control character rejection for path with byte: %q", path)
 			}
@@ -594,7 +594,7 @@ func TestPrepareFilePath_Security(t *testing.T) {
 	t.Run("Path too long", func(t *testing.T) {
 		// Create a path longer than maxFilePathLen (4096)
 		longPath := "/tmp/" + strings.Repeat("a", 4100)
-		err := prepareFilePath(longPath)
+		_, err := prepareFilePath(longPath)
 		if err == nil {
 			t.Error("Expected error for path too long")
 		}
@@ -610,7 +610,7 @@ func TestPrepareFilePath_Security(t *testing.T) {
 		}
 
 		for _, path := range traversalPaths {
-			err := prepareFilePath(path)
+			_, err := prepareFilePath(path)
 			if err == nil {
 				t.Errorf("Expected path traversal rejection for: %s", path)
 			}
@@ -621,7 +621,7 @@ func TestPrepareFilePath_Security(t *testing.T) {
 		tempDir := t.TempDir()
 		validPath := filepath.Join(tempDir, "subdir", "file.txt")
 
-		err := prepareFilePath(validPath)
+		_, err := prepareFilePath(validPath)
 		if err != nil {
 			t.Errorf("Valid path should be accepted: %v", err)
 		}
@@ -647,7 +647,7 @@ func TestPrepareFilePath_Security(t *testing.T) {
 		}
 
 		// prepareFilePath should reject the symlink
-		err = prepareFilePath(symlinkPath)
+		_, err = prepareFilePath(symlinkPath)
 		if err == nil {
 			t.Error("Expected symlink rejection")
 		}
@@ -681,7 +681,7 @@ func TestPrepareFilePath_ValidPaths(t *testing.T) {
 				tt.path = filepath.Join(tempDir, tt.path)
 			}
 
-			err := prepareFilePath(tt.path)
+			_, err := prepareFilePath(tt.path)
 			// We expect this to succeed for valid paths
 			// Note: system path check may fail for some paths
 			t.Logf("Path %q: err=%v", tt.path, err)

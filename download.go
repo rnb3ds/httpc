@@ -135,12 +135,12 @@ func DownloadWithOptionsWithContext(ctx context.Context, url string, downloadOpt
 
 // DownloadFile downloads a file from the given URL to the specified file path.
 func (c *clientImpl) DownloadFile(url string, filePath string, options ...RequestOption) (*DownloadResult, error) {
-	return c.DownloadFileWithContext(context.Background(), url, filePath, options...)
+	return c.DownloadFileWithContext(backgroundCtx, url, filePath, options...)
 }
 
 // DownloadWithOptions downloads a file with custom download options.
 func (c *clientImpl) DownloadWithOptions(url string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error) {
-	return c.DownloadWithOptionsWithContext(context.Background(), url, downloadOpts, options...)
+	return c.DownloadWithOptionsWithContext(backgroundCtx, url, downloadOpts, options...)
 }
 
 // DownloadFileWithContext downloads a file with context control for cancellation and timeouts.
@@ -162,9 +162,11 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	if opts.FilePath == "" {
 		return nil, ErrEmptyFilePath
 	}
-	if err := prepareFilePath(opts.FilePath); err != nil {
+	validatedPath, err := prepareFilePath(opts.FilePath)
+	if err != nil {
 		return nil, fmt.Errorf("failed to prepare file path: %w", err)
 	}
+	opts.FilePath = validatedPath
 
 	var resumeOffset int64
 	if fileInfo, err := os.Stat(opts.FilePath); err == nil {
@@ -201,11 +203,15 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 		return nil, fmt.Errorf("unexpected response type from download request")
 	}
 	bodyReader := engResp.RawBodyReader()
-	engResp.SetRawBodyReader(nil) // Transfer ownership; prevent ReleaseResponse from closing
+	engResp.SetRawBodyReader(nil)
+	// Transfer body reader ownership from Response to this function.
+	// Setting nil prevents ReleaseResponse from closing the reader; we
+	// manage its lifetime here. Closed via defer below, or by
+	// writeDownloadBody's io.Copy completing the read.
 	defer engine.ReleaseResponse(engResp)
 
 	if bodyReader != nil {
-		defer func() { _ = bodyReader.Close() }()
+		defer func() { _ = bodyReader.Close() }() // best-effort cleanup
 	}
 
 	statusCode := engResp.StatusCode()
@@ -419,25 +425,26 @@ func calculateSpeed(bytes int64, duration time.Duration) float64 {
 }
 
 // prepareFilePath validates and prepares file paths with security checks.
+// Returns the validated absolute path that should be used for all file operations.
 // SECURITY: This function implements multiple layers of protection:
 // 1. UNC path blocking (prevents network resource access)
 // 2. Control character filtering
 // 3. System path protection
 // 4. Path traversal detection
 // 5. Symlink attack prevention
-func prepareFilePath(filePath string) error {
+func prepareFilePath(filePath string) (string, error) {
 	filePathLen := len(filePath)
 	if filePathLen == 0 {
-		return ErrEmptyFilePath
+		return "", ErrEmptyFilePath
 	}
 	if filePathLen > maxFilePathLen {
-		return fmt.Errorf("file path too long (max %d)", maxFilePathLen)
+		return "", fmt.Errorf("file path too long (max %d)", maxFilePathLen)
 	}
 
 	// Check for UNC paths
 	if filePathLen >= 2 {
 		if (filePath[0] == '\\' && filePath[1] == '\\') || (filePath[0] == '/' && filePath[1] == '/') {
-			return fmt.Errorf("UNC paths not allowed for security")
+			return "", fmt.Errorf("UNC paths not allowed for security")
 		}
 	}
 
@@ -445,14 +452,14 @@ func prepareFilePath(filePath string) error {
 	for i := range filePathLen {
 		c := filePath[i]
 		if c < 0x20 || c == 0x7F || c == 0 {
-			return fmt.Errorf("file path contains invalid characters at position %d", i)
+			return "", fmt.Errorf("file path contains invalid characters at position %d", i)
 		}
 	}
 
 	cleanPath := filepath.Clean(filePath)
 	absPath, err := filepath.Abs(cleanPath)
 	if err != nil {
-		return fmt.Errorf("failed to resolve path: %w", err)
+		return "", fmt.Errorf("failed to resolve path: %w", err)
 	}
 
 	// SECURITY: Check for symlinks to prevent symlink attacks
@@ -460,13 +467,13 @@ func prepareFilePath(filePath string) error {
 	// and trick the application into writing to that file
 	if fi, err := os.Lstat(absPath); err == nil {
 		if fi.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("symlink paths not allowed for security")
+			return "", fmt.Errorf("symlink paths not allowed for security")
 		}
 	}
 
 	// Check for system path access
 	if isSystemPath(absPath) {
-		return fmt.Errorf("system path access denied for security")
+		return "", fmt.Errorf("system path access denied for security")
 	}
 
 	// Check for path traversal: after filepath.Clean, only paths starting with ".."
@@ -474,15 +481,15 @@ func prepareFilePath(filePath string) error {
 	if !filepath.IsAbs(filePath) && strings.HasPrefix(cleanPath, "..") {
 		wd, err := os.Getwd()
 		if err != nil {
-			return fmt.Errorf("failed to get working directory: %w", err)
+			return "", fmt.Errorf("failed to get working directory: %w", err)
 		}
 		wdAbs, err := filepath.Abs(wd)
 		if err != nil {
-			return fmt.Errorf("failed to resolve working directory: %w", err)
+			return "", fmt.Errorf("failed to resolve working directory: %w", err)
 		}
 
 		if !strings.HasPrefix(absPath+string(filepath.Separator), wdAbs+string(filepath.Separator)) {
-			return fmt.Errorf("path traversal detected: path outside working directory")
+			return "", fmt.Errorf("path traversal detected: path outside working directory")
 		}
 	}
 
@@ -491,16 +498,16 @@ func prepareFilePath(filePath string) error {
 	dir := filepath.Dir(absPath)
 	if dir != absPath { // Avoid infinite recursion at root
 		if err := checkParentDirSymlinks(dir); err != nil {
-			return err
+			return "", err
 		}
 	}
 
 	// Create directories
 	if err := os.MkdirAll(dir, dirPermissions); err != nil {
-		return fmt.Errorf("failed to create directories: %w", err)
+		return "", fmt.Errorf("failed to create directories: %w", err)
 	}
 
-	return nil
+	return absPath, nil
 }
 
 // checkParentDirSymlinks recursively checks if any parent directory is a symlink
@@ -552,13 +559,14 @@ func isSystemPath(path string) bool {
 	}
 
 	for _, sysPath := range systemPaths {
-		// Handle environment variable patterns on Windows
+		// Handle environment variable patterns on Windows.
+		// Append trailing separator after expansion to prevent prefix collision
+		// (e.g., expanded "C:\Windows" must not match "C:\WindowsEvil").
 		if strings.HasPrefix(sysPath, "%") && runtime.GOOS == "windows" {
-			// Expand environment variables
 			expanded := os.ExpandEnv(sysPath)
 			if expanded != sysPath {
-				// Check if expanded path matches
-				if strings.HasPrefix(cleanPathForCompare, strings.ToLower(expanded)) {
+				normalized := strings.TrimRight(strings.ToLower(expanded), "\\") + "\\"
+				if strings.HasPrefix(cleanPathForCompare, normalized) {
 					return true
 				}
 			}

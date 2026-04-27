@@ -21,7 +21,7 @@ func TestProxyConfigurationPriority(t *testing.T) {
 	}{
 		{
 			name:              "Manual proxy only",
-			proxyURL:          "http://127.0.0.1:8080",
+			proxyURL:          "http://proxy.example.com:8080",
 			enableSystemProxy: false,
 			expectProxySet:    true,
 			description:       "Manual proxy URL should be used",
@@ -118,9 +118,8 @@ func TestValidProxyURLs(t *testing.T) {
 	validURLs := []string{
 		"http://proxy.example.com:8080",
 		"https://proxy.example.com:8443",
-		"http://127.0.0.1:7890",
-		"http://localhost:8080",
-		"socks5://127.0.0.1:1080",
+		"http://proxy.example.com:7890",
+		"http://proxy2.example.com:8080",
 	}
 
 	for _, validURL := range validURLs {
@@ -147,7 +146,7 @@ func TestValidProxyURLs(t *testing.T) {
 func TestProxyConfigurationIsolation(t *testing.T) {
 	// Create first pool with manual proxy
 	config1 := &Config{
-		ProxyURL:    "http://127.0.0.1:8080",
+		ProxyURL:    "http://proxy.example.com:8080",
 		DialTimeout: 10 * time.Second,
 	}
 
@@ -203,7 +202,7 @@ func TestProxyConfigurationIsolation(t *testing.T) {
 // BenchmarkProxyConfiguration benchmarks the performance impact of proxy configuration
 func BenchmarkProxyConfiguration(b *testing.B) {
 	config := &Config{
-		ProxyURL:    "http://127.0.0.1:8080",
+		ProxyURL:    "http://proxy.example.com:8080",
 		DialTimeout: 10 * time.Second,
 	}
 

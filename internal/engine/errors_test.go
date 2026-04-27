@@ -607,9 +607,9 @@ func TestClientError_IsRetryable_Additional(t *testing.T) {
 			wantRetry: true,
 		},
 		{
-			name:      "Response read nil cause is retryable",
+			name:      "Response read nil cause is not retryable",
 			err:       &ClientError{Type: ErrorTypeResponseRead, Cause: nil},
-			wantRetry: true,
+			wantRetry: false,
 		},
 		{
 			name:      "Context canceled via cause is not retryable",

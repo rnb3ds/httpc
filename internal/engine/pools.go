@@ -133,7 +133,7 @@ func queryEscape(s string) string {
 	// Slow path: escape using pooled buffer
 	// Safe from overflow: len(s) <= maxQueryEscapeSize (10MB), so len(s)*3 <= 30MB
 	bufPtr, ok := queryEscapePool.Get().(*[]byte)
-	if !ok || bufPtr == nil {
+	if !ok || bufPtr == nil || cap(*bufPtr) < len(s)*3 {
 		tmp := make([]byte, 0, len(s)*3)
 		bufPtr = &tmp
 	}

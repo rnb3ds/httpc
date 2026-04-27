@@ -400,31 +400,3 @@ func (t *transport) Close() error {
 	}
 	return nil
 }
-
-// clearPools clears all sync.Pool instances used by the transport package.
-// This is primarily useful for testing and debugging to ensure a clean state.
-// Note: sync.Pool is automatically managed by the GC, so this is typically not needed
-// in production code. The pools will be repopulated on next use.
-func clearPools() {
-	// Clear redirect settings pool by creating fresh pool entries
-	// The old entries will be garbage collected
-	redirectSettingsPool = sync.Pool{
-		New: func() any {
-			return &redirectSettings{}
-		},
-	}
-	// Clear cookie map pool
-	cookieMapPool = sync.Pool{
-		New: func() any {
-			m := make(map[string]*http.Cookie, 8)
-			return &m
-		},
-	}
-	// Clear cookie slice pool
-	cookieSlicePool = sync.Pool{
-		New: func() any {
-			s := make([]*http.Cookie, 0, 8)
-			return &s
-		},
-	}
-}

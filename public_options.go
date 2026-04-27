@@ -476,7 +476,13 @@ func WithCookie(cookie http.Cookie) RequestOption {
 		}
 
 		cookies := r.Cookies()
-		cookies = append(cookies, cookie)
+		if cap(cookies) > len(cookies) {
+			cookies = append(cookies, cookie)
+		} else {
+			newCookies := make([]http.Cookie, len(cookies), len(cookies)+1)
+			copy(newCookies, cookies)
+			cookies = append(newCookies, cookie)
+		}
 		r.SetCookies(cookies)
 		return nil
 	}
@@ -573,22 +579,6 @@ func parseCookieString(cookieString string) ([]http.Cookie, error) {
 
 	cookies := make([]http.Cookie, 0, len(parsedCookies))
 	for _, cookie := range parsedCookies {
-		nameLen := len(cookie.Name)
-		if nameLen > validation.MaxCookieNameLen {
-			return nil, fmt.Errorf("cookie name too long: %s", cookie.Name)
-		}
-		if len(cookie.Value) > validation.MaxCookieValueLen {
-			return nil, fmt.Errorf("cookie value too long for %s", cookie.Name)
-		}
-
-		// Validate cookie name characters (excluding '=' which is valid in cookie string format)
-		for j := 0; j < nameLen; j++ {
-			c := cookie.Name[j]
-			if c < 0x20 || c == 0x7F || c == ';' || c == ',' {
-				return nil, fmt.Errorf("invalid character in cookie name: %s", cookie.Name)
-			}
-		}
-
 		cookies = append(cookies, http.Cookie{
 			Name:  cookie.Name,
 			Value: cookie.Value,
@@ -687,8 +677,10 @@ func WithSecureCookie(securityConfig *validation.CookieSecurityConfig) RequestOp
 			return fmt.Errorf("security config cannot be nil")
 		}
 
-		// Store the security config in the request for later validation
-		// This will be applied when cookies are processed
+		// IMPORTANT: This option validates only cookies already added at the time it is applied.
+		// Place WithSecureCookie AFTER all WithCookie/WithCookieMap options to ensure
+		// all cookies are validated. Example:
+		//   httpc.WithCookie(c), httpc.WithSecureCookie(sec)
 		existing := r.Cookies()
 		for i := range existing {
 			if err := validation.ValidateCookieSecurity(&existing[i], securityConfig); err != nil {

@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"context"
+	"errors"
 	"math/rand/v2"
 	"net/http"
 	"strconv"
@@ -155,6 +157,10 @@ func (r *retryEngine) MaxRetries() int {
 // the centralized error classification in ClientError.IsRetryable().
 // This ensures consistent retry behavior across the codebase.
 func (r *retryEngine) isRetryableError(err error) bool {
+	// Fast path: context errors are never retryable — avoid full classification.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
 	clientErr := classifyError(err, "", "", 0)
 	if clientErr == nil {
 		return false

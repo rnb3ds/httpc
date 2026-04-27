@@ -194,10 +194,37 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 	// 2. System proxy detection (if enabled)
 	// 3. Direct connection (no proxy)
 	if config.ProxyURL != "" {
-		// User explicitly specified a proxy URL - use it
 		proxyURL, err := url.Parse(config.ProxyURL)
 		if err != nil {
 			return nil, fmt.Errorf("invalid proxy URL: %w", err)
+		}
+		if proxyURL.Host == "" {
+			return nil, fmt.Errorf("invalid proxy URL: empty host")
+		}
+		if scheme := proxyURL.Scheme; scheme != "http" && scheme != "https" {
+			return nil, fmt.Errorf("invalid proxy URL scheme %q: must be http or https", scheme)
+		}
+		// SECURITY: Validate that the proxy host does not resolve to a private/reserved IP
+		// unless AllowPrivateIPs is explicitly set. This prevents SSRF attacks where a
+		// library consumer in a multi-tenant environment configures a proxy URL pointing
+		// to internal services (e.g., cloud metadata at 169.254.169.254).
+		if !config.AllowPrivateIPs {
+			proxyHost := proxyURL.Hostname()
+			if ip := net.ParseIP(proxyHost); ip != nil {
+				if err := validation.ValidateIPWithExemptions(ip, config.ExemptNets); err != nil {
+					return nil, fmt.Errorf("proxy URL host fails SSRF validation: %w", err)
+				}
+			} else {
+				ips, err := net.LookupIP(proxyHost)
+				if err != nil {
+					return nil, fmt.Errorf("failed to resolve proxy host %q: %w", proxyHost, err)
+				}
+				for _, ip := range ips {
+					if err := validation.ValidateIPWithExemptions(ip, config.ExemptNets); err != nil {
+						return nil, fmt.Errorf("proxy host %q resolves to blocked IP %s: %w", proxyHost, ip, err)
+					}
+				}
+			}
 		}
 		transport.Proxy = http.ProxyURL(proxyURL)
 		pm.proxyAddrs = append(pm.proxyAddrs, proxyURL.Host)
@@ -232,6 +259,10 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 	}
 
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		if atomic.LoadInt32(&pm.closed) == 1 {
+			return nil, errors.New("connection pool is closed")
+		}
+
 		// Atomically reserve a connection slot to prevent TOCTOU race
 		if pm.config.MaxTotalConns > 0 {
 			newCount := atomic.AddInt64(&pm.totalConns, 1)
@@ -392,9 +423,13 @@ func (pm *PoolManager) resolveAndValidateAddress(address string) (string, error)
 	}
 
 	// For domain names, resolve and filter to allowed IPs
-	ips, err := net.LookupIP(host)
+	ipAddrs, err := net.DefaultResolver.LookupIPAddr(context.Background(), host)
 	if err != nil {
 		return "", fmt.Errorf("DNS resolution failed for SSRF validation of %s: %w", host, err)
+	}
+	ips := make([]net.IP, len(ipAddrs))
+	for i, addr := range ipAddrs {
+		ips[i] = addr.IP
 	}
 
 	// Filter to public/exempted IPs — supports Split-Horizon DNS environments
@@ -492,6 +527,9 @@ func (tc *trackedConn) Close() error {
 	tc.closeOnce.Do(func() {
 		atomic.StoreInt32(&tc.closed, 1)
 		atomic.AddInt64(&tc.pm.activeConns, -1)
+		if tc.pm.config.MaxTotalConns > 0 {
+			atomic.AddInt64(&tc.pm.totalConns, -1)
+		}
 		if tc.stats != nil {
 			atomic.AddInt64(&tc.stats.ActiveConns, -1)
 		}

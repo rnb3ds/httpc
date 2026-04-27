@@ -213,13 +213,15 @@ func getPooledBytesReader(b []byte) io.Reader {
 // Callers always receive a clone of the cached entry to prevent mutation.
 type urlCache struct {
 	mu      sync.RWMutex
-	entries map[string]*url.URL
-	keys    []string // Track insertion order for LRU eviction
+	raw     map[string]*url.URL // Fast path: raw URL string -> parsed URL
+	entries map[string]*url.URL // Sanitized key -> parsed URL (for sensitive URLs)
+	keys    []string            // Track insertion order for LRU eviction
 	maxSize int
 }
 
 // globalURLCache is the shared URL cache for all requests
 var globalURLCache = &urlCache{
+	raw:     make(map[string]*url.URL, 256),
 	entries: make(map[string]*url.URL, 256),
 	keys:    make([]string, 0, 256),
 	maxSize: 1024,
@@ -262,11 +264,35 @@ var sensitiveQueryParams = map[string]bool{
 	"jwt": true, "signature": true, "sign": true, "sig": true,
 }
 
+// hasSensitiveContent returns true if the raw URL string contains credentials
+// or query parameters that should not be stored in the raw string cache.
+func hasSensitiveContent(rawURL string) bool {
+	// '@' in the URL indicates user:pass credentials before the host
+	if strings.Contains(rawURL, "@") {
+		return true
+	}
+	return false
+}
+
 // Get retrieves a parsed URL from cache or parses and caches it.
 // SECURITY: Uses sanitized URL as cache key to prevent sensitive data persistence.
+// Raw string cache is skipped for URLs containing credentials.
 func (c *urlCache) Get(rawURL string) (*url.URL, error) {
+	sensitive := hasSensitiveContent(rawURL)
 
-	// Parse URL first to produce sanitized cache key
+	// Fast path: check raw string cache first (avoids url.Parse for repeated URLs)
+	if !sensitive {
+		c.mu.RLock()
+		if c.raw != nil {
+			if cached, ok := c.raw[rawURL]; ok {
+				c.mu.RUnlock()
+				return cloneURL(cached), nil
+			}
+		}
+		c.mu.RUnlock()
+	}
+
+	// Parse URL to produce sanitized cache key
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, err
@@ -274,10 +300,19 @@ func (c *urlCache) Get(rawURL string) (*url.URL, error) {
 	parsed.User = nil
 	cacheKey := sanitizeURLKey(parsed)
 
-	// Fast path: read lock for cache hit
+	// Second fast path: check sanitized cache
 	c.mu.RLock()
 	if cached, ok := c.entries[cacheKey]; ok {
 		c.mu.RUnlock()
+		// Populate raw cache only for non-sensitive URLs
+		if !sensitive {
+			c.mu.Lock()
+			if c.raw == nil {
+				c.raw = make(map[string]*url.URL, 16)
+			}
+			c.raw[rawURL] = cached
+			c.mu.Unlock()
+		}
 		return cloneURL(cached), nil
 	}
 	c.mu.RUnlock()
@@ -288,12 +323,26 @@ func (c *urlCache) Get(rawURL string) (*url.URL, error) {
 
 	// Double-check after acquiring write lock
 	if cached, ok := c.entries[cacheKey]; ok {
+		if !sensitive {
+			if c.raw == nil {
+				c.raw = make(map[string]*url.URL, 16)
+			}
+			c.raw[rawURL] = cached
+		}
 		return cloneURL(cached), nil
 	}
 
 	// SECURITY: Evict oldest entry if cache is full
 	if len(c.entries) >= c.maxSize && len(c.keys) > 0 {
 		oldestKey := c.keys[0]
+		if old, ok := c.entries[oldestKey]; ok && c.raw != nil {
+			// Remove from raw cache: scan for raw URLs pointing to this parsed URL
+			for k, v := range c.raw {
+				if v == old {
+					delete(c.raw, k)
+				}
+			}
+		}
 		delete(c.entries, oldestKey)
 		c.keys = c.keys[1:]
 		if cap(c.keys) > len(c.keys)*2 {
@@ -304,6 +353,12 @@ func (c *urlCache) Get(rawURL string) (*url.URL, error) {
 	}
 
 	c.entries[cacheKey] = parsed
+	if !sensitive {
+		if c.raw == nil {
+			c.raw = make(map[string]*url.URL, 16)
+		}
+		c.raw[rawURL] = parsed
+	}
 	c.keys = append(c.keys, cacheKey)
 
 	return cloneURL(parsed), nil
@@ -332,24 +387,11 @@ func cloneURL(u *url.URL) *url.URL {
 	return clone
 }
 
-// clearURLCache clears the global URL cache to release memory.
-// This is useful for long-running applications that want to free memory
-// when the URL patterns change or during low-activity periods.
-// Thread-safe: can be called concurrently with cache operations.
-func clearURLCache() {
-	globalURLCache.clear()
-}
-
-// getURLCacheSize returns the current number of entries in the URL cache.
-// Useful for monitoring cache usage in production environments.
-func getURLCacheSize() int {
-	return globalURLCache.size()
-}
-
 // clear removes all entries from the cache
 func (c *urlCache) clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.raw = make(map[string]*url.URL, 256)
 	c.entries = make(map[string]*url.URL, 256)
 	c.keys = make([]string, 0, 256)
 }

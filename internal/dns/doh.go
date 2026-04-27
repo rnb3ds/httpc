@@ -503,10 +503,20 @@ func (r *DoHResolver) fallbackLookup(ctx context.Context, host string, lastErr e
 // Deletes all entries and atomically resets the counter to zero.
 func (r *DoHResolver) ClearCache() {
 	r.cache.Range(func(key, value any) bool {
-		r.cache.Delete(key)
+		if _, ok := r.cache.LoadAndDelete(key); ok {
+			r.cacheSize.Add(-1)
+		}
 		return true
 	})
-	r.cacheSize.Store(0)
+	// Reconcile counter: concurrent eviction may have decremented entries
+	// we already deleted, or new entries may have been inserted during the scan.
+	// Loading the actual count ensures the counter never goes negative.
+	count := int64(0)
+	r.cache.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	r.cacheSize.Store(count)
 }
 
 // evictExpiredEntries removes expired cache entries to free space.

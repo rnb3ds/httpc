@@ -1575,4 +1575,34 @@ func TestDomainClient_BuildURL(t *testing.T) {
 		}
 		_ = resp
 	})
+
+	t.Run("path traversal to sibling blocked", func(t *testing.T) {
+		dc2, err := httpc.NewDomain(server.URL+"/api", cfg)
+		if err != nil {
+			t.Fatalf("NewDomain failed: %v", err)
+		}
+		defer dc2.Close()
+
+		// "../apix" via stdpath.Join("/api", "../apix") = "/apix"
+		// Old check: HasPrefix("/apix", "/api") = true -> ALLOWED (bug!)
+		// New check: "/apix" != "/api" && !HasPrefix("/apix", "/api/") -> blocked
+		_, err = dc2.Get("../apix")
+		if err == nil {
+			t.Error("expected error for path traversal to sibling '/apix', got nil")
+		}
+	})
+
+	t.Run("valid subpath allowed", func(t *testing.T) {
+		dc2, err := httpc.NewDomain(server.URL+"/api", cfg)
+		if err != nil {
+			t.Fatalf("NewDomain failed: %v", err)
+		}
+		defer dc2.Close()
+
+		resp, err := dc2.Get("/v1/users")
+		if err != nil {
+			t.Fatalf("valid subpath should succeed: %v", err)
+		}
+		_ = resp
+	})
 }

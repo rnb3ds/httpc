@@ -12,6 +12,9 @@ import (
 	"github.com/cybergodev/httpc/internal/engine"
 )
 
+// backgroundCtx is a cached background context, consistent with the engine layer.
+var backgroundCtx = context.Background()
+
 // Doer is a minimal interface for executing HTTP requests.
 // Users who need custom implementations can implement this smaller interface
 // instead of the full Client interface.
@@ -280,7 +283,7 @@ func (c *clientImpl) Options(url string, options ...RequestOption) (*Result, err
 // doRequest executes an HTTP request with the given method and options.
 // It delegates to Request with a background context for convenience methods.
 func (c *clientImpl) doRequest(method, url string, options []RequestOption) (*Result, error) {
-	return c.Request(context.Background(), method, url, options...)
+	return c.Request(backgroundCtx, method, url, options...)
 }
 
 // Request executes an HTTP request with the given context, method, URL, and options.
@@ -318,6 +321,9 @@ var middlewareRequestPool = sync.Pool{
 // or directly via the engine. Returns the raw ResponseMutator; the caller must
 // release the response via engine.ReleaseResponse() or convert it via convertResponseToResult().
 func (c *clientImpl) executeRequest(ctx context.Context, method, url string, options []RequestOption) (ResponseMutator, error) {
+	if c.engine.IsClosed() {
+		return nil, fmt.Errorf("client is closed")
+	}
 	if !c.hasMiddlewares {
 		return c.engine.Request(ctx, method, url, options...)
 	}
@@ -326,7 +332,10 @@ func (c *clientImpl) executeRequest(ctx context.Context, method, url string, opt
 	if !ok || engineReq == nil {
 		engineReq = &engine.Request{}
 	}
-	// Clear sensitive data (cookies, headers, auth tokens) before returning to pool
+	// Clear sensitive data (cookies, headers, auth tokens) before returning to pool.
+	// SAFETY: middlewareChain executes synchronously — defer runs only after
+	// the chain returns. If async middleware is ever introduced, this pool
+	// pattern will cause data races and must be redesigned.
 	defer func() {
 		*engineReq = engine.Request{}
 		middlewareRequestPool.Put(engineReq)
@@ -492,7 +501,7 @@ func SetDefaultClient(client Client) error {
 	var closeErr error
 	oldClient := defaultClient.Load()
 	defaultClient.Store(impl)
-	if oldClient != nil {
+	if oldClient != nil && oldClient != impl {
 		closeErr = oldClient.Close()
 	}
 	return closeErr
@@ -535,14 +544,22 @@ func ReleaseResult(r *Result) {
 	if r == nil {
 		return
 	}
+
+	// Guard against manually constructed Results with nil sub-structs.
+	if r.Response == nil {
+		r.Response = &ResponseInfo{}
+	}
+	if r.Request == nil {
+		r.Request = &RequestInfo{}
+	}
+	if r.Meta == nil {
+		r.Meta = &RequestMeta{}
+	}
+
 	// Sanitize sensitive body data before returning to pool.
-	// Always clear up to 64KB and nil the slice for large bodies.
 	body := r.Response.RawBody
 	if len(body) > 0 {
-		clearLen := min(len(body), 64*1024)
-		for i := range body[:clearLen] {
-			body[i] = 0
-		}
+		clear(body[:min(len(body), 64*1024)])
 		r.Response.RawBody = nil
 	}
 	*r.Request = RequestInfo{}

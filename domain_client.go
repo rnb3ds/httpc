@@ -58,11 +58,10 @@ func NewDomain(baseURL string, config ...*Config) (DomainClienter, error) {
 	}
 
 	// Create config with cookies enabled.
-	// New() handles ValidateConfig + deepCopyConfig internally, so we only
-	// need to prepare the config without redundant validation/copy.
+	// Use deepCopyConfig to fully isolate caller's config before mutation.
 	var cfg *Config
 	if len(config) > 0 && config[0] != nil {
-		cfg = config[0]
+		cfg = deepCopyConfig(config[0])
 	} else {
 		cfg = DefaultConfig()
 	}
@@ -156,13 +155,13 @@ func (dc *DomainClient) Request(ctx context.Context, method, path string, option
 // DownloadFile downloads a file from the specified path to the given file path.
 // Response cookies are captured into the session, consistent with Request behavior.
 func (dc *DomainClient) DownloadFile(path string, filePath string, options ...RequestOption) (*DownloadResult, error) {
-	return dc.DownloadFileWithContext(context.Background(), path, filePath, options...)
+	return dc.DownloadFileWithContext(backgroundCtx, path, filePath, options...)
 }
 
 // DownloadWithOptions downloads a file with custom download options.
 // Response cookies are captured into the session, consistent with Request behavior.
 func (dc *DomainClient) DownloadWithOptions(path string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error) {
-	return dc.DownloadWithOptionsWithContext(context.Background(), path, downloadOpts, options...)
+	return dc.DownloadWithOptionsWithContext(backgroundCtx, path, downloadOpts, options...)
 }
 
 // DownloadFileWithContext downloads a file with context control for cancellation and timeouts.
@@ -221,7 +220,7 @@ func (dc *DomainClient) captureDownloadCookies(result *DownloadResult) {
 // request is an internal helper that delegates to Request with a background context.
 // This eliminates code duplication between Request() and the convenience methods.
 func (dc *DomainClient) request(method, path string, options ...RequestOption) (*Result, error) {
-	return dc.Request(context.Background(), method, path, options...)
+	return dc.Request(backgroundCtx, method, path, options...)
 }
 
 func (dc *DomainClient) buildURL(pathStr string) (string, error) {
@@ -251,6 +250,15 @@ func (dc *DomainClient) buildURL(pathStr string) (string, error) {
 		return "", fmt.Errorf("invalid path %q: %w", pathStr, err)
 	}
 	result.Path = stdpath.Join(dc.parsedURL.Path, parsed.Path)
+	// Prevent path traversal: ensure result stays within base path scope.
+	// Use path-separator-aware comparison to block prefix collisions
+	// (e.g., base "/a" must not allow escape to "/ab").
+	if dc.parsedURL.Path != "" && dc.parsedURL.Path != "/" {
+		if result.Path != dc.parsedURL.Path &&
+			!strings.HasPrefix(result.Path, dc.parsedURL.Path+"/") {
+			return "", fmt.Errorf("path %q escapes base URL scope", pathStr)
+		}
+	}
 	// Preserve trailing slash from base URL when request path is empty
 	if parsed.Path == "" && strings.HasSuffix(dc.parsedURL.Path, "/") &&
 		!strings.HasSuffix(result.Path, "/") {

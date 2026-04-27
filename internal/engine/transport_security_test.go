@@ -146,18 +146,18 @@ func TestCheckRedirect_SameOriginHeadersPreserved(t *testing.T) {
 }
 
 func TestClearPools(t *testing.T) {
-	clearPools()
+	clearTransportPools()
 
 	settings := getRedirectSettings()
 	if settings == nil {
-		t.Fatal("getRedirectSettings returned nil after clearPools")
+		t.Fatal("getRedirectSettings returned nil after clearTransportPools")
 	}
 	settings.followRedirects = true
 	settings.maxRedirects = 5
 	settings.addRedirect("https://example.com")
 	putRedirectSettings(settings)
 
-	clearPools()
+	clearTransportPools()
 }
 
 func TestCrossOriginRedirectHostComparison(t *testing.T) {

@@ -73,6 +73,9 @@ func NewSessionManager(config ...*SessionConfig) (*SessionManager, error) {
 // SetCookieSecurity sets the cookie security configuration.
 // This affects all subsequent SetCookie calls.
 func (s *SessionManager) SetCookieSecurity(config *validation.CookieSecurityConfig) {
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cookieSecurity = config
@@ -81,6 +84,9 @@ func (s *SessionManager) SetCookieSecurity(config *validation.CookieSecurityConf
 // SetHeader adds or updates a header in the session.
 // Returns an error if the header key or value is invalid.
 func (s *SessionManager) SetHeader(key, value string) error {
+	if s == nil {
+		return fmt.Errorf("session manager is nil")
+	}
 	if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
 		return fmt.Errorf("invalid header: %w", err)
 	}
@@ -95,6 +101,9 @@ func (s *SessionManager) SetHeader(key, value string) error {
 // SetHeaders adds or updates multiple headers in the session.
 // Returns an error if any header key or value is invalid.
 func (s *SessionManager) SetHeaders(headers map[string]string) error {
+	if s == nil {
+		return fmt.Errorf("session manager is nil")
+	}
 	for k, v := range headers {
 		if err := validation.ValidateHeaderKeyValue(k, v); err != nil {
 			return fmt.Errorf("invalid header %s: %w", k, err)
@@ -110,6 +119,9 @@ func (s *SessionManager) SetHeaders(headers map[string]string) error {
 
 // DeleteHeader removes a header from the session.
 func (s *SessionManager) DeleteHeader(key string) {
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -118,6 +130,9 @@ func (s *SessionManager) DeleteHeader(key string) {
 
 // ClearHeaders removes all headers from the session.
 func (s *SessionManager) ClearHeaders() {
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -126,6 +141,9 @@ func (s *SessionManager) ClearHeaders() {
 
 // GetHeaders returns a copy of all session headers.
 func (s *SessionManager) GetHeaders() map[string]string {
+	if s == nil {
+		return nil
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -138,6 +156,9 @@ func (s *SessionManager) GetHeaders() map[string]string {
 // Returns an error if the cookie is nil or invalid.
 // If cookie security is configured, validates against security requirements.
 func (s *SessionManager) SetCookie(cookie *http.Cookie) error {
+	if s == nil {
+		return fmt.Errorf("session manager is nil")
+	}
 	if cookie == nil {
 		return fmt.Errorf("cookie cannot be nil")
 	}
@@ -161,6 +182,9 @@ func (s *SessionManager) SetCookie(cookie *http.Cookie) error {
 // Returns an error if any cookie is nil or invalid.
 // If cookie security is configured, validates against security requirements.
 func (s *SessionManager) SetCookies(cookies []*http.Cookie) error {
+	if s == nil {
+		return fmt.Errorf("session manager is nil")
+	}
 	// Pre-validate all cookies outside the lock
 	for i, cookie := range cookies {
 		if cookie == nil {
@@ -174,11 +198,15 @@ func (s *SessionManager) SetCookies(cookies []*http.Cookie) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Apply cookie security validation and store (inside lock for thread safety)
+	// Validate all cookies for security before storing any (atomic write)
 	for _, cookie := range cookies {
 		if err := s.validateCookieSecurity(cookie); err != nil {
 			return fmt.Errorf("cookie security validation failed for %s: %w", cookie.Name, err)
 		}
+	}
+
+	// All passed, store cookies
+	for _, cookie := range cookies {
 		s.cookies[cookie.Name] = cookie
 	}
 	return nil
@@ -186,6 +214,9 @@ func (s *SessionManager) SetCookies(cookies []*http.Cookie) error {
 
 // DeleteCookie removes a cookie from the session by name.
 func (s *SessionManager) DeleteCookie(name string) {
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -194,6 +225,9 @@ func (s *SessionManager) DeleteCookie(name string) {
 
 // ClearCookies removes all cookies from the session.
 func (s *SessionManager) ClearCookies() {
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -203,6 +237,9 @@ func (s *SessionManager) ClearCookies() {
 // GetCookies returns a copy of all session cookies.
 // Optimized to reduce allocations by pre-allocating slice with exact capacity.
 func (s *SessionManager) GetCookies() []*http.Cookie {
+	if s == nil {
+		return nil
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -220,6 +257,9 @@ func (s *SessionManager) GetCookies() []*http.Cookie {
 
 // GetCookie returns a copy of a cookie by name, or nil if not found.
 func (s *SessionManager) GetCookie(name string) *http.Cookie {
+	if s == nil {
+		return nil
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -280,6 +320,9 @@ func (s *SessionManager) validateCookieSecurity(cookie *http.Cookie) error {
 // UpdateFromResult updates session cookies from a Result.
 // If cookie security is configured, insecure cookies are silently skipped.
 func (s *SessionManager) UpdateFromResult(result *Result) {
+	if s == nil {
+		return
+	}
 	if result == nil || result.Response == nil || len(result.Response.Cookies) == 0 {
 		return
 	}
@@ -293,6 +336,9 @@ func (s *SessionManager) UpdateFromResult(result *Result) {
 // UpdateFromCookies updates session cookies from a slice of http.Cookie.
 // If cookie security is configured, insecure cookies are silently skipped.
 func (s *SessionManager) UpdateFromCookies(cookies []*http.Cookie) {
+	if s == nil {
+		return
+	}
 	if len(cookies) == 0 {
 		return
 	}
@@ -321,9 +367,14 @@ func (s *SessionManager) storeCookies(cookies []*http.Cookie) {
 //
 // CAVEAT: RequestOption is an opaque function, so all options are applied to a
 // temporary request. Options with side effects beyond setting fields (e.g.,
-// WithOnRequest callbacks, body reads from IO) will execute during this capture
-// pass in addition to the real request path. Options that only set cookies,
-// headers, query params, or simple body values are safe.
+// WithOnRequest callbacks) will execute during this capture pass in addition to
+// the real request path. Options that only set cookies, headers, query params,
+// or simple body values are safe.
+//
+// WARNING: io.Reader bodies (e.g., WithBody(reader)) will be consumed twice —
+// once during capture and once during the real request. Readers that do not
+// support re-reading will fail on the second pass. Use concrete body types
+// (string, []byte, struct for JSON) with DomainClient to avoid this issue.
 func (s *SessionManager) captureFromOptions(options []RequestOption) {
 	if len(options) == 0 {
 		return

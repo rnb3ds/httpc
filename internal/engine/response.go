@@ -48,7 +48,7 @@ const (
 	// response body size when MaxResponseBodySize is not explicitly configured.
 	// This provides a safety net against compression bombs where 100MB of
 	// highly compressible data (e.g., zeros) could decompress to many gigabytes.
-	defaultMaxDecompressedSize = 500 * 1024 * 1024 // 500MB decompressed data limit
+	defaultMaxDecompressedSize = 100 * 1024 * 1024 // 100MB decompressed data limit
 )
 
 // bufferPool reuses byte buffers for response body reading
@@ -113,6 +113,24 @@ func putLimitReader(lr *pooledLimitReader) {
 	lr.r = nil
 	lr.n = 0
 	limitReaderPool.Put(lr)
+}
+
+// streamBodyReader wraps a pooledLimitReader to enforce MaxResponseBodySize
+// in streaming mode. It also holds a reference to the underlying source body
+// so Close() properly closes the original http.Response.Body and returns the
+// pooledLimitReader to the pool.
+type streamBodyReader struct {
+	reader *pooledLimitReader
+	source io.ReadCloser
+}
+
+func (s *streamBodyReader) Read(p []byte) (int, error) {
+	return s.reader.Read(p)
+}
+
+func (s *streamBodyReader) Close() error {
+	putLimitReader(s.reader)
+	return s.source.Close()
 }
 
 // getBuffer retrieves a buffer from the pool with safe type assertion.
@@ -294,9 +312,9 @@ func (p *responseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 
 	body := buf.Bytes()
 
-	// SECURITY: After decompression, check body size for zip bomb protection.
-	if isCompressed && int64(len(body)) > maxCompressedSize {
-		return nil, fmt.Errorf("decompressed response body exceeds security limit of %d bytes (potential zip bomb)", maxCompressedSize)
+	// SECURITY: After decompression, check body size against configured limit.
+	if isCompressed && int64(len(body)) > maxSize {
+		return nil, fmt.Errorf("decompressed response body exceeds limit of %d bytes (potential zip bomb)", maxSize)
 	}
 
 	if int64(len(body)) > maxSize {
@@ -453,37 +471,4 @@ func ReleaseResponse(r *Response) {
 	}
 	*r = Response{}
 	responsePool.Put(r)
-}
-
-// clearResponsePools clears all sync.Pool instances used by the response package.
-// This is primarily useful for testing and debugging to ensure a clean state.
-// Note: sync.Pool is automatically managed by the GC, so this is typically not needed
-// in production code. The pools will be repopulated on next use.
-func clearResponsePools() {
-	gzipReaderPool = sync.Pool{
-		New: func() any {
-			reader, _ := gzip.NewReader(bytes.NewReader(nil))
-			return reader
-		},
-	}
-	flateReaderPool = sync.Pool{
-		New: func() any {
-			return flate.NewReader(bytes.NewReader(nil))
-		},
-	}
-	bufferPool = sync.Pool{
-		New: func() any {
-			return bytes.NewBuffer(make([]byte, 0, defaultBufferSize))
-		},
-	}
-	responsePool = sync.Pool{
-		New: func() any {
-			return &Response{}
-		},
-	}
-	limitReaderPool = sync.Pool{
-		New: func() any {
-			return &pooledLimitReader{}
-		},
-	}
 }

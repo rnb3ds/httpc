@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -340,12 +339,12 @@ func (r *Result) SaveToFile(filePath string) error {
 		return ErrResponseBodyEmpty
 	}
 
-	if err := prepareFilePath(filePath); err != nil {
+	validatedPath, err := prepareFilePath(filePath)
+	if err != nil {
 		return fmt.Errorf("file path validation failed: %w", err)
 	}
 
-	cleanPath := filepath.Clean(filePath)
-	if err := os.WriteFile(cleanPath, r.Response.RawBody, 0644); err != nil {
+	if err := os.WriteFile(validatedPath, r.Response.RawBody, 0644); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/cybergodev/httpc/internal/validation"
@@ -107,9 +108,21 @@ type ClientError struct {
 	Host       string // Host for circuit breaker errors
 }
 
+// errorBuilderPool reduces allocations for strings.Builder in ClientError.Error()
+var errorBuilderPool = sync.Pool{
+	New: func() any {
+		sb := &strings.Builder{}
+		return sb
+	},
+}
+
 func (e *ClientError) Error() string {
 	// Estimate capacity: method (~8) + URL (~64) + message (~64) + cause (~64) + overhead
-	var b strings.Builder
+	b, _ := errorBuilderPool.Get().(*strings.Builder)
+	if b == nil {
+		b = &strings.Builder{}
+	}
+	b.Reset()
 	b.Grow(220)
 
 	if e.URL != "" && e.Method != "" {
@@ -134,7 +147,11 @@ func (e *ClientError) Error() string {
 		b.WriteByte(')')
 	}
 
-	return b.String()
+	result := b.String()
+	if b.Cap() <= 1024 {
+		errorBuilderPool.Put(b)
+	}
+	return result
 }
 
 func (e *ClientError) Unwrap() error {
@@ -283,13 +300,14 @@ func isRetryableNetworkMessage(errMsg string) bool {
 }
 
 // isRetryableResponseReadError determines if a response read error is retryable.
+// Only read-related network operations qualify; file or write OpErrors are excluded.
 func (e *ClientError) isRetryableResponseReadError() bool {
 	if e.Cause == nil {
-		return true
+		return false
 	}
 	var netErr *net.OpError
 	if errors.As(e.Cause, &netErr) {
-		return true
+		return netErr.Op == "read" || netErr.Op == "readfrom"
 	}
 	errMsg := e.Cause.Error()
 	return containsFold(errMsg, "eof") || containsFold(errMsg, "connection") || containsFold(errMsg, "timeout")
@@ -346,7 +364,6 @@ func classifyError(err error, reqURL, method string, attempts int) *ClientError 
 		return nil
 	}
 
-	// Sanitize URL to prevent credential leakage in error storage
 	sanitizedURL := validation.SanitizeURL(reqURL)
 	return classifyErrorWithSanitizedURL(err, sanitizedURL, method, attempts)
 }
