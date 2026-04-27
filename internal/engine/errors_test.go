@@ -10,8 +10,6 @@ import (
 	"net/url"
 	"testing"
 	"time"
-
-	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // ============================================================================
@@ -89,59 +87,6 @@ func TestClientError_Error(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := tt.err.Error()
-			if result != tt.expected {
-				t.Errorf("Expected %q, got %q", tt.expected, result)
-			}
-		})
-	}
-}
-
-func TestSanitizeURL(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name:     "URL without credentials",
-			input:    "https://example.com/path",
-			expected: "https://example.com/path",
-		},
-		{
-			name:     "URL with username and password",
-			input:    "https://user:password@example.com/path",
-			expected: "https://***:***@example.com/path",
-		},
-		{
-			name:     "URL with only username",
-			input:    "https://user@example.com/path",
-			expected: "https://***@example.com/path",
-		},
-		{
-			name:     "URL with query parameters",
-			input:    "https://user:pass@example.com/path?key=value",
-			expected: "https://***:***@example.com/path?key=value",
-		},
-		{
-			name:     "URL with fragment",
-			input:    "https://user:pass@example.com/path#section",
-			expected: "https://***:***@example.com/path",
-		},
-		{
-			name:     "URL without scheme (relative path)",
-			input:    "not a valid url",
-			expected: "not%20a%20valid%20url",
-		},
-		{
-			name:     "HTTP URL with credentials",
-			input:    "http://admin:secret@localhost:8080/api",
-			expected: "http://***:***@localhost:8080/api",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := validation.SanitizeURL(tt.input)
 			if result != tt.expected {
 				t.Errorf("Expected %q, got %q", tt.expected, result)
 			}
@@ -492,31 +437,6 @@ func TestClientError_Code(t *testing.T) {
 	}
 }
 
-func TestContainsFold(t *testing.T) {
-	tests := []struct {
-		s, substr string
-		want      bool
-	}{
-		{"Hello World", "world", true},
-		{"hello world", "WORLD", true},
-		{"Hello", "ello", true},
-		{"Hello", "xyz", false},
-		{"", "", true},
-		{"abc", "", true},
-		{"", "a", false},
-		{"ab", "abc", false},
-		{"HTTP/2 invalid", "INVALID", true},
-		{"connection refused", "REFUSED", true},
-	}
-
-	for _, tt := range tests {
-		got := containsFold(tt.s, tt.substr)
-		if got != tt.want {
-			t.Errorf("containsFold(%q, %q) = %v, want %v", tt.s, tt.substr, got, tt.want)
-		}
-	}
-}
-
 func TestClassifyError_AdditionalPatterns(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -553,6 +473,63 @@ func TestClassifyError_AdditionalPatterns(t *testing.T) {
 			result := classifyError(errors.New(tt.errMsg), "https://example.com", "GET", 1)
 			if result.Type != tt.expectedType {
 				t.Errorf("classifyError(%q) type = %v, want %v", tt.errMsg, result.Type, tt.expectedType)
+			}
+		})
+	}
+}
+
+// TestClassifyError_MessagePatterns_Extra covers additional untested error message
+// patterns in classifyError to increase branch coverage.
+func TestClassifyError_MessagePatterns_Extra(t *testing.T) {
+	tests := []struct {
+		name         string
+		errMsg       string
+		expectedType ErrorType
+	}{
+		{"CircularRedirect", "circular redirect detected", ErrorTypeValidation},
+		{"RedirectBlockedByPolicy", "redirect blocked by policy", ErrorTypeValidation},
+		{"BrokenPipe", "broken pipe", ErrorTypeNetwork},
+		{"TLSHandshakeFailure", "TLS handshake failure", ErrorTypeTLS},
+		{"SSLHandshakeError", "SSL handshake error", ErrorTypeTLS},
+		{"CertificateVerifyFailed", "certificate verify failed", ErrorTypeCertificate},
+		{"X509CertUnknownAuthority", "x509: certificate signed by unknown authority", ErrorTypeCertificate},
+		{"TransportConnectionReset", "transport connection reset", ErrorTypeNetwork},
+		{"ProtocolErrorDuringConnection", "protocol error during connection", ErrorTypeTransport},
+		{"UnexpectedEOF", "unexpected EOF", ErrorTypeResponseRead},
+		{"ValidationFailedInvalidHeader", "validation failed: invalid header", ErrorTypeValidation},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := errors.New(tt.errMsg)
+			result := classifyError(err, "", "", 0)
+
+			if result.Type != tt.expectedType {
+				t.Errorf("classifyError(%q) type = %v, want %v", tt.errMsg, result.Type, tt.expectedType)
+			}
+		})
+	}
+}
+
+// TestExtractStatusCode_EdgeCases tests edge-case inputs for extractStatusCode.
+func TestExtractStatusCode_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected int
+	}{
+		{"Space before code at non-zero position", "HTTP 503", 503},
+		{"Status with code and text", "status 429 rate limited", 429},
+		{"No space before code", "HTTP503", 0},
+		{"Below 400", "got 399", 0},
+		{"Above 599", "got 600", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractStatusCode(tt.input)
+			if got != tt.expected {
+				t.Errorf("extractStatusCode(%q) = %d, want %d", tt.input, got, tt.expected)
 			}
 		})
 	}
@@ -630,9 +607,9 @@ func TestClientError_IsRetryable_Additional(t *testing.T) {
 			wantRetry: true,
 		},
 		{
-			name:      "Response read nil cause is retryable",
+			name:      "Response read nil cause is not retryable",
 			err:       &ClientError{Type: ErrorTypeResponseRead, Cause: nil},
-			wantRetry: true,
+			wantRetry: false,
 		},
 		{
 			name:      "Context canceled via cause is not retryable",

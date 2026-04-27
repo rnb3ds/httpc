@@ -507,8 +507,7 @@ result, err := client.Post(url,
 | `WithXML(data)`                  | XML body             | `WithXML(struct{...})`                  |
 | `WithForm(data)`                 | Form data            | `WithForm(map[string]string{...})`      |
 | `WithBinary(data, ct...)`        | Binary data          | `WithBinary([]byte{...}, "image/png")`  |
-| `WithBody(data)`          | Auto-detect body     | `WithBody(data)`                 |
-| `WithBody(data, kind)`    | Body with type hint  | `WithBody(data, httpc.BodyJSON)` |
+| `WithBody(data, kind...)` | Auto-detect or explicit body type | `WithBody(data)` or `WithBody(data, httpc.BodyJSON)` |
 | `WithFile(field, name, content)` | Single file          | `WithFile("file", "doc.pdf", data)`     |
 | `WithFormData(fd)`               | Multipart form       | `WithFormData(&FormData{...})`          |
 | `WithTimeout(duration)`          | Request timeout      | `WithTimeout(30*time.Second)`           |

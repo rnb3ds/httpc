@@ -12,7 +12,6 @@ import (
 )
 
 // This example demonstrates comprehensive cookie handling
-// Consolidates: 02_core_features/cookies.go, 05_cookies/* (all cookie examples)
 
 func main() {
 	fmt.Println("=== Advanced Cookie Handling ===\n ")

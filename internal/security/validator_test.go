@@ -619,9 +619,13 @@ func TestValidator_ValidateCommonHeaderValue(t *testing.T) {
 		{"Connection upgrade", "Connection", "upgrade", false},
 		{"Connection Keep-Alive case insensitive", "connection", "Keep-Alive", false},
 		{"Connection CLOSE case insensitive", "CONNECTION", "CLOSE", false},
+		// Connection header - multi-token (RFC 9110)
+		{"Connection multi keep-alive Upgrade", "Connection", "keep-alive, Upgrade", false},
+		{"Connection multi with spaces", "Connection", "keep-alive, upgrade", false},
 		// Connection header - invalid values
 		{"Connection invalid", "Connection", "invalid-value", true},
 		{"Connection empty", "Connection", "", true},
+		{"Connection invalid in multi", "Connection", "keep-alive, invalid", true},
 		// Transfer-Encoding header - valid values
 		{"Transfer-Encoding chunked", "Transfer-Encoding", "chunked", false},
 		{"Transfer-Encoding gzip", "Transfer-Encoding", "gzip", false},
@@ -704,6 +708,87 @@ func TestValidateURL_WithAllowPrivateIPs(t *testing.T) {
 			err := validator.validateURL(tt.url)
 			if (err != nil) != tt.shouldErr {
 				t.Errorf("validateURL(%s) error = %v, shouldErr = %v", tt.url, err, tt.shouldErr)
+			}
+		})
+	}
+}
+
+// TestValidateRequestBodySize_UrlValues verifies that url.Values body size
+// is checked against MaxRequestBodySize when set.
+func TestValidateRequestBodySize_UrlValues(t *testing.T) {
+	validator := NewValidatorWithConfig(&Config{
+		ValidateURL:         true,
+		ValidateHeaders:     true,
+		MaxRequestBodySize:  10,
+		MaxResponseBodySize: 50 * 1024 * 1024,
+		AllowPrivateIPs:     true,
+	})
+
+	values := url.Values{"key": []string{strings.Repeat("x", 200)}}
+	req := &Request{
+		Method: "POST",
+		URL:    "http://example.com",
+		Body:   values,
+	}
+
+	err := validator.ValidateRequest(req)
+	if err == nil {
+		t.Fatal("expected error for oversized url.Values body, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds limit") {
+		t.Errorf("error should mention body size limit, got: %v", err)
+	}
+}
+
+// TestValidateRequestBodySize_ZeroLimitFallback verifies that when
+// MaxRequestBodySize is zero, the validator falls back to MaxResponseBodySize.
+func TestValidateRequestBodySize_ZeroLimitFallback(t *testing.T) {
+	validator := NewValidatorWithConfig(&Config{
+		ValidateURL:         true,
+		ValidateHeaders:     true,
+		MaxRequestBodySize:  0,
+		MaxResponseBodySize: 100,
+		AllowPrivateIPs:     true,
+	})
+
+	req := &Request{
+		Method: "POST",
+		URL:    "http://example.com",
+		Body:   strings.Repeat("a", 200),
+	}
+
+	err := validator.ValidateRequest(req)
+	if err == nil {
+		t.Fatal("expected error when body exceeds fallback limit, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds limit") {
+		t.Errorf("error should mention body size limit, got: %v", err)
+	}
+}
+
+// TestValidateHost_AllowPrivateIPsFastReturn verifies that validateHost
+// returns nil immediately for any host when AllowPrivateIPs is true.
+func TestValidateHost_AllowPrivateIPsFastReturn(t *testing.T) {
+	validator := NewValidatorWithConfig(&Config{
+		ValidateURL:     true,
+		ValidateHeaders: true,
+		AllowPrivateIPs: true,
+	})
+
+	hosts := []string{
+		"localhost",
+		"127.0.0.1",
+		"192.168.1.1",
+		"10.0.0.1",
+		"169.254.169.254",
+		"example.com",
+	}
+
+	for _, host := range hosts {
+		t.Run(host, func(t *testing.T) {
+			err := validator.validateHost(host)
+			if err != nil {
+				t.Errorf("validateHost(%q) expected nil with AllowPrivateIPs=true, got: %v", host, err)
 			}
 		})
 	}

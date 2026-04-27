@@ -16,24 +16,26 @@ import (
 )
 
 // WithHeader sets a single HTTP header on the request.
-// The key and value are validated for security (CRLF injection prevention).
+// Returns ErrInvalidHeader if the key or value contains invalid characters
+// (CRLF injection prevention).
 func WithHeader(key, value string) RequestOption {
 	return func(r *engine.Request) error {
 		if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
 			return fmt.Errorf("invalid header: %w", err)
 		}
-
 		r.SetHeader(key, value)
 		return nil
 	}
 }
 
 // WithHeaderMap sets multiple headers from a map.
+// Returns ErrInvalidHeader if any key or value contains invalid characters
+// (CRLF injection prevention).
 func WithHeaderMap(headers map[string]string) RequestOption {
 	return func(r *engine.Request) error {
 		for k, v := range headers {
 			if err := validation.ValidateHeaderKeyValue(k, v); err != nil {
-				return fmt.Errorf("invalid header %s: %w", k, err)
+				return fmt.Errorf("invalid header %q: %w", k, err)
 			}
 			r.SetHeader(k, v)
 		}
@@ -169,6 +171,11 @@ func WithXML(data any) RequestOption {
 //   - io.Reader → passed through (no Content-Type set)
 //   - other types → application/json (default)
 //
+// Note: io.Reader bodies bypass request body size validation. For untrusted sources,
+// wrap with io.LimitReader to prevent resource exhaustion:
+//
+//	limited := io.LimitReader(untrustedReader, 10<<20) // 10 MB cap
+//
 // Explicit kinds (BodyJSON, BodyXML, BodyForm, BodyBinary, BodyMultipart) override auto-detection.
 //
 // Example:
@@ -235,6 +242,15 @@ func WithBody(data any, kind ...BodyKind) RequestOption {
 	}
 }
 
+// encodeFormFields encodes a map[string]string to url-encoded form string.
+func encodeFormFields(data map[string]string) string {
+	values := make(url.Values, len(data))
+	for k, v := range data {
+		values.Set(k, v)
+	}
+	return values.Encode()
+}
+
 // convertToForm converts data to url-encoded form string.
 func convertToForm(data any) (string, error) {
 	switch v := data.(type) {
@@ -242,11 +258,7 @@ func convertToForm(data any) (string, error) {
 		if v == nil {
 			return "", fmt.Errorf("form data cannot be nil")
 		}
-		values := make(url.Values, len(v))
-		for k, val := range v {
-			values.Set(k, val)
-		}
-		return values.Encode(), nil
+		return encodeFormFields(v), nil
 	case url.Values:
 		if v == nil {
 			return "", fmt.Errorf("form data cannot be nil")
@@ -261,8 +273,8 @@ func convertToForm(data any) (string, error) {
 func convertToBinary(data any) ([]byte, error) {
 	switch v := data.(type) {
 	case []byte:
-		if v == nil {
-			return nil, fmt.Errorf("binary data cannot be nil")
+		if len(v) == 0 {
+			return nil, fmt.Errorf("binary data cannot be empty")
 		}
 		return v, nil
 	case string:
@@ -303,11 +315,7 @@ func setAutoDetectedBody(r *engine.Request, data any) (string, error) {
 		if v == nil {
 			return "", fmt.Errorf("form data cannot be nil")
 		}
-		values := make(url.Values, len(v))
-		for k, val := range v {
-			values.Set(k, val)
-		}
-		r.SetBody(values.Encode())
+		r.SetBody(encodeFormFields(v))
 		return "application/x-www-form-urlencoded", nil
 	default:
 		// Default to JSON for all other types
@@ -322,12 +330,7 @@ func WithForm(data map[string]string) RequestOption {
 		if data == nil {
 			return fmt.Errorf("form data cannot be nil")
 		}
-		// Pre-allocate url.Values with capacity to avoid map growth
-		values := make(url.Values, len(data))
-		for k, v := range data {
-			values.Set(k, v)
-		}
-		r.SetBody(values.Encode())
+		r.SetBody(encodeFormFields(data))
 		r.SetHeader("Content-Type", "application/x-www-form-urlencoded")
 		return nil
 	}
@@ -473,7 +476,13 @@ func WithCookie(cookie http.Cookie) RequestOption {
 		}
 
 		cookies := r.Cookies()
-		cookies = append(cookies, cookie)
+		if cap(cookies) > len(cookies) {
+			cookies = append(cookies, cookie)
+		} else {
+			newCookies := make([]http.Cookie, len(cookies), len(cookies)+1)
+			copy(newCookies, cookies)
+			cookies = append(newCookies, cookie)
+		}
 		r.SetCookies(cookies)
 		return nil
 	}
@@ -570,22 +579,6 @@ func parseCookieString(cookieString string) ([]http.Cookie, error) {
 
 	cookies := make([]http.Cookie, 0, len(parsedCookies))
 	for _, cookie := range parsedCookies {
-		nameLen := len(cookie.Name)
-		if nameLen > validation.MaxCookieNameLen {
-			return nil, fmt.Errorf("cookie name too long: %s", cookie.Name)
-		}
-		if len(cookie.Value) > validation.MaxCookieValueLen {
-			return nil, fmt.Errorf("cookie value too long for %s", cookie.Name)
-		}
-
-		// Validate cookie name characters (excluding '=' which is valid in cookie string format)
-		for j := 0; j < nameLen; j++ {
-			c := cookie.Name[j]
-			if c < 0x20 || c == 0x7F || c == ';' || c == ',' {
-				return nil, fmt.Errorf("invalid character in cookie name: %s", cookie.Name)
-			}
-		}
-
 		cookies = append(cookies, http.Cookie{
 			Name:  cookie.Name,
 			Value: cookie.Value,
@@ -684,8 +677,10 @@ func WithSecureCookie(securityConfig *validation.CookieSecurityConfig) RequestOp
 			return fmt.Errorf("security config cannot be nil")
 		}
 
-		// Store the security config in the request for later validation
-		// This will be applied when cookies are processed
+		// IMPORTANT: This option validates only cookies already added at the time it is applied.
+		// Place WithSecureCookie AFTER all WithCookie/WithCookieMap options to ensure
+		// all cookies are validated. Example:
+		//   httpc.WithCookie(c), httpc.WithSecureCookie(sec)
 		existing := r.Cookies()
 		for i := range existing {
 			if err := validation.ValidateCookieSecurity(&existing[i], securityConfig); err != nil {

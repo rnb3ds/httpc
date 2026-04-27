@@ -13,7 +13,6 @@ import (
 )
 
 // This example demonstrates file upload and download operations
-// Consolidates: file_upload.go, file_download.go
 
 func main() {
 	fmt.Println("=== File Operations Examples ===\n ")

@@ -377,6 +377,7 @@ func BenchmarkMiddlewareOverhead(b *testing.B) {
 		client, _ := New(cfg)
 		defer client.Close()
 
+		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			_, _ = client.Get(ts.URL)
@@ -395,6 +396,7 @@ func BenchmarkMiddlewareOverhead(b *testing.B) {
 		client, _ := New(cfg)
 		defer client.Close()
 
+		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			_, _ = client.Get(ts.URL)
@@ -423,6 +425,7 @@ func BenchmarkMiddlewareOverhead(b *testing.B) {
 		client, _ := New(cfg)
 		defer client.Close()
 
+		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			_, _ = client.Get(ts.URL)
@@ -473,6 +476,8 @@ func (m *mockRequest) SetContext(v context.Context)    { m.ctx = v }
 func (m *mockRequest) SetCookies(v []http.Cookie)      { m.cookies = v }
 func (m *mockRequest) SetFollowRedirects(v *bool)      { m.followRedirects = v }
 func (m *mockRequest) SetMaxRedirects(v *int)          { m.maxRedirects = v }
+func (m *mockRequest) StreamBody() bool                { return false }
+func (m *mockRequest) SetStreamBody(v bool)            {}
 
 // mockResponse implements ResponseMutator for testing
 type mockResponse struct {
@@ -864,5 +869,67 @@ func TestAuditEventMarshalJSON(t *testing.T) {
 	}
 	if !strings.Contains(jsonStr, "test error") {
 		t.Error("expected JSON to contain error")
+	}
+}
+
+func TestMaskStringHeaders(t *testing.T) {
+	tests := []struct {
+		name       string
+		headers    map[string]string
+		maskList   []string
+		wantMasked []string
+		wantPlain  []string
+	}{
+		{
+			name:     "nil headers returns nil",
+			headers:  nil,
+			maskList: []string{"Authorization"},
+		},
+		{
+			name:     "empty headers returns nil",
+			headers:  map[string]string{},
+			maskList: []string{"Authorization"},
+		},
+		{
+			name:       "mask authorization",
+			headers:    map[string]string{"Authorization": "Bearer secret"},
+			maskList:   []string{"Authorization"},
+			wantMasked: []string{"Authorization"},
+		},
+		{
+			name:       "mask multiple headers",
+			headers:    map[string]string{"Authorization": "Bearer token", "X-Custom": "visible"},
+			maskList:   []string{"Authorization", "Cookie"},
+			wantMasked: []string{"Authorization"},
+			wantPlain:  []string{"X-Custom"},
+		},
+		{
+			name:       "case insensitive mask match",
+			headers:    map[string]string{"authorization": "Bearer token"},
+			maskList:   []string{"Authorization"},
+			wantMasked: []string{"authorization"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := maskStringHeaders(tt.headers, tt.maskList)
+			if len(tt.headers) == 0 {
+				if result != nil {
+					t.Error("expected nil for empty/nil headers")
+				}
+				return
+			}
+			for _, k := range tt.wantMasked {
+				if v, ok := result[k]; !ok || len(v) != 1 || v[0] != "[REDACTED]" {
+					t.Errorf("header %q should be masked, got %v", k, v)
+				}
+			}
+			for _, k := range tt.wantPlain {
+				if v, ok := result[k]; !ok || len(v) != 1 || v[0] == "[REDACTED]" {
+					t.Errorf("header %q should be plain, got %v", k, v)
+				}
+			}
+		})
 	}
 }

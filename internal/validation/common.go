@@ -1,3 +1,5 @@
+// Package validation provides input sanitization and validation utilities
+// for credentials, headers, cookies, URLs, and network addresses.
 package validation
 
 import (
@@ -23,11 +25,6 @@ const (
 	MaxHeaderValueLen = 8192
 	maxURLLen         = 2048 // Maximum URL length
 )
-
-// dangerousChars contains characters that may be used for injection attacks.
-// These characters are commonly used in command injection, SQL injection,
-// XSS, and other attack vectors.
-const dangerousChars = `"'<>&;` + "`|" + `$\{}[]^~`
 
 // validateInputString performs common string validation to prevent injection attacks.
 func validateInputString(input string, maxLen int, name string, additionalChecks func(rune) error) error {
@@ -71,52 +68,6 @@ func ValidateToken(token string) error {
 		}
 		return nil
 	})
-}
-
-// ValidateCredentialStrict validates credentials with additional security checks
-// for high-security scenarios (financial, medical, government).
-// In addition to standard validation, it blocks dangerous characters commonly
-// used in injection attacks.
-//
-// Parameters:
-//   - cred: The credential string to validate
-//   - maxLen: Maximum allowed length
-//   - checkColon: If true, colons are not allowed (for usernames)
-//   - credType: Description of the credential type for error messages
-//
-// Returns an error if validation fails, nil otherwise.
-func validateCredentialStrict(cred string, maxLen int, checkColon bool, credType string) error {
-	// First perform standard validation
-	if err := ValidateCredential(cred, maxLen, checkColon, credType); err != nil {
-		return err
-	}
-
-	// Additional check for dangerous characters
-	if strings.ContainsAny(cred, dangerousChars) {
-		return fmt.Errorf("%s contains dangerous characters that may be used for injection attacks", credType)
-	}
-
-	return nil
-}
-
-// ValidateTokenStrict validates bearer tokens with additional security checks
-// for high-security scenarios. It blocks dangerous characters commonly used
-// in injection attacks in addition to standard token validation.
-//
-// This is recommended for financial, medical, and government applications
-// where defense-in-depth is required.
-func validateTokenStrict(token string) error {
-	// First perform standard validation
-	if err := ValidateToken(token); err != nil {
-		return err
-	}
-
-	// Additional check for dangerous characters
-	if strings.ContainsAny(token, dangerousChars) {
-		return fmt.Errorf("token contains dangerous characters that may be used for injection attacks")
-	}
-
-	return nil
 }
 
 // ValidateQueryKey validates query parameter keys.
@@ -165,8 +116,9 @@ func ValidateHeaderKeyValue(key, value string) error {
 		return fmt.Errorf("header value too long")
 	}
 
-	for _, r := range value {
-		if (r < 0x20 && r != 0x09) || r == 0x7F {
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if (c < 0x20 && c != 0x09) || c == 0x7F {
 			return fmt.Errorf("header value contains invalid characters")
 		}
 	}
@@ -239,8 +191,8 @@ func ValidateCookieValue(value string) error {
 		return fmt.Errorf("cookie value too long")
 	}
 
-	for _, r := range value {
-		if r < 0x20 || r == 0x7F {
+	for i := 0; i < len(value); i++ {
+		if value[i] < 0x20 || value[i] == 0x7F {
 			return fmt.Errorf("cookie value contains invalid characters")
 		}
 	}

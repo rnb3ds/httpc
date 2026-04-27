@@ -57,21 +57,18 @@ func NewDomain(baseURL string, config ...*Config) (DomainClienter, error) {
 		return nil, fmt.Errorf("base URL must include scheme and host")
 	}
 
-	// Create config with cookies enabled
+	// Create config with cookies enabled.
+	// Use deepCopyConfig to fully isolate caller's config before mutation.
 	var cfg *Config
 	if len(config) > 0 && config[0] != nil {
-		if err := ValidateConfig(config[0]); err != nil {
-			return nil, fmt.Errorf("invalid configuration: %w", err)
-		}
 		cfg = deepCopyConfig(config[0])
 	} else {
 		cfg = DefaultConfig()
 	}
 	cfg.Connection.EnableCookies = true
-
 	client, err := New(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create client: %w", err)
+		return nil, fmt.Errorf("failed to create domain client: %w", err)
 	}
 
 	session, err := NewSessionManager()
@@ -149,7 +146,7 @@ func (dc *DomainClient) Request(ctx context.Context, method, path string, option
 	}
 
 	if result != nil {
-		dc.SessionManager.UpdateFromResult(result)
+		dc.UpdateFromResult(result)
 	}
 
 	return result, nil
@@ -158,13 +155,13 @@ func (dc *DomainClient) Request(ctx context.Context, method, path string, option
 // DownloadFile downloads a file from the specified path to the given file path.
 // Response cookies are captured into the session, consistent with Request behavior.
 func (dc *DomainClient) DownloadFile(path string, filePath string, options ...RequestOption) (*DownloadResult, error) {
-	return dc.DownloadFileWithContext(context.Background(), path, filePath, options...)
+	return dc.DownloadFileWithContext(backgroundCtx, path, filePath, options...)
 }
 
 // DownloadWithOptions downloads a file with custom download options.
 // Response cookies are captured into the session, consistent with Request behavior.
 func (dc *DomainClient) DownloadWithOptions(path string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error) {
-	return dc.DownloadWithOptionsWithContext(context.Background(), path, downloadOpts, options...)
+	return dc.DownloadWithOptionsWithContext(backgroundCtx, path, downloadOpts, options...)
 }
 
 // DownloadFileWithContext downloads a file with context control for cancellation and timeouts.
@@ -207,23 +204,23 @@ func (dc *DomainClient) DownloadWithOptionsWithContext(ctx context.Context, path
 
 // prepareSessionOptions merges session state (headers, cookies) with user-provided options.
 func (dc *DomainClient) prepareSessionOptions(options []RequestOption) []RequestOption {
-	managedOptions := dc.SessionManager.prepareOptions()
+	managedOptions := dc.prepareOptions()
 	allOptions := append(managedOptions, options...)
-	dc.SessionManager.captureFromOptions(options)
+	dc.captureFromOptions(options)
 	return allOptions
 }
 
 // captureDownloadCookies captures response cookies from a download result into the session.
 func (dc *DomainClient) captureDownloadCookies(result *DownloadResult) {
 	if result != nil {
-		dc.SessionManager.UpdateFromCookies(result.ResponseCookies)
+		dc.UpdateFromCookies(result.ResponseCookies)
 	}
 }
 
 // request is an internal helper that delegates to Request with a background context.
 // This eliminates code duplication between Request() and the convenience methods.
 func (dc *DomainClient) request(method, path string, options ...RequestOption) (*Result, error) {
-	return dc.Request(context.Background(), method, path, options...)
+	return dc.Request(backgroundCtx, method, path, options...)
 }
 
 func (dc *DomainClient) buildURL(pathStr string) (string, error) {
@@ -235,12 +232,6 @@ func (dc *DomainClient) buildURL(pathStr string) (string, error) {
 	if strings.HasPrefix(pathStr, "http://") || strings.HasPrefix(pathStr, "https://") {
 		parsedURL, err := url.Parse(pathStr)
 		if err == nil && parsedURL.Scheme != "" && parsedURL.Host != "" {
-			// Validate URL scheme for security
-			// Only allow http and https schemes to prevent potential SSRF attacks
-			if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-				// Reject URLs with disallowed schemes (file:, data:, javascript:, etc.)
-				return "", fmt.Errorf("invalid URL scheme: %q: only http and https are allowed", parsedURL.Scheme)
-			}
 			return pathStr, nil
 		}
 	}
@@ -259,8 +250,27 @@ func (dc *DomainClient) buildURL(pathStr string) (string, error) {
 		return "", fmt.Errorf("invalid path %q: %w", pathStr, err)
 	}
 	result.Path = stdpath.Join(dc.parsedURL.Path, parsed.Path)
+	// Prevent path traversal: ensure result stays within base path scope.
+	// Use path-separator-aware comparison to block prefix collisions
+	// (e.g., base "/a" must not allow escape to "/ab").
+	if dc.parsedURL.Path != "" && dc.parsedURL.Path != "/" {
+		if result.Path != dc.parsedURL.Path &&
+			!strings.HasPrefix(result.Path, dc.parsedURL.Path+"/") {
+			return "", fmt.Errorf("path %q escapes base URL scope", pathStr)
+		}
+	}
+	// Preserve trailing slash from base URL when request path is empty
+	if parsed.Path == "" && strings.HasSuffix(dc.parsedURL.Path, "/") &&
+		!strings.HasSuffix(result.Path, "/") {
+		result.Path += "/"
+	}
+	// Merge query params: base URL params + path params
 	if parsed.RawQuery != "" {
-		result.RawQuery = parsed.RawQuery
+		if result.RawQuery != "" {
+			result.RawQuery = result.RawQuery + "&" + parsed.RawQuery
+		} else {
+			result.RawQuery = parsed.RawQuery
+		}
 	}
 	if parsed.Fragment != "" {
 		result.Fragment = parsed.Fragment
@@ -268,14 +278,30 @@ func (dc *DomainClient) buildURL(pathStr string) (string, error) {
 	return result.String(), nil
 }
 
-// URL returns the base URL
-func (dc *DomainClient) URL() string { return dc.baseURL }
+// URL returns the base URL.
+// Returns empty string if the receiver is nil.
+func (dc *DomainClient) URL() string {
+	if dc == nil {
+		return ""
+	}
+	return dc.baseURL
+}
 
-// Domain returns the domain name (host without port)
-func (dc *DomainClient) Domain() string { return dc.domain }
+// Domain returns the domain name (host without port).
+// Returns empty string if the receiver is nil.
+func (dc *DomainClient) Domain() string {
+	if dc == nil {
+		return ""
+	}
+	return dc.domain
+}
 
 // Session returns the underlying SessionManager for advanced session management.
+// Returns nil if the receiver is nil.
 func (dc *DomainClient) Session() *SessionManager {
+	if dc == nil {
+		return nil
+	}
 	return dc.SessionManager
 }
 
@@ -286,6 +312,10 @@ var _ Client = (*DomainClient)(nil)
 var _ DomainClienter = (*DomainClient)(nil)
 
 // Close closes the underlying HTTP client and releases resources.
+// Returns nil if the receiver is nil.
 func (dc *DomainClient) Close() error {
+	if dc == nil {
+		return nil
+	}
 	return dc.client.Close()
 }

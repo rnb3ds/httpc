@@ -443,7 +443,7 @@ if err != nil {
 
 ## Examples
 
-See [examples/03_advanced/redirects.go](../examples/03_advanced/redirects.go) for complete working examples:
+See [09_redirects.go](../examples/09_redirects.go) for complete working examples:
 
 1. **Automatic redirect following** - Default behavior
 2. **Disable redirect following** - Get redirect response

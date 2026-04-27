@@ -342,3 +342,113 @@ func TestRedirect_OptionValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestRedirect_LoopDetection(t *testing.T) {
+	t.Parallel()
+
+	var serverB *httptest.Server
+	serverA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/to-b" {
+			http.Redirect(w, r, serverB.URL+"/to-a", http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer serverA.Close()
+
+	serverB = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, serverA.URL+"/to-b", http.StatusFound)
+	}))
+	defer serverB.Close()
+
+	config := testConfig()
+	config.Middleware.FollowRedirects = true
+	config.Middleware.MaxRedirects = 10
+	client, err := New(config)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	defer client.Close()
+
+	_, err = client.Get(serverA.URL + "/to-b")
+	if err == nil {
+		t.Error("Expected error for circular redirect, got nil")
+	}
+}
+
+func TestRedirect_QueryParameterPreservation(t *testing.T) {
+	t.Parallel()
+
+	var receivedQuery string
+	finalServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer finalServer.Close()
+
+	redirectServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, finalServer.URL+"?"+r.URL.RawQuery, http.StatusFound)
+	}))
+	defer redirectServer.Close()
+
+	config := testConfig()
+	config.Middleware.FollowRedirects = true
+	client, err := New(config)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	defer client.Close()
+
+	resp, err := client.Get(redirectServer.URL + "?key=value&foo=bar")
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	if resp.StatusCode() != http.StatusOK {
+		t.Errorf("Expected 200, got %d", resp.StatusCode())
+	}
+	if receivedQuery != "foo=bar&key=value" && receivedQuery != "key=value&foo=bar" {
+		t.Errorf("Expected query params preserved, got %q", receivedQuery)
+	}
+}
+
+func TestRedirect_BoundaryStatusCodes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		statusCode int
+	}{
+		{"300 Multiple Choices", 300},
+		{"399 boundary", 399},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			finalServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer finalServer.Close()
+
+			redirectServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Location", finalServer.URL)
+				w.WriteHeader(tt.statusCode)
+			}))
+			defer redirectServer.Close()
+
+			config := testConfig()
+			config.Middleware.FollowRedirects = true
+			client, err := New(config)
+			if err != nil {
+				t.Fatalf("Failed to create client: %v", err)
+			}
+			defer client.Close()
+
+			resp, err := client.Get(redirectServer.URL)
+			if err != nil {
+				t.Logf("Status %d returned error: %v (acceptable)", tt.statusCode, err)
+				return
+			}
+			t.Logf("Status %d: final status %d, redirects %d", tt.statusCode, resp.StatusCode(), resp.Meta.RedirectCount)
+		})
+	}
+}

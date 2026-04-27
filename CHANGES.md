@@ -4,6 +4,57 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ---
 
+## v1.4.1 - Bug Fixes, Concurrency Safety & Performance (2026-04-28)
+
+### Fixed
+- Path traversal bypass in DomainClient buildURL allowing escape to sibling paths (e.g., base "/api" + "../apix")
+- Nil pointer dereference panics on nil `*SessionManager` (all 14 exported methods) and nil Result sub-structs
+- Permanent `ErrPoolExhausted` after `MaxTotalConns` lifetime connections (`totalConns` not decremented on close)
+- New connections accepted after `PoolManager.Close()` due to missing closed check at dialer entry
+- DNS cache counter going negative under concurrent eviction in DoH resolver
+- `MaxResponseHeaderBytes` security limit validated but never applied to connection pool
+- `SetDefaultClient` closing client when called with the same instance
+- Closed-client requests reaching middleware path before failing fast
+- `EnableCookies` mutation in `NewDomain` leaking to caller's Config via shallow copy
+- `SetCookies` storing cookies before completing full security validation
+- Decompressed body size checked against fixed `maxCompressedSize` instead of user-configured `maxSize`
+- Resume download silently truncating file when server returns 200 instead of expected 206
+- Download `Duration` measuring only header-receipt time instead of full body transfer
+- Response pool leak on `engine.Response` type assertion failure in download
+- `MetricsMiddleware` exposing credentials in URL from non-ClientError errors (e.g., stdlib `*url.Error`)
+- File handle management in download body write for Windows compatibility
+- Redundant `nil` check before `len()` on nil slice (staticcheck S1009)
+- Unused `nopCancelFunc` and `createDefaultContext` dead code in engine client
+- Redundant embedded field selectors (QF1008) in DomainClient and Response
+- Tautological `err == nil` check in download Sync error path
+- `isRetryableResponseReadError` returning inconsistent result for nil Cause
+
+### Changed
+- Cached `context.Background()` as package-level variable to reduce allocations
+- Moved test-only pool/cache functions from production code to `testing.go`
+- Documented `WithSecureCookie` ordering requirement (must be after `WithCookie`/`WithCookieMap`)
+- Removed redundant `ValidateConfig`/`deepCopyConfig` before `New()` (already handled internally)
+- Extracted `writeQueryParamValue` helper and `requestPool` type to eliminate duplicated code patterns
+- Replaced multiple `strings.Contains` with `ContainsAny`, hoisted slice literals to package-level vars
+- Pre-computed wildcard suffix at `DomainWhitelist` creation for zero-alloc matching
+- Replaced `fmt.Sprintf` with `strconv.FormatFloat` and rune iteration with byte iteration for ASCII
+- Clarified `AllowPrivateIPs` documentation — explicitly states it disables ALL SSRF protection
+- Applied `gofmt` and `goimports` formatting across 33 previously unformatted files
+
+### Security
+- Redacted IP addresses from SSRF block error messages to prevent network topology disclosure
+- Path traversal protection in DomainClient `buildURL` preventing `..` segments from escaping base URL scope
+- govulncheck identified 4 stdlib vulnerabilities (GO-2026-4947, GO-2026-4946, GO-2026-4870, GO-2026-4601) fixed in Go 1.25.9
+
+### Performance
+- Allocation-free numeric formatting via `strconv.FormatFloat`
+- Zero-alloc wildcard suffix matching in domain whitelist
+- Direct length calculation replacing `url.Values.Encode()` for body size validation
+- Cached sanitized URL in `executeRequest` reused across all error paths
+- `cleanPath` normalization hoisted outside system path comparison loop
+
+---
+
 ## v1.4.0 - Security Hardening, Performance & API Unification (2026-04-24)
 
 ### Breaking

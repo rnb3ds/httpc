@@ -11,7 +11,7 @@ import (
 )
 
 // This example demonstrates HTTP methods with focus on less common ones.
-// For GET/POST/PUT/DELETE basics, see 01_quickstart/basic_usage.go
+// For GET/POST/PUT/DELETE basics, see 01_basic_usage.go
 
 func main() {
 	fmt.Println("=== HTTP Methods Examples ===")
@@ -170,5 +170,5 @@ func demonstrateMethodComparison() {
 	fmt.Println()
 	fmt.Println("Idempotent: Multiple identical requests have same effect as single request")
 	fmt.Println()
-	fmt.Println("Basic examples (GET/POST/PUT/DELETE): See 01_quickstart/basic_usage.go")
+	fmt.Println("Basic examples (GET/POST/PUT/DELETE): See 01_basic_usage.go")
 }

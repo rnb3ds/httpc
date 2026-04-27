@@ -2,13 +2,17 @@ package httpc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cybergodev/httpc/internal/engine"
@@ -18,13 +22,32 @@ import (
 // Parameters: downloaded bytes, total bytes, current speed in bytes/second.
 type DownloadProgressCallback func(downloaded, total int64, speed float64)
 
+// ChecksumAlgorithm specifies the hash algorithm for download integrity verification.
+type ChecksumAlgorithm string
+
+const (
+	// ChecksumSHA256 uses SHA-256 for integrity verification.
+	ChecksumSHA256 ChecksumAlgorithm = "sha256"
+)
+
 // DownloadConfig configures file download behavior.
 // Use DefaultDownloadConfig() to get a configuration with sensible defaults.
 type DownloadConfig struct {
-	FilePath         string
+	// FilePath is the destination path for the downloaded file.
+	FilePath string
+	// ProgressCallback is called periodically during download to report progress.
 	ProgressCallback DownloadProgressCallback
-	Overwrite        bool
-	ResumeDownload   bool
+	// Overwrite allows overwriting an existing file at FilePath.
+	Overwrite bool
+	// ResumeDownload attempts to resume a previously interrupted download.
+	ResumeDownload bool
+	// Checksum is the expected hex-encoded checksum of the downloaded file.
+	// When set, the file is verified after download completes.
+	// A mismatch causes the download to fail and the file to be removed.
+	Checksum string
+	// ChecksumAlgorithm specifies the hash algorithm for verification.
+	// Currently only "sha256" is supported. Default: "sha256".
+	ChecksumAlgorithm ChecksumAlgorithm
 }
 
 // DefaultDownloadConfig returns a DownloadConfig with default settings.
@@ -39,21 +62,33 @@ type DownloadConfig struct {
 //	result, err := client.DownloadWithOptions(url, cfg)
 func DefaultDownloadConfig() *DownloadConfig {
 	return &DownloadConfig{
-		Overwrite:      false,
-		ResumeDownload: false,
+		Overwrite:         false,
+		ResumeDownload:    false,
+		ChecksumAlgorithm: ChecksumSHA256,
 	}
 }
 
 // DownloadResult contains information about a completed download.
 type DownloadResult struct {
-	FilePath        string
-	BytesWritten    int64
-	Duration        time.Duration
-	AverageSpeed    float64
-	StatusCode      int
-	ContentLength   int64
-	Resumed         bool
+	// FilePath is the path where the file was saved.
+	FilePath string
+	// BytesWritten is the total number of bytes written to disk.
+	BytesWritten int64
+	// Duration is the total time taken for the download.
+	Duration time.Duration
+	// AverageSpeed is the average download speed in bytes/second.
+	AverageSpeed float64
+	// StatusCode is the HTTP status code of the download response.
+	StatusCode int
+	// ContentLength is the Content-Length reported by the server.
+	ContentLength int64
+	// Resumed indicates whether the download was resumed from a previous partial download.
+	Resumed bool
+	// ResponseCookies contains cookies returned by the download response.
 	ResponseCookies []*http.Cookie
+	// ActualChecksum is the computed checksum of the downloaded file (hex-encoded).
+	// Only set when DownloadConfig.Checksum is provided.
+	ActualChecksum string
 }
 
 // DownloadFile downloads a file from the given URL to the specified file path using the default client.
@@ -100,12 +135,12 @@ func DownloadWithOptionsWithContext(ctx context.Context, url string, downloadOpt
 
 // DownloadFile downloads a file from the given URL to the specified file path.
 func (c *clientImpl) DownloadFile(url string, filePath string, options ...RequestOption) (*DownloadResult, error) {
-	return c.DownloadFileWithContext(context.Background(), url, filePath, options...)
+	return c.DownloadFileWithContext(backgroundCtx, url, filePath, options...)
 }
 
 // DownloadWithOptions downloads a file with custom download options.
 func (c *clientImpl) DownloadWithOptions(url string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error) {
-	return c.DownloadWithOptionsWithContext(context.Background(), url, downloadOpts, options...)
+	return c.DownloadWithOptionsWithContext(backgroundCtx, url, downloadOpts, options...)
 }
 
 // DownloadFileWithContext downloads a file with context control for cancellation and timeouts.
@@ -127,9 +162,11 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	if opts.FilePath == "" {
 		return nil, ErrEmptyFilePath
 	}
-	if err := prepareFilePath(opts.FilePath); err != nil {
+	validatedPath, err := prepareFilePath(opts.FilePath)
+	if err != nil {
 		return nil, fmt.Errorf("failed to prepare file path: %w", err)
 	}
+	opts.FilePath = validatedPath
 
 	var resumeOffset int64
 	if fileInfo, err := os.Stat(opts.FilePath); err == nil {
@@ -149,7 +186,6 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	}
 
 	// Use streaming mode to avoid buffering the entire response body into memory.
-	// The body is streamed directly from the network to the file via io.Copy.
 	streamOptions := make([]RequestOption, len(options)+1)
 	copy(streamOptions, options)
 	streamOptions[len(options)] = WithStreamBody(true)
@@ -163,46 +199,90 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	}
 	engResp, ok := rawResp.(*engine.Response)
 	if !ok {
+		releaseResponseMutator(rawResp)
 		return nil, fmt.Errorf("unexpected response type from download request")
 	}
+	bodyReader := engResp.RawBodyReader()
+	engResp.SetRawBodyReader(nil)
+	// Transfer body reader ownership from Response to this function.
+	// Setting nil prevents ReleaseResponse from closing the reader; we
+	// manage its lifetime here. Closed via defer below, or by
+	// writeDownloadBody's io.Copy completing the read.
 	defer engine.ReleaseResponse(engResp)
 
-	bodyReader := engResp.RawBodyReader()
 	if bodyReader != nil {
-		defer func() { _ = bodyReader.Close() }()
+		defer func() { _ = bodyReader.Close() }() // best-effort cleanup
 	}
 
 	statusCode := engResp.StatusCode()
 	contentLength := engResp.ContentLength()
-	duration := engResp.Duration()
 	responseCookies := engResp.Cookies()
 
+	// Measure the full download duration including body transfer.
+	// engResp.Duration() only covers time-to-first-header, which would
+	// produce misleading AverageSpeed values for large downloads.
+	downloadStart := time.Now()
+
 	resumed := resumeOffset > 0 && statusCode == http.StatusPartialContent
-	if resumeOffset > 0 && statusCode == http.StatusRequestedRangeNotSatisfiable {
-		return &DownloadResult{
-			FilePath:        opts.FilePath,
-			BytesWritten:    0,
-			Duration:        duration,
-			AverageSpeed:    0,
-			StatusCode:      statusCode,
-			ContentLength:   resumeOffset,
-			Resumed:         false,
-			ResponseCookies: responseCookies,
-		}, nil
+
+	// When resume was requested but server returned 200 instead of 206,
+	// the server does not support range requests. Truncating the existing
+	// partial file would silently destroy data the user intended to resume.
+	if resumeOffset > 0 && !resumed {
+		return nil, fmt.Errorf("server does not support range requests (status %d); cannot resume download", statusCode)
 	}
 
-	if statusCode != http.StatusOK && statusCode != http.StatusPartialContent {
-		if bodyReader != nil {
-			_, _ = io.Copy(io.Discard, io.LimitReader(bodyReader, 1<<20))
-		}
-		return nil, fmt.Errorf("unexpected status code: %d", statusCode)
+	// Validate response status
+	if err := handleDownloadStatus(statusCode, bodyReader, resumeOffset); err != nil {
+		return nil, err
 	}
 
 	if bodyReader == nil {
 		return nil, fmt.Errorf("download response has no body reader")
 	}
 
+	return writeDownloadBody(bodyReader, opts, resumed, resumeOffset, statusCode, contentLength, downloadStart, responseCookies)
+}
+
+// handleDownloadStatus validates the HTTP response status for a download request.
+// Returns an error for 416 Range Not Satisfiable (with body drained),
+// an error for unexpected status codes (with body drained),
+// or nil for 200 OK / 206 Partial Content (body left intact for caller).
+func handleDownloadStatus(statusCode int, bodyReader io.Reader, resumeOffset int64) error {
+	if resumeOffset > 0 && statusCode == http.StatusRequestedRangeNotSatisfiable {
+		// Drain body for connection reuse
+		if bodyReader != nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(bodyReader, 1<<20))
+		}
+		return fmt.Errorf("server cannot satisfy range request (416)")
+	}
+
+	if statusCode != http.StatusOK && statusCode != http.StatusPartialContent {
+		var bodyPreview string
+		if bodyReader != nil {
+			previewBuf := make([]byte, 512)
+			n, _ := bodyReader.Read(previewBuf)
+			if n > 0 {
+				bodyPreview = string(previewBuf[:n])
+				if len(bodyPreview) > 200 {
+					bodyPreview = bodyPreview[:200] + "..."
+				}
+			}
+			_, _ = io.Copy(io.Discard, io.LimitReader(bodyReader, 1<<20))
+		}
+		if bodyPreview != "" {
+			return fmt.Errorf("unexpected status code: %d: %s", statusCode, bodyPreview)
+		}
+		return fmt.Errorf("unexpected status code: %d", statusCode)
+	}
+
+	return nil
+}
+
+// writeDownloadBody streams the response body to a file and returns download statistics.
+func writeDownloadBody(bodyReader io.Reader, opts *DownloadConfig, resumed bool, resumeOffset int64, statusCode int, contentLength int64, downloadStart time.Time, responseCookies []*http.Cookie) (*DownloadResult, error) {
 	var file *os.File
+	var err error
 	if resumed {
 		file, err = os.OpenFile(opts.FilePath, os.O_WRONLY|os.O_APPEND, filePermissions)
 	} else {
@@ -211,20 +291,63 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %w", err)
 	}
-	defer func() {
-		if closeErr := file.Close(); closeErr != nil && err == nil {
-			err = fmt.Errorf("failed to close file: %w", closeErr)
-		}
-	}()
-
 	// Stream body directly from network to file — no full-body buffering.
-	bytesWritten, err := io.Copy(file, bodyReader)
+	// When checksum verification is requested, hash the data as it passes through.
+	var writer io.Writer = file
+	var hasher hash.Hash
+	if opts.Checksum != "" {
+		hasher = sha256.New()
+		writer = io.MultiWriter(file, hasher)
+	}
+	if opts.ProgressCallback != nil {
+		totalSize := contentLength
+		if resumed {
+			totalSize += resumeOffset
+		}
+		writer = &progressWriter{
+			w:            writer,
+			callback:     opts.ProgressCallback,
+			total:        totalSize,
+			offset:       resumeOffset,
+			startTime:    time.Now(),
+			lastCallback: time.Now(),
+		}
+	}
+
+	bytesWritten, err := io.Copy(writer, bodyReader)
 	if err != nil {
+		_ = file.Close()
+		if !resumed {
+			_ = os.Remove(opts.FilePath) // best-effort cleanup of partial file
+		}
 		return nil, fmt.Errorf("failed to write file: %w", err)
 	}
 
+	// Sync and close file before potential checksum-based removal
+	if syncErr := file.Sync(); syncErr != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("failed to sync file: %w", syncErr)
+	}
+	if closeErr := file.Close(); closeErr != nil {
+		return nil, fmt.Errorf("failed to close file: %w", closeErr)
+	}
+
+	// Compute actual checksum if hashing was enabled
+	var actualChecksum string
+	if hasher != nil {
+		actualChecksum = hex.EncodeToString(hasher.Sum(nil))
+	}
+
+	// Verify checksum if expected value is provided
+	if opts.Checksum != "" && actualChecksum != strings.ToLower(opts.Checksum) {
+		_ = os.Remove(opts.FilePath)
+		return nil, fmt.Errorf("checksum mismatch: expected %s, got %s", strings.ToLower(opts.Checksum), actualChecksum)
+	}
+
+	duration := time.Since(downloadStart)
 	avgSpeed := calculateSpeed(bytesWritten, duration)
 
+	// Final callback with complete stats
 	if opts.ProgressCallback != nil {
 		totalSize := contentLength
 		if resumed {
@@ -242,6 +365,7 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 		ContentLength:   contentLength,
 		Resumed:         resumed,
 		ResponseCookies: responseCookies,
+		ActualChecksum:  actualChecksum,
 	}, nil
 }
 
@@ -259,7 +383,7 @@ func getSystemPaths() []string {
 			"c:\\windows\\", "c:\\system32\\",
 			"c:\\program files\\", "c:\\programdata\\",
 			"c:\\program files (x86)\\",
-			// Environment variables that typically point to system directories
+			// Env-var patterns: Go os.ExpandEnv does not expand %VAR% syntax, these are handled by isSystemPath via os.Getenv
 			"%systemroot%", "%windir%", "%programfiles%", "%programfiles(x86)%",
 		}
 	case "darwin":
@@ -271,18 +395,26 @@ func getSystemPaths() []string {
 		fallthrough
 	default:
 		return []string{
-			// Critical system configuration and kernel
 			"/etc/", "/sys/", "/proc/", "/dev/", "/boot/",
-			// Root user directory
 			"/root/",
-			// System executables
 			"/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/",
-			// System libraries
 			"/lib/", "/lib32/", "/lib64/", "/usr/lib/", "/usr/lib32/", "/usr/lib64/",
-			// Runtime directories
 			"/run/", "/var/run/", "/sys/fs/",
 		}
 	}
+}
+
+// systemPathsOnce ensures getSystemPaths() is called only once.
+var (
+	systemPathsOnce   sync.Once
+	cachedSystemPaths []string
+)
+
+func getSystemPathsCached() []string {
+	systemPathsOnce.Do(func() {
+		cachedSystemPaths = getSystemPaths()
+	})
+	return cachedSystemPaths
 }
 
 func calculateSpeed(bytes int64, duration time.Duration) float64 {
@@ -293,25 +425,26 @@ func calculateSpeed(bytes int64, duration time.Duration) float64 {
 }
 
 // prepareFilePath validates and prepares file paths with security checks.
+// Returns the validated absolute path that should be used for all file operations.
 // SECURITY: This function implements multiple layers of protection:
 // 1. UNC path blocking (prevents network resource access)
 // 2. Control character filtering
 // 3. System path protection
 // 4. Path traversal detection
 // 5. Symlink attack prevention
-func prepareFilePath(filePath string) error {
+func prepareFilePath(filePath string) (string, error) {
 	filePathLen := len(filePath)
 	if filePathLen == 0 {
-		return ErrEmptyFilePath
+		return "", ErrEmptyFilePath
 	}
 	if filePathLen > maxFilePathLen {
-		return fmt.Errorf("file path too long (max %d)", maxFilePathLen)
+		return "", fmt.Errorf("file path too long (max %d)", maxFilePathLen)
 	}
 
 	// Check for UNC paths
 	if filePathLen >= 2 {
 		if (filePath[0] == '\\' && filePath[1] == '\\') || (filePath[0] == '/' && filePath[1] == '/') {
-			return fmt.Errorf("UNC paths not allowed for security")
+			return "", fmt.Errorf("UNC paths not allowed for security")
 		}
 	}
 
@@ -319,14 +452,14 @@ func prepareFilePath(filePath string) error {
 	for i := range filePathLen {
 		c := filePath[i]
 		if c < 0x20 || c == 0x7F || c == 0 {
-			return fmt.Errorf("file path contains invalid characters at position %d", i)
+			return "", fmt.Errorf("file path contains invalid characters at position %d", i)
 		}
 	}
 
 	cleanPath := filepath.Clean(filePath)
 	absPath, err := filepath.Abs(cleanPath)
 	if err != nil {
-		return fmt.Errorf("failed to resolve path: %w", err)
+		return "", fmt.Errorf("failed to resolve path: %w", err)
 	}
 
 	// SECURITY: Check for symlinks to prevent symlink attacks
@@ -334,28 +467,29 @@ func prepareFilePath(filePath string) error {
 	// and trick the application into writing to that file
 	if fi, err := os.Lstat(absPath); err == nil {
 		if fi.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("symlink paths not allowed for security")
+			return "", fmt.Errorf("symlink paths not allowed for security")
 		}
 	}
 
 	// Check for system path access
 	if isSystemPath(absPath) {
-		return fmt.Errorf("system path access denied for security")
+		return "", fmt.Errorf("system path access denied for security")
 	}
 
-	// Check for path traversal
-	if !filepath.IsAbs(filePath) && strings.Contains(cleanPath, "..") {
+	// Check for path traversal: after filepath.Clean, only paths starting with ".."
+	// indicate traversal above CWD. Filenames like "backup..zip" are safe.
+	if !filepath.IsAbs(filePath) && strings.HasPrefix(cleanPath, "..") {
 		wd, err := os.Getwd()
 		if err != nil {
-			return fmt.Errorf("failed to get working directory: %w", err)
+			return "", fmt.Errorf("failed to get working directory: %w", err)
 		}
 		wdAbs, err := filepath.Abs(wd)
 		if err != nil {
-			return fmt.Errorf("failed to resolve working directory: %w", err)
+			return "", fmt.Errorf("failed to resolve working directory: %w", err)
 		}
 
 		if !strings.HasPrefix(absPath+string(filepath.Separator), wdAbs+string(filepath.Separator)) {
-			return fmt.Errorf("path traversal detected: path outside working directory")
+			return "", fmt.Errorf("path traversal detected: path outside working directory")
 		}
 	}
 
@@ -364,16 +498,16 @@ func prepareFilePath(filePath string) error {
 	dir := filepath.Dir(absPath)
 	if dir != absPath { // Avoid infinite recursion at root
 		if err := checkParentDirSymlinks(dir); err != nil {
-			return err
+			return "", err
 		}
 	}
 
 	// Create directories
 	if err := os.MkdirAll(dir, dirPermissions); err != nil {
-		return fmt.Errorf("failed to create directories: %w", err)
+		return "", fmt.Errorf("failed to create directories: %w", err)
 	}
 
-	return nil
+	return absPath, nil
 }
 
 // checkParentDirSymlinks recursively checks if any parent directory is a symlink
@@ -413,35 +547,35 @@ func isSystemPath(path string) bool {
 
 	cleanPath := filepath.Clean(absPath)
 
-	// On Windows, do case-insensitive comparison
-	// On Unix systems, do case-sensitive comparison
-	systemPaths := getSystemPaths()
+	systemPaths := getSystemPathsCached()
+
+	// Normalize cleanPath once outside the loop
+	cleanPathForCompare := cleanPath
+	if runtime.GOOS == "windows" {
+		cleanPathForCompare = strings.ToLower(cleanPath)
+		cleanPathForCompare = strings.ReplaceAll(cleanPathForCompare, "/", "\\")
+	} else {
+		cleanPathForCompare = strings.ReplaceAll(cleanPathForCompare, "\\", "/")
+	}
 
 	for _, sysPath := range systemPaths {
-		// Handle environment variable patterns on Windows
+		// Handle environment variable patterns on Windows.
+		// Append trailing separator after expansion to prevent prefix collision
+		// (e.g., expanded "C:\Windows" must not match "C:\WindowsEvil").
 		if strings.HasPrefix(sysPath, "%") && runtime.GOOS == "windows" {
-			// Expand environment variables
 			expanded := os.ExpandEnv(sysPath)
 			if expanded != sysPath {
-				// Check if expanded path matches
-				if strings.HasPrefix(strings.ToLower(cleanPath), strings.ToLower(expanded)) {
+				normalized := strings.TrimRight(strings.ToLower(expanded), "\\") + "\\"
+				if strings.HasPrefix(cleanPathForCompare, normalized) {
 					return true
 				}
 			}
 		}
 
-		// Convert both paths to use the same separator for comparison
-		cleanPathForCompare := cleanPath
 		sysPathForCompare := sysPath
-
 		if runtime.GOOS == "windows" {
-			// Windows: case-insensitive, use backslashes
-			cleanPathForCompare = strings.ToLower(cleanPath)
-			cleanPathForCompare = strings.ReplaceAll(cleanPathForCompare, "/", "\\")
 			sysPathForCompare = strings.ToLower(sysPathForCompare)
 		} else {
-			// Unix: case-sensitive, use forward slashes
-			cleanPathForCompare = strings.ReplaceAll(cleanPathForCompare, "\\", "/")
 			sysPathForCompare = strings.ReplaceAll(sysPathForCompare, "\\", "/")
 		}
 
@@ -453,3 +587,33 @@ func isSystemPath(path string) bool {
 	return false
 }
 
+// progressWriter wraps an io.Writer to invoke progress callbacks during download.
+// Callbacks fire at most once per progressInterval to avoid overhead on fast networks.
+type progressWriter struct {
+	w            io.Writer
+	callback     DownloadProgressCallback
+	total        int64
+	offset       int64
+	written      int64
+	startTime    time.Time
+	lastCallback time.Time
+}
+
+const progressInterval = 200 * time.Millisecond
+
+func (pw *progressWriter) Write(p []byte) (int, error) {
+	n, err := pw.w.Write(p)
+	if n > 0 {
+		pw.written += int64(n)
+		if now := time.Now(); now.Sub(pw.lastCallback) >= progressInterval {
+			elapsed := now.Sub(pw.startTime).Seconds()
+			var speed float64
+			if elapsed > 0 {
+				speed = float64(pw.written) / elapsed
+			}
+			pw.callback(pw.offset+pw.written, pw.total, speed)
+			pw.lastCallback = now
+		}
+	}
+	return n, err
+}

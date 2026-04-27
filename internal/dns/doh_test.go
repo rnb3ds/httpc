@@ -134,9 +134,6 @@ func TestDefaultDoHProviders(t *testing.T) {
 		if p.Template == "" {
 			t.Error("Provider has empty Template")
 		}
-		if p.Template == "" {
-			t.Errorf("Provider %s has invalid template", p.Name)
-		}
 		t.Logf("Provider: %s - %s", p.Name, p.Template)
 	}
 }

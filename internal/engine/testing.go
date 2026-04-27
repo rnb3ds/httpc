@@ -1,6 +1,9 @@
 package engine
 
 import (
+	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"context"
 	"io"
 	"net/http"
@@ -110,6 +113,13 @@ func (m *mockTransport) GetLastRequest() *http.Request {
 	return m.Requests[len(m.Requests)-1]
 }
 
+// withMockTransport returns a clientOption that injects a mock transport.
+func withMockTransport(mt *mockTransport) clientOption {
+	return func(opts *clientOptions) {
+		opts.customTransport = mt
+	}
+}
+
 // Reset clears all recorded state.
 func (m *mockTransport) Reset() {
 	m.mu.Lock()
@@ -119,4 +129,69 @@ func (m *mockTransport) Reset() {
 	m.CallCount = 0
 	m.Requests = nil
 	m.Error = nil
+}
+
+// clearResponsePools resets all sync.Pool instances used for response processing.
+// For use in tests only — ensures a clean state between test cases.
+func clearResponsePools() {
+	gzipReaderPool = sync.Pool{
+		New: func() any {
+			reader, _ := gzip.NewReader(bytes.NewReader(nil))
+			return reader
+		},
+	}
+	flateReaderPool = sync.Pool{
+		New: func() any {
+			return flate.NewReader(bytes.NewReader(nil))
+		},
+	}
+	bufferPool = sync.Pool{
+		New: func() any {
+			return bytes.NewBuffer(make([]byte, 0, defaultBufferSize))
+		},
+	}
+	responsePool = sync.Pool{
+		New: func() any {
+			return &Response{}
+		},
+	}
+	limitReaderPool = sync.Pool{
+		New: func() any {
+			return &pooledLimitReader{}
+		},
+	}
+}
+
+// clearTransportPools resets all sync.Pool instances used by the transport package.
+// For use in tests only.
+func clearTransportPools() {
+	redirectSettingsPool = sync.Pool{
+		New: func() any {
+			return &redirectSettings{}
+		},
+	}
+	cookieMapPool = sync.Pool{
+		New: func() any {
+			m := make(map[string]*http.Cookie, 8)
+			return &m
+		},
+	}
+	cookieSlicePool = sync.Pool{
+		New: func() any {
+			s := make([]*http.Cookie, 0, 8)
+			return &s
+		},
+	}
+}
+
+// clearURLCache clears the global URL cache to release memory.
+// For use in tests only.
+func clearURLCache() {
+	globalURLCache.clear()
+}
+
+// getURLCacheSize returns the current number of entries in the URL cache.
+// For use in tests only.
+func getURLCacheSize() int {
+	return globalURLCache.size()
 }

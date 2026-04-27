@@ -681,163 +681,6 @@ func TestValidateHeaderKeyValue_EdgeCases(t *testing.T) {
 	}
 }
 
-func TestValidateCredentialStrict(t *testing.T) {
-	tests := []struct {
-		name        string
-		cred        string
-		maxLen      int
-		checkColon  bool
-		credType    string
-		wantErr     bool
-		errContains string
-	}{
-		{
-			name:       "valid credential",
-			cred:       "valid-user-123",
-			maxLen:     255,
-			checkColon: true,
-			credType:   "username",
-			wantErr:    false,
-		},
-		{
-			name:        "credential with SQL injection quote",
-			cred:        "admin'--",
-			maxLen:      255,
-			checkColon:  false,
-			credType:    "password",
-			wantErr:     true,
-			errContains: "dangerous characters",
-		},
-		{
-			name:        "credential with semicolon",
-			cred:        "user;rm -rf /",
-			maxLen:      255,
-			checkColon:  false,
-			credType:    "password",
-			wantErr:     true,
-			errContains: "dangerous characters",
-		},
-		{
-			name:        "credential with angle brackets",
-			cred:        "<script>alert(1)</script>",
-			maxLen:      255,
-			checkColon:  false,
-			credType:    "password",
-			wantErr:     true,
-			errContains: "dangerous characters",
-		},
-		{
-			name:        "credential with pipe",
-			cred:        "user|cat /etc/passwd",
-			maxLen:      255,
-			checkColon:  false,
-			credType:    "password",
-			wantErr:     true,
-			errContains: "dangerous characters",
-		},
-		{
-			name:        "credential with backtick",
-			cred:        "user`whoami`",
-			maxLen:      255,
-			checkColon:  false,
-			credType:    "password",
-			wantErr:     true,
-			errContains: "dangerous characters",
-		},
-		{
-			name:        "credential with dollar sign",
-			cred:        "user$(id)",
-			maxLen:      255,
-			checkColon:  false,
-			credType:    "password",
-			wantErr:     true,
-			errContains: "dangerous characters",
-		},
-		{
-			name:        "credential with ampersand",
-			cred:        "user && cat /etc/passwd",
-			maxLen:      255,
-			checkColon:  false,
-			credType:    "password",
-			wantErr:     true,
-			errContains: "dangerous characters",
-		},
-		{
-			name:        "credential with backslash",
-			cred:        "user\\nadmin",
-			maxLen:      255,
-			checkColon:  false,
-			credType:    "password",
-			wantErr:     true,
-			errContains: "dangerous characters",
-		},
-		{
-			name:        "credential with braces",
-			cred:        "user{test}",
-			maxLen:      255,
-			checkColon:  false,
-			credType:    "password",
-			wantErr:     true,
-			errContains: "dangerous characters",
-		},
-		{
-			name:        "credential with square brackets",
-			cred:        "user[0]",
-			maxLen:      255,
-			checkColon:  false,
-			credType:    "password",
-			wantErr:     true,
-			errContains: "dangerous characters",
-		},
-		{
-			name:        "credential with colon when check enabled",
-			cred:        "user:name",
-			maxLen:      255,
-			checkColon:  true,
-			credType:    "username",
-			wantErr:     true,
-			errContains: "colon",
-		},
-		{
-			name:        "too long credential",
-			cred:        strings.Repeat("a", 300),
-			maxLen:      255,
-			checkColon:  false,
-			credType:    "credential",
-			wantErr:     true,
-			errContains: "too long",
-		},
-		{
-			name:        "empty credential",
-			cred:        "",
-			maxLen:      255,
-			checkColon:  false,
-			credType:    "credential",
-			wantErr:     true,
-			errContains: "cannot be empty",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateCredentialStrict(tt.cred, tt.maxLen, tt.checkColon, tt.credType)
-			if tt.wantErr {
-				if err == nil {
-					t.Errorf("validateCredentialStrict() expected error, got nil")
-					return
-				}
-				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
-					t.Errorf("validateCredentialStrict() error = %v, want to contain %v", err, tt.errContains)
-				}
-			} else {
-				if err != nil {
-					t.Errorf("validateCredentialStrict() unexpected error = %v", err)
-				}
-			}
-		})
-	}
-}
-
 // TestIsValidHeaderChar_Boundaries tests the character boundary conditions for
 // HTTP header name validation including control characters, DEL, and ASCII edges.
 func TestIsValidHeaderChar_Boundaries(t *testing.T) {
@@ -943,100 +786,67 @@ func TestValidateURL_Boundaries(t *testing.T) {
 	})
 }
 
-func TestValidateTokenStrict(t *testing.T) {
+// TestValidateCookie_NilCookie verifies that ValidateCookie returns an error
+// when called with a nil cookie pointer.
+func TestValidateCookie_NilCookie(t *testing.T) {
+	err := ValidateCookie(nil)
+	if err == nil {
+		t.Fatal("ValidateCookie(nil) expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "nil") {
+		t.Errorf("error should contain 'nil', got: %v", err)
+	}
+}
+
+// TestValidateCookie_ControlCharsInDomain verifies that control characters
+// in the cookie Domain field are rejected.
+func TestValidateCookie_ControlCharsInDomain(t *testing.T) {
 	tests := []struct {
-		name        string
-		token       string
-		wantErr     bool
-		errContains string
+		name   string
+		domain string
 	}{
-		{
-			name:    "valid token",
-			token:   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
-			wantErr: false,
-		},
-		{
-			name:    "valid simple token",
-			token:   "abc123-xyz789_ABCDEF",
-			wantErr: false,
-		},
-		{
-			name:        "token with SQL injection quote",
-			token:       "token'--",
-			wantErr:     true,
-			errContains: "dangerous characters",
-		},
-		{
-			name:        "token with angle brackets",
-			token:       "<token>",
-			wantErr:     true,
-			errContains: "dangerous characters",
-		},
-		{
-			name:        "token with semicolon",
-			token:       "token;drop-table",
-			wantErr:     true,
-			errContains: "dangerous characters",
-		},
-		{
-			name:        "token with pipe",
-			token:       "token|command",
-			wantErr:     true,
-			errContains: "dangerous characters",
-		},
-		{
-			name:        "token with space",
-			token:       "token with space",
-			wantErr:     true,
-			errContains: "spaces",
-		},
-		{
-			name:        "too long token",
-			token:       strings.Repeat("a", 2049),
-			wantErr:     true,
-			errContains: "too long",
-		},
-		{
-			name:        "token with backtick",
-			token:       "token`id`",
-			wantErr:     true,
-			errContains: "dangerous characters",
-		},
-		{
-			name:        "token with dollar",
-			token:       "token$(cmd)",
-			wantErr:     true,
-			errContains: "dangerous characters",
-		},
-		{
-			name:        "token with ampersand",
-			token:       "token&&cmd",
-			wantErr:     true,
-			errContains: "dangerous characters",
-		},
-		{
-			name:    "token with dots and dashes allowed",
-			token:   "abc.123-xyz_test",
-			wantErr: false,
-		},
+		{"Nul byte", "\x00"},
+		{"DEL character", "\x7f"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateTokenStrict(tt.token)
-			if tt.wantErr {
-				if err == nil {
-					t.Errorf("validateTokenStrict() expected error, got nil")
-					return
-				}
-				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
-					t.Errorf("validateTokenStrict() error = %v, want to contain %v", err, tt.errContains)
-				}
-			} else {
-				if err != nil {
-					t.Errorf("validateTokenStrict() unexpected error = %v", err)
-				}
+			cookie := &http.Cookie{
+				Name:   "session",
+				Value:  "abc123",
+				Domain: tt.domain,
+			}
+			err := ValidateCookie(cookie)
+			if err == nil {
+				t.Errorf("ValidateCookie() expected error for domain %q, got nil", tt.domain)
 			}
 		})
+	}
+}
+
+// TestValidateCookie_ControlCharsInPath verifies that control characters
+// in the cookie Path field are rejected.
+func TestValidateCookie_ControlCharsInPath(t *testing.T) {
+	cookie := &http.Cookie{
+		Name:  "session",
+		Value: "abc123",
+		Path:  "/\x01path",
+	}
+	err := ValidateCookie(cookie)
+	if err == nil {
+		t.Error("ValidateCookie() expected error for path with control character, got nil")
+	}
+}
+
+// TestValidateHeaderKeyValue_PseudoHeader verifies that HTTP/2 pseudo-headers
+// (keys starting with ":") are rejected. The colon character fails the header
+// character validation before reaching the explicit pseudo-header check.
+func TestValidateHeaderKeyValue_PseudoHeader(t *testing.T) {
+	err := ValidateHeaderKeyValue(":method", "GET")
+	if err == nil {
+		t.Fatal("ValidateHeaderKeyValue() expected error for pseudo-header ':method', got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid character") {
+		t.Errorf("error should mention invalid character, got: %v", err)
 	}
 }

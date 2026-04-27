@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -56,29 +55,45 @@ type Result struct {
 
 // RequestInfo contains details about the HTTP request that was sent.
 type RequestInfo struct {
-	URL     string
-	Method  string
+	// URL is the request URL.
+	URL string
+	// Method is the HTTP method used.
+	Method string
+	// Headers contains the request headers.
 	Headers http.Header
+	// Cookies contains the request cookies.
 	Cookies []*http.Cookie
 }
 
 // ResponseInfo contains the HTTP response data including status, headers, body, and cookies.
 type ResponseInfo struct {
-	StatusCode    int
-	Status        string
-	Proto         string
-	Headers       http.Header
-	Body          string
-	RawBody       []byte
+	// StatusCode is the HTTP status code.
+	StatusCode int
+	// Status is the HTTP status text.
+	Status string
+	// Proto is the HTTP protocol version.
+	Proto string
+	// Headers contains the response headers.
+	Headers http.Header
+	// Body is the response body as a string.
+	Body string
+	// RawBody is the raw response body bytes.
+	RawBody []byte
+	// ContentLength is the Content-Length from the response.
 	ContentLength int64
-	Cookies       []*http.Cookie
+	// Cookies contains the response cookies.
+	Cookies []*http.Cookie
 }
 
 // RequestMeta contains metadata about the request execution including timing and redirect info.
 type RequestMeta struct {
-	Duration      time.Duration
-	Attempts      int
+	// Duration is the total time from request start to response completion.
+	Duration time.Duration
+	// Attempts is the number of request attempts including retries.
+	Attempts int
+	// RedirectChain contains the URLs followed during redirects.
 	RedirectChain []string
+	// RedirectCount is the number of redirects followed.
 	RedirectCount int
 }
 
@@ -324,12 +339,12 @@ func (r *Result) SaveToFile(filePath string) error {
 		return ErrResponseBodyEmpty
 	}
 
-	if err := prepareFilePath(filePath); err != nil {
+	validatedPath, err := prepareFilePath(filePath)
+	if err != nil {
 		return fmt.Errorf("file path validation failed: %w", err)
 	}
 
-	cleanPath := filepath.Clean(filePath)
-	if err := os.WriteFile(cleanPath, r.Response.RawBody, 0644); err != nil {
+	if err := os.WriteFile(validatedPath, r.Response.RawBody, 0644); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 

@@ -95,7 +95,7 @@ result, err := client.DownloadFile(
 
 Track download completion:
 
-**Note**: The download uses streaming mode — the response body is written directly to disk via `io.Copy` without buffering the entire response into memory. The progress callback is called once at completion with final statistics.
+**Note**: The download uses streaming mode — the response body is written directly to disk via `io.Copy` without buffering the entire response into memory. The progress callback is invoked periodically during download (approximately every 200ms) with current statistics, and once more at completion with final statistics.
 
 ```go
 opts := httpc.DefaultDownloadConfig()
@@ -295,7 +295,7 @@ result, err := client.DownloadWithOptionsWithContext(ctx, url, opts)
 
 The HTTPC download implementation:
 - Uses streaming mode (`io.Copy`) to write response body directly to disk — no full-body memory buffering
-- Progress callback is called once at completion with final statistics
+- Progress callback is invoked periodically during download (~200ms intervals) and once at completion with final statistics
 - Supports resume downloads using HTTP Range requests
 - Automatically creates parent directories
 - Includes security checks to prevent path traversal attacks (UNC path blocking, symlink prevention, control character filtering)
@@ -371,7 +371,7 @@ speed := httpc.FormatSpeed(1048576.0)  // "1.00 MB/s"
 
 ## Examples
 
-See the [file_operations.go](../examples/03_advanced/file_operations.go) example for complete working code.
+See the [17_file_operations.go](../examples/17_file_operations.go) example for complete working code.
 
 
 ---

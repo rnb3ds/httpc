@@ -3,80 +3,21 @@ package engine
 import (
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 )
 
-const (
-	// maxPooledHeaderSize limits the number of headers that will be pooled
-	// to prevent memory bloat from large header sets
-	maxPooledHeaderSize = 32
-)
-
-// headerPool reduces allocations for http.Header objects
-var headerPool = sync.Pool{
-	New: func() any {
-		h := make(http.Header, 8)
-		return &h
-	},
-}
-
-// getHeader retrieves an http.Header from the pool.
-// The returned header is cleared and ready for use.
-func getHeader() *http.Header {
-	h, ok := headerPool.Get().(*http.Header)
-	if !ok || h == nil {
-		tmp := make(http.Header, 8)
-		return &tmp
-	}
-	// Clear the map for reuse
-	for k := range *h {
-		delete(*h, k)
-	}
-	return h
-}
-
-// putHeader returns an http.Header to the pool.
-// Headers with too many entries are discarded to prevent memory bloat.
-// SECURITY: Always clears all header values to prevent sensitive data leakage,
-// regardless of whether the header is pooled or discarded.
-func putHeader(h *http.Header) {
-	if h == nil {
-		return
-	}
-
-	// Record size before clearing — check must happen while entries exist
-	oversized := len(*h) > maxPooledHeaderSize
-
-	// SECURITY: Always clear all values to prevent sensitive data leakage
-	for k, v := range *h {
-		// Clear all string values to allow GC and prevent data leakage
-		for i := range v {
-			v[i] = ""
-		}
-		(*h)[k] = v[:0]
-		delete(*h, k)
-	}
-
-	// Only pool headers within size limits
-	if oversized {
-		return // Don't pool large headers (already cleared above)
-	}
-
-	headerPool.Put(h)
-}
-
 // cloneHeader creates a deep copy of headers using batch allocation.
 // Returns a newly allocated header map that can be safely modified.
 // SECURITY: Always allocates new slices to prevent data leakage between requests.
-// The header map itself uses pooled allocation, but values are always copied.
 // OPTIMIZATION: Uses batch allocation to reduce N allocations (one per header) to 1 allocation.
 func cloneHeader(src http.Header) http.Header {
 	if src == nil {
 		return nil
 	}
 
-	dst := *getHeader()
+	dst := make(http.Header, len(src))
 
 	// Count total values for batch allocation
 	totalValues := 0
@@ -192,7 +133,7 @@ func queryEscape(s string) string {
 	// Slow path: escape using pooled buffer
 	// Safe from overflow: len(s) <= maxQueryEscapeSize (10MB), so len(s)*3 <= 30MB
 	bufPtr, ok := queryEscapePool.Get().(*[]byte)
-	if !ok || bufPtr == nil {
+	if !ok || bufPtr == nil || cap(*bufPtr) < len(s)*3 {
 		tmp := make([]byte, 0, len(s)*3)
 		bufPtr = &tmp
 	}
@@ -210,18 +151,19 @@ func queryEscape(s string) string {
 	}
 
 	result := string(buf)
-	// Always return bufPtr to pool; detach large buffers to prevent bloat.
+	// Return bufPtr to pool only if buffer is reasonably sized.
+	// Discard oversized buffers to prevent pool bloat.
 	if cap(buf) <= 1024 {
 		*bufPtr = buf
-	} else {
-		*bufPtr = nil
+		queryEscapePool.Put(bufPtr)
 	}
-	queryEscapePool.Put(bufPtr)
 	return result
 }
 
 // encodeQueryParams efficiently encodes query parameters without allocating url.Values.
 // This avoids the intermediate map allocation and uses pooled strings.Builder.
+// Optimized to write numeric values directly via strconv.Append* to avoid
+// intermediate string allocations.
 // Returns an empty string if params is nil or empty.
 func encodeQueryParams(params map[string]any) string {
 	if len(params) == 0 {
@@ -232,8 +174,10 @@ func encodeQueryParams(params map[string]any) string {
 	first := true
 
 	// Pre-calculate approximate size to reduce reallocations
-	estimatedSize := len(params) * 32 // rough estimate: key=value per param
+	estimatedSize := len(params) * 32
 	sb.Grow(estimatedSize)
+
+	var numBuf [32]byte
 
 	for key, value := range params {
 		if first {
@@ -244,11 +188,7 @@ func encodeQueryParams(params map[string]any) string {
 		sb.WriteString(queryEscape(key))
 		sb.WriteByte('=')
 
-		// Format value without allocation using FormatQueryParam
-		strValue := FormatQueryParam(value)
-		if strValue != "" {
-			sb.WriteString(queryEscape(strValue))
-		}
+		writeQueryParamValue(sb, value, numBuf[:0])
 	}
 
 	result := sb.String()
@@ -258,6 +198,8 @@ func encodeQueryParams(params map[string]any) string {
 
 // appendQueryParams appends query parameters to an existing raw query string.
 // This is more efficient than creating url.Values when you have an existing query.
+// Optimized to write numeric values directly via strconv.Append* to avoid
+// intermediate string allocations from FormatQueryParam.
 func appendQueryParams(existingQuery string, params map[string]any) string {
 	if len(params) == 0 {
 		return existingQuery
@@ -274,6 +216,8 @@ func appendQueryParams(existingQuery string, params map[string]any) string {
 		sb.WriteString(existingQuery)
 	}
 
+	var numBuf [32]byte // stack-allocated buffer for numeric formatting
+
 	first := existingQuery == ""
 	for key, value := range params {
 		if first {
@@ -284,13 +228,49 @@ func appendQueryParams(existingQuery string, params map[string]any) string {
 		sb.WriteString(queryEscape(key))
 		sb.WriteByte('=')
 
-		strValue := FormatQueryParam(value)
-		if strValue != "" {
-			sb.WriteString(queryEscape(strValue))
-		}
+		writeQueryParamValue(sb, value, numBuf[:0])
 	}
 
 	result := sb.String()
 	putQueryBuilder(sb)
 	return result
+}
+
+// writeQueryParamValue appends a query parameter value to sb.
+// Numeric and bool values are written directly via strconv.Append*
+// to avoid intermediate string allocations. Strings are URL-escaped.
+func writeQueryParamValue(sb *strings.Builder, value any, numBuf []byte) {
+	switch v := value.(type) {
+	case string:
+		if v != "" {
+			sb.WriteString(queryEscape(v))
+		}
+	case int:
+		sb.Write(strconv.AppendInt(numBuf, int64(v), 10))
+	case int64:
+		sb.Write(strconv.AppendInt(numBuf, v, 10))
+	case int32:
+		sb.Write(strconv.AppendInt(numBuf, int64(v), 10))
+	case uint:
+		sb.Write(strconv.AppendUint(numBuf, uint64(v), 10))
+	case uint64:
+		sb.Write(strconv.AppendUint(numBuf, v, 10))
+	case uint32:
+		sb.Write(strconv.AppendUint(numBuf, uint64(v), 10))
+	case float64:
+		sb.Write(strconv.AppendFloat(numBuf, v, 'f', -1, 64))
+	case float32:
+		sb.Write(strconv.AppendFloat(numBuf, float64(v), 'f', -1, 32))
+	case bool:
+		if v {
+			sb.WriteString("true")
+		} else {
+			sb.WriteString("false")
+		}
+	default:
+		strValue := FormatQueryParam(value)
+		if strValue != "" {
+			sb.WriteString(queryEscape(strValue))
+		}
+	}
 }

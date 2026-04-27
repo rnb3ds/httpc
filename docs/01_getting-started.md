@@ -486,7 +486,7 @@ Now that you understand the basics, explore these guides:
 
 - **[Request Options](03_request-options.md)** - Complete reference for all request options
 - **[Configuration](02_configuration.md)** - Client configuration and presets
-- **[Domain Client](../examples/03_advanced/domain_client.go)** - Domain-specific client with session management
+- **[Domain Client](../examples/12_domain_client.go)** - Domain-specific client with session management
 - **[Error Handling](04_error-handling.md)** - Advanced error handling patterns
 - **[Redirects](05_redirects.md)** - Handle HTTP redirects
 - **[Cookie Management](06_cookie-api.md)** - Automatic and manual cookie handling

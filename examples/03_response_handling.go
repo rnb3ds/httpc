@@ -10,7 +10,6 @@ import (
 )
 
 // This example demonstrates comprehensive response handling
-// Consolidates: response_parsing.go, response_formatting.go, result_api_example.go
 
 func main() {
 	fmt.Println("=== Response Handling Examples ===\n ")

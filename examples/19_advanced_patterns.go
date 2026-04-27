@@ -21,13 +21,16 @@ func main() {
 	// 2. Result Pool Optimization
 	demonstrateResultPool()
 
-	// 3. Testing Configuration
+	// 3. Stream Body Mode
+	demonstrateStreamBody()
+
+	// 4. Testing Configuration
 	demonstrateTestingConfig()
 
-	// 4. Default Client Management
+	// 5. Default Client Management
 	demonstrateDefaultClient()
 
-	// 5. Memory Stats Comparison
+	// 6. Memory Stats Comparison
 	demonstrateMemoryOptimization()
 
 	fmt.Println("\n=== All Examples Completed ===")
@@ -125,9 +128,48 @@ func demonstrateResultPool() {
 	fmt.Println()
 }
 
+// demonstrateStreamBody shows streaming mode for large responses
+func demonstrateStreamBody() {
+	fmt.Println("--- Example 3: Stream Body Mode ---")
+
+	client, err := httpc.New()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer client.Close()
+
+	// WithStreamBody(true) avoids buffering the entire response into memory.
+	// The download methods use this internally.
+	// For manual use, combine with SaveToFile for memory-efficient processing.
+	resp, err := client.Get("https://httpbin.org/get",
+		httpc.WithStreamBody(true),
+	)
+	if err != nil {
+		log.Printf("Request failed: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Status: %d\n", resp.StatusCode())
+	fmt.Printf("Body length: %d bytes\n", len(resp.RawBody()))
+
+	// Save streamed response directly to file
+	err = resp.SaveToFile("downloads/stream-example.json")
+	if err != nil {
+		fmt.Printf("SaveToFile: %v\n", err)
+	} else {
+		fmt.Println("Saved to downloads/stream-example.json")
+	}
+
+	fmt.Println("\nWhen to use WithStreamBody:")
+	fmt.Println("  - Downloading large files (avoids buffering entire body in memory)")
+	fmt.Println("  - Processing streaming APIs (NDJSON, SSE)")
+	fmt.Println("  - Memory-constrained environments")
+	fmt.Println()
+}
+
 // demonstrateTestingConfig shows TestingConfig preset
 func demonstrateTestingConfig() {
-	fmt.Println("--- Example 3: Testing Configuration ---")
+	fmt.Println("--- Example 4: Testing Configuration ---")
 
 	// TestingConfig is optimized for unit tests
 	config := httpc.TestingConfig()
@@ -174,7 +216,7 @@ func demonstrateTestingConfig() {
 
 // demonstrateDefaultClient shows default client management
 func demonstrateDefaultClient() {
-	fmt.Println("--- Example 4: Default Client Management ---")
+	fmt.Println("--- Example 5: Default Client Management ---")
 
 	// Package-level functions use a shared default client
 	fmt.Println("Package-level functions (Get, Post, etc.):")
@@ -224,7 +266,7 @@ func demonstrateDefaultClient() {
 
 // demonstrateMemoryOptimization shows memory optimization techniques
 func demonstrateMemoryOptimization() {
-	fmt.Println("--- Example 5: Memory Optimization Techniques ---")
+	fmt.Println("--- Example 6: Memory Optimization Techniques ---")
 
 	fmt.Println("Optimization tips:")
 	fmt.Println("  1. Reuse client instances (don't create new clients per request)")

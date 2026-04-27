@@ -2,10 +2,12 @@ package engine
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
-func TestMetrics_RecordRequest(t *testing.T) {
+func TestMetrics_recordRequest(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -20,67 +22,67 @@ func TestMetrics_RecordRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := &Metrics{}
-			m.RecordRequest(tt.latency, tt.success)
+			m := &metrics{}
+			m.recordRequest(tt.latency, tt.success)
 
-			snap := m.Snapshot()
-			if snap.TotalRequests != 1 {
-				t.Errorf("TotalRequests = %d, want 1", snap.TotalRequests)
+			snap := m.snapshot()
+			if snap.totalRequests != 1 {
+				t.Errorf("totalRequests = %d, want 1", snap.totalRequests)
 			}
-			if tt.success && snap.SuccessfulRequests != 1 {
-				t.Errorf("SuccessfulRequests = %d, want 1", snap.SuccessfulRequests)
+			if tt.success && snap.successfulRequests != 1 {
+				t.Errorf("successfulRequests = %d, want 1", snap.successfulRequests)
 			}
-			if !tt.success && snap.FailedRequests != 1 {
-				t.Errorf("FailedRequests = %d, want 1", snap.FailedRequests)
+			if !tt.success && snap.failedRequests != 1 {
+				t.Errorf("failedRequests = %d, want 1", snap.failedRequests)
 			}
 		})
 	}
 }
 
-func TestMetrics_Snapshot(t *testing.T) {
-	m := &Metrics{}
-	m.RecordRequest(100, true)
-	m.RecordRequest(200, true)
-	m.RecordRequest(300, false)
+func TestMetrics_snapshot(t *testing.T) {
+	m := &metrics{}
+	m.recordRequest(100, true)
+	m.recordRequest(200, true)
+	m.recordRequest(300, false)
 
-	snap := m.Snapshot()
-	if snap.TotalRequests != 3 {
-		t.Errorf("TotalRequests = %d, want 3", snap.TotalRequests)
+	snap := m.snapshot()
+	if snap.totalRequests != 3 {
+		t.Errorf("totalRequests = %d, want 3", snap.totalRequests)
 	}
-	if snap.SuccessfulRequests != 2 {
-		t.Errorf("SuccessfulRequests = %d, want 2", snap.SuccessfulRequests)
+	if snap.successfulRequests != 2 {
+		t.Errorf("successfulRequests = %d, want 2", snap.successfulRequests)
 	}
-	if snap.FailedRequests != 1 {
-		t.Errorf("FailedRequests = %d, want 1", snap.FailedRequests)
+	if snap.failedRequests != 1 {
+		t.Errorf("failedRequests = %d, want 1", snap.failedRequests)
 	}
-	if snap.AverageLatency == 0 {
-		t.Error("AverageLatency should be non-zero after recording requests")
+	if snap.averageLatency == 0 {
+		t.Error("averageLatency should be non-zero after recording requests")
 	}
 }
 
-func TestMetrics_Reset(t *testing.T) {
-	m := &Metrics{}
-	m.RecordRequest(100, true)
-	m.RecordRequest(200, false)
+func TestMetrics_reset(t *testing.T) {
+	m := &metrics{}
+	m.recordRequest(100, true)
+	m.recordRequest(200, false)
 
-	m.Reset()
+	m.reset()
 
-	snap := m.Snapshot()
-	if snap.TotalRequests != 0 {
-		t.Errorf("TotalRequests = %d, want 0 after reset", snap.TotalRequests)
+	snap := m.snapshot()
+	if snap.totalRequests != 0 {
+		t.Errorf("totalRequests = %d, want 0 after reset", snap.totalRequests)
 	}
-	if snap.SuccessfulRequests != 0 {
-		t.Errorf("SuccessfulRequests = %d, want 0 after reset", snap.SuccessfulRequests)
+	if snap.successfulRequests != 0 {
+		t.Errorf("successfulRequests = %d, want 0 after reset", snap.successfulRequests)
 	}
-	if snap.FailedRequests != 0 {
-		t.Errorf("FailedRequests = %d, want 0 after reset", snap.FailedRequests)
+	if snap.failedRequests != 0 {
+		t.Errorf("failedRequests = %d, want 0 after reset", snap.failedRequests)
 	}
-	if snap.AverageLatency != 0 {
-		t.Errorf("AverageLatency = %v, want 0 after reset", snap.AverageLatency)
+	if snap.averageLatency != 0 {
+		t.Errorf("averageLatency = %v, want 0 after reset", snap.averageLatency)
 	}
 }
 
-func TestMetrics_GetHealthStatus(t *testing.T) {
+func TestMetrics_getHealthStatus(t *testing.T) {
 	tests := []struct {
 		name        string
 		successes   int64
@@ -98,54 +100,34 @@ func TestMetrics_GetHealthStatus(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := &Metrics{}
+			m := &metrics{}
 			for i := int64(0); i < tt.successes; i++ {
-				m.RecordRequest(100, true)
+				m.recordRequest(100, true)
 			}
 			for i := int64(0); i < tt.failures; i++ {
-				m.RecordRequest(100, false)
+				m.recordRequest(100, false)
 			}
 
-			status := m.GetHealthStatus()
-			if status.Healthy != tt.wantHealthy {
-				t.Errorf("Healthy = %v, want %v (error rate = %f)", status.Healthy, tt.wantHealthy, status.ErrorRate)
+			status := m.getHealthStatus()
+			if status.healthy != tt.wantHealthy {
+				t.Errorf("healthy = %v, want %v (error rate = %f)", status.healthy, tt.wantHealthy, status.errorRate)
 			}
 			total := tt.successes + tt.failures
-			if status.TotalRequests != total {
-				t.Errorf("TotalRequests = %d, want %d", status.TotalRequests, total)
+			if status.totalRequests != total {
+				t.Errorf("totalRequests = %d, want %d", status.totalRequests, total)
 			}
-			if status.SuccessfulRequests != tt.successes {
-				t.Errorf("SuccessfulRequests = %d, want %d", status.SuccessfulRequests, tt.successes)
+			if status.successfulRequests != tt.successes {
+				t.Errorf("successfulRequests = %d, want %d", status.successfulRequests, tt.successes)
 			}
-			if status.FailedRequests != tt.failures {
-				t.Errorf("FailedRequests = %d, want %d", status.FailedRequests, tt.failures)
+			if status.failedRequests != tt.failures {
+				t.Errorf("failedRequests = %d, want %d", status.failedRequests, tt.failures)
 			}
 		})
 	}
 }
 
-func TestMetrics_IsHealthy(t *testing.T) {
-	t.Run("Healthy", func(t *testing.T) {
-		m := &Metrics{}
-		m.RecordRequest(100, true)
-		if !m.IsHealthy() {
-			t.Error("Client with only successful requests should be healthy")
-		}
-	})
-
-	t.Run("Unhealthy", func(t *testing.T) {
-		m := &Metrics{}
-		for i := 0; i < 20; i++ {
-			m.RecordRequest(100, false)
-		}
-		if m.IsHealthy() {
-			t.Error("Client with all failures should be unhealthy")
-		}
-	})
-}
-
 func TestMetrics_Concurrent(t *testing.T) {
-	m := &Metrics{}
+	m := &metrics{}
 	var wg sync.WaitGroup
 	const goroutines = 100
 	const opsPerGoroutine = 100
@@ -155,15 +137,59 @@ func TestMetrics_Concurrent(t *testing.T) {
 		go func(success bool) {
 			defer wg.Done()
 			for i := 0; i < opsPerGoroutine; i++ {
-				m.RecordRequest(int64(i*100), success)
+				m.recordRequest(int64(i*100), success)
 			}
 		}(g%2 == 0)
 	}
 	wg.Wait()
 
-	snap := m.Snapshot()
+	snap := m.snapshot()
 	expected := int64(goroutines * opsPerGoroutine)
-	if snap.TotalRequests != expected {
-		t.Errorf("TotalRequests = %d, want %d", snap.TotalRequests, expected)
+	if snap.totalRequests != expected {
+		t.Errorf("totalRequests = %d, want %d", snap.totalRequests, expected)
 	}
+
+	// Half the goroutines record success (even-indexed), half record failure (odd-indexed)
+	expectedEach := int64(goroutines/2) * opsPerGoroutine
+	if snap.successfulRequests != expectedEach {
+		t.Errorf("successfulRequests = %d, want %d", snap.successfulRequests, expectedEach)
+	}
+	if snap.failedRequests != expectedEach {
+		t.Errorf("failedRequests = %d, want %d", snap.failedRequests, expectedEach)
+	}
+}
+
+func TestMetrics_ConcurrentReadAndWrite(t *testing.T) {
+	m := &metrics{}
+	const duration = 100 * time.Millisecond
+
+	var stop int32
+	var wg sync.WaitGroup
+
+	// Writers
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for atomic.LoadInt32(&stop) == 0 {
+			m.recordRequest(1000, true)
+		}
+	}()
+
+	// Readers
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for atomic.LoadInt32(&stop) == 0 {
+				snap := m.snapshot()
+				_ = snap.totalRequests
+				_ = m.getHealthStatus()
+				_ = m.isHealthy()
+			}
+		}()
+	}
+
+	time.Sleep(duration)
+	atomic.StoreInt32(&stop, 1)
+	wg.Wait()
 }

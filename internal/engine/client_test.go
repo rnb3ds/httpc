@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -205,9 +206,9 @@ func TestClient_Statistics(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	// Test that client tracks basic statistics via health status
-	status := client.GetHealthStatus()
-	if status.TotalRequests < 0 {
-		t.Error("TotalRequests should be non-negative")
+	status := client.getHealthStatus()
+	if status.totalRequests < 0 {
+		t.Error("totalRequests should be non-negative")
 	}
 }
 
@@ -399,13 +400,13 @@ func TestClient_IsHealthy(t *testing.T) {
 	defer cancel()
 	_, _ = client.Request(ctx, "GET", server.URL)
 
-	if !client.IsHealthy() {
+	if !client.isHealthy() {
 		t.Error("Client should be healthy after successful request")
 	}
 
-	status := client.GetHealthStatus()
-	if status.TotalRequests < 1 {
-		t.Errorf("TotalRequests = %d, want >= 1", status.TotalRequests)
+	status := client.getHealthStatus()
+	if status.totalRequests < 1 {
+		t.Errorf("totalRequests = %d, want >= 1", status.totalRequests)
 	}
 }
 
@@ -727,4 +728,46 @@ func TestClient_ContextCancellation(t *testing.T) {
 	}
 
 	t.Logf("Context cancellation worked correctly in %v", duration)
+}
+
+func TestClient_OnResponseErrorReleasesResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("test body"))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&Config{
+		FollowRedirects: true,
+	}, withMockTransport(newMockTransport(200, "test response body")))
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	defer client.Close()
+
+	// onResponse callback that returns an error
+	onRespOption := func(req *Request) error {
+		req.SetOnResponse(func(r *Response) error {
+			return fmt.Errorf("simulated callback error")
+		})
+		return nil
+	}
+
+	// This should return error but NOT leak the pooled Response
+	_, err = client.get(server.URL, onRespOption)
+	if err == nil {
+		t.Fatal("expected error from onResponse callback")
+	}
+	if !strings.Contains(err.Error(), "onResponse callback failed") {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Verify the response pool is still functional by making another request
+	resp, err := client.get(server.URL)
+	if err != nil {
+		t.Fatalf("subsequent request failed: %v", err)
+	}
+	if resp.StatusCode() != 200 {
+		t.Errorf("expected status 200, got %d", resp.StatusCode())
+	}
 }

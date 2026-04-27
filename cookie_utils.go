@@ -56,7 +56,7 @@ func parseCookieHeader(cookieHeader string) []*http.Cookie {
 				pairStart, pairEnd := trimSpaceIndices(cookieHeader, start, i)
 				if pairStart < pairEnd {
 					pair := cookieHeader[pairStart:pairEnd]
-					if idx := findEqual(pair); idx > 0 {
+					if idx := strings.IndexByte(pair, '='); idx > 0 {
 						// Trim whitespace from name
 						nameStart, nameEnd := trimSpaceIndices(pair, 0, idx)
 						// Trim whitespace from value
@@ -102,12 +102,8 @@ func trimSpaceIndices(s string, low, high int) (int, int) {
 	return low, high
 }
 
-// isWhitespace reports whether byte c is an ASCII whitespace character.
+// isWhitespace reports whether byte c is a cookie OWS (optional whitespace).
+// RFC 6265 Section 4.1.1 only permits SP and HTAB as OWS.
 func isWhitespace(c byte) bool {
-	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
-}
-
-// findEqual finds the first '=' byte in s, returning -1 if not found.
-func findEqual(s string) int {
-	return strings.IndexByte(s, '=')
+	return c == ' ' || c == '\t'
 }

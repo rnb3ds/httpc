@@ -48,7 +48,7 @@ const (
 	// response body size when MaxResponseBodySize is not explicitly configured.
 	// This provides a safety net against compression bombs where 100MB of
 	// highly compressible data (e.g., zeros) could decompress to many gigabytes.
-	defaultMaxDecompressedSize = 500 * 1024 * 1024 // 500MB decompressed data limit
+	defaultMaxDecompressedSize = 100 * 1024 * 1024 // 100MB decompressed data limit
 )
 
 // bufferPool reuses byte buffers for response body reading
@@ -113,6 +113,24 @@ func putLimitReader(lr *pooledLimitReader) {
 	lr.r = nil
 	lr.n = 0
 	limitReaderPool.Put(lr)
+}
+
+// streamBodyReader wraps a pooledLimitReader to enforce MaxResponseBodySize
+// in streaming mode. It also holds a reference to the underlying source body
+// so Close() properly closes the original http.Response.Body and returns the
+// pooledLimitReader to the pool.
+type streamBodyReader struct {
+	reader *pooledLimitReader
+	source io.ReadCloser
+}
+
+func (s *streamBodyReader) Read(p []byte) (int, error) {
+	return s.reader.Read(p)
+}
+
+func (s *streamBodyReader) Close() error {
+	putLimitReader(s.reader)
+	return s.source.Close()
 }
 
 // getBuffer retrieves a buffer from the pool with safe type assertion.
@@ -247,36 +265,43 @@ func (p *responseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 	decompressedLr = getLimitReader(reader, maxSize+1)
 	reader = decompressedLr
 
-	// Optimization: Use Content-Length hint for buffer pre-allocation when available
-	// This reduces buffer growth overhead for responses with known size
-	contentLength := httpResp.ContentLength
-	var buf *bytes.Buffer
-	fromPool := false // Track if buffer came from pool
-
-	// For responses with known content length that fit in stolen threshold,
-	// allocate directly to avoid pool overhead
-	if !isCompressed && contentLength > 0 && contentLength <= int64(bufferStealThreshold) {
-		// Direct allocation: we know the exact size needed
-		body := make([]byte, 0, contentLength)
-		buf = bytes.NewBuffer(body)
-	} else {
-		buf = getBuffer()
-		fromPool = true
-	}
-
+	// Cleanup decompressor and limit readers
 	defer func() {
-		// Only return buffer to pool if it came from pool and we're not stealing it
-		if fromPool && buf != nil && buf.Cap() <= maxBufferSize {
-			putBuffer(buf)
-		}
 		if decompressor != nil {
-			_ = decompressor.Close() // Close returns pooled reader to pool
+			_ = decompressor.Close()
 		}
 		if compressedLr != nil {
 			putLimitReader(compressedLr)
 		}
 		if decompressedLr != nil {
 			putLimitReader(decompressedLr)
+		}
+	}()
+
+	contentLength := httpResp.ContentLength
+
+	// Fast path: known Content-Length, not compressed, within safe size.
+	// Read directly into a pre-sized slice — avoids bytes.Buffer allocation entirely.
+	if !isCompressed && contentLength > 0 && contentLength <= int64(bufferStealThreshold) {
+		body := make([]byte, contentLength)
+		n, err := io.ReadFull(reader, body)
+		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+			return nil, fmt.Errorf("failed to read response body: %w", err)
+		}
+		body = body[:n]
+
+		if int64(len(body)) > maxSize {
+			return nil, fmt.Errorf("response body exceeds limit of %d bytes", maxSize)
+		}
+		return body, nil
+	}
+
+	// Slow path: unknown size, compressed, or large response
+	buf := getBuffer()
+
+	defer func() {
+		if buf != nil && buf.Cap() <= maxBufferSize {
+			putBuffer(buf)
 		}
 	}()
 
@@ -287,27 +312,17 @@ func (p *responseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 
 	body := buf.Bytes()
 
-	// SECURITY: After decompression, check body size for zip bomb protection.
-	// The compressed input is already limited by compressedLr above.
-	// This catches cases where small compressed payloads decompress to excessively large output.
-	if isCompressed && int64(len(body)) > maxCompressedSize {
-		return nil, fmt.Errorf("decompressed response body exceeds security limit of %d bytes (potential zip bomb)", maxCompressedSize)
+	// SECURITY: After decompression, check body size against configured limit.
+	if isCompressed && int64(len(body)) > maxSize {
+		return nil, fmt.Errorf("decompressed response body exceeds limit of %d bytes (potential zip bomb)", maxSize)
 	}
 
-	// Check decompressed size limit (uses same maxSize calculation as limit reader above)
 	if int64(len(body)) > maxSize {
 		return nil, fmt.Errorf("response body exceeds limit of %d bytes", maxSize)
 	}
 
-	// Optimization path for small responses (most common case)
-	// For directly allocated buffers (fromPool=false), just return the bytes directly
-	// For pooled buffers within steal threshold, steal the backing array
+	// Optimization path for pooled buffers within steal threshold
 	if len(body) <= bufferStealThreshold {
-		if !fromPool {
-			return body, nil
-		}
-		// stealThreshold: for bodies under 4KB, copy is cheaper than
-		// allocating a 4KB replacement buffer. Steal for larger ones.
 		if len(body) <= defaultBufferSize/2 {
 			result := make([]byte, len(body))
 			copy(result, body)
@@ -395,7 +410,7 @@ func (r *pooledGzipReader) Close() error {
 	}
 	err := r.Reader.Close()
 	// Reset to nil reader for safety before returning to pool
-	_ = r.Reader.Reset(bytes.NewReader(nil)) // reset before returning to pool
+	_ = r.Reset(bytes.NewReader(nil)) // reset before returning to pool
 	gzipReaderPool.Put(r.Reader)
 	r.Reader = nil
 	// Return wrapper to pool
@@ -428,7 +443,7 @@ func (r *pooledFlateReader) Close() error {
 	// Get the Resetter interface to reset and return to pool
 	if resetter, ok := r.reader.(flate.Resetter); ok {
 		_ = resetter.Reset(bytes.NewReader(nil), nil) // reset before returning to pool
-		flateReaderPool.Put(resetter)
+		flateReaderPool.Put(r.reader)                 // return original io.ReadCloser, not the Resetter interface
 	} else {
 		// SECURITY: If the reader doesn't implement Resetter, close it directly
 		// to prevent resource leaks. This shouldn't happen with standard library,
@@ -456,37 +471,4 @@ func ReleaseResponse(r *Response) {
 	}
 	*r = Response{}
 	responsePool.Put(r)
-}
-
-// clearResponsePools clears all sync.Pool instances used by the response package.
-// This is primarily useful for testing and debugging to ensure a clean state.
-// Note: sync.Pool is automatically managed by the GC, so this is typically not needed
-// in production code. The pools will be repopulated on next use.
-func clearResponsePools() {
-	gzipReaderPool = sync.Pool{
-		New: func() any {
-			reader, _ := gzip.NewReader(bytes.NewReader(nil))
-			return reader
-		},
-	}
-	flateReaderPool = sync.Pool{
-		New: func() any {
-			return flate.NewReader(bytes.NewReader(nil))
-		},
-	}
-	bufferPool = sync.Pool{
-		New: func() any {
-			return bytes.NewBuffer(make([]byte, 0, defaultBufferSize))
-		},
-	}
-	responsePool = sync.Pool{
-		New: func() any {
-			return &Response{}
-		},
-	}
-	limitReaderPool = sync.Pool{
-		New: func() any {
-			return &pooledLimitReader{}
-		},
-	}
 }

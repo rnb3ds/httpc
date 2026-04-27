@@ -1,3 +1,5 @@
+// Package dns provides DNS-over-HTTPS resolution with caching support
+// for the httpc library.
 package dns
 
 import (
@@ -31,7 +33,7 @@ type DoHResolver struct {
 // Compile-time interface check
 var _ resolver = (*DoHResolver)(nil)
 
-// DoHProvider represents a DoH service provider
+// DoHProvider represents a DNS-over-HTTPS service provider with a URL template and priority.
 type DoHProvider struct {
 	Name     string
 	Template string // URL template with {name} placeholder
@@ -55,22 +57,23 @@ const (
 	maxDoHCacheSize = 1000
 )
 
-// DefaultDoHProviders returns common DoH providers
+// DefaultDoHProviders returns common DoH providers.
+// Templates use {name} for hostname and {type} for record type (A/AAAA).
 func DefaultDoHProviders() []*DoHProvider {
 	return []*DoHProvider{
 		{
 			Name:     "cloudflare",
-			Template: "https://1.1.1.1/dns-query?name={name}&type=A",
+			Template: "https://1.1.1.1/dns-query?name={name}&type={type}",
 			Priority: 1,
 		},
 		{
 			Name:     "google",
-			Template: "https://dns.google/resolve?name={name}&type=A",
+			Template: "https://dns.google/resolve?name={name}&type={type}",
 			Priority: 2,
 		},
 		{
 			Name:     "ali",
-			Template: "https://dns.alidns.com/resolve?name={name}&type=A",
+			Template: "https://dns.alidns.com/resolve?name={name}&type={type}",
 			Priority: 3,
 		},
 	}
@@ -141,7 +144,12 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 			for {
 				current := r.cacheSize.Load()
 				if current >= maxDoHCacheSize {
-					break // Cache full, don't store but still return result
+					// Cache full â evict expired entries to make room
+					r.evictExpiredEntries()
+					if r.cacheSize.Load() >= maxDoHCacheSize {
+						break // Still full after eviction, skip caching
+					}
+					continue
 				}
 				if r.cacheSize.CompareAndSwap(current, current+1) {
 					cacheTTL := time.Duration(r.cacheTTL.Load())
@@ -178,12 +186,65 @@ func (r *DoHResolver) CacheSize() int64 {
 	return r.cacheSize.Load()
 }
 
-// lookupWithProvider performs DNS lookup using a specific DoH provider
+// lookupWithProvider performs DNS lookup using a specific DoH provider.
+// It queries both A (IPv4) and AAAA (IPv6) records concurrently.
 func (r *DoHResolver) lookupWithProvider(ctx context.Context, provider *DoHProvider, host string) ([]net.IPAddr, error) {
-	// Build request URL
-	requestURL := strings.Replace(provider.Template, "{name}", url.PathEscape(host), 1)
+	escapedHost := url.PathEscape(host)
 
-	// Create HTTP request
+	type lookupResult struct {
+		ips []net.IPAddr
+		err error
+	}
+
+	chA := make(chan lookupResult, 1)
+	chAAAA := make(chan lookupResult, 1)
+
+	// Query A and AAAA records concurrently
+	go func() {
+		ips, err := r.lookupRecordType(ctx, provider, escapedHost, "A")
+		chA <- lookupResult{ips: ips, err: err}
+	}()
+	go func() {
+		ips, err := r.lookupRecordType(ctx, provider, escapedHost, "AAAA")
+		chAAAA <- lookupResult{ips: ips, err: err}
+	}()
+
+	resA := <-chA
+	resAAAA := <-chAAAA
+
+	// Merge results: return any IPs found
+	var ips []net.IPAddr
+	if resA.err == nil {
+		ips = append(ips, resA.ips...)
+	}
+	if resAAAA.err == nil {
+		ips = append(ips, resAAAA.ips...)
+	}
+	if len(ips) > 0 {
+		return ips, nil
+	}
+
+	// Both failed — return the first non-nil error, preferring A record error
+	if resA.err != nil {
+		return nil, resA.err
+	}
+	return nil, resAAAA.err
+}
+
+// lookupRecordType queries a specific DNS record type (A or AAAA) via DoH.
+func (r *DoHResolver) lookupRecordType(ctx context.Context, provider *DoHProvider, escapedHost, recordType string) ([]net.IPAddr, error) {
+	// Build request URL: replace {name} and {type} placeholders
+	requestURL := strings.Replace(provider.Template, "{name}", escapedHost, 1)
+	requestURL = strings.Replace(requestURL, "{type}", recordType, 1)
+	// Fallback: append type parameter if template doesn't have {type}
+	if !strings.Contains(provider.Template, "{type}") {
+		sep := "&"
+		if !strings.Contains(requestURL, "?") {
+			sep = "?"
+		}
+		requestURL += sep + "type=" + recordType
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "GET", requestURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request failed: %w", err)
@@ -191,19 +252,20 @@ func (r *DoHResolver) lookupWithProvider(ctx context.Context, provider *DoHProvi
 
 	req.Header.Set("Accept", "application/dns-json")
 
-	// Execute request
 	resp, err := r.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("DoH request failed: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }() // best-effort cleanup
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxDoHResponseSize))
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("DoH request returned status %d", resp.StatusCode)
 	}
 
-	// Parse response based on provider
-	return r.parseResponse(resp, provider, host)
+	return r.parseResponse(resp, provider, escapedHost)
 }
 
 // parseResponse parses DoH response with size limits to prevent memory exhaustion
@@ -291,7 +353,10 @@ func (r *DoHResolver) parseWireFormatResponse(body []byte, host string) ([]net.I
 	offset := 12
 
 	// Parse question section
-	qdCount, _ := getUint16(body[4:6])
+	qdCount, err := getUint16(body[4:6])
+	if err != nil {
+		return nil, fmt.Errorf("invalid question count: %w", err)
+	}
 	for i := 0; i < int(qdCount); i++ {
 		var err error
 		_, offset, err = parseDomain(body, offset, 0)
@@ -302,7 +367,10 @@ func (r *DoHResolver) parseWireFormatResponse(body []byte, host string) ([]net.I
 	}
 
 	// Parse answer section
-	anCount, _ := getUint16(body[6:8])
+	anCount, err := getUint16(body[6:8])
+	if err != nil {
+		return nil, fmt.Errorf("invalid answer count: %w", err)
+	}
 	var ips []net.IPAddr
 
 	for i := 0; i < int(anCount); i++ {
@@ -431,18 +499,38 @@ func (r *DoHResolver) fallbackLookup(ctx context.Context, host string, lastErr e
 	return ips, nil
 }
 
-// ClearCache clears the DNS cache
-// SECURITY: Uses atomic counter reset to avoid race conditions with concurrent
-// cache operations. The counter may be temporarily inaccurate during clear but
-// will self-correct on subsequent operations.
+// ClearCache clears the DNS cache.
+// Deletes all entries and atomically resets the counter to zero.
 func (r *DoHResolver) ClearCache() {
-	// First, reset the counter to prevent new entries from being rejected
-	// during the clear operation due to size limit checks
-	r.cacheSize.Store(0)
-	// Then delete all entries - any new entries added during this time
-	// will correctly increment the counter from 0
-	r.cache.Range(func(key, value interface{}) bool {
-		r.cache.Delete(key)
+	r.cache.Range(func(key, value any) bool {
+		if _, ok := r.cache.LoadAndDelete(key); ok {
+			r.cacheSize.Add(-1)
+		}
+		return true
+	})
+	// Reconcile counter: concurrent eviction may have decremented entries
+	// we already deleted, or new entries may have been inserted during the scan.
+	// Loading the actual count ensures the counter never goes negative.
+	count := int64(0)
+	r.cache.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	r.cacheSize.Store(count)
+}
+
+// evictExpiredEntries removes expired cache entries to free space.
+// Called proactively when the cache is full to avoid discarding fresh results.
+func (r *DoHResolver) evictExpiredEntries() {
+	now := time.Now()
+	r.cache.Range(func(key, value any) bool {
+		if entry, ok := value.(*cacheEntry); ok && entry != nil {
+			if now.After(entry.Expires) {
+				if _, deleted := r.cache.LoadAndDelete(key); deleted {
+					r.cacheSize.Add(-1)
+				}
+			}
+		}
 		return true
 	})
 }

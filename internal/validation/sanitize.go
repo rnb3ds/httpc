@@ -25,6 +25,11 @@ var sensitiveQueryParamNames = map[string]bool{
 	"jwt": true, "signature": true, "sign": true, "sig": true,
 }
 
+// isSensitiveQueryParamCI performs case-insensitive lookup for sensitive query param names.
+func isSensitiveQueryParamCI(name string) bool {
+	return sensitiveQueryParamNames[strings.ToLower(name)]
+}
+
 // IsSensitiveQueryParam reports whether the given query parameter name is
 // considered sensitive and should be redacted from logs and cache keys.
 func IsSensitiveQueryParam(name string) bool {
@@ -56,11 +61,8 @@ func SanitizeURL(urlStr string) string {
 	// Fast path: skip parsing if URL has no credentials, query params, fragments,
 	// or characters that would be escaped by url.Parse (spaces).
 	// Most real URLs pass this check and avoid the expensive url.Parse call.
-	hasAt := strings.Contains(urlStr, "@")
-	hasQuery := strings.Contains(urlStr, "?")
-	hasFragment := strings.Contains(urlStr, "#")
-	hasSpace := strings.Contains(urlStr, " ")
-	if !hasAt && !hasQuery && !hasFragment && !hasSpace {
+	// Single scan replaces 4 separate strings.Contains calls.
+	if !strings.ContainsAny(urlStr, "@?# ") {
 		return urlStr
 	}
 
@@ -74,7 +76,7 @@ func SanitizeURL(urlStr string) string {
 		query := parsedURL.Query()
 		redacted := false
 		for key := range query {
-			if sensitiveQueryParamNames[strings.ToLower(key)] {
+			if isSensitiveQueryParamCI(key) {
 				query.Set(key, "[REDACTED]")
 				redacted = true
 			}
@@ -94,8 +96,8 @@ func SanitizeURL(urlStr string) string {
 	_, hasPassword := parsedURL.User.Password()
 	parsedURL.User = nil
 
-	// Estimate size: scheme (8) + ://***:***@ (10) + host + path + query + fragment
-	estimatedLen := 18 + len(parsedURL.Scheme) + len(parsedURL.Host) + len(parsedURL.Path) + len(parsedURL.RawQuery) + len(parsedURL.Fragment)
+	// Estimate size: scheme (8) + ://***:***@ (10) + host + path + query
+	estimatedLen := 18 + len(parsedURL.Scheme) + len(parsedURL.Host) + len(parsedURL.Path) + len(parsedURL.RawQuery)
 	var b strings.Builder
 	b.Grow(estimatedLen)
 	b.WriteString(parsedURL.Scheme)
@@ -111,10 +113,6 @@ func SanitizeURL(urlStr string) string {
 	if parsedURL.RawQuery != "" {
 		b.WriteByte('?')
 		b.WriteString(parsedURL.RawQuery)
-	}
-	if parsedURL.Fragment != "" {
-		b.WriteByte('#')
-		b.WriteString(parsedURL.Fragment)
 	}
 	return b.String()
 }

@@ -12,7 +12,6 @@ import (
 )
 
 // This example demonstrates all request options: body formats, headers, authentication, and query parameters
-// Consolidates: body_formats.go, headers_auth.go, query_params.go
 
 func main() {
 	fmt.Println("=== Request Options Examples ===\n ")

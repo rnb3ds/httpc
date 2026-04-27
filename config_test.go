@@ -590,6 +590,49 @@ func TestMaskProxyURL(t *testing.T) {
 	}
 }
 
+func TestConfig_String_UserAgentTruncation(t *testing.T) {
+	config := DefaultConfig()
+	config.Middleware.UserAgent = strings.Repeat("x", 60)
+	result := config.String()
+	if !strings.Contains(result, "x...") {
+		t.Error("Long UserAgent should be truncated with '...'")
+	}
+	config.Middleware.UserAgent = "short-agent"
+	result = config.String()
+	if !strings.Contains(result, "short-agent") {
+		t.Error("Short UserAgent should appear in full")
+	}
+}
+
+func TestDefaultCookieSecurityConfig(t *testing.T) {
+	cfg := DefaultCookieSecurityConfig()
+	if cfg == nil {
+		t.Fatal("DefaultCookieSecurityConfig returned nil")
+	}
+	if cfg.RequireSecure {
+		t.Error("Default should not require Secure")
+	}
+	if cfg.RequireHttpOnly {
+		t.Error("Default should not require HttpOnly")
+	}
+}
+
+func TestStrictCookieSecurityConfig(t *testing.T) {
+	cfg := StrictCookieSecurityConfig()
+	if cfg == nil {
+		t.Fatal("StrictCookieSecurityConfig returned nil")
+	}
+	if !cfg.RequireSecure {
+		t.Error("Strict should require Secure")
+	}
+	if !cfg.RequireHttpOnly {
+		t.Error("Strict should require HttpOnly")
+	}
+	if cfg.RequireSameSite != "Strict" {
+		t.Error("Strict should require SameSite=Strict")
+	}
+}
+
 // ----------------------------------------------------------------------------
 // ValidateConfig additional boundary cases
 // ----------------------------------------------------------------------------

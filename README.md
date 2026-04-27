@@ -1,4 +1,4 @@
-# HTTPC - Production-Ready HTTP Client for Go
+# HTTPC - Secure HTTP Client for Go
 
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://golang.org)
 [![Go Reference](https://pkg.go.dev/badge/github.com/cybergodev/httpc.svg)](https://pkg.go.dev/github.com/cybergodev/httpc)
@@ -7,7 +7,7 @@
 [![Zero Deps](https://img.shields.io/badge/deps-zero-brightgreen.svg)](go.mod)
 [![Thread Safe](https://img.shields.io/badge/thread%20safe-%E2%9C%93-brightgreen.svg)](docs/09_concurrency-safety.md)
 
-A high-performance HTTP client library for Go with enterprise-grade security, minimal dependencies, and production-ready defaults.
+A fast, secure HTTP client library for Go with sensible defaults, minimal dependencies, and built-in resilience.
 
 **[中文文档](README_zh-CN.md)**
 
@@ -22,7 +22,7 @@ A high-performance HTTP client library for Go with enterprise-grade security, mi
 | **Built-in Resilience** | Smart retry with exponential backoff and jitter |
 | **Developer Friendly** | Clean API, intuitive options pattern, comprehensive documentation |
 | **Minimal Dependencies** | Only `golang.org/x/sys` for system-level operations |
-| **Production Ready** | Battle-tested defaults, extensive test coverage |
+| **Reliable Defaults** | Well-tested defaults, extensive test coverage |
 | **Cookie Management** | Full cookie jar support with security validation |
 | **File Operations** | Secure file download with progress tracking and resume support |
 
@@ -102,8 +102,8 @@ import (
 )
 
 func main() {
-    // Create a reusable client
-    client, err := httpc.New(httpc.DefaultConfig())
+    // Create a reusable client (New() uses DefaultConfig() when no config provided)
+    client, err := httpc.New()
     if err != nil {
         log.Fatal(err)
     }
@@ -203,11 +203,23 @@ httpc.WithXML(data)
 httpc.WithForm(map[string]string{"key": "value"})
 
 // Multipart form data (file upload)
+formData := &httpc.FormData{
+    Fields: map[string]string{"key": "value"},
+    Files: map[string]*httpc.FileData{
+        "upload": {Filename: "doc.pdf", Content: fileBytes, ContentType: "application/pdf"},
+    },
+}
 httpc.WithFormData(formData)
+
+// Or use shorthand for single file upload
 httpc.WithFile("file", "document.pdf", fileBytes)
 
 // Raw body (auto-detect Content-Type)
 httpc.WithBody([]byte("raw data"))
+httpc.WithBody(data, httpc.BodyJSON) // explicit BodyKind
+
+// BodyKind constants: BodyAuto, BodyJSON, BodyXML, BodyForm, BodyBinary, BodyMultipart
+
 httpc.WithBinary(binaryData, "application/pdf")
 
 // Stream body (for large request bodies)
@@ -230,7 +242,9 @@ httpc.WithCookieMap(map[string]string{
 httpc.WithCookieString("session=abc123; token=xyz")
 
 // Secure cookie with validation (validates cookie security attributes)
-httpc.WithSecureCookie(securityConfig)
+cfg := httpc.DefaultCookieSecurityConfig()
+cfg.RequireSecure = true
+httpc.WithSecureCookie(cfg)
 ```
 
 ### Request Control
@@ -273,7 +287,7 @@ httpc.WithOnResponse(func(resp httpc.ResponseMutator) error {
 | **Headers** | `WithHeader(key, value)`, `WithHeaderMap(map)`, `WithUserAgent(ua)` |
 | **Auth** | `WithBearerToken(token)`, `WithBasicAuth(user, pass)` |
 | **Query** | `WithQuery(key, value)`, `WithQueryMap(map)` |
-| **Body** | `WithJSON(data)`, `WithXML(data)`, `WithForm(map)`, `WithFormData(form)`, `WithFile(field, filename, content)`, `WithBody(data, kind?)`, `WithBinary([]byte, contentType?)`, `WithStreamBody(bool)` |
+| **Body** | `WithJSON(data)`, `WithXML(data)`, `WithForm(map)`, `WithFormData(*FormData)`, `WithFile(field, filename, content)`, `WithBody(data, ...BodyKind)`, `WithBinary([]byte, ...contentType)`, `WithStreamBody(bool)` |
 | **Cookies** | `WithCookie(cookie)`, `WithCookieMap(map)`, `WithCookieString("a=1; b=2")`, `WithSecureCookie(config)` |
 | **Control** | `WithTimeout(dur)`, `WithMaxRetries(n)`, `WithContext(ctx)` |
 | **Redirects** | `WithFollowRedirects(bool)`, `WithMaxRedirects(n)` |
@@ -286,7 +300,12 @@ httpc.WithOnResponse(func(resp httpc.ResponseMutator) error {
 ```go
 result, _ := httpc.Get("https://api.example.com/users/123")
 
-// Quick access
+// Result struct composition:
+// result.Request  -> *RequestInfo  (URL, Method, Headers, Cookies)
+// result.Response -> *ResponseInfo (StatusCode, Status, Proto, Headers, Body, RawBody, ContentLength, Cookies)
+// result.Meta     -> *RequestMeta  (Duration, Attempts, RedirectCount, RedirectChain)
+
+// Quick access methods (nil-safe)
 fmt.Println(result.StatusCode())     // 200
 fmt.Println(result.Proto())          // "HTTP/1.1" or "HTTP/2.0"
 fmt.Println(result.RawBody())        // Response body ([]byte)
@@ -407,6 +426,15 @@ result, _ := httpc.DownloadFileWithContext(ctx,
 // Full control with download config + context
 result, _ := httpc.DownloadWithOptionsWithContext(ctx, url, opts)
 ```
+
+### DownloadConfig Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `FilePath` | `string` | Destination path for the downloaded file |
+| `ProgressCallback` | `DownloadProgressCallback` | Progress callback: `func(downloaded, total int64, speed float64)` |
+| `Overwrite` | `bool` | Overwrite existing file (default: `false`) |
+| `ResumeDownload` | `bool` | Resume interrupted download (default: `false`) |
 
 ### Download Functions
 
@@ -557,7 +585,7 @@ sm.SetCookieSecurity(httpc.StrictCookieSecurityConfig())
 ### Preset Configurations
 
 ```go
-// Production-ready defaults (recommended)
+// Recommended defaults (same as httpc.New() with no arguments)
 client, _ := httpc.New(httpc.DefaultConfig())
 
 // Maximum security (SSRF protection enabled)
@@ -617,10 +645,25 @@ config := &httpc.Config{
         MaxRedirects:    10,
     },
 }
+
+// Validate configuration before creating client (New() also validates internally)
+if err := httpc.ValidateConfig(config); err != nil {
+    log.Fatal(err)
+}
+
 client, _ := httpc.New(config)
 ```
 
 ### Configuration Options
+
+| Function | Description |
+|----------|-------------|
+| `DefaultConfig()` | Recommended defaults |
+| `SecureConfig()` | Maximum security (SSRF protection enabled) |
+| `PerformanceConfig()` | High throughput |
+| `MinimalConfig()` | Lightweight (no retries) |
+| `TestingConfig()` | Testing only - disables security features |
+| `ValidateConfig(cfg)` | Validate configuration, returns error |
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -645,6 +688,7 @@ client, _ := httpc.New(config)
 | `Security.MaxTLSVersion` | `uint16` | `TLS 1.3` | Maximum TLS version |
 | `Security.InsecureSkipVerify` | `bool` | `false` | Skip TLS verification (testing only!) |
 | `Security.MaxResponseBodySize` | `int64` | `10MB` | Max response body size |
+| `Security.MaxRequestBodySize` | `int64` | `0` | Max request body size (0 = uses MaxResponseBodySize) |
 | `Security.AllowPrivateIPs` | `bool` | `false` | Allow private IPs (SSRF protection enabled by default) |
 | `Security.ValidateURL` | `bool` | `true` | Enable URL validation |
 | `Security.ValidateHeaders` | `bool` | `true` | Enable header validation |
@@ -708,6 +752,23 @@ httpc.AuditMiddlewareWithConfig(func(a httpc.AuditEvent) {
     log.Printf("[AUDIT] %v", a)
 }, auditCfg)
 ```
+
+### AuditEvent Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Timestamp` | `time.Time` | Request timestamp |
+| `Method` | `string` | HTTP method |
+| `URL` | `string` | Request URL |
+| `StatusCode` | `int` | Response status code |
+| `Duration` | `time.Duration` | Request duration |
+| `Attempts` | `int` | Retry attempts |
+| `Error` | `error` | Error if any |
+| `SourceIP` | `string` | Source IP (set via context key `SourceIPKey`) |
+| `UserID` | `string` | User ID (set via context key `UserIDKey`) |
+| `RedirectChain` | `[]string` | Redirect URLs |
+| `ReqHeaders` | `map[string][]string` | Request headers (when `IncludeHeaders: true`) |
+| `RespHeaders` | `map[string][]string` | Response headers (when `IncludeHeaders: true`) |
 
 ### Chain Multiple Middleware
 
@@ -902,7 +963,7 @@ wg.Wait()
 ### Performance Optimization
 
 ```go
-// Release Result back to pool after use (reduces GC pressure)
+// Release Result back to pool after use (reduces GC pressure for high-throughput scenarios)
 result, _ := httpc.Get(url)
 defer httpc.ReleaseResult(result)
 ```
@@ -945,11 +1006,20 @@ _ = httpc.CloseDefaultClient()
 
 ### Example Code
 
-| Directory | Description |
-|-----------|-------------|
-| [01_quickstart](examples/01_quickstart) | Basic usage |
-| [02_core_features](examples/02_core_features) | Headers, auth, body formats |
-| [03_advanced](examples/03_advanced) | File upload, download, retry, middleware |
+19 runnable examples covering all features, ordered from basic to advanced.
+
+| Category | Examples |
+|----------|----------|
+| **Basics** | [01_basic_usage](examples/01_basic_usage.go), [02_http_methods](examples/02_http_methods.go), [03_response_handling](examples/03_response_handling.go), [04_compression](examples/04_compression.go) |
+| **Core Features** | [05_request_options](examples/05_request_options.go), [06_error_handling](examples/06_error_handling.go), [07_timeout_retry](examples/07_timeout_retry.go), [08_client_configuration](examples/08_client_configuration.go), [09_redirects](examples/09_redirects.go), [10_cookies_advanced](examples/10_cookies_advanced.go) |
+| **Stateful Clients** | [11_session](examples/11_session.go), [12_domain_client](examples/12_domain_client.go), [13_proxy_configuration](examples/13_proxy_configuration.go), [14_doh](examples/14_doh.go) |
+| **Advanced** | [15_middleware](examples/15_middleware.go), [16_concurrent_requests](examples/16_concurrent_requests.go), [17_file_operations](examples/17_file_operations.go), [18_rest_api_client](examples/18_rest_api_client.go), [19_advanced_patterns](examples/19_advanced_patterns.go) |
+
+Run any example:
+
+```bash
+go run examples/01_basic_usage.go
+```
 
 ---
 

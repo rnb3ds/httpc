@@ -224,10 +224,8 @@ var warnNoOpPinnerOnce sync.Once
 // VerifyPeerCertificate always returns nil, accepting all certificates.
 func (n *noOpPinner) VerifyPeerCertificate(_ [][]byte, _ [][]*x509.Certificate) error {
 	warnNoOpPinnerOnce.Do(func() {
-		executable := strings.TrimSuffix(strings.TrimSuffix(os.Args[0], ".exe"), ".test")
 		if !strings.Contains(os.Args[0], ".test") {
 			fmt.Fprintf(os.Stderr, "[SECURITY WARNING] noOpPinner used outside test environment - certificate pinning is DISABLED\n")
-			_ = executable
 		}
 	})
 	return nil

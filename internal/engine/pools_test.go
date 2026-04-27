@@ -6,30 +6,6 @@ import (
 	"testing"
 )
 
-func TestGetPutHeader(t *testing.T) {
-	t.Run("GetAndReturn", func(t *testing.T) {
-		h := getHeader()
-		if h == nil {
-			t.Fatal("getHeader returned nil")
-		}
-		h.Set("Content-Type", "application/json")
-		h.Set("X-Custom", "value")
-
-		putHeader(h)
-
-		// Get again - should be cleared
-		h2 := getHeader()
-		if len(*h2) != 0 {
-			t.Errorf("Pooled header should be cleared, got %d entries", len(*h2))
-		}
-		putHeader(h2)
-	})
-
-	t.Run("PutNil", func(t *testing.T) {
-		putHeader(nil) // should not panic
-	})
-}
-
 func TestCloneHeader(t *testing.T) {
 	t.Run("Nil", func(t *testing.T) {
 		if cloneHeader(nil) != nil {

@@ -86,6 +86,11 @@ type ConnectionConfig struct {
 	// DoHCacheTTL is the cache duration for DoH DNS responses.
 	// Default: 5 minutes.
 	DoHCacheTTL time.Duration
+
+	// MaxResponseHeaderBytes limits the maximum size of the server's response headers.
+	// This protects against malicious servers sending excessively large headers.
+	// Default: 0 (uses Go stdlib default of 10MB).
+	MaxResponseHeaderBytes int64
 }
 
 // SecurityConfig configures TLS, validation, and SSRF protection.
@@ -107,15 +112,22 @@ type SecurityConfig struct {
 	// MaxResponseBodySize limits response body size in bytes. Default: 10MB.
 	MaxResponseBodySize int64
 
+	// MaxRequestBodySize limits request body size in bytes.
+	// Default: 0 (uses MaxResponseBodySize). Set independently if needed.
+	MaxRequestBodySize int64
+
 	// MaxDecompressedBodySize limits decompressed response body size in bytes.
 	// This prevents decompression bomb (zip bomb) attacks. Default: 100MB.
 	// Only applies when MaxResponseBodySize is not explicitly set; when set,
 	// MaxResponseBodySize takes precedence as the stricter limit.
 	MaxDecompressedBodySize int64
 
-	// AllowPrivateIPs permits connections to private IP addresses.
+	// AllowPrivateIPs disables ALL SSRF protection when set to true, including
+	// localhost, loopback, link-local, and private/reserved IP checks.
 	// Default: false (SSRF protection enabled). Set to true only when
 	// connecting to internal services (VPNs, proxies, corporate networks).
+	// WARNING: This completely bypasses the connection-level SSRF dialer validation,
+	// not just private IP blocking. Use SSRFExemptCIDRs for selective allowlisting instead.
 	AllowPrivateIPs bool
 
 	// SSRFExemptCIDRs specifies CIDR ranges exempted from SSRF blocking.
@@ -180,7 +192,7 @@ type MiddlewareConfig struct {
 }
 
 // Config defines the HTTP client configuration organized into logical groups.
-// Use DefaultConfig() for production-ready defaults, or use preset configurations
+// Use DefaultConfig() for sensible defaults, or use preset configurations
 // like SecureConfig(), PerformanceConfig(), or MinimalConfig().
 //
 // Example:
@@ -311,13 +323,13 @@ const (
 	BodyMultipart
 )
 
-// DefaultConfig returns a Config with production-ready defaults.
+// DefaultConfig returns a Config with sensible defaults.
 // The returned config is safe for modification.
 //
 // SSRF Protection:
 // AllowPrivateIPs defaults to false, blocking connections to private/reserved IPs
-// (127.0.0.1, 10.x, 192.168.x, 169.254.x, etc.). Set to true only when connecting
-// to internal services that use private IP addresses.
+// (127.0.0.1, 10.x, 192.168.x, 169.254.x, etc.). Setting to true disables ALL SSRF
+// protection including localhost checks — use SSRFExemptCIDRs for selective allowlisting.
 func DefaultConfig() *Config {
 	return &Config{
 		Timeouts: TimeoutConfig{
@@ -373,6 +385,22 @@ func newCookieJar() (http.CookieJar, error) {
 	})
 }
 
+// validateDuration validates that a duration is within [0, max].
+func validateDuration(field string, d, max time.Duration) error {
+	if d < 0 || d > max {
+		return fmt.Errorf("%w: %s must be 0-%v, got %v", ErrInvalidTimeout, field, max, d)
+	}
+	return nil
+}
+
+// validateRange validates that an integer is within [0, max].
+func validateRange(field string, v, max int) error {
+	if v < 0 || v > max {
+		return fmt.Errorf("%w: %s must be 0-%d, got %d", ErrInvalidConnection, field, max, v)
+	}
+	return nil
+}
+
 // ValidateConfig validates the configuration and returns an error if invalid.
 // This is called internally by New() but can also be called explicitly.
 func ValidateConfig(cfg *Config) error {
@@ -381,28 +409,26 @@ func ValidateConfig(cfg *Config) error {
 	}
 
 	// Validate timeouts
-	if cfg.Timeouts.Request < 0 || cfg.Timeouts.Request > maxTimeout {
-		return fmt.Errorf("%w: Timeouts.Request must be 0-%v, got %v", ErrInvalidTimeout, maxTimeout, cfg.Timeouts.Request)
-	}
-	if cfg.Timeouts.Dial < 0 || cfg.Timeouts.Dial > maxTimeout {
-		return fmt.Errorf("%w: Timeouts.Dial must be 0-%v, got %v", ErrInvalidTimeout, maxTimeout, cfg.Timeouts.Dial)
-	}
-	if cfg.Timeouts.TLSHandshake < 0 || cfg.Timeouts.TLSHandshake > maxTimeout {
-		return fmt.Errorf("%w: Timeouts.TLSHandshake must be 0-%v, got %v", ErrInvalidTimeout, maxTimeout, cfg.Timeouts.TLSHandshake)
-	}
-	if cfg.Timeouts.ResponseHeader < 0 || cfg.Timeouts.ResponseHeader > maxTimeout {
-		return fmt.Errorf("%w: Timeouts.ResponseHeader must be 0-%v, got %v", ErrInvalidTimeout, maxTimeout, cfg.Timeouts.ResponseHeader)
-	}
-	if cfg.Timeouts.IdleConn < 0 || cfg.Timeouts.IdleConn > maxTimeout {
-		return fmt.Errorf("%w: Timeouts.IdleConn must be 0-%v, got %v", ErrInvalidTimeout, maxTimeout, cfg.Timeouts.IdleConn)
+	for _, err := range []error{
+		validateDuration("Timeouts.Request", cfg.Timeouts.Request, maxTimeout),
+		validateDuration("Timeouts.Dial", cfg.Timeouts.Dial, maxTimeout),
+		validateDuration("Timeouts.TLSHandshake", cfg.Timeouts.TLSHandshake, maxTimeout),
+		validateDuration("Timeouts.ResponseHeader", cfg.Timeouts.ResponseHeader, maxTimeout),
+		validateDuration("Timeouts.IdleConn", cfg.Timeouts.IdleConn, maxTimeout),
+	} {
+		if err != nil {
+			return err
+		}
 	}
 
 	// Validate connection settings
-	if cfg.Connection.MaxIdleConns < 0 || cfg.Connection.MaxIdleConns > maxIdleConns {
-		return fmt.Errorf("%w: Connection.MaxIdleConns must be 0-%d, got %d", ErrInvalidConnection, maxIdleConns, cfg.Connection.MaxIdleConns)
-	}
-	if cfg.Connection.MaxConnsPerHost < 0 || cfg.Connection.MaxConnsPerHost > maxConnsPerHost {
-		return fmt.Errorf("%w: Connection.MaxConnsPerHost must be 0-%d, got %d", ErrInvalidConnection, maxConnsPerHost, cfg.Connection.MaxConnsPerHost)
+	for _, err := range []error{
+		validateRange("Connection.MaxIdleConns", cfg.Connection.MaxIdleConns, maxIdleConns),
+		validateRange("Connection.MaxConnsPerHost", cfg.Connection.MaxConnsPerHost, maxConnsPerHost),
+	} {
+		if err != nil {
+			return err
+		}
 	}
 	if cfg.Connection.ProxyURL != "" {
 		if _, err := url.Parse(cfg.Connection.ProxyURL); err != nil {
@@ -412,6 +438,9 @@ func ValidateConfig(cfg *Config) error {
 	if cfg.Connection.DoHCacheTTL < 0 {
 		return fmt.Errorf("%w: Connection.DoHCacheTTL cannot be negative, got %v", ErrInvalidConnection, cfg.Connection.DoHCacheTTL)
 	}
+	if cfg.Connection.MaxResponseHeaderBytes < 0 {
+		return fmt.Errorf("%w: Connection.MaxResponseHeaderBytes cannot be negative, got %d", ErrInvalidConnection, cfg.Connection.MaxResponseHeaderBytes)
+	}
 
 	// Validate security settings
 	if cfg.Security.MaxResponseBodySize < 0 || cfg.Security.MaxResponseBodySize > maxResponseBodySize {
@@ -419,6 +448,9 @@ func ValidateConfig(cfg *Config) error {
 	}
 	if cfg.Security.MaxDecompressedBodySize < 0 || cfg.Security.MaxDecompressedBodySize > maxDecompressedBodySize {
 		return fmt.Errorf("%w: Security.MaxDecompressedBodySize must be 0-100MB, got %d", ErrInvalidSecurity, cfg.Security.MaxDecompressedBodySize)
+	}
+	if cfg.Security.MaxRequestBodySize < 0 || cfg.Security.MaxRequestBodySize > maxResponseBodySize {
+		return fmt.Errorf("%w: Security.MaxRequestBodySize must be 0-%d, got %d", ErrInvalidSecurity, maxResponseBodySize, cfg.Security.MaxRequestBodySize)
 	}
 
 	// Validate TLS version ordering
@@ -439,8 +471,8 @@ func ValidateConfig(cfg *Config) error {
 	if cfg.Retry.MaxRetries < 0 || cfg.Retry.MaxRetries > maxRetries {
 		return fmt.Errorf("%w: Retry.MaxRetries must be 0-%d, got %d", ErrInvalidRetry, maxRetries, cfg.Retry.MaxRetries)
 	}
-	if cfg.Retry.Delay < 0 {
-		return fmt.Errorf("%w: Retry.Delay cannot be negative", ErrInvalidRetry)
+	if cfg.Retry.Delay < 0 || cfg.Retry.Delay > maxTimeout {
+		return fmt.Errorf("%w: Retry.Delay must be 0-%v, got %v", ErrInvalidRetry, maxTimeout, cfg.Retry.Delay)
 	}
 	if cfg.Retry.BackoffFactor < minBackoffFactor || cfg.Retry.BackoffFactor > maxBackoffFactor {
 		return fmt.Errorf("%w: Retry.BackoffFactor must be %.1f-%.1f, got %.1f", ErrInvalidRetry, minBackoffFactor, maxBackoffFactor, cfg.Retry.BackoffFactor)
@@ -505,7 +537,11 @@ func (c *Config) String() string {
 	b.WriteString(strconv.FormatFloat(c.Retry.BackoffFactor, 'f', 1, 64))
 
 	b.WriteString("}, Middleware:{UserAgent: ")
-	b.WriteString(c.Middleware.UserAgent)
+	ua := c.Middleware.UserAgent
+	if len(ua) > 50 {
+		ua = ua[:50] + "..."
+	}
+	b.WriteString(ua)
 	b.WriteString(", FollowRedirects: ")
 	b.WriteString(strconv.FormatBool(c.Middleware.FollowRedirects))
 
