@@ -466,6 +466,11 @@ result, _ := httpc.DownloadWithOptionsWithContext(ctx, url, opts)
 | `Resumed` | `bool` | Whether download was resumed |
 | `ActualChecksum` | `string` | Computed checksum of downloaded file |
 | `ResponseCookies` | `[]*http.Cookie` | Cookies from response |
+| `Proto` | `string` | HTTP protocol version (e.g., "HTTP/1.1", "HTTP/2.0") |
+| `ResponseHeaders` | `http.Header` | Response headers |
+| `RequestURL` | `string` | Actual URL requested |
+| `RequestMethod` | `string` | HTTP method used |
+| `RequestHeaders` | `http.Header` | Request headers sent |
 
 ---
 
@@ -677,10 +682,10 @@ client, _ := httpc.New(config)
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | **Timeouts** (nested: `Timeouts: httpc.TimeoutConfig{...}`) ||||
-| `Timeouts.Request` | `time.Duration` | `30s` | Overall request timeout |
+| `Timeouts.Request` | `time.Duration` | `180s` | Overall request timeout |
 | `Timeouts.Dial` | `time.Duration` | `10s` | TCP connection timeout |
 | `Timeouts.TLSHandshake` | `time.Duration` | `10s` | TLS handshake timeout |
-| `Timeouts.ResponseHeader` | `time.Duration` | `30s` | Response header timeout |
+| `Timeouts.ResponseHeader` | `time.Duration` | `0` | Response header timeout (0 = disabled, uses context timeout) |
 | `Timeouts.IdleConn` | `time.Duration` | `90s` | Idle connection timeout |
 | **Connection** (nested: `Connection: httpc.ConnectionConfig{...}`) ||||
 | `Connection.MaxIdleConns` | `int` | `50` | Max idle connections |
@@ -691,6 +696,7 @@ client, _ := httpc.New(config)
 | `Connection.EnableCookies` | `bool` | `false` | Enable cookie jar |
 | `Connection.EnableDoH` | `bool` | `false` | Enable DNS-over-HTTPS |
 | `Connection.DoHCacheTTL` | `time.Duration` | `5m` | DoH cache duration |
+| `Connection.MaxResponseHeaderBytes` | `int64` | `0` | Max response header size (0 = Go stdlib default 10MB) |
 | **Security** (nested: `Security: httpc.SecurityConfig{...}`) ||||
 | `Security.TLSConfig` | `*tls.Config` | `nil` | Custom TLS config |
 | `Security.MinTLSVersion` | `uint16` | `TLS 1.2` | Minimum TLS version |
@@ -711,6 +717,7 @@ client, _ := httpc.New(config)
 | `Retry.Delay` | `time.Duration` | `1s` | Initial retry delay |
 | `Retry.BackoffFactor` | `float64` | `2.0` | Backoff multiplier |
 | `Retry.EnableJitter` | `bool` | `true` | Add jitter to retries |
+| `Retry.MaxRetryDelay` | `time.Duration` | `30s` | Cap on maximum retry delay |
 | `Retry.CustomPolicy` | `RetryPolicy` | `nil` | Custom retry logic |
 | **Middleware** (nested: `Middleware: httpc.MiddlewareConfig{...}`) ||||
 | `Middleware.Middlewares` | `[]MiddlewareFunc` | `nil` | Middleware chain |

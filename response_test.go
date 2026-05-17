@@ -264,91 +264,6 @@ func TestResult_NilSafety(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
-// Proto
-// ----------------------------------------------------------------------------
-
-func TestResult_Proto(t *testing.T) {
-	t.Parallel()
-
-	t.Run("nil Result", func(t *testing.T) {
-		var r *Result
-		if r.Proto() != "" {
-			t.Error("nil Result Proto should return empty string")
-		}
-	})
-
-	t.Run("nil Response", func(t *testing.T) {
-		r := &Result{}
-		if r.Proto() != "" {
-			t.Error("nil Response Proto should return empty string")
-		}
-	})
-
-	t.Run("normal", func(t *testing.T) {
-		r := &Result{Response: &ResponseInfo{Proto: "HTTP/2.0"}}
-		if r.Proto() != "HTTP/2.0" {
-			t.Errorf("Expected HTTP/2.0, got %s", r.Proto())
-		}
-	})
-}
-
-// ----------------------------------------------------------------------------
-// RequestCookies / ResponseCookies
-// ----------------------------------------------------------------------------
-
-func TestResult_RequestCookies(t *testing.T) {
-	t.Parallel()
-
-	t.Run("nil Result", func(t *testing.T) {
-		var r *Result
-		if r.RequestCookies() != nil {
-			t.Error("nil Result should return nil")
-		}
-	})
-
-	t.Run("nil Request", func(t *testing.T) {
-		r := &Result{}
-		if r.RequestCookies() != nil {
-			t.Error("nil Request should return nil")
-		}
-	})
-
-	t.Run("with cookies", func(t *testing.T) {
-		cookies := []*http.Cookie{{Name: "session", Value: "abc"}}
-		r := &Result{Request: &RequestInfo{Cookies: cookies}}
-		if len(r.RequestCookies()) != 1 || r.RequestCookies()[0].Name != "session" {
-			t.Error("Request cookies mismatch")
-		}
-	})
-}
-
-func TestResult_ResponseCookies(t *testing.T) {
-	t.Parallel()
-
-	t.Run("nil Result", func(t *testing.T) {
-		var r *Result
-		if r.ResponseCookies() != nil {
-			t.Error("nil Result should return nil")
-		}
-	})
-
-	t.Run("nil Response", func(t *testing.T) {
-		r := &Result{}
-		if r.ResponseCookies() != nil {
-			t.Error("nil Response should return nil")
-		}
-	})
-
-	t.Run("with cookies", func(t *testing.T) {
-		cookies := []*http.Cookie{{Name: "token", Value: "xyz"}}
-		r := &Result{Response: &ResponseInfo{Cookies: cookies}}
-		if len(r.ResponseCookies()) != 1 || r.ResponseCookies()[0].Name != "token" {
-			t.Error("Response cookies mismatch")
-		}
-	})
-}
-
-// ----------------------------------------------------------------------------
 // IsRedirect
 // ----------------------------------------------------------------------------
 
@@ -381,106 +296,146 @@ func TestResult_IsRedirect(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
-// GetRequestCookie / HasRequestCookie
+// Nil and Empty Accessors (table-driven)
 // ----------------------------------------------------------------------------
 
-func TestResult_GetRequestCookie(t *testing.T) {
+func TestResult_NilAndEmptyAccessors(t *testing.T) {
 	t.Parallel()
 
-	t.Run("nil Result", func(t *testing.T) {
-		var r *Result
-		if r.GetRequestCookie("test") != nil {
-			t.Error("nil Result should return nil")
+	t.Run("Proto", func(t *testing.T) {
+		tests := []struct {
+			name string
+			r    *Result
+			want string
+		}{
+			{"nil Result", nil, ""},
+			{"nil Response", &Result{}, ""},
+			{"normal", &Result{Response: &ResponseInfo{Proto: "HTTP/2.0"}}, "HTTP/2.0"},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				if got := tt.r.Proto(); got != tt.want {
+					t.Errorf("Proto() = %q, want %q", got, tt.want)
+				}
+			})
 		}
 	})
 
-	t.Run("nil Request", func(t *testing.T) {
-		r := &Result{}
-		if r.GetRequestCookie("test") != nil {
-			t.Error("nil Request should return nil")
+	t.Run("RequestCookies", func(t *testing.T) {
+		tests := []struct {
+			name string
+			r    *Result
+			want int
+		}{
+			{"nil Result", nil, 0},
+			{"nil Request", &Result{}, 0},
+			{"with cookies", &Result{Request: &RequestInfo{Cookies: []*http.Cookie{{Name: "s", Value: "a"}}}}, 1},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				got := tt.r.RequestCookies()
+				if (got == nil && tt.want != 0) || (got != nil && len(got) != tt.want) {
+					t.Errorf("RequestCookies() len = %v, want %v", len(got), tt.want)
+				}
+			})
 		}
 	})
 
-	t.Run("found", func(t *testing.T) {
-		r := &Result{Request: &RequestInfo{Cookies: []*http.Cookie{
-			{Name: "session", Value: "abc"},
-			{Name: "user", Value: "bob"},
-		}}}
-		c := r.GetRequestCookie("user")
-		if c == nil || c.Value != "bob" {
-			t.Error("expected to find cookie 'user'")
+	t.Run("ResponseCookies", func(t *testing.T) {
+		tests := []struct {
+			name string
+			r    *Result
+			want int
+		}{
+			{"nil Result", nil, 0},
+			{"nil Response", &Result{}, 0},
+			{"with cookies", &Result{Response: &ResponseInfo{Cookies: []*http.Cookie{{Name: "t", Value: "x"}}}}, 1},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				got := tt.r.ResponseCookies()
+				if (got == nil && tt.want != 0) || (got != nil && len(got) != tt.want) {
+					t.Errorf("ResponseCookies() len = %v, want %v", len(got), tt.want)
+				}
+			})
 		}
 	})
 
-	t.Run("not found", func(t *testing.T) {
-		r := &Result{Request: &RequestInfo{Cookies: []*http.Cookie{
-			{Name: "session", Value: "abc"},
-		}}}
-		if r.GetRequestCookie("missing") != nil {
-			t.Error("expected nil for missing cookie")
+	t.Run("GetRequestCookie", func(t *testing.T) {
+		tests := []struct {
+			name   string
+			r      *Result
+			cookie string
+			want   string
+		}{
+			{"nil Result", nil, "any", ""},
+			{"nil Request", &Result{}, "any", ""},
+			{"found", &Result{Request: &RequestInfo{Cookies: []*http.Cookie{
+				{Name: "session", Value: "abc"},
+				{Name: "user", Value: "bob"},
+			}}}, "user", "bob"},
+			{"not found", &Result{Request: &RequestInfo{Cookies: []*http.Cookie{
+				{Name: "session", Value: "abc"},
+			}}}, "missing", ""},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				got := tt.r.GetRequestCookie(tt.cookie)
+				if tt.want == "" {
+					if got != nil {
+						t.Error("expected nil")
+					}
+				} else {
+					if got == nil || got.Value != tt.want {
+						t.Errorf("GetRequestCookie() = %v, want value %q", got, tt.want)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("HasRequestCookie", func(t *testing.T) {
+		tests := []struct {
+			name   string
+			r      *Result
+			cookie string
+			want   bool
+		}{
+			{"nil Result", nil, "any", false},
+			{"existing", &Result{Request: &RequestInfo{Cookies: []*http.Cookie{{Name: "session", Value: "abc"}}}}, "session", true},
+			{"missing", &Result{Request: &RequestInfo{Cookies: []*http.Cookie{{Name: "session", Value: "abc"}}}}, "missing", false},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				if got := tt.r.HasRequestCookie(tt.cookie); got != tt.want {
+					t.Errorf("HasRequestCookie() = %v, want %v", got, tt.want)
+				}
+			})
+		}
+	})
+
+	t.Run("GetCookie", func(t *testing.T) {
+		tests := []struct {
+			name   string
+			r      *Result
+			cookie string
+			want   string
+		}{
+			{"nil Result", nil, "any", ""},
+			{"nil Response", &Result{}, "any", ""},
+			{"not found", &Result{Response: &ResponseInfo{Cookies: []*http.Cookie{{Name: "other", Value: "val"}}}}, "missing", ""},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				got := tt.r.GetCookie(tt.cookie)
+				if tt.want == "" && got != nil {
+					t.Error("expected nil")
+				}
+			})
 		}
 	})
 }
 
-func TestResult_HasRequestCookie(t *testing.T) {
-	t.Parallel()
-
-	r := &Result{Request: &RequestInfo{Cookies: []*http.Cookie{
-		{Name: "session", Value: "abc"},
-	}}}
-
-	t.Run("existing", func(t *testing.T) {
-		if !r.HasRequestCookie("session") {
-			t.Error("expected HasRequestCookie to return true")
-		}
-	})
-
-	t.Run("missing", func(t *testing.T) {
-		if r.HasRequestCookie("missing") {
-			t.Error("expected HasRequestCookie to return false")
-		}
-	})
-
-	t.Run("nil Result", func(t *testing.T) {
-		var r2 *Result
-		if r2.HasRequestCookie("any") {
-			t.Error("nil Result should return false")
-		}
-	})
-}
-
-// ----------------------------------------------------------------------------
-// GetCookie Nil Safety
-// ----------------------------------------------------------------------------
-
-func TestResult_GetCookie_NilSafety(t *testing.T) {
-	t.Parallel()
-
-	t.Run("nil Result", func(t *testing.T) {
-		var r *Result
-		if r.GetCookie("test") != nil {
-			t.Error("nil Result should return nil")
-		}
-	})
-
-	t.Run("nil Response", func(t *testing.T) {
-		r := &Result{}
-		if r.GetCookie("test") != nil {
-			t.Error("nil Response should return nil")
-		}
-	})
-
-	t.Run("not found", func(t *testing.T) {
-		r := &Result{Response: &ResponseInfo{Cookies: []*http.Cookie{
-			{Name: "other", Value: "val"},
-		}}}
-		if r.GetCookie("missing") != nil {
-			t.Error("expected nil for missing cookie")
-		}
-	})
-}
-
-// ----------------------------------------------------------------------------
 // Unmarshal Boundaries
 // ----------------------------------------------------------------------------
 

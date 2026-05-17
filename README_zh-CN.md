@@ -466,6 +466,11 @@ result, _ := httpc.DownloadWithOptionsWithContext(ctx, url, opts)
 | `Resumed` | `bool` | 是否从断点恢复 |
 | `ActualChecksum` | `string` | 下载文件的实际校验和 |
 | `ResponseCookies` | `[]*http.Cookie` | 响应中的 Cookie |
+| `Proto` | `string` | HTTP 协议版本 (如 "HTTP/1.1", "HTTP/2.0") |
+| `ResponseHeaders` | `http.Header` | 响应头 |
+| `RequestURL` | `string` | 实际请求 URL |
+| `RequestMethod` | `string` | 使用的 HTTP 方法 |
+| `RequestHeaders` | `http.Header` | 发送的请求头 |
 
 ---
 
@@ -677,10 +682,10 @@ client, _ := httpc.New(config)
 | 选项 | 类型 | 默认值 | 描述 |
 |------|------|--------|------|
 | **超时设置** (`Timeouts`) ||||
-| `Timeouts.Request` | `time.Duration` | `30s` | 整体请求超时 |
+| `Timeouts.Request` | `time.Duration` | `180s` | 整体请求超时 |
 | `Timeouts.Dial` | `time.Duration` | `10s` | TCP 连接超时 |
 | `Timeouts.TLSHandshake` | `time.Duration` | `10s` | TLS 握手超时 |
-| `Timeouts.ResponseHeader` | `time.Duration` | `30s` | 响应头超时 |
+| `Timeouts.ResponseHeader` | `time.Duration` | `0` | 响应头超时 (0 = 禁用，使用 Context 超时) |
 | `Timeouts.IdleConn` | `time.Duration` | `90s` | 空闲连接超时 |
 | **连接设置** (`Connection`) ||||
 | `Connection.MaxIdleConns` | `int` | `50` | 最大空闲连接数 |
@@ -691,6 +696,7 @@ client, _ := httpc.New(config)
 | `Connection.EnableCookies` | `bool` | `false` | 启用 Cookie Jar |
 | `Connection.EnableDoH` | `bool` | `false` | 启用 DNS-over-HTTPS |
 | `Connection.DoHCacheTTL` | `time.Duration` | `5m` | DoH 缓存时长 |
+| `Connection.MaxResponseHeaderBytes` | `int64` | `0` | 最大响应头大小 (0 = Go 标准库默认 10MB) |
 | **安全设置** (`Security`) ||||
 | `Security.TLSConfig` | `*tls.Config` | `nil` | 自定义 TLS 配置 |
 | `Security.MinTLSVersion` | `uint16` | `TLS 1.2` | 最低 TLS 版本 |
@@ -711,6 +717,7 @@ client, _ := httpc.New(config)
 | `Retry.Delay` | `time.Duration` | `1s` | 初始重试延迟 |
 | `Retry.BackoffFactor` | `float64` | `2.0` | 退避乘数 |
 | `Retry.EnableJitter` | `bool` | `true` | 重试添加抖动 |
+| `Retry.MaxRetryDelay` | `time.Duration` | `30s` | 最大重试延迟上限 |
 | `Retry.CustomPolicy` | `RetryPolicy` | `nil` | 自定义重试逻辑 |
 | **中间件设置** (`Middleware`) ||||
 | `Middleware.Middlewares` | `[]MiddlewareFunc` | `nil` | 中间件链 |
@@ -993,7 +1000,7 @@ _ = httpc.CloseDefaultClient()
 **线程安全保证：**
 - 所有 `Client` 方法均可安全并发使用
 - 包级函数安全使用共享的默认客户端
-- 响应对象可安全地从多个 goroutine 读取
+- `Result` 对象不支持并发访问 — 每个 goroutine 应使用各自的 `Result`
 - 内部指标使用原子操作
 
 ---

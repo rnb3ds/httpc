@@ -153,7 +153,7 @@ func IsLocalhost(hostname string) bool {
 	// Only do case-insensitive check if first char is 'l' or 'L'
 	if hlen == 9 && (hostname[0] == 'l' || hostname[0] == 'L') {
 		// Check "localhost" case-insensitively
-		if equalFold(hostname, "localhost") {
+		if EqualFold(hostname, "localhost") {
 			return true
 		}
 	}
@@ -163,12 +163,12 @@ func IsLocalhost(hostname string) bool {
 	// which may be legitimate public domains (e.g., localhost.example.com).
 	// Domains resolving to loopback IPs are still blocked at the dialer layer.
 	if hlen == 21 && (hostname[0] == 'l' || hostname[0] == 'L') {
-		if equalFold(hostname, "localhost.localdomain") {
+		if EqualFold(hostname, "localhost.localdomain") {
 			return true
 		}
 	}
 	if hlen == 22 && (hostname[0] == 'l' || hostname[0] == 'L') {
-		if equalFold(hostname, "localhost.localdomain.") {
+		if EqualFold(hostname, "localhost.localdomain.") {
 			return true
 		}
 	}
@@ -176,9 +176,9 @@ func IsLocalhost(hostname string) bool {
 	return false
 }
 
-// equalFold checks if s equals t case-insensitively (ASCII only)
-// Avoids allocation from strings.ToLower
-func equalFold(s, t string) bool {
+// EqualFold checks if s equals t case-insensitively (ASCII only).
+// Avoids allocation from strings.ToLower.
+func EqualFold(s, t string) bool {
 	if len(s) != len(t) {
 		return false
 	}
@@ -200,6 +200,24 @@ func equalFold(s, t string) bool {
 		}
 	}
 	return true
+}
+
+// ContainsFold reports whether substr is contained within s, ASCII case-insensitively.
+// Zero-allocation alternative to strings.Contains(strings.ToLower(s), substr).
+func ContainsFold(s, substr string) bool {
+	if len(substr) == 0 {
+		return true
+	}
+	if len(substr) > len(s) {
+		return false
+	}
+	end := len(s) - len(substr)
+	for i := 0; i <= end; i++ {
+		if EqualFold(s[i:i+len(substr)], substr) {
+			return true
+		}
+	}
+	return false
 }
 
 // ValidateAndParseURL validates a URL and returns the parsed result.

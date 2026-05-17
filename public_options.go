@@ -530,18 +530,23 @@ func WithCookie(cookie http.Cookie) RequestOption {
 //	result, err := client.Get("https://api.example.com",
 //	    httpc.WithCookies(cookies),
 //	)
+// ensureCookieCapacity grows the slice if needed to accommodate additional entries.
+func ensureCookieCapacity(existing []http.Cookie, additional int) []http.Cookie {
+	if cap(existing) < len(existing)+additional {
+		grown := make([]http.Cookie, len(existing), len(existing)+additional)
+		copy(grown, existing)
+		return grown
+	}
+	return existing
+}
+
 func WithCookies(cookies []http.Cookie) RequestOption {
 	return func(r *engine.Request) error {
 		if len(cookies) == 0 {
 			return nil
 		}
 
-		existing := r.Cookies()
-		if cap(existing) < len(existing)+len(cookies) {
-			newCookies := make([]http.Cookie, len(existing), len(existing)+len(cookies))
-			copy(newCookies, existing)
-			existing = newCookies
-		}
+		existing := ensureCookieCapacity(r.Cookies(), len(cookies))
 
 		for i := range cookies {
 			if err := validation.ValidateCookie(&cookies[i]); err != nil {
@@ -576,13 +581,7 @@ func WithCookieMap(cookies map[string]string) RequestOption {
 			return nil
 		}
 
-		existing := r.Cookies()
-		// Pre-allocate capacity to avoid multiple allocations
-		if cap(existing) < len(existing)+len(cookies) {
-			newCookies := make([]http.Cookie, len(existing), len(existing)+len(cookies))
-			copy(newCookies, existing)
-			existing = newCookies
-		}
+		existing := ensureCookieCapacity(r.Cookies(), len(cookies))
 
 		for name, value := range cookies {
 			cookie := http.Cookie{

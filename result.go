@@ -11,7 +11,9 @@ import (
 	"time"
 )
 
-// stringBuilderPool reduces allocations for strings.Builder used in String()
+// stringBuilderPool reduces allocations for strings.Builder used in String().
+// A separate pool exists in engine/request.go for engine-internal use; kept
+// separate to avoid cross-package pool contention.
 var stringBuilderPool = sync.Pool{
 	New: func() any {
 		sb := &strings.Builder{}
@@ -35,14 +37,15 @@ var sensitiveHeaders = map[string]bool{
 	"Proxy-Authorization": true,
 }
 
-// sensitiveHeaderNames returns the canonical list as a slice for AuditMiddlewareConfig defaults.
-func sensitiveHeaderNames() []string {
+// cachedSensitiveHeaderNames is a pre-computed slice of sensitive header names.
+// Avoids map iteration and allocation on every DefaultAuditMiddlewareConfig() call.
+var cachedSensitiveHeaderNames = func() []string {
 	names := make([]string, 0, len(sensitiveHeaders))
 	for k := range sensitiveHeaders {
 		names = append(names, k)
 	}
 	return names
-}
+}()
 
 // Result wraps an HTTP response with request metadata and convenience methods.
 // Obtain a Result from Client.Request() or package-level functions like Get(), Post(), etc.
@@ -275,23 +278,25 @@ func (r *Result) String() string {
 	b.Reset()
 	b.Grow(estimatedSize)
 
+	var numBuf [20]byte
+
 	b.WriteString("Result{Status: ")
-	b.WriteString(strconv.Itoa(r.Response.StatusCode))
+	b.Write(strconv.AppendInt(numBuf[:0], int64(r.Response.StatusCode), 10))
 	b.WriteByte(' ')
 	b.WriteString(r.Response.Status)
 	b.WriteString(", ContentLength: ")
-	b.WriteString(strconv.FormatInt(r.Response.ContentLength, 10))
+	b.Write(strconv.AppendInt(numBuf[:0], r.Response.ContentLength, 10))
 
 	if r.Meta != nil {
 		b.WriteString(", Duration: ")
 		b.WriteString(r.Meta.Duration.String())
 		b.WriteString(", Attempts: ")
-		b.WriteString(strconv.Itoa(r.Meta.Attempts))
+		b.Write(strconv.AppendInt(numBuf[:0], int64(r.Meta.Attempts), 10))
 	}
 
 	if len(r.Response.Headers) > 0 {
 		b.WriteString(", Headers: ")
-		b.WriteString(strconv.Itoa(len(r.Response.Headers)))
+		b.Write(strconv.AppendInt(numBuf[:0], int64(len(r.Response.Headers)), 10))
 		b.WriteString(" [")
 		first := true
 		for key := range r.Response.Headers {
@@ -311,7 +316,7 @@ func (r *Result) String() string {
 
 	if len(r.Response.Cookies) > 0 {
 		b.WriteString(", Cookies: ")
-		b.WriteString(strconv.Itoa(len(r.Response.Cookies)))
+		b.Write(strconv.AppendInt(numBuf[:0], int64(len(r.Response.Cookies)), 10))
 	}
 
 	if len(r.Response.Body) > 0 {

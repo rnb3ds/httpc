@@ -2,7 +2,6 @@ package engine
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -11,11 +10,9 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync"
-	"unsafe"
 
 	"github.com/cybergodev/httpc/internal/types"
 	"github.com/cybergodev/httpc/internal/validation"
@@ -26,19 +23,6 @@ var stringsReaderPool = sync.Pool{
 	New: func() any { return &strings.Reader{} },
 }
 
-// setRequestContext sets the context on an http.Request without cloning it.
-// This avoids the Header map clone that http.Request.WithContext performs.
-// The caller must own the http.Request (i.e., it was freshly constructed).
-func setRequestContext(r *http.Request, ctx context.Context) {
-	v := reflect.ValueOf(r).Elem()
-	ctxField := v.FieldByName("ctx")
-	if ctxField.IsValid() && ctxField.CanAddr() {
-		// Use unsafe since reflect can't set unexported fields directly.
-		// Safe because we own the *http.Request and there is no concurrent access.
-		ctxPtr := (*context.Context)(unsafe.Pointer(ctxField.UnsafeAddr()))
-		*ctxPtr = ctx
-	}
-}
 
 // bytesReaderPool reduces allocations for bytes.Reader used in request bodies
 var bytesReaderPool = sync.Pool{
@@ -237,7 +221,10 @@ type urlCache struct {
 	maxSize int
 }
 
-// globalURLCache is the shared URL cache for all requests
+// globalURLCache is the shared URL cache for all engine.Client instances.
+// All clients share a single cache (max 1024 entries), so one client's
+// URLs may evict another's. This is an intentional trade-off: URL parsing
+// is expensive and most workloads benefit from cross-client reuse.
 var globalURLCache = &urlCache{
 	raw:     make(map[string]*url.URL, 256),
 	entries: make(map[string]*url.URL, 256),
@@ -755,11 +742,9 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 		Body:       bodyRC,
 		Host:       parsedURL.Host,
 	}
-	// Set the context without cloning the entire Request + Header map.
-	// We own this httpReq — it was just constructed above — so writing to the
-	// unexported ctx field via reflect is safe. This saves one Header clone
-	// (~2KB per request) compared to httpReq.WithContext(ctx).
-	setRequestContext(httpReq, ctx)
+	// WithContext is safe here: Header map is empty (just allocated), so the
+	// internal cloneHeader call copies zero entries — negligible overhead.
+	httpReq = httpReq.WithContext(ctx)
 
 	// Set Content-Length from known body types
 	p.setContentLength(httpReq, body)

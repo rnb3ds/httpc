@@ -3,6 +3,7 @@ package validation
 import (
 	"net/url"
 	"strings"
+	"sync"
 )
 
 // sensitiveQueryParamNames contains query parameter names whose values should be
@@ -140,7 +141,7 @@ func SanitizeURL(urlStr string) string {
 
 	// Estimate size: scheme (8) + ://***:***@ (10) + host + path + query
 	estimatedLen := 18 + len(parsedURL.Scheme) + len(parsedURL.Host) + len(parsedURL.Path) + len(parsedURL.RawQuery)
-	var b strings.Builder
+	b := getSanitizeBuilder()
 	b.Grow(estimatedLen)
 	b.WriteString(parsedURL.Scheme)
 	b.WriteString("://")
@@ -156,5 +157,31 @@ func SanitizeURL(urlStr string) string {
 		b.WriteByte('?')
 		b.WriteString(parsedURL.RawQuery)
 	}
-	return b.String()
+	result := b.String()
+	putSanitizeBuilder(b)
+	return result
+}
+
+// sanitizeBuilderPool reduces allocations for strings.Builder in SanitizeURL.
+var sanitizeBuilderPool = sync.Pool{
+	New: func() any {
+		return &strings.Builder{}
+	},
+}
+
+func getSanitizeBuilder() *strings.Builder {
+	b, ok := sanitizeBuilderPool.Get().(*strings.Builder)
+	if !ok || b == nil {
+		return &strings.Builder{}
+	}
+	b.Reset()
+	return b
+}
+
+func putSanitizeBuilder(b *strings.Builder) {
+	if b == nil || b.Cap() > 2048 {
+		return
+	}
+	b.Reset()
+	sanitizeBuilderPool.Put(b)
 }

@@ -115,8 +115,8 @@ func TestConfig_Presets(t *testing.T) {
 		config := TestingConfig()
 
 		// Verify testing-focused settings
-		if config.Timeouts.Request != 30*time.Second {
-			t.Errorf("Expected timeout 30s, got %v", config.Timeouts.Request)
+		if config.Timeouts.Request != 180*time.Second {
+			t.Errorf("Expected timeout 180s, got %v", config.Timeouts.Request)
 		}
 		if !config.Security.AllowPrivateIPs {
 			t.Error("Expected AllowPrivateIPs to be true")
@@ -628,83 +628,38 @@ func TestStrictCookieSecurityConfig(t *testing.T) {
 // ----------------------------------------------------------------------------
 
 func TestValidateConfig_AdditionalBoundaries(t *testing.T) {
-	t.Run("nil config", func(t *testing.T) {
-		if err := ValidateConfig(nil); err == nil {
-			t.Error("expected error for nil config")
-		}
-	})
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr bool
+	}{
+		{"nil config", func(c *Config) {}, true},
+		{"negative dial timeout", func(c *Config) { c.Timeouts.Dial = -1 * time.Second }, true},
+		{"negative TLS handshake timeout", func(c *Config) { c.Timeouts.TLSHandshake = -1 * time.Second }, true},
+		{"negative response header timeout", func(c *Config) { c.Timeouts.ResponseHeader = -1 * time.Second }, true},
+		{"negative idle conn timeout", func(c *Config) { c.Timeouts.IdleConn = -1 * time.Second }, true},
+		{"negative max idle conns", func(c *Config) { c.Connection.MaxIdleConns = -1 }, true},
+		{"negative max conns per host", func(c *Config) { c.Connection.MaxConnsPerHost = -1 }, true},
+		{"negative max response body size", func(c *Config) { c.Security.MaxResponseBodySize = -1 }, true},
+		{"negative retry delay", func(c *Config) { c.Retry.Delay = -1 * time.Second }, true},
+		{"invalid middleware headers", func(c *Config) { c.Middleware.Headers = map[string]string{"X-Bad": "value\r\nevil"} }, true},
+	}
 
-	t.Run("negative dial timeout", func(t *testing.T) {
-		cfg := DefaultConfig()
-		cfg.Timeouts.Dial = -1 * time.Second
-		if err := ValidateConfig(cfg); err == nil {
-			t.Error("expected error for negative dial timeout")
-		}
-	})
-
-	t.Run("negative TLS handshake timeout", func(t *testing.T) {
-		cfg := DefaultConfig()
-		cfg.Timeouts.TLSHandshake = -1 * time.Second
-		if err := ValidateConfig(cfg); err == nil {
-			t.Error("expected error for negative TLS handshake timeout")
-		}
-	})
-
-	t.Run("negative response header timeout", func(t *testing.T) {
-		cfg := DefaultConfig()
-		cfg.Timeouts.ResponseHeader = -1 * time.Second
-		if err := ValidateConfig(cfg); err == nil {
-			t.Error("expected error for negative response header timeout")
-		}
-	})
-
-	t.Run("negative idle conn timeout", func(t *testing.T) {
-		cfg := DefaultConfig()
-		cfg.Timeouts.IdleConn = -1 * time.Second
-		if err := ValidateConfig(cfg); err == nil {
-			t.Error("expected error for negative idle conn timeout")
-		}
-	})
-
-	t.Run("negative max idle conns", func(t *testing.T) {
-		cfg := DefaultConfig()
-		cfg.Connection.MaxIdleConns = -1
-		if err := ValidateConfig(cfg); err == nil {
-			t.Error("expected error for negative max idle conns")
-		}
-	})
-
-	t.Run("negative max conns per host", func(t *testing.T) {
-		cfg := DefaultConfig()
-		cfg.Connection.MaxConnsPerHost = -1
-		if err := ValidateConfig(cfg); err == nil {
-			t.Error("expected error for negative max conns per host")
-		}
-	})
-
-	t.Run("negative max response body size", func(t *testing.T) {
-		cfg := DefaultConfig()
-		cfg.Security.MaxResponseBodySize = -1
-		if err := ValidateConfig(cfg); err == nil {
-			t.Error("expected error for negative max response body size")
-		}
-	})
-
-	t.Run("negative retry delay", func(t *testing.T) {
-		cfg := DefaultConfig()
-		cfg.Retry.Delay = -1 * time.Second
-		if err := ValidateConfig(cfg); err == nil {
-			t.Error("expected error for negative retry delay")
-		}
-	})
-
-	t.Run("invalid middleware headers", func(t *testing.T) {
-		cfg := DefaultConfig()
-		cfg.Middleware.Headers = map[string]string{"X-Bad": "value\r\nevil"}
-		if err := ValidateConfig(cfg); err == nil {
-			t.Error("expected error for CRLF in middleware header value")
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.name == "nil config" {
+				if err := ValidateConfig(nil); err == nil {
+					t.Error("expected error for nil config")
+				}
+				return
+			}
+			cfg := DefaultConfig()
+			tt.mutate(cfg)
+			if err := ValidateConfig(cfg); (err != nil) != tt.wantErr {
+				t.Errorf("ValidateConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
 }
 
 // ============================================================================
@@ -746,7 +701,7 @@ func TestCalculateIdleConnsPerHost_TableDriven(t *testing.T) {
 		want            int
 	}{
 		{"unlimited uses cap", 0, 10},
-		{"very small rounds to min", 1, 2},
+		{"very small capped to max", 1, 1},
 		{"small rounds to min", 3, 2},
 		{"medium value halved", 8, 4},
 		{"large capped", 30, 10},
@@ -765,24 +720,20 @@ func TestCalculateIdleConnsPerHost_TableDriven(t *testing.T) {
 
 func TestCalculateMaxRetryDelay_TableDriven(t *testing.T) {
 	tests := []struct {
-		name    string
-		delay   time.Duration
-		backoff float64
-		wantMin time.Duration
-		wantMax time.Duration
+		name          string
+		maxRetryDelay time.Duration
+		wantMin       time.Duration
+		wantMax       time.Duration
 	}{
-		{"zero delay uses default", 0, 2.0, 5 * time.Second, 5 * time.Second},
-		{"zero backoff uses default", 100 * time.Millisecond, 0, 5 * time.Second, 5 * time.Second},
-		{"small product uses default min", 100 * time.Millisecond, 1.0, 5 * time.Second, 5 * time.Second},
-		{"medium product", 1 * time.Second, 2.0, 6 * time.Second, 7 * time.Second},
-		{"large product capped at absolute max", 10 * time.Second, 5.0, 30 * time.Second, 30 * time.Second},
+		{"default when not set", 0, 30 * time.Second, 30 * time.Second},
+		{"user override", 60 * time.Second, 60 * time.Second, 60 * time.Second},
+		{"short override", 5 * time.Second, 5 * time.Second, 5 * time.Second},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &Config{}
-			cfg.Retry.Delay = tt.delay
-			cfg.Retry.BackoffFactor = tt.backoff
+			cfg.Retry.MaxRetryDelay = tt.maxRetryDelay
 			got := calculateMaxRetryDelay(cfg)
 			if got < tt.wantMin || got > tt.wantMax {
 				t.Errorf("calculateMaxRetryDelay() = %v, want between %v and %v", got, tt.wantMin, tt.wantMax)

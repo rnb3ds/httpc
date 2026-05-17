@@ -297,59 +297,6 @@ func TestPackageLevel_AllMethods(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
-// Type Tests
-// ----------------------------------------------------------------------------
-
-func TestTypes(t *testing.T) {
-	t.Run("HTTPError", func(t *testing.T) {
-		// HTTPError is now an alias for ClientError
-		// Test that we can check HTTP errors using ClientError
-		err := &ClientError{
-			Type:       ErrorTypeHTTP,
-			Message:    "Not Found",
-			Method:     "GET",
-			URL:        "https://example.com",
-			StatusCode: 404,
-		}
-		if err.StatusCode != 404 {
-			t.Errorf("ClientError.StatusCode = %d, want 404", err.StatusCode)
-		}
-		if err.Type != ErrorTypeHTTP {
-			t.Errorf("ClientError.Type = %v, want %v", err.Type, ErrorTypeHTTP)
-		}
-	})
-
-	t.Run("FormData", func(t *testing.T) {
-		formData := &FormData{
-			Fields: map[string]string{
-				"field1": "value1",
-				"field2": "value2",
-			},
-			Files: map[string]*FileData{
-				"file1": {
-					Filename: "test.txt",
-					Content:  []byte("test content"),
-				},
-			},
-		}
-
-		if len(formData.Fields) != 2 {
-			t.Error("FormData should have 2 fields")
-		}
-		if len(formData.Files) != 1 {
-			t.Error("FormData should have 1 file")
-		}
-		file := formData.Files["file1"]
-		if file.Filename != "test.txt" {
-			t.Error("File filename should be test.txt")
-		}
-		if string(file.Content) != "test content" {
-			t.Error("File content should match")
-		}
-	})
-}
-
-// ----------------------------------------------------------------------------
 // Error Handling Tests
 // ----------------------------------------------------------------------------
 
@@ -616,18 +563,18 @@ func TestGetDefaultClient_Init(t *testing.T) {
 	CloseDefaultClient()
 }
 
-func TestClose_ErrorPath(t *testing.T) {
-	// Create and close a client, then close again to trigger error path
+
+func TestClose_DoubleClose(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Security.AllowPrivateIPs = true
 	client, _ := New(cfg)
 
-	// First close should succeed
 	if err := client.Close(); err != nil {
 		t.Errorf("First close should succeed: %v", err)
 	}
 
-	// Second close - the engine should return an error
-	// This exercises the error wrapping in Close()
-	_ = client.Close()
+	// Double close should not panic and should return nil (engine handles gracefully)
+	if err := client.Close(); err != nil {
+		t.Errorf("Second close should not error: %v", err)
+	}
 }

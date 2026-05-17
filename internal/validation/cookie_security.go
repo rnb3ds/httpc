@@ -137,7 +137,7 @@ func validateSameSite(cookie *http.Cookie, required string, allowNone bool) erro
 	// Handle empty/unknown SameSite
 	if cookieSameSite == "" || cookieSameSite == "Default" {
 		// Default mode in modern browsers is Lax
-		if equalFold(required, "lax") {
+		if EqualFold(required, "lax") {
 			return nil // Default is acceptable for Lax requirement
 		}
 		return fmt.Errorf("missing SameSite attribute (required: %s)", required)
@@ -149,7 +149,7 @@ func validateSameSite(cookie *http.Cookie, required string, allowNone bool) erro
 	}
 
 	// Validate match using zero-allocation case-insensitive comparison
-	if !equalFold(cookieSameSite, required) {
+	if !EqualFold(cookieSameSite, required) {
 		return fmt.Errorf("invalid SameSite value '%s' (required: %s)", cookieSameSite, required)
 	}
 

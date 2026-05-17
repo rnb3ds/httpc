@@ -55,7 +55,7 @@ func SecureConfig() *Config {
 	cfg.Timeouts.Request = 15 * time.Second
 	cfg.Timeouts.Dial = 5 * time.Second
 	cfg.Timeouts.TLSHandshake = 5 * time.Second
-	cfg.Timeouts.ResponseHeader = 10 * time.Second
+	cfg.Timeouts.ResponseHeader = 10 * time.Second // Transport-level defense-in-depth against slowloris
 	cfg.Timeouts.IdleConn = 30 * time.Second
 
 	// Connection - conservative limits
@@ -94,7 +94,7 @@ func PerformanceConfig() *Config {
 	cfg.Timeouts.Request = 60 * time.Second
 	cfg.Timeouts.Dial = 15 * time.Second
 	cfg.Timeouts.TLSHandshake = 15 * time.Second
-	cfg.Timeouts.ResponseHeader = 60 * time.Second
+	cfg.Timeouts.ResponseHeader = 0 // Use Request timeout (60s) as sole control
 	cfg.Timeouts.IdleConn = 120 * time.Second
 
 	// Connection - larger pools for throughput
@@ -131,7 +131,7 @@ func TestingConfig() *Config {
 	// Timeouts - shorter for faster tests
 	cfg.Timeouts.Dial = 5 * time.Second
 	cfg.Timeouts.TLSHandshake = 5 * time.Second
-	cfg.Timeouts.ResponseHeader = 10 * time.Second
+	cfg.Timeouts.ResponseHeader = 0 // Use Request timeout as sole control
 	cfg.Timeouts.IdleConn = 30 * time.Second
 
 	// Connection - minimal for testing
@@ -165,7 +165,7 @@ func MinimalConfig() *Config {
 	// Timeouts - reasonable defaults
 	cfg.Timeouts.Dial = 5 * time.Second
 	cfg.Timeouts.TLSHandshake = 5 * time.Second
-	cfg.Timeouts.ResponseHeader = 10 * time.Second
+	cfg.Timeouts.ResponseHeader = 0 // Use Request timeout as sole control
 	cfg.Timeouts.IdleConn = 30 * time.Second
 
 	// Connection - minimal

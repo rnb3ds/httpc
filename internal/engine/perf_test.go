@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 func BenchmarkClassifyError(b *testing.B) {
@@ -124,7 +126,7 @@ func BenchmarkContainsFold(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		for _, sub := range substrs {
-			containsFold(s, sub)
+			validation.ContainsFold(s, sub)
 		}
 	}
 }

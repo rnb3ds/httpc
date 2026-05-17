@@ -70,7 +70,7 @@ func DefaultAuditMiddlewareConfig() *AuditMiddlewareConfig {
 	return &AuditMiddlewareConfig{
 		Format:         "text",
 		IncludeHeaders: false,
-		MaskHeaders:    sensitiveHeaderNames(),
+		MaskHeaders:    cachedSensitiveHeaderNames,
 		SanitizeError:  true,
 	}
 }
@@ -159,6 +159,8 @@ func RequestIDMiddleware(headerName string, generator func() string) MiddlewareF
 		generator = func() string {
 			// SECURITY: Use cryptographically secure random for unpredictable request IDs
 			var b [16]byte
+			// crypto/rand.Read never fails on any supported Go platform
+			// (Linux getrandom, Windows ProcessPrng, macOS getentropy, etc.)
 			_, _ = cryptorand.Read(b[:])
 			return hex.EncodeToString(b[:])
 		}

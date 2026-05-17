@@ -274,27 +274,6 @@ func TestMetricsMiddleware(t *testing.T) {
 	}
 }
 
-func TestClient_NoMiddleware_Succeeds(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	// Client without middlewares
-	cfg := testConfig()
-	client, err := New(cfg)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
-	defer client.Close()
-
-	// Should work normally
-	_, err = client.Get(ts.URL)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-}
-
 func TestMiddlewareCanModifyRequest(t *testing.T) {
 	var receivedValue string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -140,11 +140,14 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 	for _, provider := range r.providers {
 		ips, err := r.lookupWithProvider(ctx, provider, host)
 		if err == nil && len(ips) > 0 {
-			// SECURITY: Use CAS to atomically reserve cache slot before storing
-			for {
+			// SECURITY: Use CAS to atomically reserve cache slot before storing.
+			// Bounded retry prevents theoretical livelock under extreme contention
+			// where concurrent goroutines continuously fill and evict the cache.
+			const maxCacheRetryAttempts = 3
+			for attempt := 0; attempt < maxCacheRetryAttempts; attempt++ {
 				current := r.cacheSize.Load()
 				if current >= maxDoHCacheSize {
-					// Cache full â evict expired entries to make room
+					// Cache full - evict expired entries to make room
 					r.evictExpiredEntries()
 					if r.cacheSize.Load() >= maxDoHCacheSize {
 						break // Still full after eviction, skip caching

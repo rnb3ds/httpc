@@ -8,12 +8,14 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
-	"unsafe"
 
 	"github.com/cybergodev/httpc/internal/engine"
 )
 
-// backgroundCtx is a cached background context, consistent with the engine layer.
+// backgroundCtx is a convenience alias for context.Background(), used as the
+// default context in methods that don't accept one (e.g., Get, Post, doRequest).
+// context.Background() returns the same immutable singleton on every call,
+// so caching it in a package variable is purely stylistic.
 var backgroundCtx = context.Background()
 
 // Doer is a minimal interface for executing HTTP requests.
@@ -305,7 +307,8 @@ func (c *clientImpl) Request(ctx context.Context, method, url string, options ..
 
 // releaseResponseMutator safely releases a ResponseMutator back to the engine pool.
 // If the response is an *engine.Response, it is returned via ReleaseResponse.
-// Other implementations are silently ignored (no pool to return to).
+// Custom ResponseMutator implementations (e.g., from middleware wrapping) are not
+// pooled — middleware authors are responsible for their own resource cleanup.
 func releaseResponseMutator(resp ResponseMutator) {
 	if resp == nil {
 		return
@@ -325,10 +328,12 @@ var middlewareRequestPool = sync.Pool{
 // executeRequest executes an HTTP request through the middleware chain (if configured)
 // or directly via the engine. Returns the raw ResponseMutator; the caller must
 // release the response via engine.ReleaseResponse() or convert it via convertResponseToResult().
+//
+// Middleware contract: if a middleware calls next() and obtains a non-nil response,
+// it must either return that response (directly or via a later next() call) or
+// explicitly release it via releaseResponseMutator(). Returning (nil, error) while
+// holding an unreleased response will cause a pool leak.
 func (c *clientImpl) executeRequest(ctx context.Context, method, url string, options []RequestOption) (ResponseMutator, error) {
-	if c.engine.IsClosed() {
-		return nil, fmt.Errorf("%w", ErrClientClosed)
-	}
 	if !c.hasMiddlewares {
 		return c.engine.Request(ctx, method, url, options...)
 	}
@@ -373,8 +378,9 @@ func (c *clientImpl) executeRequest(ctx context.Context, method, url string, opt
 // Close releases resources held by the client including connection pools and transport.
 // After calling Close, the client must not be used for further requests.
 func (c *clientImpl) Close() error {
-	// engine.Close() handles all resource cleanup including connection pool and transport
-	// If it fails, we wrap the error for better context
+	if c.engine == nil {
+		return nil
+	}
 	if err := c.engine.Close(); err != nil {
 		return fmt.Errorf("failed to close client: %w", err)
 	}
@@ -440,37 +446,37 @@ func doPackage(fn func(Client, string, ...RequestOption) (*Result, error), url s
 	return fn(client, url, options...)
 }
 
-// Get makes a GET request to the specified URL using the default client.
+// Get makes a GET request to the specified URL using the default client. Call ReleaseResult when done to reduce GC pressure.
 func Get(url string, options ...RequestOption) (*Result, error) {
 	return doPackage(Client.Get, url, options...)
 }
 
-// Post makes a POST request to the specified URL using the default client.
+// Post makes a POST request to the specified URL using the default client. Call ReleaseResult when done to reduce GC pressure.
 func Post(url string, options ...RequestOption) (*Result, error) {
 	return doPackage(Client.Post, url, options...)
 }
 
-// Put makes a PUT request to the specified URL using the default client.
+// Put makes a PUT request to the specified URL using the default client. Call ReleaseResult when done to reduce GC pressure.
 func Put(url string, options ...RequestOption) (*Result, error) {
 	return doPackage(Client.Put, url, options...)
 }
 
-// Patch makes a PATCH request to the specified URL using the default client.
+// Patch makes a PATCH request to the specified URL using the default client. Call ReleaseResult when done to reduce GC pressure.
 func Patch(url string, options ...RequestOption) (*Result, error) {
 	return doPackage(Client.Patch, url, options...)
 }
 
-// Delete makes a DELETE request to the specified URL using the default client.
+// Delete makes a DELETE request to the specified URL using the default client. Call ReleaseResult when done to reduce GC pressure.
 func Delete(url string, options ...RequestOption) (*Result, error) {
 	return doPackage(Client.Delete, url, options...)
 }
 
-// Head makes a HEAD request to the specified URL using the default client.
+// Head makes a HEAD request to the specified URL using the default client. Call ReleaseResult when done to reduce GC pressure.
 func Head(url string, options ...RequestOption) (*Result, error) {
 	return doPackage(Client.Head, url, options...)
 }
 
-// Options makes an OPTIONS request to the specified URL using the default client.
+// Options makes an OPTIONS request to the specified URL using the default client. Call ReleaseResult when done to reduce GC pressure.
 func Options(url string, options ...RequestOption) (*Result, error) {
 	return doPackage(Client.Options, url, options...)
 }
@@ -606,13 +612,8 @@ func convertResponseToResult(resp ResponseMutator) *Result {
 	// string conversion (sync.Once). The engine Response is released right
 	// after this call, so its cached body string would be wasted.
 	result.Response.RawBody = resp.RawBody()
-	// OPTIMIZATION: Use unsafe string conversion to avoid copying the body.
-	// The raw bytes are freshly allocated by readBody(), so the caller has
-	// exclusive ownership. When ReleaseResult is called, the underlying bytes
-	// are cleared (security), making the string unusable — which is correct.
-	// If the caller never calls ReleaseResult, the string remains valid.
 	if len(result.Response.RawBody) > 0 {
-		result.Response.Body = unsafeBytesToString(result.Response.RawBody)
+		result.Response.Body = string(result.Response.RawBody)
 	}
 	result.Response.ContentLength = resp.ContentLength()
 	result.Response.Cookies = resp.Cookies()
@@ -622,13 +623,6 @@ func convertResponseToResult(resp ResponseMutator) *Result {
 	result.Meta.RedirectCount = resp.RedirectCount()
 
 	return result
-}
-
-// unsafeBytesToString converts a byte slice to a string without copying.
-// The caller must ensure the byte slice is not modified after this call.
-// This is safe because readBody() always returns freshly allocated []byte.
-func unsafeBytesToString(b []byte) string {
-	return *(*string)(unsafe.Pointer(&b))
 }
 
 func extractRequestCookies(headers http.Header) []*http.Cookie {

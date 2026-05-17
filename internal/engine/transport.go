@@ -284,15 +284,15 @@ func (t *transport) validateRedirectTarget(targetURL *url.URL) error {
 type redirectContextKey struct{}
 
 // SetRedirectPolicy updates the redirect policy for a specific request.
-// Returns a new context with the redirect settings and a cleanup function.
+// Returns a new context with the redirect settings.
 //
-// IMPORTANT: The returned cleanup function MUST be called after the request completes
-// to return settings to the pool. Use defer to ensure cleanup:
+// IMPORTANT: The returned settings MUST be returned to the pool after
+// the request completes. Use defer to ensure cleanup:
 //
-//	ctx, cleanup := transport.SetRedirectPolicy(ctx, true, 5)
-//	defer cleanup()
+//	ctx, settings := transport.SetRedirectPolicy(ctx, true, 5)
+//	defer putRedirectSettings(settings)
 //
-// SECURITY: Failure to call cleanup will cause memory leaks and pool exhaustion.
+// SECURITY: Failure to call putRedirectSettings will cause memory leaks and pool exhaustion.
 func (t *transport) SetRedirectPolicy(ctx context.Context, followRedirects bool, maxRedirects int) (context.Context, *redirectSettings) {
 	settings := getRedirectSettings()
 	settings.followRedirects = followRedirects

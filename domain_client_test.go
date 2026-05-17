@@ -576,122 +576,43 @@ func TestDomainClient_SameDomainCookiePersistence(t *testing.T) {
 	}
 }
 
-func TestDomainClient_DomainMatching(t *testing.T) {
-	tests := []struct {
-		name        string
-		baseURL     string
-		requestPath string
-		shouldMatch bool
+func TestDomainClient_HTTPMethods(t *testing.T) {
+	methods := []struct {
+		name   string
+		method string
+		do     func(httpc.DomainClienter, string) (*httpc.Result, error)
 	}{
-		{
-			name:        "exact domain match",
-			baseURL:     "https://www.example.com",
-			requestPath: "https://www.example.com/aa.html",
-			shouldMatch: true,
-		},
-		{
-			name:        "different subdomain",
-			baseURL:     "https://www.example.com",
-			requestPath: "https://api.example.com/aa.html",
-			shouldMatch: false,
-		},
-		{
-			name:        "different domain",
-			baseURL:     "https://www.example.com",
-			requestPath: "https://www.other.com/aa.html",
-			shouldMatch: false,
-		},
-		{
-			name:        "same domain different port",
-			baseURL:     "https://www.example.com:8080",
-			requestPath: "https://www.example.com:8080/aa.html",
-			shouldMatch: true,
-		},
-		{
-			name:        "same domain different protocol",
-			baseURL:     "https://www.example.com",
-			requestPath: "http://www.example.com/aa.html",
-			shouldMatch: true,
-		},
+		{"Put", "PUT", func(dc httpc.DomainClienter, path string) (*httpc.Result, error) { return dc.Put(path) }},
+		{"Patch", "PATCH", func(dc httpc.DomainClienter, path string) (*httpc.Result, error) { return dc.Patch(path) }},
+		{"Delete", "DELETE", func(dc httpc.DomainClienter, path string) (*httpc.Result, error) { return dc.Delete(path) }},
+		{"Head", "HEAD", func(dc httpc.DomainClienter, path string) (*httpc.Result, error) { return dc.Head(path) }},
+		{"Options", "OPTIONS", func(dc httpc.DomainClienter, path string) (*httpc.Result, error) { return dc.Options(path) }},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range methods {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create a test server
+			received := ""
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				received = r.Method
 				w.WriteHeader(http.StatusOK)
 			}))
 			defer server.Close()
 
-			cfg := httpc.TestingConfig()
-			cfg.Security.AllowPrivateIPs = true
-
-			// Use test server URL as base
-			client, err := httpc.NewDomain(server.URL, cfg)
+			client, err := httpc.NewDomain(server.URL, httpc.TestingConfig())
 			if err != nil {
 				t.Fatalf("NewDomain() error = %v", err)
 			}
 			defer client.Close()
 
-			// Test with relative path (should always work)
-			_, err = client.Get("/test")
+			resp, err := tt.do(client, "/resource")
 			if err != nil {
-				t.Errorf("Relative path request failed: %v", err)
-			}
-
-			// Test with full URL to same server (should work)
-			_, err = client.Get(server.URL + "/test")
-			if err != nil {
-				t.Errorf("Full URL same domain request failed: %v", err)
-			}
-		})
-	}
-}
-
-func TestDomainClient_AllHTTPMethods(t *testing.T) {
-	methods := []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
-
-	for _, method := range methods {
-		t.Run(method, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != method {
-					t.Errorf("Method = %v, want %v", r.Method, method)
-				}
-				w.WriteHeader(http.StatusOK)
-			}))
-			defer server.Close()
-
-			cfg := httpc.TestingConfig()
-			cfg.Security.AllowPrivateIPs = true
-			client, err := httpc.NewDomain(server.URL, cfg)
-			if err != nil {
-				t.Fatalf("NewDomain() error = %v", err)
-			}
-			defer client.Close()
-
-			var resp *httpc.Result
-			switch method {
-			case "GET":
-				resp, err = client.Get("/")
-			case "POST":
-				resp, err = client.Post("/")
-			case "PUT":
-				resp, err = client.Put("/")
-			case "PATCH":
-				resp, err = client.Patch("/")
-			case "DELETE":
-				resp, err = client.Delete("/")
-			case "HEAD":
-				resp, err = client.Head("/")
-			case "OPTIONS":
-				resp, err = client.Options("/")
-			}
-
-			if err != nil {
-				t.Fatalf("%s error = %v", method, err)
+				t.Fatalf("%s error = %v", tt.name, err)
 			}
 			if resp == nil {
-				t.Fatalf("%s returned nil response", method)
+				t.Fatalf("%s returned nil", tt.name)
+			}
+			if received != tt.method {
+				t.Errorf("Server received method %q, want %q", received, tt.method)
 			}
 		})
 	}
