@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cybergodev/httpc/internal/engine"
@@ -33,7 +34,7 @@ const (
 // All duration values use time.Duration (e.g., 30 * time.Second).
 type TimeoutConfig struct {
 	// Request is the overall request timeout including retries.
-	// Default: 30s. Set to 0 for no timeout (not recommended for production).
+	// Default: 180s. Set to 0 for no timeout (not recommended for production).
 	Request time.Duration
 
 	// Dial is the maximum time to wait for a TCP connection.
@@ -44,8 +45,19 @@ type TimeoutConfig struct {
 	// Default: 10s. Only applies to HTTPS connections.
 	TLSHandshake time.Duration
 
-	// ResponseHeader is the maximum time to wait for response headers.
-	// Default: 30s.
+	// ResponseHeader is the maximum time to wait for response headers after
+	// the request is fully written. This timeout is enforced at the transport
+	// level and applies to ALL requests sharing the same client — it CANNOT
+	// be overridden per-request via WithTimeout.
+	//
+	// When set to 0 (default), the context-level timeout from Timeouts.Request
+	// or WithTimeout() serves as the sole timeout mechanism, giving per-request
+	// control over how long to wait for a response.
+	//
+	// Set to a positive value ONLY when you want a hard transport-level cap
+	// independent of the request timeout (e.g., defense-in-depth against
+	// slowloris attacks). Be aware this will override WithTimeout if the
+	// ResponseHeader value is shorter.
 	ResponseHeader time.Duration
 
 	// IdleConn is the maximum time an idle connection remains open.
@@ -167,6 +179,10 @@ type RetryConfig struct {
 
 	// EnableJitter enables jitter in retry delay. Default: true.
 	EnableJitter bool
+
+	// MaxRetryDelay caps the maximum delay between retry attempts.
+	// Default: 30s. Set to 0 for no cap (not recommended).
+	MaxRetryDelay time.Duration
 
 	// CustomPolicy overrides the built-in retry logic. Default: nil.
 	CustomPolicy RetryPolicy
@@ -333,10 +349,10 @@ const (
 func DefaultConfig() *Config {
 	return &Config{
 		Timeouts: TimeoutConfig{
-			Request:        30 * time.Second,
+			Request:        180 * time.Second,
 			Dial:           10 * time.Second,
 			TLSHandshake:   10 * time.Second,
-			ResponseHeader: 30 * time.Second,
+			ResponseHeader: 0, // Disabled: rely on context timeout (Timeouts.Request / WithTimeout)
 			IdleConn:       90 * time.Second,
 		},
 		Connection: ConnectionConfig{
@@ -366,6 +382,7 @@ func DefaultConfig() *Config {
 			Delay:         1 * time.Second,
 			BackoffFactor: 2.0,
 			EnableJitter:  true,
+			MaxRetryDelay: 30 * time.Second,
 			CustomPolicy:  nil,
 		},
 		Middleware: MiddlewareConfig{
@@ -477,6 +494,9 @@ func ValidateConfig(cfg *Config) error {
 	if cfg.Retry.BackoffFactor < minBackoffFactor || cfg.Retry.BackoffFactor > maxBackoffFactor {
 		return fmt.Errorf("%w: Retry.BackoffFactor must be %.1f-%.1f, got %.1f", ErrInvalidRetry, minBackoffFactor, maxBackoffFactor, cfg.Retry.BackoffFactor)
 	}
+	if cfg.Retry.MaxRetryDelay < 0 || cfg.Retry.MaxRetryDelay > maxTimeout {
+		return fmt.Errorf("%w: Retry.MaxRetryDelay must be 0-%v, got %v", ErrInvalidRetry, maxTimeout, cfg.Retry.MaxRetryDelay)
+	}
 
 	// Validate middleware settings
 	if cfg.Middleware.MaxRedirects < 0 || cfg.Middleware.MaxRedirects > 50 {
@@ -488,7 +508,7 @@ func ValidateConfig(cfg *Config) error {
 
 	for key, value := range cfg.Middleware.Headers {
 		if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
-			return fmt.Errorf("%w: %s: %v", ErrInvalidHeader, key, err)
+			return fmt.Errorf("%w: %s: %w", ErrInvalidHeader, key, err)
 		}
 	}
 
@@ -505,7 +525,15 @@ func (c *Config) String() string {
 		return "Config{<nil>}"
 	}
 
-	var b strings.Builder
+	b, ok := configBuilderPool.Get().(*strings.Builder)
+	if !ok || b == nil {
+		b = &strings.Builder{}
+	}
+	b.Reset()
+	b.Grow(512)
+
+	var numBuf [20]byte
+
 	b.WriteString("Config{Timeouts:{Request: ")
 	b.WriteString(c.Timeouts.Request.String())
 	b.WriteString(", Dial: ")
@@ -514,9 +542,9 @@ func (c *Config) String() string {
 	b.WriteString(c.Timeouts.TLSHandshake.String())
 
 	b.WriteString("}, Connection:{MaxIdleConns: ")
-	b.WriteString(strconv.Itoa(c.Connection.MaxIdleConns))
+	b.Write(strconv.AppendInt(numBuf[:0], int64(c.Connection.MaxIdleConns), 10))
 	b.WriteString(", MaxConnsPerHost: ")
-	b.WriteString(strconv.Itoa(c.Connection.MaxConnsPerHost))
+	b.Write(strconv.AppendInt(numBuf[:0], int64(c.Connection.MaxConnsPerHost), 10))
 	b.WriteString(", ProxyURL: ")
 	b.WriteString(maskProxyURL(c.Connection.ProxyURL))
 
@@ -532,7 +560,7 @@ func (c *Config) String() string {
 	b.WriteString(strconv.FormatBool(c.Security.AllowPrivateIPs))
 
 	b.WriteString("}, Retry:{MaxRetries: ")
-	b.WriteString(strconv.Itoa(c.Retry.MaxRetries))
+	b.Write(strconv.AppendInt(numBuf[:0], int64(c.Retry.MaxRetries), 10))
 	b.WriteString(", BackoffFactor: ")
 	b.WriteString(strconv.FormatFloat(c.Retry.BackoffFactor, 'f', 1, 64))
 
@@ -546,7 +574,16 @@ func (c *Config) String() string {
 	b.WriteString(strconv.FormatBool(c.Middleware.FollowRedirects))
 
 	b.WriteString("}}")
-	return b.String()
+	result := b.String()
+	configBuilderPool.Put(b)
+	return result
+}
+
+// configBuilderPool reduces allocations for strings.Builder in Config.String().
+var configBuilderPool = sync.Pool{
+	New: func() any {
+		return &strings.Builder{}
+	},
 }
 
 // maskProxyURL masks credentials in a proxy URL for safe logging.

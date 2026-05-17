@@ -142,7 +142,7 @@ func validateHeaderValueTokens(value string, allowed []string, headerName string
 		}
 		found := false
 		for _, a := range allowed {
-			if asciiEqualFold(token, a) {
+			if validation.EqualFold(token, a) {
 				found = true
 				break
 			}
@@ -168,38 +168,17 @@ func validateCommonHeaderValue(key, value string) error {
 	}
 	switch key[0] | 0x20 {
 	case 'c':
-		if asciiEqualFold(key, "connection") {
+		if validation.EqualFold(key, "connection") {
 			return validateHeaderValueTokens(value, connectionAllowed, "Connection")
 		}
 	case 't':
-		if asciiEqualFold(key, "transfer-encoding") {
+		if validation.EqualFold(key, "transfer-encoding") {
 			return validateHeaderValueTokens(value, transferEncodingAllowed, "Transfer-Encoding")
 		}
 	}
 	return nil
 }
 
-// asciiEqualFold reports whether s and t are equal under ASCII case-folding.
-// Avoids strings.EqualFold allocation and unicode overhead for simple ASCII comparison.
-func asciiEqualFold(s, t string) bool {
-	if len(s) != len(t) {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		sc := s[i]
-		tc := t[i]
-		if sc >= 'A' && sc <= 'Z' {
-			sc += 32
-		}
-		if tc >= 'A' && tc <= 'Z' {
-			tc += 32
-		}
-		if sc != tc {
-			return false
-		}
-	}
-	return true
-}
 
 // validateRequestBodySize checks the request body against the configured size limit.
 // Only validates when MaxRequestBodySize is explicitly set; does not fall back to

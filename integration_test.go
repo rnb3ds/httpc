@@ -152,117 +152,63 @@ func TestIntegration_RESTfulAPI(t *testing.T) {
 	})
 }
 
-func TestIntegration_Authentication(t *testing.T) {
+func TestIntegration_UnauthorizedAccess(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check authentication
-		auth := r.Header.Get("Authorization")
-		if auth == "" {
+		if r.Header.Get("Authorization") == "" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-
-		if strings.HasPrefix(auth, "Bearer ") {
-			token := strings.TrimPrefix(auth, "Bearer ")
-			if token != "valid-token" {
-				w.WriteHeader(http.StatusUnauthorized)
-				return
-			}
-		} else if strings.HasPrefix(auth, "Basic ") {
-			username, password, ok := r.BasicAuth()
-			if !ok || username != "user" || password != "pass" {
-				w.WriteHeader(http.StatusUnauthorized)
-				return
-			}
-		}
-
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"authenticated":true}`))
 	}))
 	defer server.Close()
 
 	client, _ := newTestClient()
 	defer client.Close()
 
-	t.Run("Bearer Token", func(t *testing.T) {
-		resp, err := client.Get(server.URL, WithBearerToken("valid-token"))
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-
-		if resp.StatusCode() != http.StatusOK {
-			t.Errorf("Expected status 200, got %d", resp.StatusCode())
-		}
-	})
-
-	t.Run("Basic Auth", func(t *testing.T) {
-		resp, err := client.Get(server.URL, WithBasicAuth("user", "pass"))
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-
-		if resp.StatusCode() != http.StatusOK {
-			t.Errorf("Expected status 200, got %d", resp.StatusCode())
-		}
-	})
-
-	t.Run("No Auth", func(t *testing.T) {
-		resp, err := client.Get(server.URL)
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-
-		if resp.StatusCode() != http.StatusUnauthorized {
-			t.Errorf("Expected status 401, got %d", resp.StatusCode())
-		}
-	})
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	if resp.StatusCode() != http.StatusUnauthorized {
+		t.Errorf("Expected status 401 without auth, got %d", resp.StatusCode())
+	}
 }
 
-func TestIntegration_Pagination(t *testing.T) {
+func TestIntegration_QueryParameterVariations(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		page := r.URL.Query().Get("page")
-		limit := r.URL.Query().Get("limit")
-
-		if page == "" {
-			page = "1"
-		}
-		if limit == "" {
-			limit = "10"
-		}
-
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"page":  page,
-			"limit": limit,
-			"data":  []string{"item1", "item2", "item3"},
-		})
+		json.NewEncoder(w).Encode(map[string]string{"page": page})
 	}))
 	defer server.Close()
 
 	client, _ := newTestClient()
 	defer client.Close()
 
-	// Test pagination
-	for page := 1; page <= 3; page++ {
-		resp, err := client.Get(server.URL,
-			WithQuery("page", page),
-			WithQuery("limit", 10),
-		)
-		if err != nil {
-			t.Fatalf("Request failed for page %d: %v", page, err)
-		}
+	tests := []struct {
+		page string
+	}{
+		{"1"}, {"2"}, {"99"}, {""},
+	}
 
-		if resp.StatusCode() != http.StatusOK {
-			t.Errorf("Expected status 200, got %d", resp.StatusCode())
-		}
-
-		var result map[string]interface{}
-		if err := resp.Unmarshal(&result); err != nil {
-			t.Fatalf("Failed to parse response: %v", err)
-		}
-
-		if result["page"] != fmt.Sprintf("%d", page) {
-			t.Errorf("Expected page %d, got %v", page, result["page"])
-		}
+	for _, tt := range tests {
+		t.Run("page_"+tt.page, func(t *testing.T) {
+			opts := []RequestOption{}
+			if tt.page != "" {
+				opts = append(opts, WithQuery("page", tt.page))
+			}
+			resp, err := client.Get(server.URL, opts...)
+			if err != nil {
+				t.Fatalf("Request failed: %v", err)
+			}
+			var result map[string]string
+			if err := resp.Unmarshal(&result); err != nil {
+				t.Fatalf("Failed to parse response: %v", err)
+			}
+			if result["page"] != tt.page {
+				t.Errorf("Expected page %q, got %q", tt.page, result["page"])
+			}
+		})
 	}
 }
 

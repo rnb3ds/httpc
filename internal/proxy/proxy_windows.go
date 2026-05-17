@@ -60,7 +60,7 @@ func getWindowsProxySettings() (proxyServer string, proxyEnable bool, err error)
 	defer func() { _ = syscall.RegCloseKey(hKey) }() // best-effort registry key cleanup
 
 	// Read ProxyEnable value
-	valueName, _ := windows.UTF16PtrFromString("ProxyEnable")
+	valueName, _ := windows.UTF16PtrFromString("ProxyEnable") // compile-time constant; cannot fail
 	var dataType uint32
 	var dataSize uint32
 
@@ -93,7 +93,7 @@ func getWindowsProxySettings() (proxyServer string, proxyEnable bool, err error)
 	}
 
 	// Read ProxyServer value
-	valueName, _ = windows.UTF16PtrFromString("ProxyServer")
+	valueName, _ = windows.UTF16PtrFromString("ProxyServer") // "ProxyServer" is a compile-time constant; cannot fail
 	err = syscall.RegQueryValueEx(
 		hKey,
 		valueName,

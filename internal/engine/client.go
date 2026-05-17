@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -516,12 +517,72 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 		policy = c.config.CustomRetryPolicy
 	}
 
+	// Create a shared timeout context for all retry attempts.
+	// This ensures WithTimeout is a total budget across retries,
+	// not per-attempt. Without this, each retry gets a fresh full timeout,
+	// allowing WithTimeout(900s)+3 retries to take ~3600s instead of 900s.
+	retryCtx := req.Context()
+	if retryCtx == nil {
+		retryCtx = backgroundCtx
+	}
+	retryTimeout := req.Timeout()
+	if retryTimeout <= 0 && c.config.Timeout > 0 {
+		retryTimeout = c.config.Timeout
+	}
+	var overallCancel context.CancelFunc
+	if retryTimeout > 0 {
+		if existingDeadline, hasDeadline := retryCtx.Deadline(); !hasDeadline {
+			retryCtx, overallCancel = context.WithTimeout(retryCtx, retryTimeout)
+		} else if timeUntil := time.Until(existingDeadline); timeUntil > retryTimeout {
+			retryCtx, overallCancel = context.WithTimeout(retryCtx, retryTimeout)
+		}
+	}
+	req.SetContext(retryCtx)
+	// Ensure overallCancel is called on all non-success exit paths.
+	// For streaming success, overallCancel is transferred to the response
+	// and set to nil before this defer runs.
+	if overallCancel != nil {
+		defer func() {
+			if overallCancel != nil {
+				overallCancel()
+			}
+		}()
+	}
+
 	// Cache sanitized URL once — URL doesn't change across retry attempts
 	sanitizedURL := validation.SanitizeURL(req.URL())
 	reqMethod := req.Method()
 
 	var lastErr error
 	var lastResp *Response
+
+	// Buffer io.Reader body for retry safety. io.Reader is consumed on
+	// first use, so subsequent retry attempts would send an empty body.
+	// Converting to []byte allows Build() to create a fresh reader per attempt.
+	// SECURITY: Cap at maxRetryBodySize to prevent OOM from large streams.
+	if req.body != nil {
+		if r, ok := req.body.(io.Reader); ok {
+			const maxRetryBodySize int64 = 100 * 1024 * 1024 // 100MB
+			limited := io.LimitReader(r, maxRetryBodySize+1)
+			buf, readErr := io.ReadAll(limited)
+			if readErr != nil {
+				if overallCancel != nil {
+					overallCancel()
+				}
+				return nil, classifyError(fmt.Errorf("buffer request body failed: %w", readErr), req.URL(), req.Method(), 0)
+			}
+			if int64(len(buf)) > maxRetryBodySize {
+				if overallCancel != nil {
+					overallCancel()
+				}
+				return nil, classifyError(
+					fmt.Errorf("retry not supported for streaming bodies exceeding %d bytes", maxRetryBodySize),
+					req.URL(), req.Method(), 0,
+				)
+			}
+			req.body = buf
+		}
+	}
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		resp, err := c.executeRequest(req, false)
@@ -579,6 +640,13 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 
 			// Success - set attempt count and return
 			resp.SetAttempts(attempt + 1)
+			// Transfer context cancel ownership: streaming responses
+			// need the cancel to stay alive until ReleaseResponse.
+			// Setting overallCancel=nil prevents the defer from cancelling.
+			if overallCancel != nil && resp.rawBodyReader != nil {
+				resp.cancelFunc = overallCancel
+				overallCancel = nil
+			}
 			return resp, nil
 		}
 	}
@@ -603,6 +671,27 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 	return nil, fmt.Errorf("request failed after %d attempts", maxRetries+1)
 }
 
+// captureRequestHeaders builds a complete header map from an http.Request.
+// Go's http.Request stores Content-Length and Host as separate struct fields,
+// not in the Header map. This function clones the Header map and enriches it
+// with those fields so callers see the full set of sent headers.
+func captureRequestHeaders(httpReq *http.Request) http.Header {
+	if httpReq == nil {
+		return nil
+	}
+	h := cloneHeader(httpReq.Header)
+	if h == nil {
+		h = make(http.Header, 4)
+	}
+	if httpReq.ContentLength > 0 && h.Get("Content-Length") == "" {
+		h.Set("Content-Length", strconv.FormatInt(httpReq.ContentLength, 10))
+	}
+	if httpReq.Host != "" && h.Get("Host") == "" {
+		h.Set("Host", httpReq.Host)
+	}
+	return h
+}
+
 // releaseLastResp releases the intermediate response object back to the pool.
 // Takes a pointer to the caller's lastResp so it can nil the reference after release,
 // preventing double-release in deferred cleanup paths.
@@ -617,17 +706,10 @@ const (
 	defaultMaxDrain int64 = 10 * 1024 * 1024 // 10MB
 )
 
-// backgroundCtx is a cached background context to avoid repeated allocations.
-//
-// # Design Note
-//
-// This does NOT violate the "do not store context in struct" guideline because:
-//   - context.Background() returns the same immutable empty context value every time
-//   - It is used only as a base/default context, never as a request-specific context
-//   - Request-specific contexts are always derived from this base via context.WithTimeout
-//
-// Caching this value avoids the overhead of repeatedly calling context.Background()
-// in the hot path of request execution.
+// backgroundCtx is a convenience alias for context.Background(), used as the
+// default context when no context is provided. context.Background() is an
+// immutable singleton, so this is purely stylistic — it does not violate
+// the "do not store context in struct" guideline.
 var backgroundCtx = context.Background()
 
 // executeRequest executes a single HTTP request with comprehensive error handling.
@@ -675,9 +757,6 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 	default:
 	}
 
-	// Cache sanitized URL once for all error paths in this execution
-	sanitizedURL := validation.SanitizeURL(req.URL())
-
 	// Get a pooled Request copy — deep copy reference types to prevent cross-retry mutation
 	// Optimization: skip deep copy in no-retry fast path (skipCopy=true) to avoid
 	// unnecessary map/slice allocations for headers, query params, and cookies.
@@ -724,22 +803,33 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 		defer putRedirectSettings(redirectSettings)
 	}
 
+	// Lazy sanitized URL: only compute when an error occurs.
+	// Most requests succeed, so this avoids the SanitizeURL allocation entirely
+	// on the happy path.
+	var sanitizedURL string
+	sanitizeOnce := func() string {
+		if sanitizedURL == "" {
+			sanitizedURL = validation.SanitizeURL(req.URL())
+		}
+		return sanitizedURL
+	}
+
 	// Invoke OnRequest callback before building the HTTP request
 	if reqCopy.onRequest != nil {
 		if err := reqCopy.onRequest(reqCopy); err != nil {
-			return nil, classifyErrorWithSanitizedURL(fmt.Errorf("onRequest callback failed: %w", err), sanitizedURL, req.Method(), 0)
+			return nil, classifyErrorWithSanitizedURL(fmt.Errorf("onRequest callback failed: %w", err), sanitizeOnce(), req.Method(), 0)
 		}
 	}
 
 	httpReq, err := c.requestProcessor.Build(reqCopy)
 	if err != nil {
-		return nil, classifyErrorWithSanitizedURL(fmt.Errorf("build request failed: %w", err), sanitizedURL, req.Method(), 0)
+		return nil, classifyErrorWithSanitizedURL(err, sanitizeOnce(), req.Method(), 0)
 	}
 
 	httpResp, err := c.transport.RoundTrip(httpReq)
 
 	if err != nil {
-		return nil, classifyErrorWithSanitizedURL(fmt.Errorf("transport failed: %w", err), sanitizedURL, req.Method(), 0)
+		return nil, classifyErrorWithSanitizedURL(err, sanitizeOnce(), req.Method(), 0)
 	}
 
 	// Streaming mode: skip body buffering, hand raw reader to caller.
@@ -762,9 +852,7 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 		setCancelFuncToNil() // Prevent deferred cancel; ReleaseResponse handles cleanup
 
 		if httpResp.Request != nil {
-			if len(httpResp.Request.Header) > 0 {
-				resp.SetRequestHeaders(cloneHeader(httpResp.Request.Header))
-			}
+			resp.SetRequestHeaders(captureRequestHeaders(httpResp.Request))
 			if httpResp.Request.URL != nil {
 				resp.SetRequestURL(httpResp.Request.URL.String())
 			}
@@ -781,7 +869,7 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 		if reqCopy.onResponse != nil {
 			if err := reqCopy.onResponse(resp); err != nil {
 				ReleaseResponse(resp)
-				return nil, classifyErrorWithSanitizedURL(fmt.Errorf("onResponse callback failed: %w", err), sanitizedURL, req.Method(), 0)
+				return nil, classifyErrorWithSanitizedURL(fmt.Errorf("onResponse callback failed: %w", err), sanitizeOnce(), req.Method(), 0)
 			}
 		}
 
@@ -796,14 +884,14 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 			}
 			// io.Discard implements io.ReaderFrom with its own internal pooled buffer,
 			// so io.Copy(io.Discard, ...) already avoids per-call heap allocation.
-			_, _ = io.Copy(io.Discard, io.LimitReader(httpResp.Body, maxDrain))
-			_ = httpResp.Body.Close()
+			_, _ = io.Copy(io.Discard, io.LimitReader(httpResp.Body, maxDrain)) // drain for connection reuse
+			_ = httpResp.Body.Close() // best-effort cleanup
 		}
 	}()
 
 	resp, err := c.responseProcessor.Process(httpResp)
 	if err != nil {
-		return nil, classifyErrorWithSanitizedURL(fmt.Errorf("process response failed: %w", err), sanitizedURL, req.Method(), 0)
+		return nil, classifyErrorWithSanitizedURL(err, sanitizeOnce(), req.Method(), 0)
 	}
 
 	if redirectChain := c.transport.GetRedirectChain(reqCopy.context); len(redirectChain) > 0 {
@@ -812,11 +900,7 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 	}
 
 	if httpResp.Request != nil {
-		// Copy headers using optimized pooled allocation
-		if len(httpResp.Request.Header) > 0 {
-			requestHeaders := cloneHeader(httpResp.Request.Header)
-			resp.SetRequestHeaders(requestHeaders)
-		}
+		resp.SetRequestHeaders(captureRequestHeaders(httpResp.Request))
 		// Set the actual request URL and method
 		if httpResp.Request.URL != nil {
 			resp.SetRequestURL(httpResp.Request.URL.String())
@@ -828,7 +912,7 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 	if reqCopy.onResponse != nil {
 		if err := reqCopy.onResponse(resp); err != nil {
 			ReleaseResponse(resp)
-			return nil, classifyErrorWithSanitizedURL(fmt.Errorf("onResponse callback failed: %w", err), sanitizedURL, req.Method(), 0)
+			return nil, classifyErrorWithSanitizedURL(fmt.Errorf("onResponse callback failed: %w", err), sanitizeOnce(), req.Method(), 0)
 		}
 	}
 

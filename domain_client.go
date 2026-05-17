@@ -133,6 +133,10 @@ func (dc *DomainClient) Options(path string, options ...RequestOption) (*Result,
 // The context parameter allows for timeout and cancellation control.
 // This method makes DomainClient compatible with the Client interface.
 func (dc *DomainClient) Request(ctx context.Context, method, path string, options ...RequestOption) (*Result, error) {
+	if err := dc.checkInit(); err != nil {
+		return nil, err
+	}
+
 	fullURL, err := dc.buildURL(path)
 	if err != nil {
 		return nil, err
@@ -167,25 +171,37 @@ func (dc *DomainClient) DownloadWithOptions(path string, downloadOpts *DownloadC
 // DownloadFileWithContext downloads a file with context control for cancellation and timeouts.
 // Response cookies are captured into the session, consistent with Request behavior.
 func (dc *DomainClient) DownloadFileWithContext(ctx context.Context, path string, filePath string, options ...RequestOption) (*DownloadResult, error) {
-	fullURL, err := dc.buildURL(path)
-	if err != nil {
-		return nil, err
-	}
-
-	allOptions := dc.prepareSessionOptions(options)
-
-	result, err := dc.client.DownloadFileWithContext(ctx, fullURL, filePath, allOptions...)
-	if err != nil {
-		return nil, err
-	}
-
-	dc.captureDownloadCookies(result)
-	return result, nil
+	downloadOpts := DefaultDownloadConfig()
+	downloadOpts.FilePath = filePath
+	return dc.downloadWithContext(ctx, path,
+		func(ctx context.Context, url string, _ *DownloadConfig, opts ...RequestOption) (*DownloadResult, error) {
+			return dc.client.DownloadWithOptionsWithContext(ctx, url, downloadOpts, opts...)
+		},
+		downloadOpts, options,
+	)
 }
 
 // DownloadWithOptionsWithContext downloads a file with custom download options and context control.
 // Response cookies are captured into the session, consistent with Request behavior.
 func (dc *DomainClient) DownloadWithOptionsWithContext(ctx context.Context, path string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error) {
+	return dc.downloadWithContext(ctx, path,
+		func(ctx context.Context, url string, opts *DownloadConfig, additional ...RequestOption) (*DownloadResult, error) {
+			return dc.client.DownloadWithOptionsWithContext(ctx, url, opts, additional...)
+		},
+		downloadOpts, options,
+	)
+}
+
+// downloadFunc is the signature for delegating a download to the underlying client.
+type downloadFunc func(ctx context.Context, url string, opts *DownloadConfig, options ...RequestOption) (*DownloadResult, error)
+
+// downloadWithContext is the shared implementation for DomainClient download methods.
+// It handles initialization checks, URL building, session option merging, and cookie capture.
+func (dc *DomainClient) downloadWithContext(ctx context.Context, path string, doDownload downloadFunc, downloadOpts *DownloadConfig, options []RequestOption) (*DownloadResult, error) {
+	if err := dc.checkInit(); err != nil {
+		return nil, err
+	}
+
 	fullURL, err := dc.buildURL(path)
 	if err != nil {
 		return nil, err
@@ -193,7 +209,7 @@ func (dc *DomainClient) DownloadWithOptionsWithContext(ctx context.Context, path
 
 	allOptions := dc.prepareSessionOptions(options)
 
-	result, err := dc.client.DownloadWithOptionsWithContext(ctx, fullURL, downloadOpts, allOptions...)
+	result, err := doDownload(ctx, fullURL, downloadOpts, allOptions...)
 	if err != nil {
 		return nil, err
 	}
@@ -203,6 +219,9 @@ func (dc *DomainClient) DownloadWithOptionsWithContext(ctx context.Context, path
 }
 
 // prepareSessionOptions merges session state (headers, cookies) with user-provided options.
+// The read-then-write sequence is intentionally non-atomic: session state is eventually
+// consistent by design. A concurrent request may interleave, but each request captures
+// a consistent snapshot at prepareOptions() time.
 func (dc *DomainClient) prepareSessionOptions(options []RequestOption) []RequestOption {
 	managedOptions := dc.prepareOptions()
 	allOptions := append(managedOptions, options...)
@@ -221,6 +240,17 @@ func (dc *DomainClient) captureDownloadCookies(result *DownloadResult) {
 // This eliminates code duplication between Request() and the convenience methods.
 func (dc *DomainClient) request(method, path string, options ...RequestOption) (*Result, error) {
 	return dc.Request(backgroundCtx, method, path, options...)
+}
+
+// checkInit validates that the DomainClient is properly initialized.
+func (dc *DomainClient) checkInit() error {
+	if dc == nil {
+		return fmt.Errorf("domain client is nil")
+	}
+	if dc.SessionManager == nil || dc.client == nil {
+		return fmt.Errorf("domain client is not properly initialized; use httpc.NewDomain()")
+	}
+	return nil
 }
 
 func (dc *DomainClient) buildURL(pathStr string) (string, error) {
@@ -312,9 +342,9 @@ var _ Client = (*DomainClient)(nil)
 var _ DomainClienter = (*DomainClient)(nil)
 
 // Close closes the underlying HTTP client and releases resources.
-// Returns nil if the receiver is nil.
+// Returns nil if the receiver or underlying client is nil.
 func (dc *DomainClient) Close() error {
-	if dc == nil {
+	if dc == nil || dc.client == nil {
 		return nil
 	}
 	return dc.client.Close()

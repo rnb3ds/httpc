@@ -12,14 +12,21 @@ import (
 // Returns a newly allocated header map that can be safely modified.
 // SECURITY: Always allocates new slices to prevent data leakage between requests.
 // OPTIMIZATION: Uses batch allocation to reduce N allocations (one per header) to 1 allocation.
+// For single-value headers (the common case), uses a shared backing array to reduce
+// slice header overhead.
 func cloneHeader(src http.Header) http.Header {
 	if src == nil {
 		return nil
 	}
 
-	dst := make(http.Header, len(src))
+	n := len(src)
+	dst := make(http.Header, n)
 
-	// Count total values for batch allocation
+	if n == 0 {
+		return dst
+	}
+
+	// Fast path: count total values.
 	totalValues := 0
 	for _, v := range src {
 		totalValues += len(v)
@@ -29,25 +36,31 @@ func cloneHeader(src http.Header) http.Header {
 		return dst
 	}
 
-	// Batch allocate all strings in one slice
+	// Batch allocate all string values in one slice
 	allValues := make([]string, totalValues)
 	valueIdx := 0
 
 	for k, v := range src {
-		if len(v) == 0 {
-			dst[k] = []string{}
-			continue
+		switch len(v) {
+		case 0:
+			dst[k] = zeroStringSlice
+		case 1:
+			allValues[valueIdx] = v[0]
+			dst[k] = allValues[valueIdx : valueIdx+1]
+			valueIdx++
+		default:
+			endIdx := valueIdx + len(v)
+			newVals := allValues[valueIdx:endIdx]
+			copy(newVals, v)
+			dst[k] = newVals
+			valueIdx = endIdx
 		}
-
-		// Slice into the batch allocation for this header's values
-		endIdx := valueIdx + len(v)
-		newVals := allValues[valueIdx:endIdx]
-		copy(newVals, v)
-		dst[k] = newVals
-		valueIdx = endIdx
 	}
 	return dst
 }
+
+// zeroStringSlice is a reusable empty slice for headers with no values.
+var zeroStringSlice = []string{}
 
 // queryBuilderPool reduces allocations for building query strings
 var queryBuilderPool = sync.Pool{
@@ -133,6 +146,7 @@ func queryEscape(s string) string {
 	// Slow path: escape using pooled buffer
 	// Safe from overflow: len(s) <= maxQueryEscapeSize (10MB), so len(s)*3 <= 30MB
 	bufPtr, ok := queryEscapePool.Get().(*[]byte)
+	origPtr := bufPtr
 	if !ok || bufPtr == nil || cap(*bufPtr) < len(s)*3 {
 		tmp := make([]byte, 0, len(s)*3)
 		bufPtr = &tmp
@@ -151,11 +165,12 @@ func queryEscape(s string) string {
 	}
 
 	result := string(buf)
-	// Return bufPtr to pool only if buffer is reasonably sized.
-	// Discard oversized buffers to prevent pool bloat.
 	if cap(buf) <= 1024 {
 		*bufPtr = buf
 		queryEscapePool.Put(bufPtr)
+	} else if origPtr != bufPtr && origPtr != nil {
+		*origPtr = (*origPtr)[:0]
+		queryEscapePool.Put(origPtr)
 	}
 	return result
 }

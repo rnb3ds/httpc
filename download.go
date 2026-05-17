@@ -89,6 +89,16 @@ type DownloadResult struct {
 	// ActualChecksum is the computed checksum of the downloaded file (hex-encoded).
 	// Only set when DownloadConfig.Checksum is provided.
 	ActualChecksum string
+	// Proto is the HTTP protocol version of the response (e.g., "HTTP/1.1", "HTTP/2.0").
+	Proto string
+	// ResponseHeaders contains the response headers from the download.
+	ResponseHeaders http.Header
+	// RequestURL is the actual URL that was requested.
+	RequestURL string
+	// RequestMethod is the HTTP method used for the download.
+	RequestMethod string
+	// RequestHeaders contains the request headers that were sent.
+	RequestHeaders http.Header
 }
 
 // DownloadFile downloads a file from the given URL to the specified file path using the default client.
@@ -162,27 +172,10 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	if opts.FilePath == "" {
 		return nil, ErrEmptyFilePath
 	}
-	validatedPath, err := prepareFilePath(opts.FilePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to prepare file path: %w", err)
-	}
-	filePath := validatedPath
 
-	var resumeOffset int64
-	if fileInfo, err := os.Stat(filePath); err == nil {
-		if !opts.Overwrite && !opts.ResumeDownload {
-			return nil, fmt.Errorf("%w: %s", ErrFileExists, filePath)
-		}
-		// ResumeDownload takes precedence over Overwrite when both are set:
-		// the existing file is extended rather than replaced.
-		if opts.ResumeDownload {
-			resumeOffset = fileInfo.Size()
-			rangeOption := WithHeader("Range", fmt.Sprintf("bytes=%d-", resumeOffset))
-			combined := make([]RequestOption, len(options)+1)
-			copy(combined, options)
-			combined[len(options)] = rangeOption
-			options = combined
-		}
+	filePath, resumeOffset, options, err := prepareResumeState(opts.FilePath, opts, options)
+	if err != nil {
+		return nil, err
 	}
 
 	// Use streaming mode to avoid buffering the entire response body into memory.
@@ -197,51 +190,119 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	if rawResp == nil {
 		return nil, fmt.Errorf("download request returned nil response")
 	}
+
 	engResp, ok := rawResp.(*engine.Response)
 	if !ok {
 		releaseResponseMutator(rawResp)
 		return nil, fmt.Errorf("unexpected response type from download request")
 	}
-	bodyReader := engResp.RawBodyReader()
-	engResp.SetRawBodyReader(nil)
-	// Transfer body reader ownership from Response to this function.
-	// Setting nil prevents ReleaseResponse from closing the reader; we
-	// manage its lifetime here. Closed via defer below, or by
-	// writeDownloadBody's io.Copy completing the read.
-	defer engine.ReleaseResponse(engResp)
 
-	if bodyReader != nil {
-		defer func() { _ = bodyReader.Close() }() // best-effort cleanup
+	df := extractDownloadFields(engResp)
+	// Transfer body reader ownership from Response to this function.
+	// Setting nil in extractDownloadFields prevents ReleaseResponse from closing
+	// the reader; we manage its lifetime here.
+	defer engine.ReleaseResponse(engResp)
+	if df.bodyReader != nil {
+		defer func() { _ = df.bodyReader.Close() }() // best-effort cleanup
 	}
 
-	statusCode := engResp.StatusCode()
-	contentLength := engResp.ContentLength()
-	responseCookies := engResp.Cookies()
-
-	// Measure the full download duration including body transfer.
-	// engResp.Duration() only covers time-to-first-header, which would
-	// produce misleading AverageSpeed values for large downloads.
-	downloadStart := time.Now()
-
-	resumed := resumeOffset > 0 && statusCode == http.StatusPartialContent
+	resumed := resumeOffset > 0 && df.statusCode == http.StatusPartialContent
 
 	// When resume was requested but server returned 200 instead of 206,
 	// the server does not support range requests. Truncating the existing
 	// partial file would silently destroy data the user intended to resume.
 	if resumeOffset > 0 && !resumed {
-		return nil, fmt.Errorf("server does not support range requests (status %d); cannot resume download", statusCode)
+		_, _ = io.Copy(io.Discard, io.LimitReader(df.bodyReader, 1<<20))
+		return nil, fmt.Errorf("server does not support range requests (status %d); cannot resume download", df.statusCode)
 	}
 
 	// Validate response status
-	if err := handleDownloadStatus(statusCode, bodyReader, resumeOffset); err != nil {
+	if err := handleDownloadStatus(df.statusCode, df.bodyReader, resumeOffset); err != nil {
 		return nil, err
 	}
 
-	if bodyReader == nil {
+	if df.bodyReader == nil {
 		return nil, fmt.Errorf("download response has no body reader")
 	}
 
-	return writeDownloadBody(bodyReader, filePath, opts, resumed, resumeOffset, statusCode, contentLength, downloadStart, responseCookies)
+	downloadStart := time.Now()
+	result, writeErr := writeDownloadBody(df.bodyReader, filePath, opts, resumed, resumeOffset, df.statusCode, df.contentLength, downloadStart, df.responseCookies)
+	if writeErr != nil {
+		return nil, writeErr
+	}
+	result.Proto = df.proto
+	result.ResponseHeaders = df.responseHeaders
+	result.RequestURL = df.requestURL
+	result.RequestMethod = df.requestMethod
+	result.RequestHeaders = df.requestHeaders
+	return result, nil
+}
+
+// prepareResumeState validates the file path and calculates resume state.
+// Returns the validated file path, resume offset, updated options, and any error.
+func prepareResumeState(filePath string, opts *DownloadConfig, options []RequestOption) (string, int64, []RequestOption, error) {
+	validatedPath, err := prepareFilePath(filePath)
+	if err != nil {
+		return "", 0, nil, fmt.Errorf("failed to prepare file path: %w", err)
+	}
+
+	var resumeOffset int64
+	if fileInfo, err := os.Stat(validatedPath); err == nil {
+		if !opts.Overwrite && !opts.ResumeDownload {
+			return "", 0, nil, fmt.Errorf("%w: %s", ErrFileExists, validatedPath)
+		}
+		// ResumeDownload takes precedence over Overwrite when both are set:
+		// the existing file is extended rather than replaced.
+		if opts.ResumeDownload {
+			resumeOffset = fileInfo.Size()
+			rangeOption := WithHeader("Range", fmt.Sprintf("bytes=%d-", resumeOffset))
+			combined := make([]RequestOption, len(options)+1)
+			copy(combined, options)
+			combined[len(options)] = rangeOption
+			options = combined
+		}
+	}
+
+	return validatedPath, resumeOffset, options, nil
+}
+
+// downloadFields holds extracted fields from an engine.Response for download processing.
+// Transfers body reader ownership to the caller.
+type downloadFields struct {
+	bodyReader      io.ReadCloser
+	statusCode      int
+	contentLength   int64
+	responseCookies []*http.Cookie
+	proto           string
+	requestURL      string
+	requestMethod   string
+	responseHeaders http.Header
+	requestHeaders  http.Header
+}
+
+// extractDownloadFields extracts download-relevant fields from an engine Response.
+// Transfers body reader ownership to the caller. The caller must call
+// engine.ReleaseResponse(engResp) after the body reader is no longer needed.
+func extractDownloadFields(engResp *engine.Response) downloadFields {
+	// Transfer body reader ownership; nil prevents ReleaseResponse from closing it.
+	df := downloadFields{
+		bodyReader:      engResp.RawBodyReader(),
+		statusCode:      engResp.StatusCode(),
+		contentLength:   engResp.ContentLength(),
+		responseCookies: engResp.Cookies(),
+		proto:           engResp.Proto(),
+		requestURL:      engResp.RequestURL(),
+		requestMethod:   engResp.RequestMethod(),
+		responseHeaders: engResp.Headers().Clone(),
+	}
+	engResp.SetRawBodyReader(nil)
+
+	// Clone request headers if present
+	if h := engResp.RequestHeaders(); h != nil {
+		df.requestHeaders = h.Clone()
+	}
+
+	return df
 }
 
 // handleDownloadStatus validates the HTTP response status for a download request.
@@ -296,7 +357,16 @@ func writeDownloadBody(bodyReader io.Reader, filePath string, opts *DownloadConf
 	var writer io.Writer = file
 	var hasher hash.Hash
 	if opts.Checksum != "" {
-		hasher = sha256.New()
+		switch opts.ChecksumAlgorithm {
+		case ChecksumSHA256, "":
+			hasher = sha256.New()
+		default:
+			_ = file.Close()
+			if !resumed {
+				_ = os.Remove(filePath)
+			}
+			return nil, fmt.Errorf("unsupported checksum algorithm: %s", opts.ChecksumAlgorithm)
+		}
 		writer = io.MultiWriter(file, hasher)
 	}
 	if opts.ProgressCallback != nil {
@@ -316,7 +386,7 @@ func writeDownloadBody(bodyReader io.Reader, filePath string, opts *DownloadConf
 
 	bytesWritten, err := io.Copy(writer, bodyReader)
 	if err != nil {
-		_ = file.Close()
+		_ = file.Close() // best-effort cleanup on write failure
 		if !resumed {
 			_ = os.Remove(filePath) // best-effort cleanup of partial file
 		}
@@ -325,7 +395,7 @@ func writeDownloadBody(bodyReader io.Reader, filePath string, opts *DownloadConf
 
 	// Sync and close file before potential checksum-based removal
 	if syncErr := file.Sync(); syncErr != nil {
-		_ = file.Close()
+		_ = file.Close() // best-effort cleanup on sync failure
 		return nil, fmt.Errorf("failed to sync file: %w", syncErr)
 	}
 	if closeErr := file.Close(); closeErr != nil {
@@ -340,7 +410,7 @@ func writeDownloadBody(bodyReader io.Reader, filePath string, opts *DownloadConf
 
 	// Verify checksum if expected value is provided
 	if opts.Checksum != "" && actualChecksum != strings.ToLower(opts.Checksum) {
-		_ = os.Remove(filePath)
+		_ = os.Remove(filePath) // remove corrupted download
 		return nil, fmt.Errorf("checksum mismatch: expected %s, got %s", strings.ToLower(opts.Checksum), actualChecksum)
 	}
 

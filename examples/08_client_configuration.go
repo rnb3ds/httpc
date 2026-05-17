@@ -51,7 +51,7 @@ func demonstrateDefaultConfig() {
 
 	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Println("Default config includes:")
-	fmt.Println("  - 30s timeout")
+	fmt.Println("  - 180s request timeout")
 	fmt.Println("  - 3 retries with exponential backoff")
 	fmt.Println("  - TLS 1.2+ with certificate validation")
 	fmt.Println("  - HTTP/2 enabled")
@@ -92,10 +92,10 @@ func demonstrateSecureConfig() {
 
 	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Println("Secure config includes:")
-	fmt.Println("  - TLS 1.3 minimum")
-	fmt.Println("  - Strict certificate validation")
+	fmt.Println("  - TLS 1.2+ with strict certificate validation")
 	fmt.Println("  - Private IP blocking (SSRF protection)")
-	fmt.Println("  - Strict content length validation")
+	fmt.Println("  - No redirect following (SSRF prevention)")
+	fmt.Println("  - Smaller response limits (5MB)")
 	fmt.Println("  - Lower connection limits\n ")
 }
 
@@ -178,11 +178,11 @@ func demonstrateConfigComparison() {
 	fmt.Println("  Use case: Health checks, fast endpoints\n ")
 
 	// Scenario 2: Standard API calls
-	fmt.Println("Scenario 2: Standard API Calls (5-15s)")
+	fmt.Println("Scenario 2: Standard API Calls (5-30s)")
 	standardConfig := httpc.DefaultConfig()
-	standardConfig.Timeouts.Request = 10 * time.Second
-	standardConfig.Retry.MaxRetries = 2
-	fmt.Println("  Timeout: 10s, Retries: 2")
+	standardConfig.Timeouts.Request = 30 * time.Second
+	standardConfig.Retry.MaxRetries = 3
+	fmt.Println("  Timeout: 30s, Retries: 3")
 	fmt.Println("  Use case: Most REST API calls\n ")
 
 	// Scenario 3: Long operations

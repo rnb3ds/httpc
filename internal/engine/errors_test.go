@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"testing"
 	"time"
+
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // ============================================================================
@@ -479,7 +481,7 @@ func TestClientError_ErrorWithAttempts(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := tt.err.Error()
-			if !containsFold(got, tt.contains) {
+			if !validation.ContainsFold(got, tt.contains) {
 				t.Errorf("Error() = %q, want to contain %q", got, tt.contains)
 			}
 		})

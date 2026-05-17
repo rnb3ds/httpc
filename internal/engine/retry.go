@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"math"
 	"math/rand/v2"
 	"net/http"
 	"strconv"
@@ -122,6 +123,10 @@ func (r *retryEngine) calculateExponentialDelay(attempt int) time.Duration {
 	exponentialDelay := float64(delay)
 	for i := 0; i < attempt; i++ {
 		exponentialDelay *= backoffFactor
+		if math.IsInf(exponentialDelay, 0) {
+			exponentialDelay = float64(r.config.MaxRetryDelay)
+			break
+		}
 	}
 	result := time.Duration(exponentialDelay)
 

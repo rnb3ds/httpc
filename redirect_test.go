@@ -412,43 +412,41 @@ func TestRedirect_QueryParameterPreservation(t *testing.T) {
 }
 
 func TestRedirect_BoundaryStatusCodes(t *testing.T) {
-	t.Parallel()
-
 	tests := []struct {
 		name       string
 		statusCode int
 	}{
 		{"300 Multiple Choices", 300},
-		{"399 boundary", 399},
+		{"399 edge case", 399},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			finalServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-			}))
-			defer finalServer.Close()
-
-			redirectServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Location", finalServer.URL)
+			source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Location", "http://example.com/target")
 				w.WriteHeader(tt.statusCode)
 			}))
-			defer redirectServer.Close()
+			defer source.Close()
 
-			config := testConfig()
-			config.Middleware.FollowRedirects = true
-			client, err := New(config)
+			cfg := testConfig()
+			cfg.Middleware.FollowRedirects = true
+
+			client, err := New(cfg)
 			if err != nil {
 				t.Fatalf("Failed to create client: %v", err)
 			}
 			defer client.Close()
 
-			resp, err := client.Get(redirectServer.URL)
+			resp, err := client.Get(source.URL)
 			if err != nil {
-				t.Logf("Status %d returned error: %v (acceptable)", tt.statusCode, err)
-				return
+				t.Fatalf("Request failed: %v", err)
 			}
-			t.Logf("Status %d: final status %d, redirects %d", tt.statusCode, resp.StatusCode(), resp.Meta.RedirectCount)
+
+			// 300 and 399 are not standard redirect codes followed by Go's HTTP client
+			// The response should be returned with the original status code
+			if resp.StatusCode() != tt.statusCode {
+				t.Errorf("Expected status %d for non-followed redirect, got %d", tt.statusCode, resp.StatusCode())
+			}
 		})
 	}
 }

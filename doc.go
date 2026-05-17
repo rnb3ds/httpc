@@ -119,5 +119,25 @@
 //
 //	result, err := client.Request(ctx, "GET", "https://api.example.com/data")
 //
+// # Timeout Behavior
+//
+// By default, TimeoutConfig.ResponseHeader is 0 (disabled). The context-level
+// timeout from Timeouts.Request (default 180s) or WithTimeout() is the sole
+// mechanism controlling how long to wait for a response.
+//
+// This design ensures WithTimeout() has full control over request duration,
+// which is essential for AI APIs and long-polling endpoints that need extended
+// response times:
+//
+//	// AI API that may take minutes to respond
+//	result, err := httpc.Post(url,
+//	    httpc.WithJSON(payload),
+//	    httpc.WithTimeout(900*time.Second),
+//	)
+//
+// For security-critical applications, use SecureConfig() which sets a strict
+// transport-level ResponseHeaderTimeout as defense-in-depth against slowloris
+// attacks.
+//
 // For more information, see https://github.com/cybergodev/httpc
 package httpc

@@ -514,6 +514,7 @@ result, err := client.Post(url,
 | `WithContext(ctx)`               | Request context      | `WithContext(ctx)`                      |
 | `WithMaxRetries(n)`              | Max retry attempts   | `WithMaxRetries(3)`                     |
 | `WithCookie(cookie)`             | Add cookie           | `WithCookie(http.Cookie{Name: "n", Value: "v"})` |
+| `WithCookies(cookies)`           | Add multiple cookies | `WithCookies([]http.Cookie{...})` |
 | `WithCookieMap(cookies)`         | Add multiple cookies | `WithCookieMap(map[string]string{...})` |
 | `WithCookieString(cookieStr)`    | Parse cookie string  | `WithCookieString("a=1; b=2")`          |
 | `WithSecureCookie(cfg)`          | Cookie security      | `WithSecureCookie(httpc.StrictCookieSecurityConfig())` |

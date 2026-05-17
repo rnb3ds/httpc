@@ -14,7 +14,6 @@ import (
 const (
 	minIdleConnsPerHost            = 2  // Minimum idle connections per host
 	maxIdleConnsPerHostCap         = 10 // Maximum cap for idle connections per host
-	maxRetryDelayBackoffMultiplier = 3  // Multiplier for Delay*BackoffFactor to cap max retry delay
 )
 
 // calculateIdleConnsPerHost calculates the optimal number of idle connections per host
@@ -26,10 +25,14 @@ func calculateIdleConnsPerHost(maxConnsPerHost int) int {
 	}
 	idleConns := maxConnsPerHost / 2
 	if idleConns < minIdleConnsPerHost {
-		return minIdleConnsPerHost
+		idleConns = minIdleConnsPerHost
 	}
 	if idleConns > maxIdleConnsPerHostCap {
-		return maxIdleConnsPerHostCap
+		idleConns = maxIdleConnsPerHostCap
+	}
+	// Don't exceed max total connections per host
+	if idleConns > maxConnsPerHost {
+		idleConns = maxConnsPerHost
 	}
 	return idleConns
 }
@@ -48,26 +51,13 @@ func resolveTLSVersions(cfg *Config) (min, max uint16) {
 	return min, max
 }
 
-// calculateMaxRetryDelay calculates the maximum retry delay based on configuration.
-// Formula: min(RetryDelay * BackoffFactor * 3, 30s)
+// calculateMaxRetryDelay returns the maximum retry delay from configuration.
+// Uses the user-provided MaxRetryDelay if set (> 0), otherwise defaults to 30s.
 func calculateMaxRetryDelay(cfg *Config) time.Duration {
-	const (
-		defaultMaxRetryDelay  = 5 * time.Second
-		absoluteMaxRetryDelay = 30 * time.Second
-	)
-
-	if cfg.Retry.Delay <= 0 || cfg.Retry.BackoffFactor <= 0 {
-		return defaultMaxRetryDelay
+	if cfg.Retry.MaxRetryDelay > 0 {
+		return cfg.Retry.MaxRetryDelay
 	}
-
-	calculated := time.Duration(float64(cfg.Retry.Delay) * cfg.Retry.BackoffFactor * maxRetryDelayBackoffMultiplier)
-	if calculated > absoluteMaxRetryDelay {
-		return absoluteMaxRetryDelay
-	}
-	if calculated < defaultMaxRetryDelay {
-		return defaultMaxRetryDelay
-	}
-	return calculated
+	return 30 * time.Second
 }
 
 // convertToEngineConfig converts public Config to engine Config.

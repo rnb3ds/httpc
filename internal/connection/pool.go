@@ -49,6 +49,11 @@ type PoolManager struct {
 
 	hostConns sync.Map
 
+	// hostCount tracks the approximate number of entries in hostConns.
+	// Used for O(1) maxHostEntries enforcement instead of expensive sync.Map.Range counting.
+	// May drift slightly under high concurrency — acceptable for a memory-limit heuristic.
+	hostCount atomic.Int64
+
 	metrics *metrics
 
 	closed int32
@@ -215,13 +220,15 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 					return nil, fmt.Errorf("proxy URL host fails SSRF validation: %w", err)
 				}
 			} else {
-				ips, err := net.LookupIP(proxyHost)
+				resolveCtx, resolveCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer resolveCancel()
+				ipAddrs, err := net.DefaultResolver.LookupIPAddr(resolveCtx, proxyHost)
 				if err != nil {
 					return nil, fmt.Errorf("failed to resolve proxy host %q: %w", proxyHost, err)
 				}
-				for _, ip := range ips {
-					if err := validation.ValidateIPWithExemptions(ip, config.ExemptNets); err != nil {
-						return nil, fmt.Errorf("proxy host %q resolves to blocked IP %s: %w", proxyHost, ip, err)
+				for _, addr := range ipAddrs {
+					if err := validation.ValidateIPWithExemptions(addr.IP, config.ExemptNets); err != nil {
+						return nil, fmt.Errorf("proxy host %q resolves to blocked IP %s: %w", proxyHost, addr.IP, err)
 					}
 				}
 			}
@@ -423,7 +430,9 @@ func (pm *PoolManager) resolveAndValidateAddress(address string) (string, error)
 	}
 
 	// For domain names, resolve and filter to allowed IPs
-	ipAddrs, err := net.DefaultResolver.LookupIPAddr(context.Background(), host)
+	dnsCtx, dnsCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer dnsCancel()
+	ipAddrs, err := net.DefaultResolver.LookupIPAddr(dnsCtx, host)
 	if err != nil {
 		return "", fmt.Errorf("DNS resolution failed for SSRF validation of %s: %w", host, err)
 	}
@@ -550,14 +559,9 @@ func (pm *PoolManager) updateConnectionMetrics(host string, connTime int64, succ
 		LastUsed: time.Now().Unix(),
 	})
 
-	// Enforce max host entries to prevent unbounded map growth from unique hosts
+	// Track new entries via atomic counter for O(1) enforcement of maxHostEntries.
 	if !loaded {
-		var count int
-		pm.hostConns.Range(func(_, _ any) bool {
-			count++
-			return count < maxHostEntries+1
-		})
-		if count > maxHostEntries {
+		if pm.hostCount.Add(1) > int64(maxHostEntries) {
 			pm.evictStaleHosts()
 		}
 	}
@@ -614,8 +618,10 @@ func (pm *PoolManager) evictStaleHosts() {
 				// connection incremented ActiveConns between the check above and here,
 				// re-insert the entry to avoid orphaning in-use stats.
 				if oldStats, loaded := pm.hostConns.LoadAndDelete(key); loaded {
+					pm.hostCount.Add(-1)
 					if s, ok := oldStats.(*hostStats); ok && atomic.LoadInt64(&s.ActiveConns) > 0 {
 						pm.hostConns.Store(key, oldStats)
+						pm.hostCount.Add(1) // Re-insert: undo the decrement
 					}
 				}
 			}
@@ -675,6 +681,7 @@ func (pm *PoolManager) Close() error {
 		pm.hostConns.Delete(key)
 		return true
 	})
+	pm.hostCount.Store(0)
 
 	return closeErr
 }

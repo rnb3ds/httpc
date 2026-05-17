@@ -4,6 +4,51 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ---
 
+## v1.4.4 - Bug Fixes, Performance & Code Quality (2026-05-18)
+
+### Fixed
+- Timeout not shared across retry attempts — each retry got a fresh timeout, allowing ~3x configured duration
+- io.Reader request body consumed on first retry attempt, causing subsequent attempts to silently send empty body
+- Default ResponseHeaderTimeout (30s) overriding per-request WithTimeout values > 30s, disconnecting slow servers
+- Request headers capture missing Content-Length and Host (Go stores these as separate struct fields)
+- Download path discarding all response headers and request metadata
+- unsafe pointer cast sharing memory between Result.Body and Result.RawBody, corrupting Body after ReleaseResult
+- Unbounded memory growth in retry body buffering — 100MB cap added
+- DownloadConfig.ChecksumAlgorithm silently ignored, always defaulting to SHA-256
+- Nil pointer dereference on Close() for zero-value Client and DomainClient
+- Float64 overflow in exponential retry delay at high attempt counts
+- Idle connections exceeding MaxConnsPerHost when MaxConnsPerHost < 2
+- ValidateConfig header errors wrapped with %v instead of %w, preventing errors.As/Is matching
+- DNS resolution and proxy SSRF validation blocking indefinitely — 10s timeout added
+- O(n) sync.Map.Range host counting replaced with O(1) atomic counter for maxHostEntries enforcement
+- DoH cache insertion CAS loop unbounded under extreme contention — max 3 retries added
+- Reduced redundant "transport failed"/"build request failed" error wrappers causing verbose duplicate-URL chains
+
+### Changed
+- Default request timeout: 30s → 180s (better for AI/LLM and large upload scenarios)
+- Default ResponseHeader timeout: 30s → 0 (context timeout now sole mechanism; SecureConfig retains 10s)
+- Added MaxRetryDelay field to RetryConfig (default: 30s, previously opaque formula)
+- Added Proto, ResponseHeaders, RequestURL, RequestMethod, RequestHeaders to DownloadResult
+- Exported EqualFold and added ContainsFold as shared ASCII case-insensitive utilities
+- Replaced unsafe.Pointer + reflect context setting with http.Request.WithContext() (Header map empty at construction)
+- Extracted checkInit(), downloadWithContext(), prepareResumeState(), ensureCookieCapacity() helpers reducing duplication
+- Consolidated 7 redundant/low-value tests into table-driven alternatives with better coverage
+- README, README_zh-CN, docs, and examples corrected for timeout defaults and field documentation
+
+### Performance
+- Result.String(): 3→1 allocs/op (−67%), 248→240 B/op (−3.2%)
+- Pooled strings.Builder for SanitizeURL() and Config.String() eliminating per-call allocations
+- Lazy sanitizeOnce() closure in executeRequest() avoiding sanitization allocation on success path
+- Optimized cloneHeader() with switch-based value copying and shared empty slice for single-value headers
+- strconv.AppendInt replacing strconv.Itoa in ClientError.Error() and Result.String()
+- Cached sensitiveHeaderNames set eliminating map iteration per DefaultAuditMiddlewareConfig() call
+
+### Removed
+- reflect and unsafe imports from request context setting
+- 7 redundant test functions replaced by table-driven versions with proper assertions
+
+---
+
 ## v1.4.3 - Performance, Bug Fixes & Code Quality (2026-05-11)
 
 ### Added

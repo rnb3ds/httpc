@@ -27,10 +27,10 @@ defer client.Close()
 **Default values:**
 
 Timeouts:
-- Timeouts.Request: 30 seconds
+- Timeouts.Request: 180 seconds (3 minutes)
 - Timeouts.Dial: 10 seconds
 - Timeouts.TLSHandshake: 10 seconds
-- Timeouts.ResponseHeader: 30 seconds
+- Timeouts.ResponseHeader: 0 (disabled, uses context-level timeout)
 - Timeouts.IdleConn: 90 seconds
 
 Connection:
@@ -78,10 +78,10 @@ defer client.Close()
 
 **Settings:**
 - TLS: 1.2-1.3 (Security.InsecureSkipVerify: true)
-- Timeouts.Request: 30 seconds
+- Timeouts.Request: 180 seconds (inherited from default)
 - Timeouts.Dial: 5 seconds
 - Timeouts.TLSHandshake: 5 seconds
-- Timeouts.ResponseHeader: 10 seconds
+- Timeouts.ResponseHeader: 0 (disabled, uses context-level timeout)
 - Timeouts.IdleConn: 30 seconds
 - Retry.MaxRetries: 1
 - Retry.Delay: 100 milliseconds
@@ -117,7 +117,7 @@ client, err := httpc.New()  // Uses balanced by default
 
 **Settings:**
 - TLS: 1.2-1.3 (modern security)
-- Timeouts.Request: 30 seconds
+- Timeouts.Request: 180 seconds (3 minutes)
 - Retry.MaxRetries: 3
 - Retry.Delay: 1 second
 - Retry.BackoffFactor: 2.0
@@ -155,7 +155,7 @@ defer client.Close()
 - Timeouts.Request: 60 seconds
 - Timeouts.Dial: 15 seconds
 - Timeouts.TLSHandshake: 15 seconds
-- Timeouts.ResponseHeader: 60 seconds
+- Timeouts.ResponseHeader: 0 (disabled, uses context-level timeout)
 - Timeouts.IdleConn: 120 seconds
 - Connection.MaxIdleConns: 100
 - Connection.MaxConnsPerHost: 20
@@ -190,7 +190,7 @@ defer client.Close()
 - TLS: 1.2-1.3 (modern security)
 - Timeouts.Dial: 5 seconds
 - Timeouts.TLSHandshake: 5 seconds
-- Timeouts.ResponseHeader: 10 seconds
+- Timeouts.ResponseHeader: 0 (disabled, uses context-level timeout)
 - Timeouts.IdleConn: 30 seconds
 - Connection.MaxIdleConns: 10
 - Connection.MaxConnsPerHost: 2
@@ -226,7 +226,7 @@ defer client.Close()
 - Timeouts.Request: 15 seconds
 - Timeouts.Dial: 5 seconds
 - Timeouts.TLSHandshake: 5 seconds
-- Timeouts.ResponseHeader: 10 seconds
+- Timeouts.ResponseHeader: 10 seconds (transport-level defense-in-depth)
 - Timeouts.IdleConn: 30 seconds
 - Retry.MaxRetries: 1
 - Retry.Delay: 2 seconds
@@ -396,10 +396,10 @@ client, err := httpc.New(config)
 
 | Field                        | Type            | Default | Description                      |
 |------------------------------|-----------------|---------|----------------------------------|
-| `Timeouts.Request`           | `time.Duration` | 30s     | Overall request timeout          |
+| `Timeouts.Request`           | `time.Duration` | 180s    | Overall request timeout (including retries) |
 | `Timeouts.Dial`              | `time.Duration` | 10s     | Dial timeout                     |
 | `Timeouts.TLSHandshake`     | `time.Duration` | 10s     | TLS handshake timeout            |
-| `Timeouts.ResponseHeader`    | `time.Duration` | 30s     | Response header timeout          |
+| `Timeouts.ResponseHeader`    | `time.Duration` | 0       | Response header timeout (0 = disabled, uses context-level timeout) |
 | `Timeouts.IdleConn`          | `time.Duration` | 90s     | Idle connection timeout          |
 
 ### Connection
@@ -445,9 +445,10 @@ client, err := httpc.New(config)
 | `Retry.Delay`            | `time.Duration` | 1s      | Initial retry delay        |
 | `Retry.BackoffFactor`    | `float64`       | 2.0     | Exponential backoff factor |
 | `Retry.EnableJitter`     | `bool`          | true    | Enable jitter in retry delay |
+| `Retry.MaxRetryDelay`    | `time.Duration` | 30s     | Cap on maximum delay between retries |
 | `Retry.CustomPolicy`     | `RetryPolicy`   | nil     | Custom retry logic override |
 
-**Note:** MaxRetryDelay is calculated internally. The formula is `min(Delay * BackoffFactor * 3, 30s)`, with a floor of 5s. For default config: `min(1s * 2.0 * 3, 30s) = 6s`. If Retry-After header is present in the response, its value takes precedence (capped at 60s).
+**Note:** If Retry-After header is present in the response, its value takes precedence (capped at 60s).
 
 ### Middleware
 
