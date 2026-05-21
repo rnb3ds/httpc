@@ -643,6 +643,13 @@ func TestValidateConfig_AdditionalBoundaries(t *testing.T) {
 		{"negative max response body size", func(c *Config) { c.Security.MaxResponseBodySize = -1 }, true},
 		{"negative retry delay", func(c *Config) { c.Retry.Delay = -1 * time.Second }, true},
 		{"invalid middleware headers", func(c *Config) { c.Middleware.Headers = map[string]string{"X-Bad": "value\r\nevil"} }, true},
+		{"retry delay zero", func(c *Config) { c.Retry.Delay = 0 }, false},
+		{"backoff factor zero", func(c *Config) { c.Retry.BackoffFactor = 0 }, true},
+		{"negative backoff factor", func(c *Config) { c.Retry.BackoffFactor = -1 }, true},
+		{"max response body size zero", func(c *Config) { c.Security.MaxResponseBodySize = 0 }, false},
+		{"backoff factor at minimum", func(c *Config) { c.Retry.BackoffFactor = 1.0 }, false},
+		{"backoff factor at maximum", func(c *Config) { c.Retry.BackoffFactor = 10.0 }, false},
+		{"backoff factor over maximum", func(c *Config) { c.Retry.BackoffFactor = 11.0 }, true},
 	}
 
 	for _, tt := range tests {

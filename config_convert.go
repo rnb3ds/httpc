@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	minIdleConnsPerHost            = 2  // Minimum idle connections per host
-	maxIdleConnsPerHostCap         = 10 // Maximum cap for idle connections per host
+	minIdleConnsPerHost    = 2                // Minimum idle connections per host
+	maxIdleConnsPerHostCap = 10               // Maximum cap for idle connections per host
+	defaultKeepAlive       = 30 * time.Second // TCP keep-alive interval for connection pooling
 )
 
 // calculateIdleConnsPerHost calculates the optimal number of idle connections per host
@@ -80,7 +81,7 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		// Timeout settings
 		Timeout:               cfg.Timeouts.Request,
 		DialTimeout:           cfg.Timeouts.Dial,
-		KeepAlive:             30 * time.Second,
+		KeepAlive:             defaultKeepAlive,
 		TLSHandshakeTimeout:   cfg.Timeouts.TLSHandshake,
 		ResponseHeaderTimeout: cfg.Timeouts.ResponseHeader,
 		IdleConnTimeout:       cfg.Timeouts.IdleConn,
@@ -97,6 +98,7 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		EnableCookies:          cfg.Connection.EnableCookies,
 		EnableDoH:              cfg.Connection.EnableDoH,
 		DoHCacheTTL:            cfg.Connection.DoHCacheTTL,
+		BrowserFingerprint:     cfg.Connection.BrowserFingerprint,
 
 		// Security settings
 		TLSConfig:               cfg.Security.TLSConfig,

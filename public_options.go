@@ -758,10 +758,6 @@ func WithSecureCookie(securityConfig *validation.CookieSecurityConfig) RequestOp
 			return fmt.Errorf("security config cannot be nil")
 		}
 
-		// IMPORTANT: This option validates only cookies already added at the time it is applied.
-		// Place WithSecureCookie AFTER all WithCookie/WithCookieMap options to ensure
-		// all cookies are validated. Example:
-		//   httpc.WithCookie(c), httpc.WithSecureCookie(sec)
 		existing := r.Cookies()
 		for i := range existing {
 			if err := validation.ValidateCookieSecurity(&existing[i], securityConfig); err != nil {

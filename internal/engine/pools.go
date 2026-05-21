@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -283,8 +284,7 @@ func writeQueryParamValue(sb *strings.Builder, value any, numBuf []byte) {
 			sb.WriteString("false")
 		}
 	default:
-		strValue := FormatQueryParam(value)
-		if strValue != "" {
+		if strValue := fmt.Sprintf("%v", value); strValue != "" {
 			sb.WriteString(queryEscape(strValue))
 		}
 	}

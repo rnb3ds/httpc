@@ -528,3 +528,57 @@ func TestValidateSSRFHost_BoundaryConditions(t *testing.T) {
 		}
 	})
 }
+
+func TestContainsFold(t *testing.T) {
+	tests := []struct {
+		name   string
+		s      string
+		substr string
+		want   bool
+	}{
+		{"empty substring matches", "hello", "", true},
+		{"both empty", "", "", true},
+		{"substr longer than string", "hi", "hello", false},
+		{"exact match", "hello", "hello", true},
+		{"case insensitive match", "HELLO WORLD", "hello", true},
+		{"case insensitive match 2", "Hello World", "WORLD", true},
+		{"no match", "hello", "xyz", false},
+		{"partial match at start", "HelloWorld", "hello", true},
+		{"partial match at end", "HelloWorld", "world", true},
+		{"partial match in middle", "xxHELLOxx", "hello", true},
+		{"single char match", "abc", "B", true},
+		{"overlapping match", "aaa", "aa", true},
+		{"unicode case fold", "straße", "STRASSE", false},
+		{"empty string non-empty substr", "", "a", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ContainsFold(tt.s, tt.substr)
+			if got != tt.want {
+				t.Errorf("ContainsFold(%q, %q) = %v, want %v", tt.s, tt.substr, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateSSRFHost_IPv6WithPort(t *testing.T) {
+	tests := []struct {
+		name    string
+		host    string
+		wantErr bool
+	}{
+		{"IPv6 localhost with port", "[::1]:8080", true},
+		{"IPv6 documentation with port", "[2001:db8::1]:443", true},
+		{"IPv6 public with port", "[2001:4860:4860::8888]:443", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateSSRFHost(tt.host, nil, false)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateSSRFHost(%q) err = %v, wantErr %v", tt.host, err, tt.wantErr)
+			}
+		})
+	}
+}

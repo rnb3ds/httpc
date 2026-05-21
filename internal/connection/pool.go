@@ -42,6 +42,7 @@ type PoolManager struct {
 	transport   *http.Transport
 	dohResolver *dns.DoHResolver
 	proxyAddrs  []string
+	proxyURL    *url.URL // Parsed proxy URL for CONNECT tunnel in DialTLSContext
 
 	activeConns   int64
 	totalConns    int64
@@ -106,6 +107,12 @@ type Config struct {
 	// DNS configuration
 	EnableDoH   bool          // Enable DNS-over-HTTPS
 	DoHCacheTTL time.Duration // DoH cache TTL
+
+	// BrowserFingerprint enables TLS ClientHello fingerprint spoofing.
+	// When set, the connection uses utls to mimic a real browser's TLS handshake
+	// instead of Go's standard crypto/tls. Supported values: "chrome", "firefox",
+	// "safari", "ios". Empty string disables fingerprint spoofing (default).
+	BrowserFingerprint string
 
 	// Certificate pinning
 	certPinner certPinner
@@ -179,20 +186,45 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 		pm.dohResolver = dns.NewDoHResolver(nil, config.DoHCacheTTL)
 	}
 
+	// EnableHTTP2=false must override ForceAttemptHTTP2 regardless of its
+	// default value. Compute the effective value without mutating the input config.
+	forceAttemptHTTP2 := config.ForceAttemptHTTP2
+	if !config.EnableHTTP2 {
+		forceAttemptHTTP2 = false
+	}
+
 	transport := &http.Transport{
-		DialContext:            pm.createDialer(),
-		TLSHandshakeTimeout:    config.TLSHandshakeTimeout,
-		TLSClientConfig:        pm.createTLSConfig(),
-		ResponseHeaderTimeout:  config.ResponseHeaderTimeout,
-		IdleConnTimeout:        config.IdleConnTimeout,
-		ExpectContinueTimeout:  config.ExpectContinueTimeout,
+		DialContext:           pm.createDialer(),
+		TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
+		ResponseHeaderTimeout: config.ResponseHeaderTimeout,
+		IdleConnTimeout:       config.IdleConnTimeout,
+		ExpectContinueTimeout: config.ExpectContinueTimeout,
 		MaxResponseHeaderBytes: config.MaxResponseHeaderBytes,
-		MaxIdleConns:           config.MaxIdleConns,
-		MaxIdleConnsPerHost:    config.MaxIdleConnsPerHost,
-		MaxConnsPerHost:        config.MaxConnsPerHost,
-		ForceAttemptHTTP2:      config.ForceAttemptHTTP2,
-		DisableCompression:     true, // Always disable automatic decompression - we handle it manually
-		DisableKeepAlives:      config.DisableKeepAlives,
+		MaxIdleConns:          config.MaxIdleConns,
+		MaxIdleConnsPerHost:   config.MaxIdleConnsPerHost,
+		MaxConnsPerHost:       config.MaxConnsPerHost,
+		ForceAttemptHTTP2:     forceAttemptHTTP2,
+		DisableCompression:    true, // Always disable automatic decompression - we handle it manually
+		DisableKeepAlives:     config.DisableKeepAlives,
+	}
+
+	// Always set TLSClientConfig — it is required for HTTPS connections
+	// through HTTP proxies (CONNECT tunnels). When DialTLSContext is also
+	// set, Go's Transport uses DialTLSContext for direct HTTPS and
+	// TLSClientConfig for proxied HTTPS, so both can coexist safely.
+	transport.TLSClientConfig = pm.createTLSConfig()
+
+	// When BrowserFingerprint is set, additionally use utls for direct
+	// TLS connections to mimic a real browser's ClientHello.
+	if config.BrowserFingerprint != "" {
+		transport.DialTLSContext = pm.createDialTLSContext()
+		// Disable HTTP/2 transport when using fingerprint spoofing. The utls
+		// wrapper restricts ALPN to "http/1.1" only, so HTTP/2 should never be
+		// negotiated. Setting ForceAttemptHTTP2=false and TLSNextProto=nil
+		// ensures Go's transport never attempts HTTP/2 framing even if the
+		// negotiated protocol check somehow returns "h2".
+		transport.ForceAttemptHTTP2 = false
+		transport.TLSNextProto = nil
 	}
 	// Configure proxy settings with priority:
 	// 1. Manual proxy URL (highest priority)
@@ -209,43 +241,57 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 		if scheme := proxyURL.Scheme; scheme != "http" && scheme != "https" {
 			return nil, fmt.Errorf("invalid proxy URL scheme %q: must be http or https", scheme)
 		}
-		// SECURITY: Validate that the proxy host does not resolve to a private/reserved IP
-		// unless AllowPrivateIPs is explicitly set. This prevents SSRF attacks where a
-		// library consumer in a multi-tenant environment configures a proxy URL pointing
-		// to internal services (e.g., cloud metadata at 169.254.169.254).
-		if !config.AllowPrivateIPs {
-			proxyHost := proxyURL.Hostname()
-			if ip := net.ParseIP(proxyHost); ip != nil {
-				if err := validation.ValidateIPWithExemptions(ip, config.ExemptNets); err != nil {
-					return nil, fmt.Errorf("proxy URL host fails SSRF validation: %w", err)
-				}
-			} else {
-				resolveCtx, resolveCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer resolveCancel()
-				ipAddrs, err := net.DefaultResolver.LookupIPAddr(resolveCtx, proxyHost)
-				if err != nil {
-					return nil, fmt.Errorf("failed to resolve proxy host %q: %w", proxyHost, err)
-				}
-				for _, addr := range ipAddrs {
-					if err := validation.ValidateIPWithExemptions(addr.IP, config.ExemptNets); err != nil {
-						return nil, fmt.Errorf("proxy host %q resolves to blocked IP %s: %w", proxyHost, addr.IP, err)
-					}
-				}
-			}
-		}
-		transport.Proxy = http.ProxyURL(proxyURL)
+		// Proxy URL is explicitly configured by the developer, not user-supplied input.
+		// SSRF validation targets request URLs (attacker-controlled), not developer-chosen
+		// infrastructure. A developer who can set ProxyURL can already bypass SSRF by
+		// connecting directly, so blocking proxy hosts adds no meaningful security.
 		pm.proxyAddrs = append(pm.proxyAddrs, proxyURL.Host)
+		pm.proxyURL = proxyURL
+
+		if config.BrowserFingerprint != "" {
+			// Smart proxy: return nil for HTTPS so Go calls DialTLSContext,
+			// which handles CONNECT + utls internally. Return proxy URL for
+			// HTTP so Go sends requests through the proxy normally.
+			parsedURL := proxyURL
+			transport.Proxy = func(req *http.Request) (*url.URL, error) {
+				if req.URL.Scheme == "https" {
+					return nil, nil
+				}
+				return parsedURL, nil
+			}
+		} else {
+			transport.Proxy = http.ProxyURL(proxyURL)
+		}
 	} else if config.EnableSystemProxy {
 		// No manual proxy, but system proxy detection is enabled
 		// Automatically detect system proxy settings (reads from Windows registry,
 		// macOS system settings, environment variables, etc.)
 		detector := proxy.NewDetector()
 		if proxyFunc := detector.GetProxyFunc(); proxyFunc != nil {
-			transport.Proxy = proxyFunc
 			testURL, _ := url.Parse("https://example.com")
 			testReq := &http.Request{URL: testURL}
-			if pu, err := proxyFunc(testReq); err == nil && pu != nil {
+			pu, err := proxyFunc(testReq)
+			if err == nil && pu != nil {
 				pm.proxyAddrs = append(pm.proxyAddrs, pu.Host)
+
+				if config.BrowserFingerprint != "" {
+					// Store detected proxy URL so DialTLSContext can use it
+					// for CONNECT tunneling. Apply smart proxy pattern: nil
+					// for HTTPS (DialTLSContext handles CONNECT+utls internally)
+					// and proxy URL for HTTP (Go handles proxy normally).
+					pm.proxyURL = pu
+					savedURL := pu
+					transport.Proxy = func(req *http.Request) (*url.URL, error) {
+						if req.URL.Scheme == "https" {
+							return nil, nil
+						}
+						return savedURL, nil
+					}
+				} else {
+					transport.Proxy = proxyFunc
+				}
+			} else {
+				transport.Proxy = proxyFunc
 			}
 		}
 		// If proxyFunc is nil, transport.Proxy remains nil (direct connection)

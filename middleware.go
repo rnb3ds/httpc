@@ -303,6 +303,9 @@ func AuditMiddleware(onAudit func(event AuditEvent)) MiddlewareFunc {
 //	    log.Printf("[AUDIT] %v", event)
 //	}, config)
 func AuditMiddlewareWithConfig(onAudit func(event AuditEvent), config *AuditMiddlewareConfig) MiddlewareFunc {
+	if onAudit == nil {
+		return func(next Handler) Handler { return next }
+	}
 	if config == nil {
 		config = DefaultAuditMiddlewareConfig()
 	}

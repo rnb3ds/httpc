@@ -321,17 +321,20 @@ func (p *responseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 		return nil, fmt.Errorf("response body exceeds limit of %d bytes", maxSize)
 	}
 
-	// Optimization path for pooled buffers within steal threshold
+	// Optimization path for responses within steal threshold.
+	// Two sub-thresholds based on size:
+	//   - <= 2KB (defaultBufferSize/2): copy — not worth detaching a 4KB buffer for tiny data.
+	//   - 2KB–16KB: steal — detach the buffer from the pool to eliminate a copy.
 	if len(body) <= bufferStealThreshold {
 		if len(body) <= defaultBufferSize/2 {
 			result := make([]byte, len(body))
 			copy(result, body)
 			return result, nil
 		}
-		// Steal: detach buffer from pool and return backing array directly
+		// Steal: detach buffer from pool and return backing array directly.
+		// buf=nil prevents the deferred putBuffer from returning the stolen buffer.
 		result := body
 		buf = nil
-		bufferPool.Put(bytes.NewBuffer(make([]byte, 0, defaultBufferSize)))
 		return result, nil
 	}
 

@@ -101,46 +101,46 @@ type DownloadResult struct {
 	RequestHeaders http.Header
 }
 
-// DownloadFile downloads a file from the given URL to the specified file path using the default client.
-// Returns DownloadResult with download statistics or an error if the download fails.
-func DownloadFile(url string, filePath string, options ...RequestOption) (*DownloadResult, error) {
+// doPackageDownload is a helper for package-level download functions.
+// It obtains the default client and delegates to the provided function.
+func doPackageDownload(fn func(Client) (*DownloadResult, error)) (*DownloadResult, error) {
 	client, err := getDefaultClient()
 	if err != nil {
 		return nil, err
 	}
+	return fn(client)
+}
 
-	return client.DownloadFile(url, filePath, options...)
+// DownloadFile downloads a file from the given URL to the specified file path using the default client.
+// Returns DownloadResult with download statistics or an error if the download fails.
+func DownloadFile(url string, filePath string, options ...RequestOption) (*DownloadResult, error) {
+	return doPackageDownload(func(c Client) (*DownloadResult, error) {
+		return c.DownloadFile(url, filePath, options...)
+	})
 }
 
 // DownloadWithOptions downloads a file with custom download options using the default client.
 // Returns DownloadResult with download statistics or an error if the download fails.
 func DownloadWithOptions(url string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error) {
-	client, err := getDefaultClient()
-	if err != nil {
-		return nil, err
-	}
-
-	return client.DownloadWithOptions(url, downloadOpts, options...)
+	return doPackageDownload(func(c Client) (*DownloadResult, error) {
+		return c.DownloadWithOptions(url, downloadOpts, options...)
+	})
 }
 
 // DownloadFileWithContext downloads a file using the default client with context control.
 // The context parameter allows for timeout and cancellation control during the download.
 func DownloadFileWithContext(ctx context.Context, url string, filePath string, options ...RequestOption) (*DownloadResult, error) {
-	client, err := getDefaultClient()
-	if err != nil {
-		return nil, err
-	}
-	return client.DownloadFileWithContext(ctx, url, filePath, options...)
+	return doPackageDownload(func(c Client) (*DownloadResult, error) {
+		return c.DownloadFileWithContext(ctx, url, filePath, options...)
+	})
 }
 
 // DownloadWithOptionsWithContext downloads a file with custom download options and context control.
 // The context parameter allows for timeout and cancellation control during the download.
 func DownloadWithOptionsWithContext(ctx context.Context, url string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error) {
-	client, err := getDefaultClient()
-	if err != nil {
-		return nil, err
-	}
-	return client.DownloadWithOptionsWithContext(ctx, url, downloadOpts, options...)
+	return doPackageDownload(func(c Client) (*DownloadResult, error) {
+		return c.DownloadWithOptionsWithContext(ctx, url, downloadOpts, options...)
+	})
 }
 
 // DownloadFile downloads a file from the given URL to the specified file path.

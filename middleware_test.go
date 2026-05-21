@@ -17,6 +17,8 @@ func TestChain(t *testing.T) {
 		count    int
 		expected []string
 	}{
+		{"zero middlewares", 0, []string{"handler"}},
+		{"single middleware", 1, []string{"m1-before", "handler", "m1-after"}},
 		{"two middlewares", 2, []string{"m1-before", "m2-before", "handler", "m2-after", "m1-after"}},
 		{"three middlewares", 3, []string{"m1-before", "m2-before", "m3-before", "handler", "m3-after", "m2-after", "m1-after"}},
 	}
@@ -172,6 +174,33 @@ func TestTimeoutMiddleware(t *testing.T) {
 
 	if elapsed > 100*time.Millisecond {
 		t.Errorf("request took too long: %v", elapsed)
+	}
+}
+
+func TestTimeoutMiddleware_CancelledContext(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	cfg := testConfig()
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
+		TimeoutMiddleware(5 * time.Second),
+	}
+
+	client, err := New(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer client.Close()
+
+	// Already-cancelled context should fail immediately
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = client.Get(ts.URL, WithContext(ctx))
+	if err == nil {
+		t.Error("expected error from cancelled context")
 	}
 }
 

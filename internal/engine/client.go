@@ -132,6 +132,10 @@ type Config struct {
 	EnableDoH   bool
 	DoHCacheTTL time.Duration
 
+	// BrowserFingerprint enables TLS ClientHello fingerprint spoofing.
+	// Supported values: "chrome", "firefox", "safari", "ios".
+	BrowserFingerprint string
+
 	// Redirect whitelist configuration
 	RedirectWhitelist *security.DomainWhitelist
 
@@ -338,6 +342,7 @@ func NewClient(config *Config, opts ...clientOption) (*Client, error) {
 		connConfig.ExemptNets = config.ExemptNets
 		connConfig.EnableDoH = config.EnableDoH
 		connConfig.DoHCacheTTL = config.DoHCacheTTL
+		connConfig.BrowserFingerprint = config.BrowserFingerprint
 		connConfig.TLSConfig = config.TLSConfig
 
 		if config.CertificatePinner != nil {
@@ -710,6 +715,8 @@ const (
 // default context when no context is provided. context.Background() is an
 // immutable singleton, so this is purely stylistic — it does not violate
 // the "do not store context in struct" guideline.
+// Note: the public httpc package also defines its own backgroundCtx — this is
+// intentional since unexported vars cannot be shared across packages.
 var backgroundCtx = context.Background()
 
 // executeRequest executes a single HTTP request with comprehensive error handling.

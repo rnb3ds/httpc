@@ -630,6 +630,19 @@ func TestParseRetryAfterHeader(t *testing.T) {
 				t.Errorf("Expected very small delay for current time, got %v", delay)
 			}
 		})
+
+		// RFC1123Z date format test
+		t.Run("RFC1123Z date format", func(t *testing.T) {
+			futureTime := time.Now().Add(30 * time.Second).UTC()
+			httpDate := futureTime.Format(time.RFC1123Z)
+
+			headers := http.Header{"Retry-After": {httpDate}}
+			delay := parseRetryAfterHeader(headers)
+
+			if delay < 25*time.Second || delay > 35*time.Second {
+				t.Errorf("Expected delay around 30s for RFC1123Z, got %v", delay)
+			}
+		})
 	})
 }
 

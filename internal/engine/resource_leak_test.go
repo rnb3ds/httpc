@@ -14,7 +14,6 @@ import (
 // is properly cleaned up when streaming mode is used and ReleaseResponse is called.
 // This prevents timer leaks from context.WithTimeout.
 func TestStreamModeContextCancelCleanup(t *testing.T) {
-	var cancelCalled atomic.Int32
 
 	mock := &mockTransport{
 		Response: &http.Response{
@@ -61,10 +60,8 @@ func TestStreamModeContextCancelCleanup(t *testing.T) {
 	// (ReleaseResponse is responsible for calling it)
 	ReleaseResponse(resp)
 
-	// Verify cancel was tracked
-	if cancelCalled.Load() > 1 {
-		t.Error("Cancel should not be called multiple times")
-	}
+		// Verify cleanup completed without panic.
+		// ReleaseResponse handles cancel func internally.
 }
 
 // TestStreamModeContextCancelOnEarlyError verifies that the context cancel function

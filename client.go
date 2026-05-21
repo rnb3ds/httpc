@@ -16,6 +16,8 @@ import (
 // default context in methods that don't accept one (e.g., Get, Post, doRequest).
 // context.Background() returns the same immutable singleton on every call,
 // so caching it in a package variable is purely stylistic.
+// Note: internal/engine also defines its own backgroundCtx — this is intentional
+// since unexported vars cannot be shared across packages.
 var backgroundCtx = context.Background()
 
 // Doer is a minimal interface for executing HTTP requests.
@@ -207,6 +209,9 @@ func deepCopyConfig(src *Config) *Config {
 // The final handler copies the middleware-modified request fields into a fresh engine
 // request and executes it. This avoids re-applying user options (double execution) and
 // uses a single option closure to forward all mutable state including callbacks.
+//
+// Callbacks (OnRequest/OnResponse) are extracted before the chain runs and forwarded
+// via closure, avoiding a direct dependency on the engine.Request concrete type.
 func (c *clientImpl) buildMiddlewareChain(middlewares []MiddlewareFunc) Handler {
 	finalHandler := func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 		reqCtx := req.Context()
@@ -214,9 +219,21 @@ func (c *clientImpl) buildMiddlewareChain(middlewares []MiddlewareFunc) Handler 
 			reqCtx = ctx
 		}
 
+		// Extract callbacks from the concrete engine.Request before forwarding.
+		// We capture them in the closure so the final handler doesn't need
+		// a type assertion on each invocation — only once at chain entry.
+		var onRequest func(*engine.Request) error
+		var onResponse func(*engine.Response) error
+		if engReq, ok := req.(*engine.Request); ok {
+			if cb := engReq.OnRequest(); cb != nil {
+				onRequest = cb
+			}
+			if cb := engReq.OnResponse(); cb != nil {
+				onResponse = cb
+			}
+		}
+
 		// Single option closure forwards all mutable fields from the middleware-modified request.
-		// The engine.Request type assertion for callbacks is safe: executeRequest always
-		// constructs *engine.Request objects, and middleware receives that same pointer.
 		resp, err := c.engine.Request(reqCtx, req.Method(), req.URL(),
 			func(r *engine.Request) error {
 				r.SetHeaders(req.Headers())
@@ -232,14 +249,12 @@ func (c *clientImpl) buildMiddlewareChain(middlewares []MiddlewareFunc) Handler 
 					r.SetMaxRedirects(mr)
 				}
 				r.SetStreamBody(req.StreamBody())
-				// Forward callbacks — safe because we always pass *engine.Request to the chain
-				if engReq, ok := req.(*engine.Request); ok {
-					if cb := engReq.OnRequest(); cb != nil {
-						r.SetOnRequest(cb)
-					}
-					if cb := engReq.OnResponse(); cb != nil {
-						r.SetOnResponse(cb)
-					}
+				// Forward pre-extracted callbacks
+				if onRequest != nil {
+					r.SetOnRequest(onRequest)
+				}
+				if onResponse != nil {
+					r.SetOnResponse(onResponse)
 				}
 				return nil
 			})
@@ -481,6 +496,16 @@ func Options(url string, options ...RequestOption) (*Result, error) {
 	return doPackage(Client.Options, url, options...)
 }
 
+// doPackageRequest is a helper for the package-level Request function.
+// Unlike doPackage, it accepts a context parameter for timeout and cancellation control.
+func doPackageRequest(ctx context.Context, method, url string, options ...RequestOption) (*Result, error) {
+	client, err := getDefaultClient()
+	if err != nil {
+		return nil, err
+	}
+	return client.Request(ctx, method, url, options...)
+}
+
 // Request executes an HTTP request with the given method using the default client.
 // The context parameter allows for timeout and cancellation control.
 //
@@ -491,11 +516,7 @@ func Options(url string, options ...RequestOption) (*Result, error) {
 //
 //	result, err := httpc.Request(ctx, "GET", "https://api.example.com/data")
 func Request(ctx context.Context, method, url string, options ...RequestOption) (*Result, error) {
-	client, err := getDefaultClient()
-	if err != nil {
-		return nil, err
-	}
-	return client.Request(ctx, method, url, options...)
+	return doPackageRequest(ctx, method, url, options...)
 }
 
 // SetDefaultClient sets a custom client as the default for package-level functions.

@@ -54,7 +54,6 @@ func TestRequest_Validation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Test request validation logic
 			if tt.request.Method() == "" {
 				tt.request.SetMethod("GET")
 			}
@@ -62,9 +61,12 @@ func TestRequest_Validation(t *testing.T) {
 				tt.request.SetContext(context.Background())
 			}
 
-			// Basic validation
-			if tt.request.URL() == "" && !tt.wantErr {
-				t.Error("Empty URL should cause error")
+			hasURL := tt.request.URL() != ""
+			if tt.wantErr && hasURL {
+				t.Errorf("expected error case %q should have empty URL", tt.name)
+			}
+			if !tt.wantErr && !hasURL {
+				t.Errorf("non-error case %q should have a URL", tt.name)
 			}
 		})
 	}

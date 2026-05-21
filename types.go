@@ -99,6 +99,12 @@ type ConnectionConfig struct {
 	// Default: 5 minutes.
 	DoHCacheTTL time.Duration
 
+	// BrowserFingerprint enables TLS ClientHello fingerprint spoofing to mimic
+	// real browser TLS handshakes. When set, connections use utls instead of
+	// Go's standard crypto/tls. Supported values: "chrome", "firefox", "safari", "ios".
+	// Empty string (default) uses standard Go TLS.
+	BrowserFingerprint string
+
 	// MaxResponseHeaderBytes limits the maximum size of the server's response headers.
 	// This protects against malicious servers sending excessively large headers.
 	// Default: 0 (uses Go stdlib default of 10MB).

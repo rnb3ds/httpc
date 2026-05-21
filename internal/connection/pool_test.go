@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1028,4 +1029,127 @@ func TestConfig_SetCertPinner(t *testing.T) {
 	if cfg.certPinner != nil {
 		t.Error("certPinner should remain nil after setting nil")
 	}
+}
+
+func TestNewPoolManager_BrowserFingerprint(t *testing.T) {
+	t.Run("chrome fingerprint configures DialTLSContext", func(t *testing.T) {
+		config := &Config{
+			BrowserFingerprint: "chrome",
+			EnableHTTP2:        true,
+		}
+		pm, err := NewPoolManager(config)
+		if err != nil {
+			t.Fatalf("NewPoolManager: %v", err)
+		}
+		defer pm.Close()
+
+		if pm.transport.DialTLSContext == nil {
+			t.Error("DialTLSContext should be set")
+		}
+		if pm.transport.ForceAttemptHTTP2 {
+			t.Error("ForceAttemptHTTP2 should be false with fingerprint")
+		}
+		if pm.transport.TLSNextProto != nil {
+			t.Error("TLSNextProto should be nil with fingerprint")
+		}
+	})
+
+	t.Run("fingerprint with proxy uses smart proxy", func(t *testing.T) {
+		config := &Config{
+			BrowserFingerprint: "chrome",
+			ProxyURL:           "http://proxy.example.com:8080",
+		}
+		pm, err := NewPoolManager(config)
+		if err != nil {
+			t.Fatalf("NewPoolManager: %v", err)
+		}
+		defer pm.Close()
+
+		if pm.transport.Proxy == nil {
+			t.Error("Proxy should be configured")
+		}
+		if pm.transport.DialTLSContext == nil {
+			t.Error("DialTLSContext should be set")
+		}
+	})
+
+	t.Run("no fingerprint no DialTLSContext", func(t *testing.T) {
+		config := &Config{
+			EnableHTTP2: true,
+		}
+		pm, err := NewPoolManager(config)
+		if err != nil {
+			t.Fatalf("NewPoolManager: %v", err)
+		}
+		defer pm.Close()
+
+		if pm.transport.DialTLSContext != nil {
+			t.Error("DialTLSContext should not be set without fingerprint")
+		}
+	})
+}
+
+func TestNewPoolManager_InvalidProxyURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		proxy   string
+		wantErr string
+	}{
+		{"empty host", "http://", "empty host"},
+		{"bad scheme", "ftp://proxy.com", "invalid proxy URL scheme"},
+		{"invalid URL", "://", "invalid proxy URL"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			config := &Config{ProxyURL: tc.proxy}
+			_, err := NewPoolManager(config)
+			if err == nil {
+				t.Fatalf("expected error containing %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error %q should contain %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestCreateDialer_ClosedPool(t *testing.T) {
+	pm, err := NewPoolManager(nil)
+	if err != nil {
+		t.Fatalf("NewPoolManager: %v", err)
+	}
+	pm.Close()
+
+	dialer := pm.createDialer()
+	_, err = dialer(context.Background(), "tcp", "example.com:80")
+	if err == nil {
+		t.Fatal("expected error when dialing closed pool")
+	}
+	if err.Error() != "connection pool is closed" {
+		t.Errorf("error = %q, want 'connection pool is closed'", err.Error())
+	}
+}
+
+func TestNewPoolManager_MaxTotalConns(t *testing.T) {
+	config := &Config{
+		MaxTotalConns:    2,
+		AllowPrivateIPs:  true,
+		DialTimeout:      5 * time.Second,
+		IdleConnTimeout:  100 * time.Millisecond,
+	}
+
+	pm, err := NewPoolManager(config)
+	if err != nil {
+		t.Fatalf("NewPoolManager: %v", err)
+	}
+	defer pm.Close()
+
+	// Use httptest server so the dialer can actually connect
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	pm.transport.CloseIdleConnections()
 }
