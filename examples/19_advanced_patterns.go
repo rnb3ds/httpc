@@ -42,7 +42,8 @@ func demonstrateCallbacks() {
 
 	client, err := httpc.New()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -88,7 +89,8 @@ func demonstrateResultPool() {
 
 	client, err := httpc.New()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -134,7 +136,8 @@ func demonstrateStreamBody() {
 
 	client, err := httpc.New()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -182,7 +185,8 @@ func demonstrateTestingConfig() {
 
 	client, err := httpc.New(config)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -234,7 +238,8 @@ func demonstrateDefaultClient() {
 	customCfg.Retry.MaxRetries = 0
 	customClient, err := httpc.New(customCfg)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 
 	// Set as default (closes previous default)

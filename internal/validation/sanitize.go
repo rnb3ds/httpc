@@ -26,15 +26,45 @@ var sensitiveQueryParamNames = map[string]bool{
 	"jwt": true, "signature": true, "sign": true, "sig": true,
 }
 
+// asciiToLower converts ASCII uppercase letters to lowercase in-place using a
+// stack-allocated buffer. Avoids heap allocation from strings.ToLower for
+// typical short query parameter names.
+func asciiToLower(s string) string {
+	// Fast path: check if any uppercase exists
+	hasUpper := false
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'A' && s[i] <= 'Z' {
+			hasUpper = true
+			break
+		}
+	}
+	if !hasUpper {
+		return s
+	}
+	var buf [128]byte
+	if len(s) > len(buf) {
+		return strings.ToLower(s)
+	}
+	b := buf[:len(s)]
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		b[i] = c
+	}
+	return string(b)
+}
+
 // isSensitiveQueryParamCI performs case-insensitive lookup for sensitive query param names.
 func isSensitiveQueryParamCI(name string) bool {
-	return sensitiveQueryParamNames[strings.ToLower(name)]
+	return sensitiveQueryParamNames[asciiToLower(name)]
 }
 
 // IsSensitiveQueryParam reports whether the given query parameter name is
 // considered sensitive and should be redacted from logs and cache keys.
 func IsSensitiveQueryParam(name string) bool {
-	return sensitiveQueryParamNames[strings.ToLower(name)]
+	return sensitiveQueryParamNames[asciiToLower(name)]
 }
 
 // SensitiveQueryParamNames returns the set of sensitive query parameter names.
@@ -78,33 +108,9 @@ func SanitizeURL(urlStr string) string {
 	// If there are query params, check if any are sensitive before parsing.
 	// This avoids the expensive url.Parse + query encode cycle for non-sensitive URLs.
 	if idx := strings.IndexByte(urlStr, '?'); idx >= 0 {
-		hasSensitive := false
-		queryPart := urlStr[idx+1:]
-		if strings.Contains(queryPart, "&") {
-			for _, pair := range strings.Split(queryPart, "&") {
-				eqIdx := strings.IndexByte(pair, '=')
-				var key string
-				if eqIdx >= 0 {
-					key = pair[:eqIdx]
-				} else {
-					key = pair
-				}
-				if sensitiveQueryParamNames[strings.ToLower(key)] {
-					hasSensitive = true
-					break
-				}
-			}
-		} else {
-			eqIdx := strings.IndexByte(queryPart, '=')
-			var key string
-			if eqIdx >= 0 {
-				key = queryPart[:eqIdx]
-			} else {
-				key = queryPart
-			}
-			hasSensitive = sensitiveQueryParamNames[strings.ToLower(key)]
-		}
-		if !hasSensitive && !strings.ContainsAny(urlStr, "@# ") {
+		if hasSensitiveQueryParams(urlStr[idx+1:]) {
+			// Fall through to full parsing below
+		} else if !strings.ContainsAny(urlStr, "@# ") {
 			return urlStr
 		}
 	}
@@ -167,6 +173,30 @@ var sanitizeBuilderPool = sync.Pool{
 	New: func() any {
 		return &strings.Builder{}
 	},
+}
+
+// hasSensitiveQueryParams checks if any key-value pair in the query string
+// has a sensitive parameter name. Uses byte-level ASCII lowercase to avoid
+// allocations from strings.ToLower.
+func hasSensitiveQueryParams(query string) bool {
+	for {
+		// Extract key before '='
+		eqIdx := strings.IndexByte(query, '=')
+		if eqIdx < 0 {
+			break
+		}
+		key := query[:eqIdx]
+		if isSensitiveQueryParamCI(key) {
+			return true
+		}
+		// Advance to next parameter
+		ampIdx := strings.IndexByte(query, '&')
+		if ampIdx < 0 {
+			break
+		}
+		query = query[ampIdx+1:]
+	}
+	return false
 }
 
 func getSanitizeBuilder() *strings.Builder {

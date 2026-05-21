@@ -36,7 +36,8 @@ func demonstrateParallelRequests() {
 
 	client, err := httpc.New()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -102,7 +103,8 @@ func demonstrateWorkerPool() {
 
 	client, err := httpc.New()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -165,7 +167,8 @@ func demonstrateConcurrentWithErrors() {
 
 	client, err := httpc.New()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -250,7 +253,8 @@ func demonstrateRateLimited() {
 
 	client, err := httpc.New()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 

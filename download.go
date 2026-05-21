@@ -682,11 +682,7 @@ func (pw *progressWriter) Write(p []byte) (int, error) {
 	if n > 0 {
 		pw.written += int64(n)
 		if now := time.Now(); now.Sub(pw.lastCallback) >= progressInterval {
-			elapsed := now.Sub(pw.startTime).Seconds()
-			var speed float64
-			if elapsed > 0 {
-				speed = float64(pw.written) / elapsed
-			}
+			speed := calculateSpeed(pw.written, now.Sub(pw.startTime))
 			pw.callback(pw.offset+pw.written, pw.total, speed)
 			pw.lastCallback = now
 		}

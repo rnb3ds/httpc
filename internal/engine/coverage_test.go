@@ -1094,7 +1094,7 @@ func TestCreateDecompressor(t *testing.T) {
 	}{
 		{"Identity", "identity", false},
 		{"Empty", "", false},
-		{"Brotli unsupported", "br", true},
+		{"Brotli supported", "br", false},
 		{"Compress unsupported", "compress", true},
 		{"X-compress unsupported", "x-compress", true},
 		{"Unknown passthrough", "unknown-encoding", false},

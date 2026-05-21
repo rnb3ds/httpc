@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"sync"
+
+	"github.com/andybalholm/brotli"
 )
 
 // gzipReaderPool pools gzip.Reader objects to reduce allocations during decompression.
@@ -27,6 +29,13 @@ var flateReaderPool = sync.Pool{
 	New: func() any {
 		// Create a dummy reader to initialize the pool
 		return flate.NewReader(bytes.NewReader(nil))
+	},
+}
+
+// brotliReaderPool pools brotli.Reader objects to reduce allocations during decompression.
+var brotliReaderPool = sync.Pool{
+	New: func() any {
+		return brotli.NewReader(bytes.NewReader(nil))
 	},
 }
 
@@ -387,7 +396,18 @@ func (p *responseProcessor) createDecompressor(reader io.Reader, encoding string
 		}
 		return flate.NewReader(reader), nil
 	case "br":
-		return nil, fmt.Errorf("brotli decompression not supported")
+		if pooled, ok := brotliReaderPool.Get().(*brotli.Reader); ok && pooled != nil {
+			if err := pooled.Reset(reader); err != nil {
+				return io.NopCloser(brotli.NewReader(reader)), nil
+			}
+			wrapper, _ := brotliReaderWrapperPool.Get().(*pooledBrotliReader)
+			if wrapper == nil {
+				wrapper = &pooledBrotliReader{}
+			}
+			wrapper.Reader = pooled
+			return wrapper, nil
+		}
+		return io.NopCloser(brotli.NewReader(reader)), nil
 	case "compress", "x-compress":
 		return nil, fmt.Errorf("LZW compression not supported")
 	case "identity", "":
@@ -456,6 +476,28 @@ func (r *pooledFlateReader) Close() error {
 	r.reader = nil
 	// Return wrapper to pool
 	flateReaderWrapperPool.Put(r)
+	return nil
+}
+
+// pooledBrotliReader wraps a pooled brotli.Reader and returns it to the pool on Close.
+type pooledBrotliReader struct {
+	*brotli.Reader
+}
+
+// brotliReaderWrapperPool reduces allocations for the pooledBrotliReader wrapper struct.
+var brotliReaderWrapperPool = sync.Pool{
+	New: func() any { return &pooledBrotliReader{} },
+}
+
+func (r *pooledBrotliReader) Close() error {
+	if r.Reader == nil {
+		return nil
+	}
+	// Reset to nil reader for safety before returning to pool
+	_ = r.Reset(bytes.NewReader(nil))
+	brotliReaderPool.Put(r.Reader)
+	r.Reader = nil
+	brotliReaderWrapperPool.Put(r)
 	return nil
 }
 

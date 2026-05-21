@@ -123,7 +123,7 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 
 		// Middleware settings
 		UserAgent:       cfg.Middleware.UserAgent,
-		Headers:         cfg.Middleware.Headers,
+		Headers:         copyHeadersMap(cfg.Middleware.Headers),
 		FollowRedirects: cfg.Middleware.FollowRedirects,
 		MaxRedirects:    cfg.Middleware.MaxRedirects,
 	}
@@ -152,4 +152,17 @@ func parseExemptCIDRs(cidrs []string) ([]*net.IPNet, error) {
 		return nil, fmt.Errorf("invalid SSRF exempt CIDRs: %w", err)
 	}
 	return exemptNets, nil
+}
+
+// copyHeadersMap creates a shallow copy of a string map to prevent
+// shared-reference mutation between the public Config and engine Config.
+func copyHeadersMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return src
+	}
+	dst := make(map[string]string, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }

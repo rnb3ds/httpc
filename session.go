@@ -10,11 +10,6 @@ import (
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
-// tempReqPool reuses engine.Request objects in captureFromOptions to reduce allocations.
-var tempReqPool = sync.Pool{
-	New: func() any { return &engine.Request{} },
-}
-
 // SessionConfig configures SessionManager behavior.
 // Use DefaultSessionConfig() to get a configuration with sensible defaults.
 type SessionConfig struct {
@@ -374,14 +369,8 @@ func (s *SessionManager) captureFromOptions(options []RequestOption) {
 	}
 
 	// Use pooled engine.Request to reduce allocations on hot path
-	tempReq, ok := tempReqPool.Get().(*engine.Request)
-	if !ok || tempReq == nil {
-		tempReq = &engine.Request{}
-	}
-	defer func() {
-		*tempReq = engine.Request{}
-		tempReqPool.Put(tempReq)
-	}()
+	tempReq := acquireMiddlewareRequest()
+	defer releaseMiddlewareRequest(tempReq)
 
 	// Clear callbacks before applying options to prevent WithOnRequest/
 	// WithOnResponse from executing during this capture-only pass.

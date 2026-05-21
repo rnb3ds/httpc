@@ -284,7 +284,11 @@ func writeQueryParamValue(sb *strings.Builder, value any, numBuf []byte) {
 			sb.WriteString("false")
 		}
 	default:
-		if strValue := fmt.Sprintf("%v", value); strValue != "" {
+		if s, ok := value.(fmt.Stringer); ok {
+			if strValue := s.String(); strValue != "" {
+				sb.WriteString(queryEscape(strValue))
+			}
+		} else if strValue := fmt.Sprintf("%v", value); strValue != "" {
 			sb.WriteString(queryEscape(strValue))
 		}
 	}

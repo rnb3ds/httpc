@@ -343,14 +343,9 @@ func classifyErrorWithSanitizedURL(err error, sanitizedURL, method string, attem
 		return nil
 	}
 
-	clientErr := &ClientError{
-		Cause:    err,
-		URL:      sanitizedURL,
-		Method:   method,
-		Attempts: attempts,
-	}
-
 	// Return a copy for already-classified errors to prevent shared-pointer mutation.
+	// Copy is created without re-wrapping to avoid circular Unwrap chains:
+	// cp.Cause retains the original chain, not err (which wraps existingErr).
 	var existingErr *ClientError
 	if errors.As(err, &existingErr) {
 		cp := *existingErr
@@ -360,6 +355,13 @@ func classifyErrorWithSanitizedURL(err error, sanitizedURL, method string, attem
 			cp.Attempts = attempts
 		}
 		return &cp
+	}
+
+	clientErr := &ClientError{
+		Cause:    err,
+		URL:      sanitizedURL,
+		Method:   method,
+		Attempts: attempts,
 	}
 
 	if errors.Is(err, context.Canceled) {

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/andybalholm/brotli"
 	"time"
 )
 
@@ -84,11 +86,11 @@ func TestResponseProcessor_Decompression(t *testing.T) {
 		},
 		// Brotli case
 		{
-			name:        "Brotli not supported",
-			encoding:    "br",
-			content:     "fake brotli data",
-			wantErr:     true,
-			errContains: "brotli",
+			name:     "Brotli decompression",
+			encoding: "br",
+			content:  "Brotli compressed content for testing",
+			wantBody: "Brotli compressed content for testing",
+			wantErr:  false,
 		},
 		// No encoding / identity / unknown cases
 		{
@@ -144,6 +146,17 @@ func TestResponseProcessor_Decompression(t *testing.T) {
 				}
 				if err := deflateWriter.Close(); err != nil {
 					t.Fatalf("Failed to close deflate writer: %v", err)
+				}
+				bodyReader = &buf
+			case "br":
+				var buf bytes.Buffer
+				brotliWriter := brotli.NewWriter(&buf)
+				_, err := brotliWriter.Write([]byte(tt.content))
+				if err != nil {
+					t.Fatalf("Failed to write brotli data: %v", err)
+				}
+				if err := brotliWriter.Close(); err != nil {
+					t.Fatalf("Failed to close brotli writer: %v", err)
 				}
 				bodyReader = &buf
 			}
@@ -480,7 +493,7 @@ func TestCreateDecompressor_UnsupportedEncodings(t *testing.T) {
 		wantErr     bool
 		errContains string
 	}{
-		{"brotli rejected", "br", true, "brotli"},
+		{"brotli supported", "br", false, ""},
 		{"compress rejected", "compress", true, "LZW"},
 		{"x-compress rejected", "x-compress", true, "LZW"},
 		{"identity pass-through", "identity", false, ""},

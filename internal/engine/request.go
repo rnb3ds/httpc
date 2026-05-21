@@ -23,7 +23,6 @@ var stringsReaderPool = sync.Pool{
 	New: func() any { return &strings.Reader{} },
 }
 
-
 // bytesReaderPool reduces allocations for bytes.Reader used in request bodies
 var bytesReaderPool = sync.Pool{
 	New: func() any { return &bytes.Reader{} },
@@ -393,26 +392,31 @@ func (c *urlCache) Get(rawURL string) (*url.URL, error) {
 	return cloneURL(parsed), nil
 }
 
+// urlPool reduces allocations for url.URL clones from the cache.
+var urlPool = sync.Pool{
+	New: func() any {
+		return &url.URL{}
+	},
+}
+
 // cloneURL creates a deep copy of a URL
 // to ensure cached entries remain immutable
 func cloneURL(u *url.URL) *url.URL {
 	if u == nil {
 		return nil
 	}
-	clone := &url.URL{
-		Scheme:      u.Scheme,
-		Opaque:      u.Opaque,
-		Host:        u.Host,
-		Path:        u.Path,
-		RawPath:     u.RawPath,
-		OmitHost:    u.OmitHost,
-		ForceQuery:  u.ForceQuery,
-		RawQuery:    u.RawQuery,
-		Fragment:    u.Fragment,
-		RawFragment: u.RawFragment,
-	}
-	// User is intentionally not cloned — credentials are never cached
-	// and should be set via WithBasicAuth() instead.
+	clone := urlPool.Get().(*url.URL)
+	clone.Scheme = u.Scheme
+	clone.Opaque = u.Opaque
+	clone.Host = u.Host
+	clone.Path = u.Path
+	clone.RawPath = u.RawPath
+	clone.OmitHost = u.OmitHost
+	clone.ForceQuery = u.ForceQuery
+	clone.RawQuery = u.RawQuery
+	clone.Fragment = u.Fragment
+	clone.RawFragment = u.RawFragment
+	clone.User = nil
 	return clone
 }
 
@@ -654,21 +658,9 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 
 					if fileData.ContentType != "" {
 						h := getMIMEHeader()
-						sb, ok := stringBuilderPool.Get().(*strings.Builder)
-						if !ok || sb == nil {
-							sb = &strings.Builder{}
-						}
-						sb.Reset()
 						escapedKey := escapeQuotes(key)
 						escapedFilename := escapeQuotes(fileData.Filename)
-						sb.Grow(21 + len(escapedKey) + 12 + len(escapedFilename) + 2)
-						sb.WriteString(`form-data; name="`)
-						sb.WriteString(escapedKey)
-						sb.WriteString(`"; filename="`)
-						sb.WriteString(escapedFilename)
-						sb.WriteByte('"')
-						contentDisposition := sb.String()
-						stringBuilderPool.Put(sb)
+						contentDisposition := `form-data; name="` + escapedKey + `"; filename="` + escapedFilename + `"`
 
 						h.Set("Content-Disposition", contentDisposition)
 						h.Set("Content-Type", fileData.ContentType)
@@ -743,7 +735,7 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 		Host:       parsedURL.Host,
 	}
 	// WithContext is safe here: Header map is empty (just allocated), so the
-	// internal cloneHeader call copies zero entries — negligible overhead.
+	// internal cloneHeader call copies zero entries - negligible overhead.
 	httpReq = httpReq.WithContext(ctx)
 
 	// Set Content-Length from known body types

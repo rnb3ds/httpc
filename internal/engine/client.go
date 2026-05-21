@@ -50,6 +50,36 @@ func (p *requestPool) put(req *Request) {
 	p.pool.Put(req)
 }
 
+// sharedRequestPool is a global pool for Request objects used by external packages
+// (httpc middleware path, session capture). Consolidating into a single pool improves
+// hit rates under concurrency compared to multiple separate pools.
+// maxRetries defaults to -1 (unset/use config default) to match the private requestPool
+// behavior. Without this, middleware-path requests would have retries silently disabled.
+var sharedRequestPool = sync.Pool{
+	New: func() any { return &Request{maxRetries: -1} },
+}
+
+// AcquireRequest retrieves a Request from the shared pool.
+// The caller must call ReleaseRequest when done.
+func AcquireRequest() *Request {
+	req, ok := sharedRequestPool.Get().(*Request)
+	if !ok || req == nil {
+		return &Request{}
+	}
+	return req
+}
+
+// ReleaseRequest returns a Request to the shared pool after clearing all fields.
+// Resets maxRetries to -1 so recycled requests inherit the client's retry config
+// rather than silently disabling retries.
+func ReleaseRequest(req *Request) {
+	if req == nil {
+		return
+	}
+	*req = Request{maxRetries: -1}
+	sharedRequestPool.Put(req)
+}
+
 // Client is the internal HTTP client that manages requests, responses, retries,
 // and connection pooling.
 type Client struct {

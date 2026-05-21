@@ -255,7 +255,7 @@ func (r *Result) String() string {
 	}
 
 	// Pre-calculate approximate size to reduce allocations
-	estimatedSize := 128 // Base size for status, content length
+	estimatedSize := 128 + len(r.Response.Status) // Base size for status, content length
 	if r.Meta != nil {
 		estimatedSize += 64 // Duration and attempts
 	}
@@ -267,7 +267,7 @@ func (r *Result) String() string {
 	}
 	if len(r.Response.Body) > 0 {
 		bodyPreview := min(len(r.Response.Body), maxBodyPreview)
-		estimatedSize += 16 + bodyPreview
+		estimatedSize += 16 + bodyPreview + len(truncationMarker)
 	}
 
 	// Use pooled strings.Builder to reduce allocations

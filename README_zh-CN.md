@@ -4,12 +4,36 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/cybergodev/httpc.svg)](https://pkg.go.dev/github.com/cybergodev/httpc)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Security](https://img.shields.io/badge/Security-Hardened-red.svg)](SECURITY.md)
-[![Zero Deps](https://img.shields.io/badge/deps-zero-brightgreen.svg)](go.mod)
+[![Dependencies](https://img.shields.io/badge/deps-minimal-brightgreen.svg)](go.mod)
 [![Thread Safe](https://img.shields.io/badge/thread%20safe-%E2%9C%93-brightgreen.svg)](docs/09_concurrency-safety.md)
 
 一个快速、安全的 Go HTTP 客户端库，具备合理的默认配置、极简依赖和内置弹性机制。
 
 **[English Documentation](README.md)** | **[www.cybergo.dev/httpc](https://www.cybergo.dev/httpc)**
+
+---
+
+## 目录
+
+- [特性](#特性)
+- [安装](#安装)
+- [快速开始](#快速开始-5-分钟)
+- [HTTP 方法](#http-方法)
+- [请求选项](#请求选项)
+- [响应处理](#响应处理)
+- [Context 与取消](#context-与取消)
+- [文件下载](#文件下载)
+- [域名客户端 (会话管理)](#域名客户端-会话管理)
+- [会话管理器](#会话管理器)
+- [配置](#配置)
+- [中间件](#中间件)
+- [代理配置](#代理配置)
+- [TLS 指纹伪装](#tls-指纹伪装)
+- [安全特性](#安全特性)
+- [错误处理](#错误处理)
+- [并发安全](#并发安全)
+- [文档](#文档)
+- [许可证](#许可证)
 
 ---
 
@@ -21,7 +45,8 @@
 | **高性能** | 连接池、HTTP/2、goroutine 安全、`sync.Pool` 优化 |
 | **内置弹性** | 智能重试，支持指数退避和抖动 |
 | **开发者友好** | 简洁的 API、直观的选项模式、完善的文档 |
-| **极简依赖** | 仅依赖 `golang.org/x/sys` 用于系统级操作 |
+| **极简依赖** | 2 个直接依赖，无外部框架 |
+| **TLS 指纹伪装** | 模拟浏览器的 TLS 握手指纹，绕过基础反爬检测 |
 | **可靠的默认配置** | 经过充分测试的默认配置，广泛的测试覆盖 |
 | **Cookie 管理** | 完整的 Cookie Jar 支持，带安全验证 |
 | **文件操作** | 安全的文件下载，支持进度跟踪和断点续传 |
@@ -696,6 +721,7 @@ client, _ := httpc.New(config)
 | `Connection.EnableCookies` | `bool` | `false` | 启用 Cookie Jar |
 | `Connection.EnableDoH` | `bool` | `false` | 启用 DNS-over-HTTPS |
 | `Connection.DoHCacheTTL` | `time.Duration` | `5m` | DoH 缓存时长 |
+| `Connection.BrowserFingerprint` | `string` | `""` | TLS 指纹伪装: "chrome"、"firefox"、"safari"、"ios" |
 | `Connection.MaxResponseHeaderBytes` | `int64` | `0` | 最大响应头大小 (0 = Go 标准库默认 10MB) |
 | **安全设置** (`Security`) ||||
 | `Security.TLSConfig` | `*tls.Config` | `nil` | 自定义 TLS 配置 |
@@ -831,6 +857,22 @@ config.Connection.ProxyURL = "http://127.0.0.1:8080"
 config := httpc.DefaultConfig()
 config.Connection.EnableSystemProxy = true  // 从环境变量和系统设置读取
 ```
+
+---
+
+## TLS 指纹伪装
+
+HTTPC 通过 [utls](https://github.com/refraction-networking/utls) 支持 TLS ClientHello 指纹伪装，使请求看起来来自真实浏览器：
+
+```go
+config := httpc.DefaultConfig()
+config.Connection.BrowserFingerprint = "chrome" // 或 "firefox"、"safari"、"ios"
+client, _ := httpc.New(config)
+```
+
+启用后，连接使用 utls 代替 Go 标准 `crypto/tls`，生成模拟指定浏览器的 TLS 握手。这有助于绕过基础的反爬虫检测系统。
+
+> **注意：** 此功能会引入 `github.com/refraction-networking/utls` 依赖。将 `BrowserFingerprint` 留空（默认）则使用标准 Go TLS。
 
 ---
 

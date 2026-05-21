@@ -35,15 +35,18 @@ func demonstrateBasicSession() {
 	// Create a session manager
 	session, err := httpc.NewSessionManager()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 
 	// Set persistent headers that apply to all requests
 	if err := session.SetHeader("Authorization", "Bearer my-token"); err != nil {
-		log.Fatal(err)
+		log.Printf("Operation failed: %v\n", err)
+		return
 	}
 	if err := session.SetHeader("Accept", "application/json"); err != nil {
-		log.Fatal(err)
+		log.Printf("Operation failed: %v\n", err)
+		return
 	}
 
 	// Set multiple headers at once
@@ -51,7 +54,8 @@ func demonstrateBasicSession() {
 		"X-API-Version": "v2",
 		"X-Client-ID":   "session-demo",
 	}); err != nil {
-		log.Fatal(err)
+		log.Printf("Operation failed: %v\n", err)
+		return
 	}
 
 	fmt.Printf("Session headers: %d\n", len(session.GetHeaders()))
@@ -61,13 +65,15 @@ func demonstrateBasicSession() {
 		Name:  "session_id",
 		Value: "abc123",
 	}); err != nil {
-		log.Fatal(err)
+		log.Printf("Operation failed: %v\n", err)
+		return
 	}
 	if err := session.SetCookie(&http.Cookie{
 		Name:  "preferences",
 		Value: "theme_dark",
 	}); err != nil {
-		log.Fatal(err)
+		log.Printf("Operation failed: %v\n", err)
+		return
 	}
 
 	fmt.Printf("Session cookies: %d\n", len(session.GetCookies()))
@@ -89,13 +95,15 @@ func demonstrateSessionWithClient() {
 	// DomainClient has a built-in session
 	client, err := httpc.NewDomain("https://httpbin.org")
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
 	// Configure session headers
 	if err := client.SetHeader("Accept", "application/json"); err != nil {
-		log.Fatal(err)
+		log.Printf("Operation failed: %v\n", err)
+		return
 	}
 
 	// Make request - session headers are sent automatically
@@ -119,7 +127,8 @@ func demonstrateSessionState() {
 
 	session, err := httpc.NewSessionManager()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 
 	// Set initial state
@@ -127,7 +136,8 @@ func demonstrateSessionState() {
 		"Authorization": "Bearer token-123",
 		"Accept":        "application/json",
 	}); err != nil {
-		log.Fatal(err)
+		log.Printf("Operation failed: %v\n", err)
+		return
 	}
 
 	cookies := []*http.Cookie{
@@ -135,7 +145,8 @@ func demonstrateSessionState() {
 		{Name: "tracking", Value: "enabled"},
 	}
 	if err := session.SetCookies(cookies); err != nil {
-		log.Fatal(err)
+		log.Printf("Operation failed: %v\n", err)
+		return
 	}
 
 	fmt.Printf("Initial state: %d headers, %d cookies\n",

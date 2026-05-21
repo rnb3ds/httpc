@@ -122,7 +122,7 @@ func New(config ...*Config) (Client, error) {
 		if err := ValidateConfig(config[0]); err != nil {
 			return nil, fmt.Errorf("invalid configuration: %w", err)
 		}
-		cfg = deepCopyConfig(config[0])
+		cfg = config[0]
 	} else {
 		cfg = DefaultConfig()
 	}
@@ -315,9 +315,8 @@ func (c *clientImpl) Request(ctx context.Context, method, url string, options ..
 	if err != nil {
 		return nil, err
 	}
-	result := convertResponseToResult(resp)
-	releaseResponseMutator(resp)
-	return result, nil
+	defer releaseResponseMutator(resp)
+	return convertResponseToResult(resp), nil
 }
 
 // releaseResponseMutator safely releases a ResponseMutator back to the engine pool.
@@ -333,11 +332,14 @@ func releaseResponseMutator(resp ResponseMutator) {
 	}
 }
 
-// middlewareRequestPool reduces allocations for engine.Request objects in the middleware path
-var middlewareRequestPool = sync.Pool{
-	New: func() any {
-		return &engine.Request{}
-	},
+// acquireMiddlewareRequest gets a Request from the engine's shared pool.
+func acquireMiddlewareRequest() *engine.Request {
+	return engine.AcquireRequest()
+}
+
+// releaseMiddlewareRequest returns a Request to the engine's shared pool.
+func releaseMiddlewareRequest(req *engine.Request) {
+	engine.ReleaseRequest(req)
 }
 
 // executeRequest executes an HTTP request through the middleware chain (if configured)
@@ -353,18 +355,12 @@ func (c *clientImpl) executeRequest(ctx context.Context, method, url string, opt
 		return c.engine.Request(ctx, method, url, options...)
 	}
 
-	engineReq, ok := middlewareRequestPool.Get().(*engine.Request)
-	if !ok || engineReq == nil {
-		engineReq = &engine.Request{}
-	}
+	engineReq := acquireMiddlewareRequest()
 	// Clear sensitive data (cookies, headers, auth tokens) before returning to pool.
 	// SAFETY: middlewareChain executes synchronously — defer runs only after
 	// the chain returns. If async middleware is ever introduced, this pool
 	// pattern will cause data races and must be redesigned.
-	defer func() {
-		*engineReq = engine.Request{}
-		middlewareRequestPool.Put(engineReq)
-	}()
+	defer releaseMiddlewareRequest(engineReq)
 
 	engineReq.SetMethod(method)
 	engineReq.SetURL(url)

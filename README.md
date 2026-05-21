@@ -4,12 +4,36 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/cybergodev/httpc.svg)](https://pkg.go.dev/github.com/cybergodev/httpc)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Security](https://img.shields.io/badge/Security-Hardened-red.svg)](SECURITY.md)
-[![Zero Deps](https://img.shields.io/badge/deps-zero-brightgreen.svg)](go.mod)
+[![Dependencies](https://img.shields.io/badge/deps-minimal-brightgreen.svg)](go.mod)
 [![Thread Safe](https://img.shields.io/badge/thread%20safe-%E2%9C%93-brightgreen.svg)](docs/09_concurrency-safety.md)
 
 A fast, secure HTTP client library for Go with sensible defaults, minimal dependencies, and built-in resilience.
 
 **[中文文档](README_zh-CN.md)** | **[www.cybergo.dev/httpc](https://www.cybergo.dev/httpc)**
+
+---
+
+## Table of Contents
+
+- [Features](#features)
+- [Installation](#installation)
+- [Quick Start](#quick-start-5-minutes)
+- [HTTP Methods](#http-methods)
+- [Request Options](#request-options)
+- [Response Handling](#response-handling)
+- [Context & Cancellation](#context--cancellation)
+- [File Download](#file-download)
+- [Domain Client (Session Management)](#domain-client-session-management)
+- [Session Manager](#session-manager)
+- [Configuration](#configuration)
+- [Middleware](#middleware)
+- [Proxy Configuration](#proxy-configuration)
+- [TLS Fingerprinting](#tls-fingerprinting)
+- [Security Features](#security-features)
+- [Error Handling](#error-handling)
+- [Concurrency Safety](#concurrency-safety)
+- [Documentation](#documentation)
+- [License](#license)
 
 ---
 
@@ -21,7 +45,8 @@ A fast, secure HTTP client library for Go with sensible defaults, minimal depend
 | **High Performance** | Connection pooling, HTTP/2, goroutine-safe, `sync.Pool` optimization |
 | **Built-in Resilience** | Smart retry with exponential backoff and jitter |
 | **Developer Friendly** | Clean API, intuitive options pattern, comprehensive documentation |
-| **Minimal Dependencies** | Only `golang.org/x/sys` for system-level operations |
+| **Minimal Dependencies** | 2 direct dependencies, no external frameworks |
+| **TLS Fingerprinting** | Browser-like TLS handshakes to bypass basic bot detection |
 | **Reliable Defaults** | Well-tested defaults, extensive test coverage |
 | **Cookie Management** | Full cookie jar support with security validation |
 | **File Operations** | Secure file download with progress tracking and resume support |
@@ -696,6 +721,7 @@ client, _ := httpc.New(config)
 | `Connection.EnableCookies` | `bool` | `false` | Enable cookie jar |
 | `Connection.EnableDoH` | `bool` | `false` | Enable DNS-over-HTTPS |
 | `Connection.DoHCacheTTL` | `time.Duration` | `5m` | DoH cache duration |
+| `Connection.BrowserFingerprint` | `string` | `""` | TLS fingerprint spoofing: "chrome", "firefox", "safari", "ios" |
 | `Connection.MaxResponseHeaderBytes` | `int64` | `0` | Max response header size (0 = Go stdlib default 10MB) |
 | **Security** (nested: `Security: httpc.SecurityConfig{...}`) ||||
 | `Security.TLSConfig` | `*tls.Config` | `nil` | Custom TLS config |
@@ -831,6 +857,22 @@ config.Connection.ProxyURL = "http://127.0.0.1:8080"
 config := httpc.DefaultConfig()
 config.Connection.EnableSystemProxy = true // Reads from environment and system settings
 ```
+
+---
+
+## TLS Fingerprinting
+
+HTTPC supports TLS ClientHello fingerprint spoofing via [utls](https://github.com/refraction-networking/utls), making requests appear to come from real browsers:
+
+```go
+config := httpc.DefaultConfig()
+config.Connection.BrowserFingerprint = "chrome" // or "firefox", "safari", "ios"
+client, _ := httpc.New(config)
+```
+
+When enabled, connections use utls instead of Go's standard `crypto/tls`, producing TLS handshakes that mimic the specified browser. This helps bypass basic bot detection systems.
+
+> **Note:** This feature adds `github.com/refraction-networking/utls` as a dependency. Leave `BrowserFingerprint` empty (default) to use standard Go TLS.
 
 ---
 

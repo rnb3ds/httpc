@@ -15,8 +15,12 @@ func FormatSpeed(bytesPerSecond float64) string {
 func formatUnit(value float64, baseUnit string, suffix string) string {
 	const unit = 1024.0
 	if value < unit {
-		s := strconv.FormatFloat(value, 'f', 0, 64)
-		return s + " " + baseUnit + suffix
+		var buf [32]byte
+		b := strconv.AppendFloat(buf[:0], value, 'f', 0, 64)
+		b = append(b, ' ')
+		b = append(b, baseUnit...)
+		b = append(b, suffix...)
+		return string(b)
 	}
 
 	units := [6]byte{'K', 'M', 'G', 'T', 'P', 'E'}
@@ -28,6 +32,11 @@ func formatUnit(value float64, baseUnit string, suffix string) string {
 		exp++
 	}
 
-	s := strconv.FormatFloat(value/div, 'f', 2, 64)
-	return s + " " + string(units[exp]) + baseUnit + suffix
+	var buf [32]byte
+	b := strconv.AppendFloat(buf[:0], value/div, 'f', 2, 64)
+	b = append(b, ' ')
+	b = append(b, units[exp])
+	b = append(b, baseUnit...)
+	b = append(b, suffix...)
+	return string(b)
 }
