@@ -29,6 +29,7 @@ func IsPrivateOrReservedIP(ip net.IP) bool {
 		// Check for reserved IP ranges
 		if ip4[0] >= 240 || // Class E (240.0.0.0/4) - Reserved
 			ip4[0] == 0 || // "This" Network (0.0.0.0/8)
+			(ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127) || // Carrier-Grade NAT (RFC 6598) 100.64.0.0/10
 			(ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 0) || // IETF Protocol Assignments (192.0.0.0/24)
 			(ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 2) || // Documentation TEST-NET-1 (192.0.2.0/24)
 			(ip4[0] == 192 && ip4[1] == 88 && ip4[2] == 99) || // 6to4 Relay Anycast (192.88.99.0/24)
@@ -67,9 +68,9 @@ func ValidateIP(ip net.IP) error {
 	return nil
 }
 
-// ParseExemptCIDRs parses a list of CIDR strings into net.IPNet slices.
+// parseExemptCIDRs parses a list of CIDR strings into net.IPNet slices.
 // Returns nil, nil for empty input.
-func ParseExemptCIDRs(cidrs []string) ([]*net.IPNet, error) {
+func parseExemptCIDRs(cidrs []string) ([]*net.IPNet, error) {
 	if len(cidrs) == 0 {
 		return nil, nil
 	}

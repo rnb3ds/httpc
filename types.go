@@ -224,18 +224,23 @@ type Config struct {
 	Security   SecurityConfig
 	Retry      RetryConfig
 	Middleware MiddlewareConfig
+
+	// parsedCIDRs caches parsed SSRFExemptCIDRs to avoid double parsing.
+	// Filled by ValidateConfig; consumed by convertToEngineConfig.
+	parsedCIDRs []*net.IPNet
 }
 
-// RequestOption is a function that modifies a request.
-// This is a type alias to the engine's RequestOption for unified type handling.
+// RequestOption is a function that modifies a request before it is sent.
+// Alias for engine.RequestOption to avoid importing the internal package.
 type RequestOption = engine.RequestOption
 
 // RetryPolicy defines the interface for custom retry behavior.
-// This is a type alias to types.RetryPolicy for convenience.
+// Alias for types.RetryPolicy to avoid importing the internal package.
 type RetryPolicy = types.RetryPolicy
 
 // CookieSecurityConfig configures cookie security attribute validation.
 // Use DefaultCookieSecurityConfig() or StrictCookieSecurityConfig() to create instances.
+// Alias for validation.CookieSecurityConfig to avoid importing the internal package.
 //
 // Example:
 //
@@ -257,7 +262,7 @@ func StrictCookieSecurityConfig() *CookieSecurityConfig {
 }
 
 // FormData represents multipart form data for HTTP requests.
-// This is a type alias to types.FormData for backward compatibility.
+// Alias for types.FormData to avoid importing the internal package.
 //
 // Example:
 //
@@ -270,40 +275,23 @@ func StrictCookieSecurityConfig() *CookieSecurityConfig {
 type FormData = types.FormData
 
 // FileData represents a file to be uploaded in a multipart form.
-// This is a type alias to types.FileData for backward compatibility.
+// Alias for types.FileData to avoid importing the internal package.
 type FileData = types.FileData
 
 // RequestMutator provides read-write access to request data for middleware.
-// Middleware can inspect and modify request properties before the request is sent.
-//
-// This is a type alias to the shared types package, ensuring compile-time
-// type compatibility between public and internal layers.
+// Alias for types.RequestMutator to avoid importing the internal package.
 type RequestMutator = types.RequestMutator
 
-// ResponseMutator provides read-write access to response data.
-// Middleware can inspect and modify response properties after the request completes.
-// This is useful for:
-//   - Response caching middleware
-//   - Response transformation (e.g., JSON pretty-printing)
-//   - Content encoding/decoding
-//   - Response filtering
-//
-// This is a type alias to the shared types package, ensuring compile-time
-// type compatibility between public and internal layers.
+// ResponseMutator provides read-write access to response data for middleware.
+// Alias for types.ResponseMutator to avoid importing the internal package.
 type ResponseMutator = types.ResponseMutator
 
 // Handler processes an HTTP request and returns a response.
-// This is the core function signature for request processing in the middleware chain.
-//
-// This is a type alias to the shared types package, ensuring compile-time
-// type compatibility between public and internal layers.
+// Alias for types.Handler to avoid importing the internal package.
 type Handler = types.Handler
 
-// MiddlewareFunc wraps a Handler with additional functionality.
-// Middleware can inspect/modify requests, handle responses, add logging, etc.
-//
-// This is a type alias to the shared types package, ensuring compile-time
-// type compatibility between public and internal layers.
+// MiddlewareFunc wraps a Handler with pre/post-processing logic.
+// Alias for types.MiddlewareFunc to avoid importing the internal package.
 type MiddlewareFunc = types.MiddlewareFunc
 
 // BodyKind represents the type of request body for WithBody.
@@ -458,7 +446,6 @@ func ValidateConfig(cfg *Config) error {
 	if cfg.Connection.MaxResponseHeaderBytes < 0 {
 		return fmt.Errorf("%w: Connection.MaxResponseHeaderBytes cannot be negative, got %d", ErrInvalidConnection, cfg.Connection.MaxResponseHeaderBytes)
 	}
-
 	// Validate security settings
 	if cfg.Security.MaxResponseBodySize < 0 || cfg.Security.MaxResponseBodySize > maxResponseBodySize {
 		return fmt.Errorf("%w: Security.MaxResponseBodySize must be 0-1GB, got %d", ErrInvalidSecurity, cfg.Security.MaxResponseBodySize)
@@ -477,10 +464,15 @@ func ValidateConfig(cfg *Config) error {
 		}
 	}
 
-	// Validate SSRF exempt CIDRs
-	for _, cidr := range cfg.Security.SSRFExemptCIDRs {
-		if _, _, err := net.ParseCIDR(cidr); err != nil {
-			return fmt.Errorf("Security.SSRFExemptCIDRs: invalid CIDR %q: %w", cidr, err)
+	// Validate and cache parsed SSRF exempt CIDRs
+	if len(cfg.Security.SSRFExemptCIDRs) > 0 {
+		cfg.parsedCIDRs = make([]*net.IPNet, 0, len(cfg.Security.SSRFExemptCIDRs))
+		for _, cidr := range cfg.Security.SSRFExemptCIDRs {
+			_, network, err := net.ParseCIDR(cidr)
+			if err != nil {
+				return fmt.Errorf("Security.SSRFExemptCIDRs: invalid CIDR %q: %w", cidr, err)
+			}
+			cfg.parsedCIDRs = append(cfg.parsedCIDRs, network)
 		}
 	}
 

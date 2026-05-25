@@ -479,8 +479,8 @@ func TestParseWireFormatResponse(t *testing.T) {
 		ttl        uint32
 		rdata      []byte
 	}{
-		{recordType: 1, ttl: 300, rdata: []byte{1, 1, 1, 1}},   // 1.1.1.1
-		{recordType: 1, ttl: 300, rdata: []byte{8, 8, 8, 8}},   // 8.8.8.8
+		{recordType: 1, ttl: 300, rdata: []byte{1, 1, 1, 1}}, // 1.1.1.1
+		{recordType: 1, ttl: 300, rdata: []byte{8, 8, 8, 8}}, // 8.8.8.8
 	})
 
 	ipv6 := net.ParseIP("2001:4860:4860::8888")

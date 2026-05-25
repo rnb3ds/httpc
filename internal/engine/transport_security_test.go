@@ -146,18 +146,27 @@ func TestCheckRedirect_SameOriginHeadersPreserved(t *testing.T) {
 }
 
 func TestClearPools(t *testing.T) {
-	clearTransportPools()
-
+	// Populate pools
 	settings := getRedirectSettings()
 	if settings == nil {
-		t.Fatal("getRedirectSettings returned nil after clearTransportPools")
+		t.Fatal("getRedirectSettings returned nil")
 	}
 	settings.followRedirects = true
 	settings.maxRedirects = 5
 	settings.addRedirect("https://example.com")
 	putRedirectSettings(settings)
 
+	// Clear pools
 	clearTransportPools()
+
+	// Verify pools are empty after clear
+	cleared := getRedirectSettings()
+	if cleared == nil {
+		t.Fatal("getRedirectSettings returned nil after clear")
+	}
+	if cleared.chainLen != 0 {
+		t.Errorf("redirect chain should be empty after clear, got %d entries", cleared.chainLen)
+	}
 }
 
 func TestCrossOriginRedirectHostComparison(t *testing.T) {

@@ -59,7 +59,7 @@ func BenchmarkCloneHeader_Small(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		_ = cloneHeader(src)
+		_ = CloneHeader(src)
 	}
 }
 
@@ -73,7 +73,7 @@ func BenchmarkCloneHeader_Large(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		_ = cloneHeader(src)
+		_ = CloneHeader(src)
 	}
 }
 
@@ -85,7 +85,7 @@ func BenchmarkQueryEscape_NoEscape(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		for _, s := range inputs {
-			_ = queryEscape(s)
+							_ = QueryEscape(s)
 		}
 	}
 }
@@ -98,7 +98,7 @@ func BenchmarkQueryEscape_NeedsEscape(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		for _, s := range inputs {
-			_ = queryEscape(s)
+							_ = QueryEscape(s)
 		}
 	}
 }

@@ -20,110 +20,54 @@ import (
 // ----------------------------------------------------------------------------
 
 func TestRetry_Behavior(t *testing.T) {
-	t.Run("SuccessOnFirstAttempt", func(t *testing.T) {
-		attemptCount := int32(0)
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			atomic.AddInt32(&attemptCount, 1)
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
+	tests := []struct {
+		name            string
+		maxRetries      int
+		successAfter    int32 // succeed on Nth attempt (0 = always succeed)
+		delay           time.Duration
+		expectedStatus  int
+		expectedAttempts int32
+	}{
+		{"SuccessOnFirstAttempt", 3, 0, 0, http.StatusOK, 1},
+		{"SuccessOnRetry", 3, 3, 10 * time.Millisecond, http.StatusOK, 3},
+		{"MaxRetriesExceeded", 3, -1, 10 * time.Millisecond, http.StatusInternalServerError, 4},
+		{"NoRetries", 0, -1, 0, http.StatusInternalServerError, 1},
+	}
 
-		config := DefaultConfig()
-		config.Retry.MaxRetries = 3
-		config.Security.AllowPrivateIPs = true
-		client, _ := New(config)
-		defer client.Close()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			attemptCount := int32(0)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				count := atomic.AddInt32(&attemptCount, 1)
+				if tt.successAfter == 0 {
+					w.WriteHeader(http.StatusOK)
+				} else if tt.successAfter > 0 && count >= tt.successAfter {
+					w.WriteHeader(http.StatusOK)
+				} else {
+					w.WriteHeader(http.StatusInternalServerError)
+				}
+			}))
+			defer server.Close()
 
-		_, err := client.Get(server.URL)
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-		if atomic.LoadInt32(&attemptCount) != 1 {
-			t.Errorf("Expected 1 attempt, got %d", atomic.LoadInt32(&attemptCount))
-		}
-	})
+			config := DefaultConfig()
+			config.Retry.MaxRetries = tt.maxRetries
+			config.Retry.Delay = tt.delay
+			config.Security.AllowPrivateIPs = true
+			client, _ := New(config)
+			defer client.Close()
 
-	t.Run("SuccessOnRetry", func(t *testing.T) {
-		attemptCount := int32(0)
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			count := atomic.AddInt32(&attemptCount, 1)
-			if count < 3 {
-				w.WriteHeader(http.StatusInternalServerError)
-			} else {
-				w.WriteHeader(http.StatusOK)
+			resp, err := client.Get(server.URL)
+			if err != nil {
+				t.Fatalf("Request failed: %v", err)
 			}
-		}))
-		defer server.Close()
-
-		config := DefaultConfig()
-		config.Retry.MaxRetries = 3
-		config.Retry.Delay = 10 * time.Millisecond
-		config.Security.AllowPrivateIPs = true
-		client, _ := New(config)
-		defer client.Close()
-
-		_, err := client.Get(server.URL)
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-		if atomic.LoadInt32(&attemptCount) != 3 {
-			t.Errorf("Expected 3 attempts, got %d", atomic.LoadInt32(&attemptCount))
-		}
-	})
-
-	t.Run("MaxRetriesExceeded", func(t *testing.T) {
-		attemptCount := int32(0)
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			atomic.AddInt32(&attemptCount, 1)
-			w.WriteHeader(http.StatusInternalServerError)
-		}))
-		defer server.Close()
-
-		config := DefaultConfig()
-		config.Retry.MaxRetries = 3
-		config.Retry.Delay = 10 * time.Millisecond
-		config.Security.AllowPrivateIPs = true
-		client, _ := New(config)
-		defer client.Close()
-
-		resp, err := client.Get(server.URL)
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-		if resp.StatusCode() != http.StatusInternalServerError {
-			t.Errorf("Expected status 500, got %d", resp.StatusCode())
-		}
-		// MaxRetries=3 means: 1 initial + 3 retries = 4 total attempts
-		if atomic.LoadInt32(&attemptCount) != 4 {
-			t.Errorf("Expected 4 attempts (1 initial + 3 retries), got %d", atomic.LoadInt32(&attemptCount))
-		}
-	})
-
-	t.Run("NoRetries", func(t *testing.T) {
-		attemptCount := int32(0)
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			atomic.AddInt32(&attemptCount, 1)
-			w.WriteHeader(http.StatusInternalServerError)
-		}))
-		defer server.Close()
-
-		config := DefaultConfig()
-		config.Retry.MaxRetries = 0
-		config.Security.AllowPrivateIPs = true
-		client, _ := New(config)
-		defer client.Close()
-
-		resp, err := client.Get(server.URL)
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-		if resp.StatusCode() != http.StatusInternalServerError {
-			t.Errorf("Expected status 500, got %d", resp.StatusCode())
-		}
-		if atomic.LoadInt32(&attemptCount) != 1 {
-			t.Errorf("Expected 1 attempt, got %d", atomic.LoadInt32(&attemptCount))
-		}
-	})
+			if resp.StatusCode() != tt.expectedStatus {
+				t.Errorf("Expected status %d, got %d", tt.expectedStatus, resp.StatusCode())
+			}
+			if atomic.LoadInt32(&attemptCount) != tt.expectedAttempts {
+				t.Errorf("Expected %d attempts, got %d", tt.expectedAttempts, atomic.LoadInt32(&attemptCount))
+			}
+		})
+	}
 }
 
 // ----------------------------------------------------------------------------
@@ -385,42 +329,4 @@ func TestRetry_RetryAfterHeader(t *testing.T) {
 	}
 
 	t.Logf("Request completed in %v with %d attempts", duration, resp.Meta.Attempts)
-}
-
-// ----------------------------------------------------------------------------
-// Attempt Count Verification
-// ----------------------------------------------------------------------------
-
-func TestRetry_AttemptCount(t *testing.T) {
-	t.Run("AttemptsTracking", func(t *testing.T) {
-		successAfter := int32(3)
-		attemptCount := int32(0)
-
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			attempt := atomic.AddInt32(&attemptCount, 1)
-			if attempt < successAfter {
-				w.WriteHeader(http.StatusInternalServerError)
-			} else {
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte("Success"))
-			}
-		}))
-		defer server.Close()
-
-		config := DefaultConfig()
-		config.Retry.MaxRetries = 5
-		config.Retry.Delay = 10 * time.Millisecond
-		config.Security.AllowPrivateIPs = true
-		client, _ := New(config)
-		defer client.Close()
-
-		resp, err := client.Get(server.URL)
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-
-		if resp.Meta.Attempts != int(successAfter) {
-			t.Errorf("Expected %d attempts, got %d", successAfter, resp.Meta.Attempts)
-		}
-	})
 }

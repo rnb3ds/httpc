@@ -49,7 +49,7 @@ func TestIsPrivateOrReservedIP(t *testing.T) {
 		// IPv4 reserved ranges
 		{"IPv4 Class E", "240.0.0.1", true},
 		{"IPv4 This network", "0.1.2.3", true},
-		{"IPv4 CGNAT (allowed - Tailscale/WireGuard)", "100.64.0.1", false},
+		{"IPv4 CGNAT (RFC 6598) blocked", "100.64.0.1", true},
 		{"IPv4 Benchmarking (allowed - Clash/Surge fake-IP)", "198.18.0.1", false},
 
 		// IPv4 public addresses
@@ -76,7 +76,7 @@ func TestIsPrivateOrReservedIP(t *testing.T) {
 		{"IPv4-mapped private C", "::ffff:192.168.1.1", true},
 		{"IPv4-mapped public", "::ffff:8.8.8.8", false},
 		{"IPv4-mapped link-local", "::ffff:169.254.1.1", true},
-		{"IPv4-mapped CGNAT (allowed - Tailscale/WireGuard)", "::ffff:100.64.0.1", false},
+		{"IPv4-mapped CGNAT (RFC 6598) blocked", "::ffff:100.64.0.1", true},
 
 		// NAT64 well-known prefix (RFC 6052)
 		{"NAT64 mapped loopback", "64:ff9b::7f00:1", true},
@@ -216,7 +216,7 @@ func TestSSRFBypassPrevention(t *testing.T) {
 	}
 }
 
-func TestParseExemptCIDRs(t *testing.T) {
+func Test_parseExemptCIDRs(t *testing.T) {
 	tests := []struct {
 		name    string
 		cidrs   []string
@@ -233,7 +233,7 @@ func TestParseExemptCIDRs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			nets, err := ParseExemptCIDRs(tt.cidrs)
+			nets, err := parseExemptCIDRs(tt.cidrs)
 			if tt.wantErr && err == nil {
 				t.Error("expected error, got nil")
 			}
@@ -248,7 +248,7 @@ func TestParseExemptCIDRs(t *testing.T) {
 }
 
 func TestIsIPExempted(t *testing.T) {
-	nets, err := ParseExemptCIDRs([]string{"10.0.0.0/8", "100.64.0.0/10"})
+	nets, err := parseExemptCIDRs([]string{"10.0.0.0/8", "100.64.0.0/10"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +281,7 @@ func TestIsIPExempted(t *testing.T) {
 }
 
 func TestValidateIPWithExemptions(t *testing.T) {
-	nets, err := ParseExemptCIDRs([]string{"10.0.0.0/8"})
+	nets, err := parseExemptCIDRs([]string{"10.0.0.0/8"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,9 +338,9 @@ func TestValidateSSRFHost(t *testing.T) {
 			var nets []*net.IPNet
 			if len(tt.exemptNets) > 0 {
 				var err error
-				nets, err = ParseExemptCIDRs(tt.exemptNets)
+				nets, err = parseExemptCIDRs(tt.exemptNets)
 				if err != nil {
-					t.Fatalf("ParseExemptCIDRs error: %v", err)
+					t.Fatalf("parseExemptCIDRs error: %v", err)
 				}
 			}
 			err := ValidateSSRFHost(tt.host, nets, tt.resolveDNS)
@@ -377,6 +377,11 @@ func TestIsPrivateOrReservedIP_BoundaryConditions(t *testing.T) {
 		{"IPv4 private C end", "192.168.255.255", true},
 		{"IPv4 link-local start", "169.254.0.0", true},
 		{"IPv4 link-local end", "169.254.255.255", true},
+		// CGNAT (RFC 6598) 100.64.0.0/10 boundaries
+		{"IPv4 CGNAT start", "100.64.0.0", true},
+		{"IPv4 CGNAT end", "100.127.255.255", true},
+		{"IPv4 CGNAT just before", "100.63.255.255", false},
+		{"IPv4 CGNAT just after", "100.128.0.0", false},
 
 		// IPv6 boundary
 		{"IPv6 multicast", "ff00::1", true},
@@ -399,7 +404,7 @@ func TestIsPrivateOrReservedIP_BoundaryConditions(t *testing.T) {
 }
 
 func TestFilterAllowedIPs(t *testing.T) {
-	exemptNets, _ := ParseExemptCIDRs([]string{"10.0.0.0/8"})
+	exemptNets, _ := parseExemptCIDRs([]string{"10.0.0.0/8"})
 
 	tests := []struct {
 		name     string
@@ -527,4 +532,58 @@ func TestValidateSSRFHost_BoundaryConditions(t *testing.T) {
 			t.Errorf("error should mention DNS, got: %v", err)
 		}
 	})
+}
+
+func TestContainsFold(t *testing.T) {
+	tests := []struct {
+		name   string
+		s      string
+		substr string
+		want   bool
+	}{
+		{"empty substring matches", "hello", "", true},
+		{"both empty", "", "", true},
+		{"substr longer than string", "hi", "hello", false},
+		{"exact match", "hello", "hello", true},
+		{"case insensitive match", "HELLO WORLD", "hello", true},
+		{"case insensitive match 2", "Hello World", "WORLD", true},
+		{"no match", "hello", "xyz", false},
+		{"partial match at start", "HelloWorld", "hello", true},
+		{"partial match at end", "HelloWorld", "world", true},
+		{"partial match in middle", "xxHELLOxx", "hello", true},
+		{"single char match", "abc", "B", true},
+		{"overlapping match", "aaa", "aa", true},
+		{"unicode case fold", "straße", "STRASSE", false},
+		{"empty string non-empty substr", "", "a", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ContainsFold(tt.s, tt.substr)
+			if got != tt.want {
+				t.Errorf("ContainsFold(%q, %q) = %v, want %v", tt.s, tt.substr, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateSSRFHost_IPv6WithPort(t *testing.T) {
+	tests := []struct {
+		name    string
+		host    string
+		wantErr bool
+	}{
+		{"IPv6 localhost with port", "[::1]:8080", true},
+		{"IPv6 documentation with port", "[2001:db8::1]:443", true},
+		{"IPv6 public with port", "[2001:4860:4860::8888]:443", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateSSRFHost(tt.host, nil, false)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateSSRFHost(%q) err = %v, wantErr %v", tt.host, err, tt.wantErr)
+			}
+		})
+	}
 }

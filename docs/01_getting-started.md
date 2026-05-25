@@ -168,9 +168,23 @@ if err != nil {
 defer client.Close()  // Important: always close the client
 
 // Use client for multiple requests
-resp1, _ := client.Get(url1)
-resp2, _ := client.Get(url2)
-resp3, _ := client.Post(url3, httpc.WithJSON(data))
+resp1, err := client.Get(url1)
+if err != nil {
+    log.Fatal(err)
+}
+defer httpc.ReleaseResult(resp1)
+
+resp2, err := client.Get(url2)
+if err != nil {
+    log.Fatal(err)
+}
+defer httpc.ReleaseResult(resp2)
+
+resp3, err := client.Post(url3, httpc.WithJSON(data))
+if err != nil {
+    log.Fatal(err)
+}
+defer httpc.ReleaseResult(resp3)
 ```
 
 **Why close?** Closing the client releases resources like connection pools and goroutines.

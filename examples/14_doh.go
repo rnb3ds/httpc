@@ -35,7 +35,8 @@ func demonstrateBasicDoH() {
 
 	client, err := httpc.New(config)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -68,7 +69,8 @@ func demonstrateDoHWithCacheTTL() {
 
 	client, err := httpc.New(config)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 

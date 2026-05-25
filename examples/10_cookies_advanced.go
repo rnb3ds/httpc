@@ -40,7 +40,8 @@ func demonstrateRequestCookies() {
 
 	client, err := httpc.New()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -119,7 +120,8 @@ func demonstrateResponseCookies() {
 
 	client, err := httpc.New()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -160,7 +162,8 @@ func demonstrateCookieJar() {
 	config.Connection.EnableCookies = true
 	client, err := httpc.New(config)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -190,7 +193,8 @@ func demonstrateCookieString() {
 
 	client, err := httpc.New()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -223,7 +227,8 @@ func demonstrateAdvancedScenarios() {
 
 	client, err := httpc.New()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 

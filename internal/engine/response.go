@@ -206,7 +206,9 @@ func (p *responseProcessor) Process(httpResp *http.Response) (*Response, error) 
 	resp := getResponse()
 	resp.SetStatusCode(httpResp.StatusCode)
 	resp.SetStatus(httpResp.Status)
-	resp.SetHeaders(httpResp.Header)
+	// Clone headers so the engine owns the copy. This enables TransferHeaders()
+	// in the public layer to take ownership without a second clone.
+	resp.SetHeaders(CloneHeader(httpResp.Header))
 	resp.SetRawBody(body)
 	// Body string is lazily converted on first access via Body() to avoid
 	// doubling memory when caller only uses RawBody
@@ -321,17 +323,20 @@ func (p *responseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 		return nil, fmt.Errorf("response body exceeds limit of %d bytes", maxSize)
 	}
 
-	// Optimization path for pooled buffers within steal threshold
+	// Optimization path for responses within steal threshold.
+	// Two sub-thresholds based on size:
+	//   - <= 2KB (defaultBufferSize/2): copy — not worth detaching a 4KB buffer for tiny data.
+	//   - 2KB–16KB: steal — detach the buffer from the pool to eliminate a copy.
 	if len(body) <= bufferStealThreshold {
 		if len(body) <= defaultBufferSize/2 {
 			result := make([]byte, len(body))
 			copy(result, body)
 			return result, nil
 		}
-		// Steal: detach buffer from pool and return backing array directly
+		// Steal: detach buffer from pool and return backing array directly.
+		// buf=nil prevents the deferred putBuffer from returning the stolen buffer.
 		result := body
 		buf = nil
-		bufferPool.Put(bytes.NewBuffer(make([]byte, 0, defaultBufferSize)))
 		return result, nil
 	}
 
@@ -368,9 +373,9 @@ func (p *responseProcessor) createDecompressor(reader io.Reader, encoding string
 			// Check if it also implements flate.Resetter
 			if resetter, ok := pooled.(flate.Resetter); ok {
 				if err := resetter.Reset(reader, nil); err != nil {
-					// SECURITY: Reset failed - discard the reader instead of returning to pool.
+					// SECURITY: Reset failed - close and discard the reader instead of returning to pool.
 					// A reader in error state may cause issues for subsequent users.
-					// The discarded reader will be garbage collected.
+					_ = pooled.Close()
 					return flate.NewReader(reader), nil
 				}
 				wrapper, _ := flateReaderWrapperPool.Get().(*pooledFlateReader)
@@ -380,11 +385,12 @@ func (p *responseProcessor) createDecompressor(reader io.Reader, encoding string
 				wrapper.reader = pooled
 				return wrapper, nil
 			}
-			// Doesn't implement Resetter, discard and create new
+			// Doesn't implement Resetter, close and discard
+				_ = pooled.Close()
 		}
 		return flate.NewReader(reader), nil
 	case "br":
-		return nil, fmt.Errorf("brotli decompression not supported")
+		return nil, fmt.Errorf("brotli compression not supported")
 	case "compress", "x-compress":
 		return nil, fmt.Errorf("LZW compression not supported")
 	case "identity", "":

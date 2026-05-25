@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
 	"time"
 )
 
@@ -24,11 +25,11 @@ func TestResponseProcessor_Decompression(t *testing.T) {
 	processor := newResponseProcessor(config)
 
 	tests := []struct {
-		name       string
-		encoding   string
-		content    string
-		wantBody   string
-		wantErr    bool
+		name        string
+		encoding    string
+		content     string
+		wantBody    string
+		wantErr     bool
 		errContains string
 	}{
 		// Gzip cases
@@ -82,14 +83,7 @@ func TestResponseProcessor_Decompression(t *testing.T) {
 			wantBody: strings.Repeat("The quick brown fox jumps over the lazy dog. ", 50),
 			wantErr:  false,
 		},
-		// Brotli case
-		{
-			name:        "Brotli not supported",
-			encoding:    "br",
-			content:     "fake brotli data",
-			wantErr:     true,
-			errContains: "brotli",
-		},
+
 		// No encoding / identity / unknown cases
 		{
 			name:     "No Content-Encoding header",
@@ -206,9 +200,9 @@ func TestResponseProcessor_InvalidCompressedData(t *testing.T) {
 	processor := newResponseProcessor(config)
 
 	tests := []struct {
-		name       string
-		encoding   string
-		rawData    string
+		name     string
+		encoding string
+		rawData  string
 	}{
 		{
 			name:     "Invalid gzip data",
@@ -480,7 +474,7 @@ func TestCreateDecompressor_UnsupportedEncodings(t *testing.T) {
 		wantErr     bool
 		errContains string
 	}{
-		{"brotli rejected", "br", true, "brotli"},
+		{"brotli unsupported", "br", true, "brotli"},
 		{"compress rejected", "compress", true, "LZW"},
 		{"x-compress rejected", "x-compress", true, "LZW"},
 		{"identity pass-through", "identity", false, ""},

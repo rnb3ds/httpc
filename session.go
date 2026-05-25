@@ -10,11 +10,6 @@ import (
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
-// tempReqPool reuses engine.Request objects in captureFromOptions to reduce allocations.
-var tempReqPool = sync.Pool{
-	New: func() any { return &engine.Request{} },
-}
-
 // SessionConfig configures SessionManager behavior.
 // Use DefaultSessionConfig() to get a configuration with sensible defaults.
 type SessionConfig struct {
@@ -247,10 +242,15 @@ func (s *SessionManager) GetCookies() []*http.Cookie {
 	if n == 0 {
 		return nil
 	}
-	cookies := make([]*http.Cookie, 0, n)
+	// Allocate all cookie structs in one contiguous backing array
+	// to reduce N individual heap allocations to 2 (backing + pointer slice).
+	backing := make([]http.Cookie, n)
+	cookies := make([]*http.Cookie, n)
+	i := 0
 	for _, cookie := range s.cookies {
-		cookieCopy := *cookie
-		cookies = append(cookies, &cookieCopy)
+		backing[i] = *cookie
+		cookies[i] = &backing[i]
+		i++
 	}
 	return cookies
 }
@@ -353,12 +353,16 @@ func (s *SessionManager) UpdateFromCookies(cookies []*http.Cookie) {
 // Caller must hold s.mu.
 func (s *SessionManager) storeCookies(cookies []*http.Cookie) {
 	for _, cookie := range cookies {
-		if cookie != nil {
-			if err := s.validateCookieSecurity(cookie); err != nil {
-				continue
-			}
-			s.cookies[cookie.Name] = cookie
+		if cookie == nil {
+			continue
 		}
+		if err := validation.ValidateCookie(cookie); err != nil {
+			continue
+		}
+		if err := s.validateCookieSecurity(cookie); err != nil {
+			continue
+		}
+		s.cookies[cookie.Name] = cookie
 	}
 }
 
@@ -374,31 +378,25 @@ func (s *SessionManager) captureFromOptions(options []RequestOption) {
 	}
 
 	// Use pooled engine.Request to reduce allocations on hot path
-	tempReq, ok := tempReqPool.Get().(*engine.Request)
-	if !ok || tempReq == nil {
-		tempReq = &engine.Request{}
-	}
-	defer func() {
-		*tempReq = engine.Request{}
-		tempReqPool.Put(tempReq)
-	}()
-
-	// Clear callbacks before applying options to prevent WithOnRequest/
-	// WithOnResponse from executing during this capture-only pass.
-	tempReq.SetOnRequest(nil)
-	tempReq.SetOnResponse(nil)
+	tempReq := acquireMiddlewareRequest()
+	defer releaseMiddlewareRequest(tempReq)
 
 	for _, opt := range options {
-		if opt != nil {
-			// Session capture is best-effort: option errors are
-			// handled during actual request execution, not here.
-			if err := opt(tempReq); err != nil {
-				continue
-			}
+		if opt == nil {
+			continue
+		}
+		// Session capture is best-effort: option errors are
+		// handled during actual request execution, not here.
+		// Clear callbacks before each option to prevent any WithOnRequest/
+		// WithOnResponse from accumulating closures across options.
+		tempReq.SetOnRequest(nil)
+		tempReq.SetOnResponse(nil)
+		if err := opt(tempReq); err != nil {
+			continue
 		}
 	}
 
-	// Immediately clear callbacks set by options to prevent any deferred
+	// Clear callbacks after all options to prevent any deferred
 	// or lazy evaluation from triggering side effects after capture.
 	tempReq.SetOnRequest(nil)
 	tempReq.SetOnResponse(nil)

@@ -100,15 +100,6 @@ func TestClient_HTTPMethods(t *testing.T) {
 	}
 }
 
-func TestClient_Lifecycle(t *testing.T) {
-	t.Run("Close", func(t *testing.T) {
-		client, _ := newTestClient()
-		if err := client.Close(); err != nil {
-			t.Errorf("Client close should not error: %v", err)
-		}
-	})
-}
-
 func TestClient_Timeout_ContextTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(500 * time.Millisecond)
@@ -351,11 +342,11 @@ func TestReleaseResult(t *testing.T) {
 		if result.Body() == "" {
 			t.Error("Expected non-empty body")
 		}
-		ReleaseResult(result)
+		releaseResult(result)
 	})
 
 	t.Run("ReleaseNil", func(t *testing.T) {
-		ReleaseResult(nil) // should not panic
+		releaseResult(nil) // should not panic
 	})
 
 	t.Run("MultipleReleaseCycle", func(t *testing.T) {
@@ -364,7 +355,7 @@ func TestReleaseResult(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Request %d failed: %v", i, err)
 			}
-			ReleaseResult(result)
+			releaseResult(result)
 		}
 	})
 }
@@ -563,7 +554,6 @@ func TestGetDefaultClient_Init(t *testing.T) {
 	CloseDefaultClient()
 }
 
-
 func TestClose_DoubleClose(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Security.AllowPrivateIPs = true
@@ -573,8 +563,19 @@ func TestClose_DoubleClose(t *testing.T) {
 		t.Errorf("First close should succeed: %v", err)
 	}
 
-	// Double close should not panic and should return nil (engine handles gracefully)
 	if err := client.Close(); err != nil {
 		t.Errorf("Second close should not error: %v", err)
+	}
+}
+
+func TestClient_Lifecycle_AfterClose(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Security.AllowPrivateIPs = true
+	client, _ := New(cfg)
+	client.Close()
+
+	_, err := client.Get("http://example.com")
+	if err == nil {
+		t.Error("Expected error when using closed client")
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cybergodev/httpc/internal/engine"
@@ -97,12 +98,7 @@ func WithQuery(key string, value any) RequestOption {
 			}
 		}
 
-		params := r.QueryParams()
-		if params == nil {
-			// Pre-allocate with capacity for typical query params
-			params = make(map[string]any, 4)
-			r.SetQueryParams(params)
-		}
+		params := r.EnsureQueryParams()
 		params[key] = value
 		return nil
 	}
@@ -111,10 +107,7 @@ func WithQuery(key string, value any) RequestOption {
 // WithQueryMap sets multiple query parameters from a map.
 func WithQueryMap(params map[string]any) RequestOption {
 	return func(r *engine.Request) error {
-		existing := r.QueryParams()
-		if existing == nil {
-			existing = make(map[string]any, len(params))
-		}
+		existing := r.EnsureQueryParams()
 
 		for k, v := range params {
 			if err := validation.ValidateQueryKey(k); err != nil {
@@ -139,6 +132,7 @@ func queryValueLength(v any) int {
 }
 
 // WithJSON sets the request body as JSON and sets Content-Type to application/json.
+// This is a convenience method; the equivalent is WithBody(data, BodyJSON).
 func WithJSON(data any) RequestOption {
 	return func(r *engine.Request) error {
 		if data == nil {
@@ -151,6 +145,7 @@ func WithJSON(data any) RequestOption {
 }
 
 // WithXML sets the request body as XML and sets Content-Type to application/xml.
+// This is a convenience method; the equivalent is WithBody(data, BodyXML).
 func WithXML(data any) RequestOption {
 	return func(r *engine.Request) error {
 		if data == nil {
@@ -211,6 +206,9 @@ func WithBody(data any, kind ...BodyKind) RequestOption {
 			if err != nil {
 				return fmt.Errorf("convert to form data: %w", err)
 			}
+			if err := validateFormInput(data); err != nil {
+				return err
+			}
 			r.SetBody(formData)
 			r.SetHeader("Content-Type", "application/x-www-form-urlencoded")
 		case BodyBinary:
@@ -242,13 +240,41 @@ func WithBody(data any, kind ...BodyKind) RequestOption {
 	}
 }
 
+// formBuilderPool reduces allocations for building form-encoded strings.
+var formBuilderPool = sync.Pool{
+	New: func() any { return &strings.Builder{} },
+}
+
 // encodeFormFields encodes a map[string]string to url-encoded form string.
+// Uses a pooled strings.Builder to avoid the intermediate url.Values map allocation.
+// Optimized to use engine.queryEscape for consistent, pooled URL encoding.
 func encodeFormFields(data map[string]string) string {
-	values := make(url.Values, len(data))
-	for k, v := range data {
-		values.Set(k, v)
+	if len(data) == 0 {
+		return ""
 	}
-	return values.Encode()
+	sb, ok := formBuilderPool.Get().(*strings.Builder)
+	if !ok || sb == nil {
+		sb = &strings.Builder{}
+	}
+	sb.Reset()
+	sb.Grow(len(data) * 32)
+
+	first := true
+	for k, v := range data {
+		if !first {
+			sb.WriteByte('&')
+		}
+		first = false
+		sb.WriteString(engine.QueryEscape(k))
+		sb.WriteByte('=')
+		sb.WriteString(engine.QueryEscape(v))
+	}
+
+	result := sb.String()
+	if sb.Cap() <= 4096 {
+		formBuilderPool.Put(sb)
+	}
+	return result
 }
 
 // convertToForm converts data to url-encoded form string.
@@ -326,15 +352,15 @@ func setAutoDetectedBody(r *engine.Request, data any) (string, error) {
 
 // WithForm sets the request body as URL-encoded form data.
 // Each field key and value is validated for control characters and size limits.
+// This is a convenience method with per-field validation; the general-purpose
+// alternative is WithBody(data, BodyForm).
 func WithForm(data map[string]string) RequestOption {
 	return func(r *engine.Request) error {
 		if data == nil {
 			return fmt.Errorf("form data cannot be nil")
 		}
-		for k, v := range data {
-			if err := validateFormField(k, v); err != nil {
-				return err
-			}
+		if err := validateFormInput(data); err != nil {
+			return err
 		}
 		encoded, err := convertToForm(data)
 		if err != nil {
@@ -372,7 +398,34 @@ func validateFormField(key, value string) error {
 	return nil
 }
 
+// validateFormInput validates all fields in form input data.
+// Handles both map[string]string and url.Values to ensure consistent
+// validation regardless of the input type used.
+func validateFormInput(data any) error {
+	switch v := data.(type) {
+	case map[string]string:
+		for k, val := range v {
+			if err := validateFormField(k, val); err != nil {
+				return err
+			}
+		}
+	case url.Values:
+		for k, vals := range v {
+			if err := validateFormField(k, ""); err != nil {
+				return err
+			}
+			for _, val := range vals {
+				if err := validateFormField(k, val); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // WithFormData sets the request body as multipart/form-data.
+// This is a convenience method; the equivalent is WithBody(data, BodyMultipart).
 func WithFormData(data *FormData) RequestOption {
 	return func(r *engine.Request) error {
 		if data == nil {
@@ -511,9 +564,20 @@ func WithCookie(cookie http.Cookie) RequestOption {
 			return fmt.Errorf("invalid cookie: %w", err)
 		}
 
-		r.SetCookies(append(r.Cookies(), cookie))
+		existing := ensureCookieCapacity(r.Cookies(), 1)
+		r.SetCookies(append(existing, cookie))
 		return nil
 	}
+}
+
+// ensureCookieCapacity grows the slice if needed to accommodate additional entries.
+func ensureCookieCapacity(existing []http.Cookie, additional int) []http.Cookie {
+	if cap(existing) < len(existing)+additional {
+		grown := make([]http.Cookie, len(existing), len(existing)+additional)
+		copy(grown, existing)
+		return grown
+	}
+	return existing
 }
 
 // WithCookies adds multiple cookies to the request after validation.
@@ -530,16 +594,6 @@ func WithCookie(cookie http.Cookie) RequestOption {
 //	result, err := client.Get("https://api.example.com",
 //	    httpc.WithCookies(cookies),
 //	)
-// ensureCookieCapacity grows the slice if needed to accommodate additional entries.
-func ensureCookieCapacity(existing []http.Cookie, additional int) []http.Cookie {
-	if cap(existing) < len(existing)+additional {
-		grown := make([]http.Cookie, len(existing), len(existing)+additional)
-		copy(grown, existing)
-		return grown
-	}
-	return existing
-}
-
 func WithCookies(cookies []http.Cookie) RequestOption {
 	return func(r *engine.Request) error {
 		if len(cookies) == 0 {
@@ -758,10 +812,6 @@ func WithSecureCookie(securityConfig *validation.CookieSecurityConfig) RequestOp
 			return fmt.Errorf("security config cannot be nil")
 		}
 
-		// IMPORTANT: This option validates only cookies already added at the time it is applied.
-		// Place WithSecureCookie AFTER all WithCookie/WithCookieMap options to ensure
-		// all cookies are validated. Example:
-		//   httpc.WithCookie(c), httpc.WithSecureCookie(sec)
 		existing := r.Cookies()
 		for i := range existing {
 			if err := validation.ValidateCookieSecurity(&existing[i], securityConfig); err != nil {

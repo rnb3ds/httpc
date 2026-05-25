@@ -10,8 +10,8 @@ import (
 
 func TestCloneHeader(t *testing.T) {
 	t.Run("Nil", func(t *testing.T) {
-		if cloneHeader(nil) != nil {
-			t.Error("cloneHeader(nil) should return nil")
+		if CloneHeader(nil) != nil {
+			t.Error("CloneHeader(nil) should return nil")
 		}
 	})
 
@@ -20,7 +20,7 @@ func TestCloneHeader(t *testing.T) {
 			"Content-Type": {"application/json"},
 			"Accept":       {"text/html", "application/xml"},
 		}
-		dst := cloneHeader(src)
+		dst := CloneHeader(src)
 
 		// Modify source - should not affect clone
 		src["Content-Type"][0] = "text/plain"
@@ -36,9 +36,9 @@ func TestCloneHeader(t *testing.T) {
 
 	t.Run("EmptyValueSliceNotCopied", func(t *testing.T) {
 		src := http.Header{"A": {}}
-		dst := cloneHeader(src)
+		dst := CloneHeader(src)
 		if dst == nil {
-			t.Fatal("cloneHeader should not return nil for non-nil src")
+			t.Fatal("CloneHeader should not return nil for non-nil src")
 		}
 		// Keys with empty value slices are not copied (totalValues == 0 fast path)
 		if len(dst) != 0 {
@@ -90,42 +90,9 @@ func TestQueryEscape(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := queryEscape(tt.input)
+			got := QueryEscape(tt.input)
 			if got != tt.want {
 				t.Errorf("queryEscape(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestEncodeQueryParams(t *testing.T) {
-	tests := []struct {
-		name   string
-		params map[string]any
-		want   string
-	}{
-		{"Nil", nil, ""},
-		{"Empty", map[string]any{}, ""},
-		{"SingleParam", map[string]any{"key": "value"}, "key=value"},
-		{"MultipleParams", map[string]any{"a": "1", "b": "2"}, ""},
-		{"SpecialChars", map[string]any{"q": "hello world"}, "q=hello%20world"},
-		{"IntValue", map[string]any{"page": 42}, "page=42"},
-		{"BoolValue", map[string]any{"flag": true}, "flag=true"},
-		{"EmptyValue", map[string]any{"key": ""}, "key="},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := encodeQueryParams(tt.params)
-			if tt.want == "" && len(tt.params) > 1 {
-				// Multiple params - just check it's non-empty
-				if got == "" {
-					t.Error("Expected non-empty result for multiple params")
-				}
-				return
-			}
-			if got != tt.want {
-				t.Errorf("encodeQueryParams() = %q, want %q", got, tt.want)
 			}
 		})
 	}

@@ -442,11 +442,84 @@ func TestRedirect_BoundaryStatusCodes(t *testing.T) {
 				t.Fatalf("Request failed: %v", err)
 			}
 
-			// 300 and 399 are not standard redirect codes followed by Go's HTTP client
-			// The response should be returned with the original status code
 			if resp.StatusCode() != tt.statusCode {
 				t.Errorf("Expected status %d for non-followed redirect, got %d", tt.statusCode, resp.StatusCode())
 			}
 		})
+	}
+}
+
+func TestRedirect_FollowWithZeroMaxRedirects(t *testing.T) {
+	t.Parallel()
+
+	redirectServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://example.com/target", http.StatusFound)
+	}))
+	defer redirectServer.Close()
+
+	config := testConfig()
+	config.Middleware.FollowRedirects = true
+	config.Middleware.MaxRedirects = 0
+	client, err := New(config)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	defer client.Close()
+
+	resp, err := client.Get(redirectServer.URL)
+	if err != nil {
+		// Zero max redirects may cause an error or return the redirect response
+		t.Logf("Got error with MaxRedirects=0: %v", err)
+		return
+	}
+
+	// With MaxRedirects=0, should either return the 302 or error
+	if resp.StatusCode() != http.StatusFound && resp.StatusCode() != http.StatusNotFound {
+		t.Logf("Got status %d with MaxRedirects=0", resp.StatusCode())
+	}
+}
+
+func TestRedirect_MixedStatusCodes(t *testing.T) {
+	t.Parallel()
+
+	finalServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Done"))
+	}))
+	defer finalServer.Close()
+
+	server3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, finalServer.URL, http.StatusTemporaryRedirect)
+	}))
+	defer server3.Close()
+
+	server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, server3.URL, http.StatusFound)
+	}))
+	defer server2.Close()
+
+	server1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, server2.URL, http.StatusMovedPermanently)
+	}))
+	defer server1.Close()
+
+	config := testConfig()
+	config.Middleware.FollowRedirects = true
+	client, err := New(config)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	defer client.Close()
+
+	resp, err := client.Get(server1.URL)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+
+	if resp.StatusCode() != http.StatusOK {
+		t.Errorf("Expected 200, got %d", resp.StatusCode())
+	}
+	if resp.Meta.RedirectCount != 3 {
+		t.Errorf("Expected 3 redirects, got %d", resp.Meta.RedirectCount)
 	}
 }

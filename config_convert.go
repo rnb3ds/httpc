@@ -2,18 +2,16 @@ package httpc
 
 import (
 	"crypto/tls"
-	"fmt"
-	"net"
 	"time"
 
 	"github.com/cybergodev/httpc/internal/engine"
 	"github.com/cybergodev/httpc/internal/security"
-	"github.com/cybergodev/httpc/internal/validation"
 )
 
 const (
-	minIdleConnsPerHost            = 2  // Minimum idle connections per host
-	maxIdleConnsPerHostCap         = 10 // Maximum cap for idle connections per host
+	minIdleConnsPerHost    = 2                // Minimum idle connections per host
+	maxIdleConnsPerHostCap = 10               // Maximum cap for idle connections per host
+	defaultKeepAlive       = 30 * time.Second // TCP keep-alive interval for connection pooling
 )
 
 // calculateIdleConnsPerHost calculates the optimal number of idle connections per host
@@ -63,10 +61,6 @@ func calculateMaxRetryDelay(cfg *Config) time.Duration {
 // convertToEngineConfig converts public Config to engine Config.
 // It uses helper functions for cleaner separation of concerns.
 func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
-	if cfg == nil {
-		cfg = DefaultConfig()
-	}
-
 	idleConnsPerHost := calculateIdleConnsPerHost(cfg.Connection.MaxConnsPerHost)
 	minTLSVersion, maxTLSVersion := resolveTLSVersions(cfg)
 	maxRetryDelay := calculateMaxRetryDelay(cfg)
@@ -80,7 +74,7 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		// Timeout settings
 		Timeout:               cfg.Timeouts.Request,
 		DialTimeout:           cfg.Timeouts.Dial,
-		KeepAlive:             30 * time.Second,
+		KeepAlive:             defaultKeepAlive,
 		TLSHandshakeTimeout:   cfg.Timeouts.TLSHandshake,
 		ResponseHeaderTimeout: cfg.Timeouts.ResponseHeader,
 		IdleConnTimeout:       cfg.Timeouts.IdleConn,
@@ -130,24 +124,8 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		engineConfig.RedirectWhitelist = security.NewDomainWhitelist(cfg.Security.RedirectWhitelist...)
 	}
 
-	// Parse SSRF exempt CIDRs
-	exemptNets, err := parseExemptCIDRs(cfg.Security.SSRFExemptCIDRs)
-	if err != nil {
-		return nil, err
-	}
-	engineConfig.ExemptNets = exemptNets
+	// Use cached parsed CIDRs from ValidateConfig (no re-parsing)
+	engineConfig.ExemptNets = cfg.parsedCIDRs
 
 	return engineConfig, nil
-}
-
-// parseExemptCIDRs parses and validates SSRF exempt CIDR strings.
-func parseExemptCIDRs(cidrs []string) ([]*net.IPNet, error) {
-	if len(cidrs) == 0 {
-		return nil, nil
-	}
-	exemptNets, err := validation.ParseExemptCIDRs(cidrs)
-	if err != nil {
-		return nil, fmt.Errorf("invalid SSRF exempt CIDRs: %w", err)
-	}
-	return exemptNets, nil
 }

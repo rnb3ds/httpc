@@ -34,7 +34,8 @@ func demonstrateBasicUsage() {
 	// Create domain-specific client
 	client, err := httpc.NewDomain("https://httpbin.org")
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -45,11 +46,13 @@ func demonstrateBasicUsage() {
 	// Set persistent headers (sent with every request)
 	err = client.SetHeader("User-Agent", "httpc-domain-client/1.0")
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Operation failed: %v\n", err)
+		return
 	}
 	err = client.SetHeader("Accept-Language", "en-US,en;q=0.9")
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Operation failed: %v\n", err)
+		return
 	}
 
 	fmt.Printf("✓ Created DomainClient for httpbin.org\n")
@@ -81,31 +84,28 @@ func demonstrateStateManagement() {
 
 	client, err := httpc.NewDomain("https://httpbin.org")
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
 	// Set persistent headers
-	if err := client.SetHeader("X-API-Version", "v1"); err != nil {
-		log.Fatal(err)
-	}
-	if err := client.SetHeader("X-Client-ID", "client-123"); err != nil {
-		log.Fatal(err)
+	if err := client.SetHeaders(map[string]string{
+		"X-API-Version": "v1",
+		"X-Client-ID":   "client-123",
+	}); err != nil {
+		log.Printf("Operation failed: %v\n", err)
+		return
 	}
 	fmt.Printf("✓ Set %d headers\n", len(client.GetHeaders()))
 
 	// Add cookies manually
-	if err := client.SetCookie(&http.Cookie{
-		Name:  "session",
-		Value: "abc123",
+	if err := client.SetCookies([]*http.Cookie{
+		{Name: "session", Value: "abc123"},
+		{Name: "preferences", Value: "dark_mode"},
 	}); err != nil {
-		log.Fatal(err)
-	}
-	if err := client.SetCookie(&http.Cookie{
-		Name:  "preferences",
-		Value: "dark_mode",
-	}); err != nil {
-		log.Fatal(err)
+		log.Printf("Operation failed: %v\n", err)
+		return
 	}
 	fmt.Printf("✓ Set %d cookies\n", len(client.GetCookies()))
 
@@ -147,7 +147,8 @@ func demonstrateRelativePaths() {
 
 	client, err := httpc.NewDomain("https://httpbin.org")
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 

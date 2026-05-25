@@ -326,12 +326,16 @@ if err != nil {
 }
 
 // Set cookies (safe for concurrent use)
-dc.SetCookie(&http.Cookie{Name: "session", Value: "abc123"})
+if err := dc.SetCookie(&http.Cookie{Name: "session", Value: "abc123"}); err != nil {
+    log.Fatal(err)
+}
 
 // Set multiple cookies
-dc.SetCookies([]*http.Cookie{
+if err := dc.SetCookies([]*http.Cookie{
     {Name: "token", Value: "xyz789"},
-})
+}); err != nil {
+    log.Fatal(err)
+}
 
 // Retrieve cookies
 cookies := dc.GetCookies()

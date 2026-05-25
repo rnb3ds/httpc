@@ -4,6 +4,66 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ---
 
+## v1.5.0 - Security Hardening, Brotli & Performance (2026-05-25)
+
+### Breaking
+- Removed Brotli (br) decompression support — library is now zero third-party dependency
+- Removed BrowserFingerprint field from ConnectionConfig and TLS fingerprinting feature
+- Removed all third-party dependencies (utls, brotli, circl)
+
+### Added
+- Interfaces section in README: Doer, Client, DomainClienter with mock examples
+- Bounded LRU URL validation cache (maxSize=1024) replacing unbounded sync.Map
+- Exported HasSensitiveQueryParams for cross-package reuse of sensitive param detection
+- Exported engine.QueryEscape for pooled query escaping in form encoding
+- Boundary tests for nil-pointer targets, non-UTF8 bodies, int64 min, control chars, zero timeout
+- TestClient_Lifecycle_AfterClose verifying closed client rejects requests
+- Test coverage: connection 54.9%→81.1%, validation 92.8%→96.1%, overall 86.7%→88.8%
+
+### Changed
+- Config deep-copied in New() to prevent caller mutation affecting client
+- AuditMiddleware returns no-op when onAudit is nil
+- Security warning output configurable via SetSecurityWarnOutput() with RWMutex protection
+- Deduplicated hasSensitiveContent — replaced 30-line inline scan with HasSensitiveQueryParams()
+- Pool ClientError objects to reduce heap allocations in error classification paths
+- Stack-allocated buffer in captureRequestHeaders for Content-Length formatting
+- Replaced stdlib url.QueryEscape with pooled engine.QueryEscape in encodeFormFields
+- Converted 6+ test suites to table-driven style (retry, response, middleware, download, request)
+
+### Fixed
+- Response.Body race — replaced sync.Once + RLock with bodyReady flag + double-check locking
+- Added bodyMu synchronization to SetRawBody() and SetRawBodyReader()
+- Closed-client check in Request() and executeRequest()
+- Trailing slash preservation in DomainClient buildURL()
+- AcquireRequest fallback returns maxRetries=-1 instead of 0 (disabled)
+- Context cancellation transferred to lastResp in retry fallback
+- Download resume total calculation when Content-Length is unknown
+- Download directory check before resume attempt
+- Circular error unwrap chain in classifyErrorWithSanitizedURL
+
+### Performance
+- SimpleGET: -6.5% memory (8166→7635 B/op), -4.4% allocs (90→86)
+- POST JSON: -3.9% memory (10618→10209 B/op), -3.3% allocs (121→117)
+- Concurrent (c=10): -9.3% memory (9207→8353 B/op), -5.6% allocs (89→84)
+- ResultReuse: -7.1% memory (8027→7461 B/op), -4.6% allocs (87→83)
+- SanitizeURL: -25% latency, -100% allocs for URLs with query params
+- Gzip decompression: 14.4μs/op (was 18.0μs), ~20% improvement
+- Deflate decompression: 6.9μs/op (was 8.1μs), ~15% improvement
+- WithTimeout: 79 allocs/op (was 80), ~150 bytes/op reduction
+- Pooled ClientError reduces GC pressure under retry/error scenarios
+- sync.Pool for HTTP headers, query params, url.URL, string builders, and query escaping
+- Header ownership transfer instead of double-clone per request
+- ASCII lowercase for sensitive param lookups, stack-buffered float formatting
+
+### Removed
+- Brotli decompression support and related pools from response.go
+- BrowserFingerprint from ConnectionConfig, engine Config, and connection pool
+- Duplicate test functions across engine, security, and public packages
+- BenchmarkMicro_URLCache and BenchmarkJSONMarshal (tested stdlib, not httpc)
+- Dead pm.metrics field and unused pool test assertion
+
+---
+
 ## v1.4.4 - Bug Fixes, Performance & Code Quality (2026-05-18)
 
 ### Fixed

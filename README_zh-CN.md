@@ -4,12 +4,36 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/cybergodev/httpc.svg)](https://pkg.go.dev/github.com/cybergodev/httpc)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Security](https://img.shields.io/badge/Security-Hardened-red.svg)](SECURITY.md)
-[![Zero Deps](https://img.shields.io/badge/deps-zero-brightgreen.svg)](go.mod)
+[![Dependencies](https://img.shields.io/badge/deps-minimal-brightgreen.svg)](go.mod)
 [![Thread Safe](https://img.shields.io/badge/thread%20safe-%E2%9C%93-brightgreen.svg)](docs/09_concurrency-safety.md)
 
 一个快速、安全的 Go HTTP 客户端库，具备合理的默认配置、极简依赖和内置弹性机制。
 
 **[English Documentation](README.md)** | **[www.cybergo.dev/httpc](https://www.cybergo.dev/httpc)**
+
+---
+
+## 目录
+
+- [特性](#特性)
+- [安装](#安装)
+- [快速开始](#快速开始-5-分钟)
+- [HTTP 方法](#http-方法)
+- [请求选项](#请求选项)
+- [响应处理](#响应处理)
+- [Context 与取消](#context-与取消)
+- [文件下载](#文件下载)
+- [域名客户端 (会话管理)](#域名客户端-会话管理)
+- [会话管理器](#会话管理器)
+- [配置](#配置)
+- [中间件](#中间件)
+- [代理配置](#代理配置)
+- [安全特性](#安全特性)
+- [错误处理](#错误处理)
+- [并发安全](#并发安全)
+- [接口](#接口)
+- [文档](#文档)
+- [许可证](#许可证)
 
 ---
 
@@ -21,8 +45,7 @@
 | **高性能** | 连接池、HTTP/2、goroutine 安全、`sync.Pool` 优化 |
 | **内置弹性** | 智能重试，支持指数退避和抖动 |
 | **开发者友好** | 简洁的 API、直观的选项模式、完善的文档 |
-| **极简依赖** | 仅依赖 `golang.org/x/sys` 用于系统级操作 |
-| **可靠的默认配置** | 经过充分测试的默认配置，广泛的测试覆盖 |
+| **极简依赖** | 1 个直接依赖 (golang.org/x/sys)，纯 Go 实现 |
 | **Cookie 管理** | 完整的 Cookie Jar 支持，带安全验证 |
 | **文件操作** | 安全的文件下载，支持进度跟踪和断点续传 |
 
@@ -464,8 +487,8 @@ result, _ := httpc.DownloadWithOptionsWithContext(ctx, url, opts)
 | `StatusCode` | `int` | HTTP 状态码 |
 | `ContentLength` | `int64` | 服务器返回的 Content-Length |
 | `Resumed` | `bool` | 是否从断点恢复 |
-| `ActualChecksum` | `string` | 下载文件的实际校验和 |
 | `ResponseCookies` | `[]*http.Cookie` | 响应中的 Cookie |
+| `ActualChecksum` | `string` | 下载文件的实际校验和 |
 | `Proto` | `string` | HTTP 协议版本 (如 "HTTP/1.1", "HTTP/2.0") |
 | `ResponseHeaders` | `http.Header` | 响应头 |
 | `RequestURL` | `string` | 实际请求 URL |
@@ -690,7 +713,7 @@ client, _ := httpc.New(config)
 | **连接设置** (`Connection`) ||||
 | `Connection.MaxIdleConns` | `int` | `50` | 最大空闲连接数 |
 | `Connection.MaxConnsPerHost` | `int` | `10` | 每个主机最大连接数 |
-| `Connection.ProxyURL` | `string` | `""` | 代理 URL (http/socks5) |
+| `Connection.ProxyURL` | `string` | `""` | 代理 URL (http/https) |
 | `Connection.EnableSystemProxy` | `bool` | `false` | 自动检测系统代理 |
 | `Connection.EnableHTTP2` | `bool` | `true` | 启用 HTTP/2 |
 | `Connection.EnableCookies` | `bool` | `false` | 启用 Cookie Jar |
@@ -711,7 +734,7 @@ client, _ := httpc.New(config)
 | `Security.RedirectWhitelist` | `[]string` | `nil` | 允许的重定向域名 |
 | `Security.MaxDecompressedBodySize` | `int64` | `100MB` | 最大解压响应体大小 (Zip 炸弹防护) |
 | `Security.SSRFExemptCIDRs` | `[]string` | `nil` | 豁免 SSRF 阻断的 CIDR 范围 |
-| `Security.CookieSecurity` | `*httpc.CookieSecurityConfig` | `nil` | Cookie 安全验证规则 |
+| `Security.CookieSecurity` | `*CookieSecurityConfig` | `nil` | Cookie 安全验证规则 |
 | **重试设置** (`Retry`) ||||
 | `Retry.MaxRetries` | `int` | `3` | 最大重试次数 |
 | `Retry.Delay` | `time.Duration` | `1s` | 初始重试延迟 |
@@ -786,6 +809,8 @@ httpc.AuditMiddlewareWithConfig(func(a httpc.AuditEvent) {
 | `ReqHeaders` | `map[string][]string` | 请求头 (当 `IncludeHeaders: true` 时) |
 | `RespHeaders` | `map[string][]string` | 响应头 (当 `IncludeHeaders: true` 时) |
 
+`AuditEvent` 支持通过 `MarshalJSON()` 进行 JSON 序列化。
+
 ### 链式中间件
 
 ```go
@@ -825,7 +850,7 @@ func CustomMiddleware() httpc.MiddlewareFunc {
 // 手动代理
 config := httpc.DefaultConfig()
 config.Connection.ProxyURL = "http://127.0.0.1:8080"
-// 或 SOCKS5: "socks5://127.0.0.1:1080"
+// 或 HTTPS 代理: "https://proxy.example.com:8443"
 
 // 系统代理自动检测 (Windows/macOS/Linux)
 config := httpc.DefaultConfig()
@@ -1002,6 +1027,82 @@ _ = httpc.CloseDefaultClient()
 - 包级函数安全使用共享的默认客户端
 - `Result` 对象不支持并发访问 — 每个 goroutine 应使用各自的 `Result`
 - 内部指标使用原子操作
+
+---
+
+## 接口
+
+HTTPC 暴露接口用于测试和扩展。在需要 Mock HTTP 调用时使用这些接口：
+
+### Doer
+
+最简接口 — 仅包含 `Request` 方法：
+
+```go
+type Doer interface {
+    Request(ctx context.Context, method, url string, options ...RequestOption) (*Result, error)
+}
+```
+
+### Client
+
+完整客户端接口 — 扩展 `Doer`，提供便捷方法和下载支持：
+
+```go
+type Client interface {
+    Doer
+    Get(url string, options ...RequestOption) (*Result, error)
+    Post(url string, options ...RequestOption) (*Result, error)
+    Put(url string, options ...RequestOption) (*Result, error)
+    Patch(url string, options ...RequestOption) (*Result, error)
+    Delete(url string, options ...RequestOption) (*Result, error)
+    Head(url string, options ...RequestOption) (*Result, error)
+    Options(url string, options ...RequestOption) (*Result, error)
+    DownloadFile(url, filePath string, options ...RequestOption) (*DownloadResult, error)
+    DownloadWithOptions(url string, cfg *DownloadConfig, options ...RequestOption) (*DownloadResult, error)
+    DownloadFileWithContext(ctx context.Context, url, filePath string, options ...RequestOption) (*DownloadResult, error)
+    DownloadWithOptionsWithContext(ctx context.Context, url string, cfg *DownloadConfig, options ...RequestOption) (*DownloadResult, error)
+    Close() error
+}
+```
+
+### DomainClienter
+
+扩展 `Client`，增加域级会话管理：
+
+```go
+type DomainClienter interface {
+    Client
+    URL() string
+    Domain() string
+    SetHeader(key, value string) error
+    SetHeaders(headers map[string]string) error
+    DeleteHeader(key string)
+    ClearHeaders()
+    GetHeaders() map[string]string
+    SetCookie(cookie *http.Cookie) error
+    SetCookies(cookies []*http.Cookie) error
+    DeleteCookie(name string)
+    ClearCookies()
+    GetCookies() []*http.Cookie
+    GetCookie(name string) *http.Cookie
+    Session() *SessionManager
+}
+```
+
+### 测试中使用
+
+```go
+type MockClient struct {
+    httpc.Client // 嵌入以保持前向兼容性
+}
+
+func (m *MockClient) Get(url string, options ...httpc.RequestOption) (*httpc.Result, error) {
+    return &httpc.Result{
+        Response: &httpc.ResponseInfo{StatusCode: 200, Body: `{"ok": true}`},
+    }, nil
+}
+```
 
 ---
 

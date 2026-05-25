@@ -2,6 +2,7 @@ package httpc
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/cybergodev/httpc/internal/validation"
@@ -291,6 +292,30 @@ func TestSessionManager_prepareOptions(t *testing.T) {
 	if len(options) < 2 {
 		t.Errorf("Expected at least 2 options, got %d", len(options))
 	}
+
+	// Verify options actually work when applied to a request
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer token" {
+			t.Error("Authorization header not applied")
+		}
+		cookie, err := r.Cookie("session")
+		if err != nil || cookie.Value != "abc123" {
+			t.Errorf("Session cookie not applied: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := newTestClient()
+	defer client.Close()
+
+	resp, err := client.Get(server.URL, options...)
+	if err != nil {
+		t.Fatalf("Request with session options failed: %v", err)
+	}
+	if resp.StatusCode() != http.StatusOK {
+		t.Errorf("Expected 200, got %d", resp.StatusCode())
+	}
 }
 
 func TestSessionManager_UpdateFromResult(t *testing.T) {
@@ -322,7 +347,7 @@ func TestSessionManager_UpdateFromResult(t *testing.T) {
 	}
 }
 
-func TestSessionManager_SecurityValidation(t *testing.T) {
+func TestSessionManager_SecurityValidation_SetCookieSecurity(t *testing.T) {
 	// Test that SetCookieSecurity affects subsequent SetCookie calls
 	session, err := NewSessionManager()
 	if err != nil {

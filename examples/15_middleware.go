@@ -53,7 +53,8 @@ func demonstrateLoggingMiddleware() {
 
 	client, err := httpc.New(config)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -81,7 +82,8 @@ func demonstrateRequestIDMiddleware() {
 
 	client, err := httpc.New(config)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -133,7 +135,8 @@ func demonstrateMetricsMiddleware() {
 
 	client, err := httpc.New(config)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -166,7 +169,8 @@ func demonstrateRecoveryMiddleware() {
 
 	client, err := httpc.New(config)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -197,7 +201,8 @@ func demonstrateAuditMiddleware() {
 
 	client, err := httpc.New(config)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -228,7 +233,8 @@ func demonstrateHeaderMiddleware() {
 
 	client, err := httpc.New(config)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -257,7 +263,8 @@ func demonstrateMiddlewareChain() {
 
 	client, err := httpc.New(config)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -283,7 +290,8 @@ func demonstrateMiddlewareChain() {
 	config2.Middleware.Middlewares = []httpc.MiddlewareFunc{chain}
 	client2, err := httpc.New(config2)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client2.Close()
 

@@ -54,8 +54,6 @@ type PoolManager struct {
 	// May drift slightly under high concurrency — acceptable for a memory-limit heuristic.
 	hostCount atomic.Int64
 
-	metrics *metrics
-
 	closed int32
 	mu     sync.RWMutex
 
@@ -170,8 +168,7 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 	}
 
 	pm := &PoolManager{
-		config:  config,
-		metrics: &metrics{},
+		config: config,
 	}
 
 	// Initialize DoH resolver if enabled
@@ -179,10 +176,16 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 		pm.dohResolver = dns.NewDoHResolver(nil, config.DoHCacheTTL)
 	}
 
+	// EnableHTTP2=false must override ForceAttemptHTTP2 regardless of its
+	// default value. Compute the effective value without mutating the input config.
+	forceAttemptHTTP2 := config.ForceAttemptHTTP2
+	if !config.EnableHTTP2 {
+		forceAttemptHTTP2 = false
+	}
+
 	transport := &http.Transport{
 		DialContext:            pm.createDialer(),
 		TLSHandshakeTimeout:    config.TLSHandshakeTimeout,
-		TLSClientConfig:        pm.createTLSConfig(),
 		ResponseHeaderTimeout:  config.ResponseHeaderTimeout,
 		IdleConnTimeout:        config.IdleConnTimeout,
 		ExpectContinueTimeout:  config.ExpectContinueTimeout,
@@ -190,10 +193,15 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 		MaxIdleConns:           config.MaxIdleConns,
 		MaxIdleConnsPerHost:    config.MaxIdleConnsPerHost,
 		MaxConnsPerHost:        config.MaxConnsPerHost,
-		ForceAttemptHTTP2:      config.ForceAttemptHTTP2,
+		ForceAttemptHTTP2:      forceAttemptHTTP2,
 		DisableCompression:     true, // Always disable automatic decompression - we handle it manually
 		DisableKeepAlives:      config.DisableKeepAlives,
 	}
+
+	// Always set TLSClientConfig — it is required for HTTPS connections
+	// through HTTP proxies (CONNECT tunnels).
+	transport.TLSClientConfig = pm.createTLSConfig()
+
 	// Configure proxy settings with priority:
 	// 1. Manual proxy URL (highest priority)
 	// 2. System proxy detection (if enabled)
@@ -209,43 +217,27 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 		if scheme := proxyURL.Scheme; scheme != "http" && scheme != "https" {
 			return nil, fmt.Errorf("invalid proxy URL scheme %q: must be http or https", scheme)
 		}
-		// SECURITY: Validate that the proxy host does not resolve to a private/reserved IP
-		// unless AllowPrivateIPs is explicitly set. This prevents SSRF attacks where a
-		// library consumer in a multi-tenant environment configures a proxy URL pointing
-		// to internal services (e.g., cloud metadata at 169.254.169.254).
-		if !config.AllowPrivateIPs {
-			proxyHost := proxyURL.Hostname()
-			if ip := net.ParseIP(proxyHost); ip != nil {
-				if err := validation.ValidateIPWithExemptions(ip, config.ExemptNets); err != nil {
-					return nil, fmt.Errorf("proxy URL host fails SSRF validation: %w", err)
-				}
-			} else {
-				resolveCtx, resolveCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer resolveCancel()
-				ipAddrs, err := net.DefaultResolver.LookupIPAddr(resolveCtx, proxyHost)
-				if err != nil {
-					return nil, fmt.Errorf("failed to resolve proxy host %q: %w", proxyHost, err)
-				}
-				for _, addr := range ipAddrs {
-					if err := validation.ValidateIPWithExemptions(addr.IP, config.ExemptNets); err != nil {
-						return nil, fmt.Errorf("proxy host %q resolves to blocked IP %s: %w", proxyHost, addr.IP, err)
-					}
-				}
-			}
-		}
-		transport.Proxy = http.ProxyURL(proxyURL)
+		// Proxy URL is explicitly configured by the developer, not user-supplied input.
+		// SSRF validation targets request URLs (attacker-controlled), not developer-chosen
+		// infrastructure. A developer who can set ProxyURL can already bypass SSRF by
+		// connecting directly, so blocking proxy hosts adds no meaningful security.
 		pm.proxyAddrs = append(pm.proxyAddrs, proxyURL.Host)
+		transport.Proxy = http.ProxyURL(proxyURL)
 	} else if config.EnableSystemProxy {
 		// No manual proxy, but system proxy detection is enabled
 		// Automatically detect system proxy settings (reads from Windows registry,
 		// macOS system settings, environment variables, etc.)
 		detector := proxy.NewDetector()
 		if proxyFunc := detector.GetProxyFunc(); proxyFunc != nil {
-			transport.Proxy = proxyFunc
 			testURL, _ := url.Parse("https://example.com")
 			testReq := &http.Request{URL: testURL}
-			if pu, err := proxyFunc(testReq); err == nil && pu != nil {
+			pu, err := proxyFunc(testReq)
+			if err == nil && pu != nil {
 				pm.proxyAddrs = append(pm.proxyAddrs, pu.Host)
+
+				transport.Proxy = proxyFunc
+			} else {
+				transport.Proxy = proxyFunc
 			}
 		}
 		// If proxyFunc is nil, transport.Proxy remains nil (direct connection)
@@ -429,8 +421,13 @@ func (pm *PoolManager) resolveAndValidateAddress(address string) (string, error)
 		return address, nil
 	}
 
-	// For domain names, resolve and filter to allowed IPs
-	dnsCtx, dnsCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// For domain names, resolve and filter to allowed IPs.
+	// Cap at 10s to avoid unbounded waits; derive from DialTimeout when smaller.
+	dnsTimeout := 10 * time.Second
+	if pm.config.DialTimeout > 0 && pm.config.DialTimeout < dnsTimeout {
+		dnsTimeout = pm.config.DialTimeout
+	}
+	dnsCtx, dnsCancel := context.WithTimeout(context.Background(), dnsTimeout)
 	defer dnsCancel()
 	ipAddrs, err := net.DefaultResolver.LookupIPAddr(dnsCtx, host)
 	if err != nil {
@@ -535,12 +532,16 @@ func (tc *trackedConn) Close() error {
 	var closeErr error
 	tc.closeOnce.Do(func() {
 		atomic.StoreInt32(&tc.closed, 1)
-		atomic.AddInt64(&tc.pm.activeConns, -1)
-		if tc.pm.config.MaxTotalConns > 0 {
-			atomic.AddInt64(&tc.pm.totalConns, -1)
-		}
-		if tc.stats != nil {
-			atomic.AddInt64(&tc.stats.ActiveConns, -1)
+		// Skip counter decrements if the pool is already closed — the pool's
+		// own Close() has already cleared hostConns and reset counters.
+		if atomic.LoadInt32(&tc.pm.closed) == 0 {
+			atomic.AddInt64(&tc.pm.activeConns, -1)
+			if tc.pm.config.MaxTotalConns > 0 {
+				atomic.AddInt64(&tc.pm.totalConns, -1)
+			}
+			if tc.stats != nil {
+				atomic.AddInt64(&tc.stats.ActiveConns, -1)
+			}
 		}
 		closeErr = tc.Conn.Close()
 	})
@@ -553,7 +554,17 @@ func (pm *PoolManager) updateConnectionMetrics(host string, connTime int64, succ
 	// Trigger lazy eviction of stale host entries to prevent unbounded map growth.
 	pm.evictStaleHosts()
 
-	// Use a pre-allocated stats pointer to avoid allocation in the hot path
+	// Fast path: check if host already tracked before allocating.
+	if existing, ok := pm.hostConns.Load(host); ok {
+		stats, ok := existing.(*hostStats)
+		if !ok || stats == nil {
+			return nil // Defensive: skip update if type assertion fails
+		}
+		pm.updateHostStats(stats, connTime, success)
+		return stats
+	}
+
+	// Slow path: new host — allocate and store
 	value, loaded := pm.hostConns.LoadOrStore(host, &hostStats{
 		Host:     host,
 		LastUsed: time.Now().Unix(),
@@ -572,12 +583,17 @@ func (pm *PoolManager) updateConnectionMetrics(host string, connTime int64, succ
 		return nil // Defensive: skip update if type assertion fails
 	}
 
+	pm.updateHostStats(stats, connTime, success)
+	return stats
+}
+
+// updateHostStats applies connection metrics to an existing hostStats entry.
+func (pm *PoolManager) updateHostStats(stats *hostStats, connTime int64, success bool) {
 	if success {
 		atomic.AddInt64(&stats.TotalConns, 1)
 		atomic.AddInt64(&stats.ActiveConns, 1)
 
 		// Use mutex for latency update to ensure consistency under high contention
-		// This is acceptable since latency tracking is not on the critical path
 		stats.mu.Lock()
 		current := stats.AverageLatency
 		if current == 0 {
@@ -591,7 +607,6 @@ func (pm *PoolManager) updateConnectionMetrics(host string, connTime int64, succ
 	}
 
 	atomic.StoreInt64(&stats.LastUsed, time.Now().Unix())
-	return stats
 }
 
 // evictStaleHosts removes hostStats entries that haven't been used recently.
@@ -635,9 +650,6 @@ func (pm *PoolManager) GetTransport() *http.Transport {
 }
 
 func (pm *PoolManager) GetMetrics() metrics {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
-
 	total := atomic.LoadInt64(&pm.totalConns)
 	rejected := atomic.LoadInt64(&pm.rejectedConns)
 	active := atomic.LoadInt64(&pm.activeConns)

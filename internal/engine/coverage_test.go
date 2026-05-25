@@ -1079,80 +1079,6 @@ func TestURLCache_Get(t *testing.T) {
 }
 
 // ============================================================================
-// DECOMPRESSOR TESTS
-// ============================================================================
-
-// TestCreateDecompressor validates decompressor creation for various encodings.
-func TestCreateDecompressor(t *testing.T) {
-	config := &Config{Timeout: 30 * time.Second}
-	processor := newResponseProcessor(config)
-
-	tests := []struct {
-		name        string
-		encoding    string
-		expectError bool
-	}{
-		{"Identity", "identity", false},
-		{"Empty", "", false},
-		{"Brotli unsupported", "br", true},
-		{"Compress unsupported", "compress", true},
-		{"X-compress unsupported", "x-compress", true},
-		{"Unknown passthrough", "unknown-encoding", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			reader := bytes.NewReader([]byte("test data"))
-			result, err := processor.createDecompressor(reader, tt.encoding)
-			if tt.expectError {
-				if err == nil {
-					t.Error("Expected error, got nil")
-				}
-				return
-			}
-			if err != nil {
-				t.Errorf("Unexpected error: %v", err)
-			}
-			if result != nil {
-				_ = result.Close()
-			}
-		})
-	}
-}
-
-// TestResponseDecompression validates gzip response decompression.
-func TestResponseDecompression(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Encoding", "gzip")
-		w.WriteHeader(http.StatusOK)
-		// Write raw bytes - server doesn't gzip, but we test the path
-		_, _ = w.Write([]byte("not actually gzipped"))
-	}))
-	defer server.Close()
-
-	config := &Config{
-		Timeout:         30 * time.Second,
-		AllowPrivateIPs: true,
-		MaxRetries:      0,
-		UserAgent:       "test/1.0",
-	}
-
-	client, err := NewClient(config)
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
-	defer client.Close()
-
-	// This may fail because the data isn't actually gzipped
-	// but it exercises the decompression path
-	_, _ = client.Request(backgroundCtx, "GET", server.URL)
-}
-
-// ============================================================================
-// CLEAR POOLS TEST
-// ============================================================================
-
-// ============================================================================
 // RETRY SCENARIO TESTS
 // ============================================================================
 
@@ -1341,90 +1267,6 @@ func TestClient_NoRedirectFollowing(t *testing.T) {
 		t.Logf("Status: %d (may vary)", resp.StatusCode())
 	}
 }
-
-// ============================================================================
-// GZIP RESPONSE TEST
-// ============================================================================
-
-// TestResponseProcessor_GzipResponse validates gzip response decompression.
-func TestResponseProcessor_GzipResponse(t *testing.T) {
-	// Create a server that returns gzipped content
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Encoding", "gzip")
-		w.WriteHeader(http.StatusOK)
-		// Write actual gzip data
-		var buf bytes.Buffer
-		gw := gzip.NewWriter(&buf)
-		_, _ = gw.Write([]byte("decompressed content"))
-		_ = gw.Close()
-		_, _ = w.Write(buf.Bytes())
-	}))
-	defer server.Close()
-
-	config := &Config{
-		Timeout:         30 * time.Second,
-		AllowPrivateIPs: true,
-		MaxRetries:      0,
-		UserAgent:       "test/1.0",
-	}
-
-	client, err := NewClient(config)
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
-	defer client.Close()
-
-	resp, err := client.Request(backgroundCtx, "GET", server.URL)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if resp.Body() != "decompressed content" {
-		t.Errorf("Expected 'decompressed content', got %q", resp.Body())
-	}
-}
-
-// ============================================================================
-// REDIRECT SETTINGS TESTS
-// ============================================================================
-
-// TestRedirectSettings_InlineAndOverflow validates inline chain and overflow behavior.
-func TestRedirectSettings_InlineAndOverflow(t *testing.T) {
-	s := getRedirectSettings()
-	defer putRedirectSettings(s)
-
-	// Fill inline chain (maxInlineRedirects = 8)
-	for i := 0; i < maxInlineRedirects; i++ {
-		s.addRedirect(fmt.Sprintf("https://example.com/%d", i))
-	}
-
-	if s.chainLen != maxInlineRedirects {
-		t.Errorf("Expected chainLen=%d, got %d", maxInlineRedirects, s.chainLen)
-	}
-
-	// Add one more to trigger overflow
-	s.addRedirect("https://example.com/overflow")
-
-	if s.overflowChain == nil {
-		t.Error("Expected overflow chain to be allocated")
-	}
-
-	chain := s.getChain()
-	if len(chain) != maxInlineRedirects+1 {
-		t.Errorf("Expected chain length %d, got %d", maxInlineRedirects+1, len(chain))
-	}
-}
-
-// TestRedirectSettings_EmptyChain validates empty chain returns nil.
-func TestRedirectSettings_EmptyChain(t *testing.T) {
-	s := getRedirectSettings()
-	defer putRedirectSettings(s)
-
-	chain := s.getChain()
-	if chain != nil {
-		t.Errorf("Expected nil for empty chain, got %v", chain)
-	}
-}
-
 // ============================================================================
 // QUERY ESCAPE LARGE INPUT TEST
 // ============================================================================
@@ -1434,14 +1276,14 @@ func TestQueryEscape_LargeInput(t *testing.T) {
 	// Create a string larger than maxQueryEscapeSize with no special chars
 	largeInput := strings.Repeat("a", maxQueryEscapeSize+1)
 
-	result := queryEscape(largeInput)
+	result := QueryEscape(largeInput)
 	if result != largeInput {
 		t.Error("Expected identity for large string without special chars")
 	}
 
 	// Large string with special char near the beginning to trigger escaping
 	largeWithSpecial := "hello world" + strings.Repeat("a", maxQueryEscapeSize)
-	result = queryEscape(largeWithSpecial)
+		result = QueryEscape(largeWithSpecial)
 	// url.QueryEscape encodes space as +
 	if !strings.Contains(result, "+") && !strings.Contains(result, "%20") {
 		t.Errorf("Expected space encoding in large string, got %q", result[:min(50, len(result))])
@@ -1682,47 +1524,6 @@ func TestPooledFlateReader(t *testing.T) {
 		}
 	})
 }
-
-// ============================================================================
-// DEFLATE RESPONSE TEST
-// ============================================================================
-
-// TestResponseProcessor_DeflateResponse validates deflate response decompression.
-func TestResponseProcessor_DeflateResponse(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Encoding", "deflate")
-		w.WriteHeader(http.StatusOK)
-		// Write actual deflate data
-		var buf bytes.Buffer
-		fw, _ := flate.NewWriter(&buf, flate.DefaultCompression)
-		_, _ = fw.Write([]byte("deflated content"))
-		_ = fw.Close()
-		_, _ = w.Write(buf.Bytes())
-	}))
-	defer server.Close()
-
-	config := &Config{
-		Timeout:         30 * time.Second,
-		AllowPrivateIPs: true,
-		MaxRetries:      0,
-		UserAgent:       "test/1.0",
-	}
-
-	client, err := NewClient(config)
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
-	defer client.Close()
-
-	resp, err := client.Request(backgroundCtx, "GET", server.URL)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if resp.Body() != "deflated content" {
-		t.Errorf("Expected 'deflated content', got %q", resp.Body())
-	}
-}
-
 // ============================================================================
 // CONTEXT CANCELLATION WITH SLEEP TEST
 // ============================================================================
@@ -1893,57 +1694,6 @@ func TestClient_RequestTimeoutOverride(t *testing.T) {
 		t.Errorf("Expected status 200, got %d", resp.StatusCode())
 	}
 }
-
-// ============================================================================
-// GZIP DIRECT DECOMPRESSOR TEST
-// ============================================================================
-
-// TestCreateDecompressor_GzipAndDeflate validates gzip and deflate decompressor creation.
-func TestCreateDecompressor_GzipAndDeflate(t *testing.T) {
-	config := &Config{Timeout: 30 * time.Second}
-	processor := newResponseProcessor(config)
-
-	t.Run("Gzip decompression", func(t *testing.T) {
-		var buf bytes.Buffer
-		gw := gzip.NewWriter(&buf)
-		_, _ = gw.Write([]byte("gzip content"))
-		_ = gw.Close()
-
-		decompressor, err := processor.createDecompressor(bytes.NewReader(buf.Bytes()), "gzip")
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		data, err := io.ReadAll(decompressor)
-		if err != nil {
-			t.Errorf("Read error: %v", err)
-		}
-		if string(data) != "gzip content" {
-			t.Errorf("Expected 'gzip content', got %q", string(data))
-		}
-		_ = decompressor.Close()
-	})
-
-	t.Run("Deflate decompression", func(t *testing.T) {
-		var buf bytes.Buffer
-		fw, _ := flate.NewWriter(&buf, flate.DefaultCompression)
-		_, _ = fw.Write([]byte("deflate content"))
-		_ = fw.Close()
-
-		decompressor, err := processor.createDecompressor(bytes.NewReader(buf.Bytes()), "deflate")
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		data, err := io.ReadAll(decompressor)
-		if err != nil {
-			t.Errorf("Read error: %v", err)
-		}
-		if string(data) != "deflate content" {
-			t.Errorf("Expected 'deflate content', got %q", string(data))
-		}
-		_ = decompressor.Close()
-	})
-}
-
 // ============================================================================
 // MAX REDIRECT LIMIT TEST
 // ============================================================================

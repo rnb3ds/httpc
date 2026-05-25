@@ -85,6 +85,7 @@ defer client.Close()
 - Timeouts.IdleConn: 30 seconds
 - Retry.MaxRetries: 1
 - Retry.Delay: 100 milliseconds
+- Retry.BackoffFactor: 2.0 (inherited)
 - Retry.EnableJitter: false
 - Connection.MaxIdleConns: 10
 - Connection.MaxConnsPerHost: 5
@@ -164,6 +165,7 @@ defer client.Close()
 - Security.StrictContentLength: false
 - Security.ValidateURL: true
 - Security.ValidateHeaders: true
+- Retry.MaxRetries: 3 (inherited)
 - Retry.Delay: 500 milliseconds
 - Retry.BackoffFactor: 1.5
 - Retry.EnableJitter: true
@@ -230,6 +232,7 @@ defer client.Close()
 - Timeouts.IdleConn: 30 seconds
 - Retry.MaxRetries: 1
 - Retry.Delay: 2 seconds
+- Retry.BackoffFactor: 2.0 (inherited)
 - Retry.EnableJitter: true
 - Connection.MaxIdleConns: 20
 - Connection.MaxConnsPerHost: 5

@@ -2,12 +2,13 @@ package security
 
 import (
 	"crypto/sha256"
+	"sync"
 	"crypto/x509"
 	"encoding/base64"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
-	"sync"
 )
 
 // CertificatePinner defines the interface for certificate pinning implementations.
@@ -75,11 +76,18 @@ func (p *publicKeyPinner) VerifyPeerCertificate(rawCerts [][]byte, verifiedChain
 	return p.inner.VerifyPeerCertificate(rawCerts, verifiedChains)
 }
 
+// pinCacheMaxSize limits the certificate fingerprint cache to prevent
+// unbounded memory growth in clients connecting to many unique hosts.
+const pinCacheMaxSize = 1024
+
 // spkiHashPinner pins certificates by their Subject Public Key Info (SPKI) hash.
 // This is the most common form of certificate pinning used in HTTP Public Key Pinning (HPKP)
 // and similar security mechanisms.
 type spkiHashPinner struct {
-	hashes map[string]bool // Base64-encoded SHA-256 hashes of SPKI
+	hashes      map[string]bool   // Base64-encoded SHA-256 hashes of SPKI
+	mu          sync.RWMutex
+	pinCache    map[string]string // fingerprint -> base64(SPKI hash)
+	pinCacheOrd []string          // insertion order for LRU eviction
 }
 
 // newSPKIHashPinner creates a new SPKI pinner from base64-encoded SHA-256 hashes.
@@ -94,7 +102,9 @@ type spkiHashPinner struct {
 //	openssl x509 -in cert.pem -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | openssl enc -base64
 func newSPKIHashPinner(hashes ...string) (*spkiHashPinner, error) {
 	p := &spkiHashPinner{
-		hashes: make(map[string]bool),
+		hashes:      make(map[string]bool),
+		pinCache:    make(map[string]string, 4),
+		pinCacheOrd: make([]string, 0, 16),
 	}
 
 	for _, h := range hashes {
@@ -138,6 +148,22 @@ func (p *spkiHashPinner) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Ce
 
 	// Check each certificate in the chain
 	for _, rawCert := range rawCerts {
+		// Compute a fingerprint of the raw DER for cache lookup
+		fp := sha256.Sum256(rawCert)
+		fpKey := string(fp[:8])
+
+		// Check cache first to avoid expensive x509.ParseCertificate
+		p.mu.RLock()
+		cached, hit := p.pinCache[fpKey]
+		p.mu.RUnlock()
+
+		if hit {
+			if p.hashes[cached] {
+				return nil // Match found (cached)
+			}
+			continue // Not a match, try next cert
+		}
+
 		cert, err := x509.ParseCertificate(rawCert)
 		if err != nil {
 			continue // Skip invalid certificates
@@ -152,6 +178,24 @@ func (p *spkiHashPinner) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Ce
 		// Hash the SPKI
 		hash := sha256.Sum256(spkiBytes)
 		hashStr := base64.StdEncoding.EncodeToString(hash[:])
+
+		// Cache the computed hash for future lookups
+		p.mu.Lock()
+		if _, exists := p.pinCache[fpKey]; !exists {
+			// Evict oldest entries when cache exceeds limit
+			if len(p.pinCache) >= pinCacheMaxSize && len(p.pinCacheOrd) > 0 {
+				evictCount := pinCacheMaxSize / 4
+				for i := 0; i < evictCount && i < len(p.pinCacheOrd); i++ {
+					delete(p.pinCache, p.pinCacheOrd[i])
+				}
+				remaining := p.pinCacheOrd[evictCount:]
+				p.pinCacheOrd = make([]string, len(remaining), len(remaining)*2)
+				copy(p.pinCacheOrd, remaining)
+			}
+			p.pinCache[fpKey] = hashStr
+			p.pinCacheOrd = append(p.pinCacheOrd, fpKey)
+		}
+		p.mu.Unlock()
 
 		// Check if it matches any pinned hash
 		if p.hashes[hashStr] {
@@ -210,6 +254,8 @@ func (c *certificatePinnerChain) VerifyPeerCertificate(rawCerts [][]byte, verifi
 }
 
 // noOpPinner accepts all certificates. For testing only.
+// In production environments, VerifyPeerCertificate returns an error to prevent
+// accidental use of this no-op pinner, which disables certificate pinning entirely.
 type noOpPinner struct{}
 
 // Pin returns "no-op" to indicate no pinning.
@@ -217,15 +263,27 @@ func (n *noOpPinner) Pin() string {
 	return "no-op"
 }
 
-// warnNoOpPinnerOnce ensures the production warning is printed at most once.
-var warnNoOpPinnerOnce sync.Once
-
-// VerifyPeerCertificate always returns nil, accepting all certificates.
+// VerifyPeerCertificate returns nil in test environments. In all other
+// environments, it returns an error to prevent accidental use in production,
+// as this pinner disables certificate verification.
 func (n *noOpPinner) VerifyPeerCertificate(_ [][]byte, _ [][]*x509.Certificate) error {
-	warnNoOpPinnerOnce.Do(func() {
-		if !strings.Contains(os.Args[0], ".test") {
-			fmt.Fprintf(os.Stderr, "[SECURITY WARNING] noOpPinner used outside test environment - certificate pinning is DISABLED\n")
-		}
-	})
+	if !isTestEnvironment() {
+		return fmt.Errorf("SECURITY: noOpPinner used outside test environment - certificate pinning is DISABLED; this is a security violation")
+	}
 	return nil
+}
+
+// isTestEnvironment detects if the code is running in a test environment.
+// Consistent with the detection logic in the httpc package.
+func isTestEnvironment() bool {
+	executable := filepath.Base(os.Args[0])
+	if strings.HasSuffix(executable, ".test") ||
+		strings.HasSuffix(executable, ".test.exe") ||
+		strings.Contains(executable, ".test.") {
+		return true
+	}
+	if os.Getenv("GO_TEST") != "" || os.Getenv("GOTEST") == "1" {
+		return true
+	}
+	return false
 }

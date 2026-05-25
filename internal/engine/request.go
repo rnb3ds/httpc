@@ -23,7 +23,6 @@ var stringsReaderPool = sync.Pool{
 	New: func() any { return &strings.Reader{} },
 }
 
-
 // bytesReaderPool reduces allocations for bytes.Reader used in request bodies
 var bytesReaderPool = sync.Pool{
 	New: func() any { return &bytes.Reader{} },
@@ -207,6 +206,10 @@ func getPooledBytesReader(b []byte) io.Reader {
 	return wrapper
 }
 
+// rawCacheMaxSize limits the raw-string URL cache to prevent unbounded growth
+// from URL variants (e.g., different query parameter orderings for the same endpoint).
+const rawCacheMaxSize = 2048
+
 // urlCache provides a thread-safe LRU-like cache for parsed URLs
 // to avoid expensive url.Parse() calls for repeated URLs.
 //
@@ -267,46 +270,55 @@ func hasSensitiveContent(rawURL string) bool {
 	if qIdx < 0 {
 		return false
 	}
-	// Check for sensitive query parameter names (e.g., token=, api_key=)
-	// by extracting each key and doing a case-insensitive map lookup.
-	// Uses a stack-allocated buffer to avoid heap allocation from strings.ToLower.
-	sensitiveNames := validation.SensitiveQueryParamNames()
-	queryPart := rawURL[qIdx+1:]
-	for {
-		// Extract key before '='
-		eqIdx := strings.IndexByte(queryPart, '=')
-		if eqIdx < 0 {
-			break
-		}
-		key := queryPart[:eqIdx]
-		// Find end of this key-value pair (next '&')
-		ampIdx := strings.IndexByte(queryPart, '&')
-		// Case-insensitive check: inline ASCII lowercase into a stack buffer
-		var buf [64]byte
-		if len(key) <= len(buf) {
-			for i := 0; i < len(key); i++ {
-				c := key[i]
-				if c >= 'A' && c <= 'Z' {
-					c += 'a' - 'A'
-				}
-				buf[i] = c
-			}
-			if sensitiveNames[string(buf[:len(key)])] {
-				return true
-			}
-		}
-		if ampIdx < 0 {
-			break
-		}
-		queryPart = queryPart[ampIdx+1:]
+	return validation.HasSensitiveQueryParams(rawURL[qIdx+1:])
+}
+
+// evictRawIfNeeded removes stale raw cache entries when the map exceeds
+// rawCacheMaxSize. Must be called with c.mu held for writing.
+func (c *urlCache) evictRawIfNeeded() {
+	if len(c.raw) < rawCacheMaxSize {
+		return
 	}
-	return false
+	// Scan for raw entries pointing to URLs no longer in the entries map
+	for k, v := range c.raw {
+		found := false
+		for _, u := range c.entries {
+			if u == v {
+				found = true
+				break
+			}
+		}
+		if !found {
+			delete(c.raw, k)
+		}
+		if len(c.raw) < rawCacheMaxSize/2 {
+			return
+		}
+	}
 }
 
 // Get retrieves a parsed URL from cache or parses and caches it.
 // SECURITY: Uses sanitized URL as cache key to prevent sensitive data persistence.
 // Raw string cache is skipped for URLs containing credentials.
+// Returns a cloned URL to ensure cached entries remain immutable.
 func (c *urlCache) Get(rawURL string) (*url.URL, error) {
+	return c.getInternal(rawURL, true)
+}
+
+// GetReadOnly retrieves a parsed URL from cache without cloning.
+// The caller MUST NOT modify the returned URL — it is shared across goroutines.
+// Returns a reference to the cached entry on cache hit; on cache miss, the
+// newly parsed URL is stored and the same reference is returned (no clone needed
+// since the caller is the first and only holder at that point).
+func (c *urlCache) GetReadOnly(rawURL string) (*url.URL, error) {
+	return c.getInternal(rawURL, false)
+}
+
+// getInternal is the shared implementation for Get and GetReadOnly.
+// When clone is true, the returned URL is deep-copied to prevent mutation
+// of cached entries. When false, the cached pointer is returned directly
+// (read-only contract enforced at call site).
+func (c *urlCache) getInternal(rawURL string, clone bool) (*url.URL, error) {
 	sensitive := hasSensitiveContent(rawURL)
 
 	// Fast path: check raw string cache first (avoids url.Parse for repeated URLs)
@@ -315,7 +327,10 @@ func (c *urlCache) Get(rawURL string) (*url.URL, error) {
 		if c.raw != nil {
 			if cached, ok := c.raw[rawURL]; ok {
 				c.mu.RUnlock()
-				return cloneURL(cached), nil
+				if clone {
+					return cloneURL(cached), nil
+				}
+				return cached, nil
 			}
 		}
 		c.mu.RUnlock()
@@ -333,16 +348,13 @@ func (c *urlCache) Get(rawURL string) (*url.URL, error) {
 	c.mu.RLock()
 	if cached, ok := c.entries[cacheKey]; ok {
 		c.mu.RUnlock()
-		// Populate raw cache only for non-sensitive URLs
 		if !sensitive {
-			c.mu.Lock()
-			if c.raw == nil {
-				c.raw = make(map[string]*url.URL, 16)
-			}
-			c.raw[rawURL] = cached
-			c.mu.Unlock()
+			c.populateRawCache(rawURL, cached)
 		}
-		return cloneURL(cached), nil
+		if clone {
+			return cloneURL(cached), nil
+		}
+		return cached, nil
 	}
 	c.mu.RUnlock()
 
@@ -353,53 +365,87 @@ func (c *urlCache) Get(rawURL string) (*url.URL, error) {
 	// Double-check after acquiring write lock
 	if cached, ok := c.entries[cacheKey]; ok {
 		if !sensitive {
-			if c.raw == nil {
-				c.raw = make(map[string]*url.URL, 16)
-			}
-			c.raw[rawURL] = cached
+			c.populateRawCacheLocked(rawURL, cached)
 		}
-		return cloneURL(cached), nil
+		if clone {
+			return cloneURL(cached), nil
+		}
+		return cached, nil
 	}
 
 	// SECURITY: Evict oldest entry if cache is full
-	if len(c.entries) >= c.maxSize && len(c.keys) > 0 {
-		oldestKey := c.keys[0]
-		if old, ok := c.entries[oldestKey]; ok && c.raw != nil {
-			// Remove from raw cache: scan for raw URLs pointing to this parsed URL
-			for k, v := range c.raw {
-				if v == old {
-					delete(c.raw, k)
-				}
-			}
-		}
-		delete(c.entries, oldestKey)
-		c.keys = c.keys[1:]
-		if cap(c.keys) > len(c.keys)*2 {
-			newKeys := make([]string, len(c.keys), len(c.keys)*2)
-			copy(newKeys, c.keys)
-			c.keys = newKeys
-		}
-	}
+	c.evictOldest()
 
 	c.entries[cacheKey] = parsed
 	if !sensitive {
-		if c.raw == nil {
-			c.raw = make(map[string]*url.URL, 16)
-		}
-		c.raw[rawURL] = parsed
+		c.populateRawCacheLocked(rawURL, parsed)
 	}
 	c.keys = append(c.keys, cacheKey)
 
-	return cloneURL(parsed), nil
+	if clone {
+		return cloneURL(parsed), nil
+	}
+	return parsed, nil
+}
+
+// populateRawCache adds a raw→parsed mapping under a separate write lock.
+// Used when the caller only holds a read lock on c.mu.
+func (c *urlCache) populateRawCache(rawURL string, cached *url.URL) {
+	c.mu.Lock()
+	if c.raw == nil {
+		c.raw = make(map[string]*url.URL, 16)
+	}
+	if _, exists := c.raw[rawURL]; !exists {
+		c.evictRawIfNeeded()
+		c.raw[rawURL] = cached
+	}
+	c.mu.Unlock()
+}
+
+// populateRawCacheLocked adds a raw→parsed mapping when the caller already
+// holds c.mu for writing. Must be called with c.mu held.
+func (c *urlCache) populateRawCacheLocked(rawURL string, cached *url.URL) {
+	if c.raw == nil {
+		c.raw = make(map[string]*url.URL, 16)
+	}
+	if _, exists := c.raw[rawURL]; !exists {
+		c.evictRawIfNeeded()
+		c.raw[rawURL] = cached
+	}
+}
+
+// evictOldest removes the oldest entry when the cache is full.
+// Must be called with c.mu held for writing.
+func (c *urlCache) evictOldest() {
+	if len(c.entries) < c.maxSize || len(c.keys) == 0 {
+		return
+	}
+	oldestKey := c.keys[0]
+	if old, ok := c.entries[oldestKey]; ok && c.raw != nil {
+		for k, v := range c.raw {
+			if v == old {
+				delete(c.raw, k)
+			}
+		}
+	}
+	delete(c.entries, oldestKey)
+	c.keys = c.keys[1:]
+	if cap(c.keys) > len(c.keys)*2 {
+		newKeys := make([]string, len(c.keys), len(c.keys)*2)
+		copy(newKeys, c.keys)
+		c.keys = newKeys
+	}
 }
 
 // cloneURL creates a deep copy of a URL
-// to ensure cached entries remain immutable
+// to ensure cached entries remain immutable.
+// Allocates directly rather than using sync.Pool — pooled objects
+// were never returned, causing unbounded memory growth.
 func cloneURL(u *url.URL) *url.URL {
 	if u == nil {
 		return nil
 	}
-	clone := &url.URL{
+	return &url.URL{
 		Scheme:      u.Scheme,
 		Opaque:      u.Opaque,
 		Host:        u.Host,
@@ -411,9 +457,6 @@ func cloneURL(u *url.URL) *url.URL {
 		Fragment:    u.Fragment,
 		RawFragment: u.RawFragment,
 	}
-	// User is intentionally not cloned — credentials are never cached
-	// and should be set via WithBasicAuth() instead.
-	return clone
 }
 
 // clear removes all entries from the cache
@@ -595,10 +638,18 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 		req.SetContext(backgroundCtx)
 	}
 
-	// Use cached URL parsing to avoid expensive url.Parse() calls
-	parsedURL, err := globalURLCache.Get(req.URL())
-	if err != nil {
-		return nil, fmt.Errorf("invalid URL: %w", err)
+	// Use cached URL parsing to avoid expensive url.Parse() calls.
+	// Optimization: use read-only cache path when URL won't be modified,
+	// avoiding a cloneURL allocation per request.
+	var parsedURL *url.URL
+	var urlErr error
+	if len(req.QueryParams()) == 0 {
+		parsedURL, urlErr = globalURLCache.GetReadOnly(req.URL())
+	} else {
+		parsedURL, urlErr = globalURLCache.Get(req.URL())
+	}
+	if urlErr != nil {
+		return nil, fmt.Errorf("invalid URL: %w", urlErr)
 	}
 
 	if len(req.QueryParams()) > 0 {
@@ -654,21 +705,9 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 
 					if fileData.ContentType != "" {
 						h := getMIMEHeader()
-						sb, ok := stringBuilderPool.Get().(*strings.Builder)
-						if !ok || sb == nil {
-							sb = &strings.Builder{}
-						}
-						sb.Reset()
 						escapedKey := escapeQuotes(key)
 						escapedFilename := escapeQuotes(fileData.Filename)
-						sb.Grow(21 + len(escapedKey) + 12 + len(escapedFilename) + 2)
-						sb.WriteString(`form-data; name="`)
-						sb.WriteString(escapedKey)
-						sb.WriteString(`"; filename="`)
-						sb.WriteString(escapedFilename)
-						sb.WriteByte('"')
-						contentDisposition := sb.String()
-						stringBuilderPool.Put(sb)
+						contentDisposition := `form-data; name="` + escapedKey + `"; filename="` + escapedFilename + `"`
 
 						h.Set("Content-Disposition", contentDisposition)
 						h.Set("Content-Type", fileData.ContentType)
@@ -719,8 +758,6 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 	//   1. parsedURL.String() allocation (URL to string)
 	//   2. url.Parse re-parsing that string back to *url.URL
 	//   3. io.NopCloser wrapper for body readers that implement io.ReadCloser
-	headerSize := max(len(p.config.Headers)+len(req.Headers())+2, 8) // +2 for Content-Type, User-Agent
-
 	var bodyRC io.ReadCloser
 	if body != nil {
 		if rc, ok := body.(io.ReadCloser); ok {
@@ -738,12 +775,10 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 		Proto:      "HTTP/1.1",
 		ProtoMajor: 1,
 		ProtoMinor: 1,
-		Header:     make(http.Header, headerSize),
+		Header:     getHTTPHeader(),
 		Body:       bodyRC,
 		Host:       parsedURL.Host,
 	}
-	// WithContext is safe here: Header map is empty (just allocated), so the
-	// internal cloneHeader call copies zero entries — negligible overhead.
 	httpReq = httpReq.WithContext(ctx)
 
 	// Set Content-Length from known body types
@@ -761,6 +796,12 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 
 	for key, value := range req.Headers() {
 		httpReq.Header.Set(key, value)
+	}
+
+	// Add Accept-Encoding automatically since DisableCompression is true
+	// and we handle decompression manually. Allows user override via WithHeader.
+	if httpReq.Header.Get("Accept-Encoding") == "" {
+		httpReq.Header.Set("Accept-Encoding", "gzip, deflate")
 	}
 
 	if httpReq.Header.Get("User-Agent") == "" && p.config.UserAgent != "" {

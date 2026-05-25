@@ -205,7 +205,6 @@ func demonstrateConfigComparison() {
 	fmt.Println("Scenario 5: High Security")
 	secureConfig := httpc.SecureConfig()
 	secureConfig.Security.MinTLSVersion = tls.VersionTLS13
-	secureConfig.Security.AllowPrivateIPs = false
 	secureConfig.Security.StrictContentLength = true
 	fmt.Println("  TLS 1.3+, SSRF protection, strict validation")
 	fmt.Println("  Use case: Financial, healthcare, sensitive data\n ")
@@ -229,7 +228,7 @@ func demonstrateConfigComparison() {
 
 	// Scenario 8: Minimal configuration
 	fmt.Println("Scenario 8: Minimal Configuration")
-	_ = httpc.MinimalConfig() // No retries, short timeouts, minimal features
+	_ = httpc.MinimalConfig() // demonstrates factory; use with httpc.New() to create client
 	fmt.Println("  No retries, short timeouts, minimal features")
 	fmt.Println("  Use case: Simple scripts, CLI tools, one-shot requests\n ")
 }

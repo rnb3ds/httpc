@@ -154,8 +154,11 @@ func TestPanicSafety(t *testing.T) {
 	}{
 		{"NilConfig", func() {
 			client, err := New(nil)
-			if err == nil && client == nil {
-				t.Error("Expected either valid client or error")
+			if err != nil {
+				t.Errorf("New(nil) should succeed with defaults, got error: %v", err)
+			}
+			if client == nil {
+				t.Error("New(nil) should return a valid client")
 			}
 			if client != nil {
 				client.Close()

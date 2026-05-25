@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -159,20 +160,32 @@ func TestRequest_Authentication(t *testing.T) {
 		}
 	})
 
-	t.Run("WithBasicAuth_EmptyUsername", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
+	authErrorCases := []struct {
+		name string
+		opt  RequestOption
+	}{
+		{"EmptyUsername", WithBasicAuth("", "pass")},
+		{"EmptyBearerToken", WithBearerToken("")},
+		{"EmptyHeaderKey", WithHeader("", "value")},
+		{"EmptyHeaderKeyWithControlChars", WithHeader("X-Bad\r\n", "value")},
+	}
 
-		client, _ := newTestClient()
-		defer client.Close()
+	for _, tt := range authErrorCases {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
 
-		_, err := client.Get(server.URL, WithBasicAuth("", "pass"))
-		if err == nil {
-			t.Error("Expected error for empty username")
-		}
-	})
+			client, _ := newTestClient()
+			defer client.Close()
+
+			_, err := client.Get(server.URL, tt.opt)
+			if err == nil {
+				t.Error("Expected error")
+			}
+		})
+	}
 
 	t.Run("WithBearerToken", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -190,21 +203,6 @@ func TestRequest_Authentication(t *testing.T) {
 		_, err := client.Get(server.URL, WithBearerToken("test-token-123"))
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
-		}
-	})
-
-	t.Run("WithBearerToken_Empty", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
-		client, _ := newTestClient()
-		defer client.Close()
-
-		_, err := client.Get(server.URL, WithBearerToken(""))
-		if err == nil {
-			t.Error("Expected error for empty token")
 		}
 	})
 }
@@ -336,13 +334,13 @@ func TestRequest_WithBody(t *testing.T) {
 	}
 
 	tests := []struct {
-		name              string
-		body              interface{}
-		kinds             []BodyKind // empty = auto-detect; 1 element = explicit kind
-		needsServer       bool       // true = spin up httptest.Server and check Content-Type
-		expectedType      string     // exact Content-Type expected (used when usePrefix=false)
-		usePrefix         bool       // true = check strings.HasPrefix instead of exact match
-		expectError       bool       // true = expect non-nil error, no server needed
+		name         string
+		body         interface{}
+		kinds        []BodyKind // empty = auto-detect; 1 element = explicit kind
+		needsServer  bool       // true = spin up httptest.Server and check Content-Type
+		expectedType string     // exact Content-Type expected (used when usePrefix=false)
+		usePrefix    bool       // true = check strings.HasPrefix instead of exact match
+		expectError  bool       // true = expect non-nil error, no server needed
 	}{
 		// --- Auto-detect cases ---
 		{
@@ -519,7 +517,13 @@ func TestRequest_WithBody(t *testing.T) {
 
 func TestRequest_TimeoutAndRetry(t *testing.T) {
 	t.Run("WithMaxRetries", func(t *testing.T) {
+		attempts := int32(0)
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			count := atomic.AddInt32(&attempts, 1)
+			if count < 2 {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 			w.WriteHeader(http.StatusOK)
 		}))
 		defer server.Close()
@@ -527,9 +531,15 @@ func TestRequest_TimeoutAndRetry(t *testing.T) {
 		client, _ := newTestClient()
 		defer client.Close()
 
-		_, err := client.Get(server.URL, WithMaxRetries(3))
+		resp, err := client.Get(server.URL, WithMaxRetries(3))
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
+		}
+		if resp.StatusCode() != http.StatusOK {
+			t.Errorf("Expected 200, got %d", resp.StatusCode())
+		}
+		if resp.Meta.Attempts < 2 {
+			t.Errorf("Expected at least 2 attempts with retries, got %d", resp.Meta.Attempts)
 		}
 	})
 }

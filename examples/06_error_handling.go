@@ -45,7 +45,8 @@ func demonstrateBasicErrors() {
 
 	client, err := httpc.New()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -71,7 +72,8 @@ func demonstrateHTTPErrors() {
 
 	client, err := httpc.New()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -121,7 +123,8 @@ func demonstrateTimeoutErrors() {
 
 	client, err := httpc.New()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -150,7 +153,8 @@ func demonstrateContextCancellation() {
 
 	client, err := httpc.New()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -184,7 +188,8 @@ func demonstrateParsingErrors() {
 
 	client, err := httpc.New()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -247,7 +252,7 @@ func fetchUserData(userID int) (map[string]any, error) {
 		httpc.WithMaxRetries(2),
 	)
 	if err != nil {
-		// Check specific error types
+		// Check specific error types using Code() string
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, fmt.Errorf("request timed out after 10s: %w", err)
 		}
@@ -293,7 +298,8 @@ func demonstrateStructuredErrors() {
 
 	client, err := httpc.New()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -306,26 +312,26 @@ func demonstrateStructuredErrors() {
 		var clientErr *httpc.ClientError
 		if errors.As(err, &clientErr) {
 			fmt.Printf("ClientError detected:\n")
-			fmt.Printf("  Type:       %d\n", clientErr.Type)
 			fmt.Printf("  Code:       %s\n", clientErr.Code())
+			fmt.Printf("  Attempts:   %d\n", clientErr.Attempts)
 			fmt.Printf("  Message:    %s\n", clientErr.Message)
 			fmt.Printf("  URL:        %s\n", clientErr.URL)
 			fmt.Printf("  Method:     %s\n", clientErr.Method)
 			fmt.Printf("  Retryable:  %v\n", clientErr.IsRetryable())
 
-			// Check specific error types
-			switch clientErr.Type {
-			case httpc.ErrorTypeTimeout:
+			// Check specific error types using Code() string
+			switch clientErr.Code() {
+			case "TIMEOUT":
 				fmt.Println("  Category:   Timeout error")
-			case httpc.ErrorTypeNetwork:
+			case "NETWORK_ERROR":
 				fmt.Println("  Category:   Network error")
-			case httpc.ErrorTypeDNS:
+			case "DNS_ERROR":
 				fmt.Println("  Category:   DNS resolution error")
-			case httpc.ErrorTypeTLS:
+			case "TLS_ERROR":
 				fmt.Println("  Category:   TLS/SSL error")
-			case httpc.ErrorTypeHTTP:
+			case "HTTP_ERROR":
 				fmt.Printf("  Category:   HTTP error (status %d)\n", clientErr.StatusCode)
-			case httpc.ErrorTypeRetryExhausted:
+			case "RETRY_EXHAUSTED":
 				fmt.Println("  Category:   Retry limit exceeded")
 			}
 		} else {

@@ -39,7 +39,8 @@ func example1AutoFollow() {
 	// Default client follows redirects automatically
 	client, err := httpc.New()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -64,7 +65,8 @@ func example2NoFollow() {
 	config.Middleware.FollowRedirects = false
 	client, err := httpc.New(config)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -91,7 +93,8 @@ func example3MaxRedirects() {
 	config.Middleware.MaxRedirects = 2 // Only follow up to 2 redirects
 	client, err := httpc.New(config)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -120,7 +123,8 @@ func example4PerRequestControl() {
 	// Client configured to follow redirects
 	client, err := httpc.New()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -163,7 +167,8 @@ func example5RedirectChain() {
 
 	client, err := httpc.New()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 
@@ -193,7 +198,8 @@ func example6ManualHandling() {
 	config.Middleware.FollowRedirects = false
 	client, err := httpc.New(config)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to create client: %v\n", err)
+		return
 	}
 	defer client.Close()
 

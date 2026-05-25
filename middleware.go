@@ -14,6 +14,27 @@ import (
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
+// sanitizedURLer is an unexported interface for per-request sanitized URL caching.
+// engine.Request implements this to deduplicate SanitizeURL across middleware.
+type sanitizedURLer interface {
+	SanitizedURL() string
+	SetSanitizedURL(string)
+}
+
+// getOrComputeSanitizedURL returns a cached sanitized URL if available,
+// otherwise computes and caches it on the request for subsequent middleware.
+func getOrComputeSanitizedURL(req RequestMutator) string {
+	if r, ok := req.(sanitizedURLer); ok {
+		if u := r.SanitizedURL(); u != "" {
+			return u
+		}
+		u := validation.SanitizeURL(req.URL())
+		r.SetSanitizedURL(u)
+		return u
+	}
+	return validation.SanitizeURL(req.URL())
+}
+
 // AuditEvent represents a security audit event for high-security scenarios.
 // It captures request/response details for compliance logging in financial,
 // medical, and government applications.
@@ -115,7 +136,7 @@ func LoggingMiddleware(log func(format string, args ...any)) MiddlewareFunc {
 				status = resp.StatusCode()
 			}
 
-			sanitizedURL := validation.SanitizeURL(req.URL())
+			sanitizedURL := getOrComputeSanitizedURL(req)
 
 			if err != nil {
 				log("%s %s -> error: %v (%v)", req.Method(), sanitizedURL, err, duration)
@@ -188,11 +209,22 @@ func TimeoutMiddleware(timeout time.Duration) MiddlewareFunc {
 				return next(ctx, req)
 			}
 
-			timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
+			// Derive from the request's own context (which may carry a user-supplied
+			// deadline or cancellation) rather than the middleware chain's ctx, so that
+			// a pre-cancelled WithContext is not silently overwritten.
+			baseCtx := req.Context()
+			if baseCtx == nil {
+				baseCtx = ctx
+			}
+
+			timeoutCtx, cancel := context.WithTimeout(baseCtx, timeout)
 			defer cancel()
 
-			// Also set the request timeout so the engine respects it
-			req.SetTimeout(timeout)
+			// Propagate the middleware context deadline to the engine via the
+			// request's context field. The finalHandler in clientImpl reads
+			// req.Context() rather than the middleware chain's ctx parameter,
+			// so the deadline must be set on the RequestMutator itself.
+			req.SetContext(timeoutCtx)
 
 			return next(timeoutCtx, req)
 		}
@@ -246,7 +278,7 @@ func MetricsMiddleware(onMetrics func(method, url string, statusCode int, durati
 				if resp != nil {
 					statusCode = resp.StatusCode()
 				}
-				sanitizedURL := validation.SanitizeURL(req.URL())
+				sanitizedURL := getOrComputeSanitizedURL(req)
 				sanitizedErr := sanitizeCallbackError(err, req.URL(), sanitizedURL)
 				onMetrics(req.Method(), sanitizedURL, statusCode, duration, sanitizedErr)
 			}
@@ -285,6 +317,8 @@ func sanitizeCallbackError(err error, rawURL, sanitizedURL string) error {
 //	        event.Method, event.URL, event.StatusCode, event.Duration,
 //	        event.UserID, event.SourceIP)
 //	})
+//
+// This is a convenience method that delegates to AuditMiddlewareWithConfig with nil config.
 func AuditMiddleware(onAudit func(event AuditEvent)) MiddlewareFunc {
 	return AuditMiddlewareWithConfig(onAudit, nil)
 }
@@ -303,6 +337,9 @@ func AuditMiddleware(onAudit func(event AuditEvent)) MiddlewareFunc {
 //	    log.Printf("[AUDIT] %v", event)
 //	}, config)
 func AuditMiddlewareWithConfig(onAudit func(event AuditEvent), config *AuditMiddlewareConfig) MiddlewareFunc {
+	if onAudit == nil {
+		return func(next Handler) Handler { return next }
+	}
 	if config == nil {
 		config = DefaultAuditMiddlewareConfig()
 	}
@@ -320,7 +357,7 @@ func AuditMiddlewareWithConfig(onAudit func(event AuditEvent), config *AuditMidd
 			event := AuditEvent{
 				Timestamp: start,
 				Method:    req.Method(),
-				URL:       validation.SanitizeURL(req.URL()),
+				URL:       getOrComputeSanitizedURL(req),
 				Duration:  duration,
 				Error:     err,
 			}
@@ -353,9 +390,7 @@ func AuditMiddlewareWithConfig(onAudit func(event AuditEvent), config *AuditMidd
 				event.Error = fmt.Errorf("[sanitized]")
 			}
 
-			if onAudit != nil {
-				onAudit(event)
-			}
+			onAudit(event)
 
 			return resp, err
 		}

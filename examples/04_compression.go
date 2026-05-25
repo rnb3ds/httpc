@@ -25,7 +25,7 @@ func main() {
 	fmt.Println("\nNote:")
 	fmt.Println("  - The library automatically detects and decompresses gzip and deflate responses")
 	fmt.Println("  - Decompression is based on the Content-Encoding header")
-	fmt.Println("  - Brotli (br) is not supported due to zero-dependency constraint")
+	fmt.Println("  - Legacy compress formats (LZW) are not supported")
 	fmt.Println("  - To request compressed responses, set Accept-Encoding header")
 }
 

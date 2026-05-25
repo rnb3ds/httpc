@@ -11,10 +11,10 @@ import (
 	"time"
 )
 
-// stringBuilderPool reduces allocations for strings.Builder used in String().
+// resultBuilderPool reduces allocations for strings.Builder used in Result.String().
 // A separate pool exists in engine/request.go for engine-internal use; kept
 // separate to avoid cross-package pool contention.
-var stringBuilderPool = sync.Pool{
+var resultBuilderPool = sync.Pool{
 	New: func() any {
 		sb := &strings.Builder{}
 		return sb
@@ -28,6 +28,7 @@ const (
 
 // sensitiveHeaders contains header names that should be masked in String() and audit output.
 // Keys use http.CanonicalHeaderKey form (Title-Case).
+// Read-only after initialization — must not be mutated (concurrent reads).
 var sensitiveHeaders = map[string]bool{
 	"Authorization":       true,
 	"Cookie":              true,
@@ -49,7 +50,7 @@ var cachedSensitiveHeaderNames = func() []string {
 
 // Result wraps an HTTP response with request metadata and convenience methods.
 // Obtain a Result from Client.Request() or package-level functions like Get(), Post(), etc.
-// Call ReleaseResult(r) when done to return it to the pool.
+// Results are automatically pooled; GC handles cleanup.
 type Result struct {
 	Request  *RequestInfo
 	Response *ResponseInfo
@@ -175,40 +176,32 @@ func (r *Result) Unmarshal(v any) error {
 	return json.Unmarshal(r.Response.RawBody, v)
 }
 
-// IsSuccess returns true if the response status code indicates success (2xx).
-func (r *Result) IsSuccess() bool {
+// statusInRange returns true if the response status code is in [lo, hi).
+func (r *Result) statusInRange(lo, hi int) bool {
 	if r == nil || r.Response == nil {
 		return false
 	}
-	code := r.Response.StatusCode
-	return code >= 200 && code < 300
+	return r.Response.StatusCode >= lo && r.Response.StatusCode < hi
+}
+
+// IsSuccess returns true if the response status code indicates success (2xx).
+func (r *Result) IsSuccess() bool {
+	return r.statusInRange(200, 300)
 }
 
 // IsRedirect returns true if the response status code indicates a redirect (3xx).
 func (r *Result) IsRedirect() bool {
-	if r == nil || r.Response == nil {
-		return false
-	}
-	code := r.Response.StatusCode
-	return code >= 300 && code < 400
+	return r.statusInRange(300, 400)
 }
 
 // IsClientError returns true if the response status code indicates a client error (4xx).
 func (r *Result) IsClientError() bool {
-	if r == nil || r.Response == nil {
-		return false
-	}
-	code := r.Response.StatusCode
-	return code >= 400 && code < 500
+	return r.statusInRange(400, 500)
 }
 
 // IsServerError returns true if the response status code indicates a server error (5xx).
 func (r *Result) IsServerError() bool {
-	if r == nil || r.Response == nil {
-		return false
-	}
-	code := r.Response.StatusCode
-	return code >= 500 && code < 600
+	return r.statusInRange(500, 600)
 }
 
 // GetCookie returns a response cookie by name, or nil if not found.
@@ -255,7 +248,7 @@ func (r *Result) String() string {
 	}
 
 	// Pre-calculate approximate size to reduce allocations
-	estimatedSize := 128 // Base size for status, content length
+	estimatedSize := 128 + len(r.Response.Status) // Base size for status, content length
 	if r.Meta != nil {
 		estimatedSize += 64 // Duration and attempts
 	}
@@ -267,11 +260,11 @@ func (r *Result) String() string {
 	}
 	if len(r.Response.Body) > 0 {
 		bodyPreview := min(len(r.Response.Body), maxBodyPreview)
-		estimatedSize += 16 + bodyPreview
+		estimatedSize += 16 + bodyPreview + len(truncationMarker)
 	}
 
 	// Use pooled strings.Builder to reduce allocations
-	b, ok := stringBuilderPool.Get().(*strings.Builder)
+	b, ok := resultBuilderPool.Get().(*strings.Builder)
 	if !ok || b == nil {
 		b = &strings.Builder{}
 	}
@@ -332,7 +325,7 @@ func (r *Result) String() string {
 	b.WriteByte('}')
 
 	result := b.String()
-	stringBuilderPool.Put(b)
+	resultBuilderPool.Put(b)
 	return result
 }
 

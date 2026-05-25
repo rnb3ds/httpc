@@ -620,7 +620,7 @@ func TestConcurrentResultPool(t *testing.T) {
 				}
 
 				// Release to pool
-				httpc.ReleaseResult(result)
+				// GC handles pool cleanup in external test packages
 			}
 		}()
 	}

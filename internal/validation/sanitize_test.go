@@ -125,7 +125,7 @@ func TestSanitizeURL(t *testing.T) {
 		{
 			name:     "Sensitive query params are redacted",
 			input:    "https://example.com/api?token=secret123",
-			expected: "https://example.com/api?token=%5BREDACTED%5D",
+			expected: "https://example.com/api?token=[REDACTED]",
 		},
 		{
 			name:     "Special characters in username",
@@ -258,26 +258,15 @@ func TestIsSensitiveQueryParam(t *testing.T) {
 	}
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func TestSensitiveQueryParamNames(t *testing.T) {
+func TestSensitiveQueryParamDetection(t *testing.T) {
 	t.Parallel()
-	names := SensitiveQueryParamNames()
-	if len(names) == 0 {
-		t.Error("SensitiveQueryParamNames() should return non-empty map")
-	}
 	expectedKeys := []string{"token", "access_token", "api_key", "password", "secret", "jwt", "session_id"}
 	for _, key := range expectedKeys {
-		if !names[key] {
-			t.Errorf("expected %q in sensitive query param names", key)
+		if !IsSensitiveQueryParam(key) {
+			t.Errorf("expected %q to be detected as sensitive", key)
 		}
 	}
-	if len(names) < 20 {
-		t.Errorf("expected at least 20 sensitive param names, got %d", len(names))
+	if !IsSensitiveQueryParam("TOKEN") {
+		t.Error("expected case-insensitive detection")
 	}
 }
