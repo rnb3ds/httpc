@@ -9,13 +9,48 @@ import (
 	"sync"
 )
 
-// cloneHeader creates a deep copy of headers using batch allocation.
+// httpHeaderPool reduces allocations for http.Header maps used in request building.
+// Header maps are allocated per-request and can be reused after clearing.
+var httpHeaderPool = sync.Pool{
+	New: func() any {
+		h := make(http.Header, 8)
+		return &h
+	},
+}
+
+// getHTTPHeader retrieves a cleared http.Header from the pool.
+func getHTTPHeader() http.Header {
+	ptr, ok := httpHeaderPool.Get().(*http.Header)
+	if !ok || ptr == nil {
+		h := make(http.Header, 8)
+		return h
+	}
+	h := *ptr
+	for k := range h {
+		delete(h, k)
+	}
+	return h
+}
+
+// putHTTPHeader returns an http.Header to the pool after clearing all entries.
+// Maps with more than 64 entries are discarded to prevent memory bloat.
+func putHTTPHeader(h http.Header) {
+	if h == nil || len(h) > 64 {
+		return
+	}
+	for k := range h {
+		delete(h, k)
+	}
+	httpHeaderPool.Put(&h)
+}
+
+// CloneHeader creates a deep copy of headers using batch allocation.
 // Returns a newly allocated header map that can be safely modified.
 // SECURITY: Always allocates new slices to prevent data leakage between requests.
 // OPTIMIZATION: Uses batch allocation to reduce N allocations (one per header) to 1 allocation.
 // For single-value headers (the common case), uses a shared backing array to reduce
 // slice header overhead.
-func cloneHeader(src http.Header) http.Header {
+func CloneHeader(src http.Header) http.Header {
 	if src == nil {
 		return nil
 	}
@@ -61,6 +96,7 @@ func cloneHeader(src http.Header) http.Header {
 }
 
 // zeroStringSlice is a reusable empty slice for headers with no values.
+// Read-only: never appended to or mutated.
 var zeroStringSlice = []string{}
 
 // queryBuilderPool reduces allocations for building query strings
@@ -102,8 +138,8 @@ func shouldEscape(c byte) bool {
 		c != '-' && c != '.' && c != '_' && c != '~'
 }
 
-// queryEscapePool pools byte slices for query escaping.
-var queryEscapePool = sync.Pool{
+// QueryEscapePool pools byte slices for query escaping.
+var QueryEscapePool = sync.Pool{
 	New: func() any {
 		b := make([]byte, 0, 64)
 		return &b
@@ -115,9 +151,9 @@ var queryEscapePool = sync.Pool{
 // in capacity calculation (len(s)*3) and excessive memory allocation.
 const maxQueryEscapeSize = 10 * 1024 * 1024 // 10MB
 
-// queryEscape performs URL query escaping with minimal allocations.
+// QueryEscape performs URL query escaping with minimal allocations.
 // Returns the original string if no escaping is needed (zero allocation).
-func queryEscape(s string) string {
+func QueryEscape(s string) string {
 	// SECURITY: For very large inputs, use standard library to avoid:
 	// 1. Integer overflow in len(s)*3 capacity calculation (32-bit systems)
 	// 2. Excessive memory allocation
@@ -146,7 +182,7 @@ func queryEscape(s string) string {
 
 	// Slow path: escape using pooled buffer
 	// Safe from overflow: len(s) <= maxQueryEscapeSize (10MB), so len(s)*3 <= 30MB
-	bufPtr, ok := queryEscapePool.Get().(*[]byte)
+	bufPtr, ok := QueryEscapePool.Get().(*[]byte)
 	origPtr := bufPtr
 	if !ok || bufPtr == nil || cap(*bufPtr) < len(s)*3 {
 		tmp := make([]byte, 0, len(s)*3)
@@ -168,54 +204,18 @@ func queryEscape(s string) string {
 	result := string(buf)
 	if cap(buf) <= 1024 {
 		*bufPtr = buf
-		queryEscapePool.Put(bufPtr)
+		QueryEscapePool.Put(bufPtr)
 	} else if origPtr != bufPtr && origPtr != nil {
 		*origPtr = (*origPtr)[:0]
-		queryEscapePool.Put(origPtr)
+		QueryEscapePool.Put(origPtr)
 	}
-	return result
-}
-
-// encodeQueryParams efficiently encodes query parameters without allocating url.Values.
-// This avoids the intermediate map allocation and uses pooled strings.Builder.
-// Optimized to write numeric values directly via strconv.Append* to avoid
-// intermediate string allocations.
-// Returns an empty string if params is nil or empty.
-func encodeQueryParams(params map[string]any) string {
-	if len(params) == 0 {
-		return ""
-	}
-
-	sb := getQueryBuilder()
-	first := true
-
-	// Pre-calculate approximate size to reduce reallocations
-	estimatedSize := len(params) * 32
-	sb.Grow(estimatedSize)
-
-	var numBuf [32]byte
-
-	for key, value := range params {
-		if first {
-			first = false
-		} else {
-			sb.WriteByte('&')
-		}
-		sb.WriteString(queryEscape(key))
-		sb.WriteByte('=')
-
-		writeQueryParamValue(sb, value, numBuf[:0])
-	}
-
-	result := sb.String()
-	putQueryBuilder(sb)
 	return result
 }
 
 // appendQueryParams appends query parameters to an existing raw query string.
 // This is more efficient than creating url.Values when you have an existing query.
 // Optimized to write numeric values directly via strconv.Append* to avoid
-// intermediate string allocations from FormatQueryParam.
+// intermediate string allocations that FormatQueryParam would incur.
 func appendQueryParams(existingQuery string, params map[string]any) string {
 	if len(params) == 0 {
 		return existingQuery
@@ -241,7 +241,7 @@ func appendQueryParams(existingQuery string, params map[string]any) string {
 		} else {
 			sb.WriteByte('&')
 		}
-		sb.WriteString(queryEscape(key))
+		sb.WriteString(QueryEscape(key))
 		sb.WriteByte('=')
 
 		writeQueryParamValue(sb, value, numBuf[:0])
@@ -259,7 +259,7 @@ func writeQueryParamValue(sb *strings.Builder, value any, numBuf []byte) {
 	switch v := value.(type) {
 	case string:
 		if v != "" {
-			sb.WriteString(queryEscape(v))
+			sb.WriteString(QueryEscape(v))
 		}
 	case int:
 		sb.Write(strconv.AppendInt(numBuf, int64(v), 10))
@@ -286,10 +286,10 @@ func writeQueryParamValue(sb *strings.Builder, value any, numBuf []byte) {
 	default:
 		if s, ok := value.(fmt.Stringer); ok {
 			if strValue := s.String(); strValue != "" {
-				sb.WriteString(queryEscape(strValue))
+				sb.WriteString(QueryEscape(strValue))
 			}
 		} else if strValue := fmt.Sprintf("%v", value); strValue != "" {
-			sb.WriteString(queryEscape(strValue))
+			sb.WriteString(QueryEscape(strValue))
 		}
 	}
 }

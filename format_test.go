@@ -1,6 +1,7 @@
 package httpc
 
 import (
+	"math"
 	"testing"
 )
 
@@ -21,15 +22,18 @@ func TestFormatBytes(t *testing.T) {
 		{"terabytes", 1099511627776, "1.00 TB"},
 		{"petabytes", 1125899906842624, "1.00 PB"},
 		{"exabytes", 1152921504606846976, "1.00 EB"},
-		{"int64 max", 9223372036854775807, "8.00 EB"},
+		{"int64 max", math.MaxInt64, "8.00 EB"},
+		{"int64 min", math.MinInt64, "-9223372036854775808 B"},
 		{"negative bytes", -1, "-1 B"},
+		{"1000 bytes under 1KB", 1000, "1000 B"},
+		{"2048 bytes", 2048, "2.00 KB"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := FormatBytes(tt.bytes)
+			got := formatBytes(tt.bytes)
 			if got != tt.want {
-				t.Errorf("FormatBytes(%d) = %q, want %q", tt.bytes, got, tt.want)
+				t.Errorf("formatBytes(%d) = %q, want %q", tt.bytes, got, tt.want)
 			}
 		})
 	}
@@ -50,13 +54,17 @@ func TestFormatSpeed(t *testing.T) {
 		{"terabytes per second", 1099511627776, "1.00 TB/s"},
 		{"petabytes per second", 1125899906842624, "1.00 PB/s"},
 		{"negative speed", -1, "-1 B/s"},
+		{"exabytes per second", float64(1152921504606846976), "1.00 EB/s"},
+		{"NaN", math.NaN(), "NaN KB/s"},
+		{"positive infinity", math.Inf(1), "+Inf EB/s"},
+		{"negative infinity", math.Inf(-1), "-Inf B/s"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := FormatSpeed(tt.bytesPerSecond)
+			got := formatSpeed(tt.bytesPerSecond)
 			if got != tt.want {
-				t.Errorf("FormatSpeed(%v) = %q, want %q", tt.bytesPerSecond, got, tt.want)
+				t.Errorf("formatSpeed(%v) = %q, want %q", tt.bytesPerSecond, got, tt.want)
 			}
 		})
 	}

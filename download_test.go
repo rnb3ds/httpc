@@ -810,100 +810,52 @@ func TestPackageLevel_DownloadWithOptionsWithContext(t *testing.T) {
 // handleDownloadStatus unit tests
 // ----------------------------------------------------------------------------
 
-func TestHandleDownloadStatus_416(t *testing.T) {
-	t.Run("RangeNotSatisfiable_WithBody", func(t *testing.T) {
-		err := handleDownloadStatus(http.StatusRequestedRangeNotSatisfiable, bytes.NewReader([]byte("data")), 100)
-		if err == nil {
-			t.Fatal("expected error for 416 with resumeOffset > 0")
-		}
-		if !strings.Contains(err.Error(), "416") {
-			t.Errorf("error should contain '416', got: %v", err)
-		}
-	})
+func TestHandleDownloadStatus(t *testing.T) {
+	tests := []struct {
+		name        string
+		statusCode  int
+		body        io.Reader
+		offset      int64
+		wantErr     bool
+		errContains string
+	}{
+		{"416 with body and offset", http.StatusRequestedRangeNotSatisfiable, bytes.NewReader([]byte("data")), 100, true, "416"},
+		{"416 nil body with offset", http.StatusRequestedRangeNotSatisfiable, nil, 100, true, "416"},
+		{"416 zero offset falls through", http.StatusRequestedRangeNotSatisfiable, bytes.NewReader([]byte("data")), 0, true, "unexpected status code"},
+		{"500 nil body", http.StatusInternalServerError, nil, 0, true, "unexpected status code: 500"},
+		{"403 with body", http.StatusForbidden, bytes.NewReader([]byte("forbidden")), 0, true, "403"},
+		{"200 nil body success", http.StatusOK, nil, 0, false, ""},
+		{"206 partial content success", http.StatusPartialContent, bytes.NewReader([]byte("partial data")), 0, false, ""},
+	}
 
-	t.Run("RangeNotSatisfiable_NilBody", func(t *testing.T) {
-		err := handleDownloadStatus(http.StatusRequestedRangeNotSatisfiable, nil, 100)
-		if err == nil {
-			t.Fatal("expected error for 416 with nil body and resumeOffset > 0")
-		}
-		if !strings.Contains(err.Error(), "416") {
-			t.Errorf("error should contain '416', got: %v", err)
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := handleDownloadStatus(tt.statusCode, tt.body, tt.offset)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("error should contain %q, got: %v", tt.errContains, err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("expected nil error, got: %v", err)
+				}
+			}
+		})
+	}
 
-	t.Run("RangeNotSatisfiable_ZeroOffset_FallsThrough", func(t *testing.T) {
-		err := handleDownloadStatus(http.StatusRequestedRangeNotSatisfiable, bytes.NewReader([]byte("data")), 0)
-		if err == nil {
-			t.Fatal("expected error when 416 falls through with resumeOffset=0")
-		}
-		// With resumeOffset=0, the 416 early-return is skipped, so it hits the
-		// "unexpected status code" path instead.
-		if !strings.Contains(err.Error(), "unexpected status code") {
-			t.Errorf("error should contain 'unexpected status code', got: %v", err)
-		}
-	})
-}
-
-func TestHandleDownloadStatus_EmptyBody(t *testing.T) {
-	t.Run("InternalServerError_NilBody", func(t *testing.T) {
-		err := handleDownloadStatus(http.StatusInternalServerError, nil, 0)
-		if err == nil {
-			t.Fatal("expected error for 500 status")
-		}
-		want := "unexpected status code: 500"
-		if err.Error() != want {
-			t.Errorf("error = %q, want %q", err.Error(), want)
-		}
-	})
-
-	t.Run("Forbidden_WithBody", func(t *testing.T) {
-		err := handleDownloadStatus(http.StatusForbidden, bytes.NewReader([]byte("forbidden")), 0)
-		if err == nil {
-			t.Fatal("expected error for 403 status")
-		}
-		if !strings.Contains(err.Error(), "forbidden") {
-			t.Errorf("error should contain 'forbidden', got: %v", err)
-		}
-		if !strings.Contains(err.Error(), "403") {
-			t.Errorf("error should contain '403', got: %v", err)
-		}
-	})
-
-	t.Run("OK_NilBody_Success", func(t *testing.T) {
-		err := handleDownloadStatus(http.StatusOK, nil, 0)
-		if err != nil {
-			t.Errorf("expected nil error for 200 status, got: %v", err)
-		}
-	})
-
-	t.Run("PartialContent_Success", func(t *testing.T) {
-		err := handleDownloadStatus(http.StatusPartialContent, bytes.NewReader([]byte("partial data")), 0)
-		if err != nil {
-			t.Errorf("expected nil error for 206 status, got: %v", err)
-		}
-	})
-
-	t.Run("BodyPreview_Truncated", func(t *testing.T) {
+	t.Run("body preview truncated", func(t *testing.T) {
 		longBody := strings.Repeat("a", 300)
 		err := handleDownloadStatus(http.StatusBadGateway, bytes.NewReader([]byte(longBody)), 0)
 		if err == nil {
 			t.Fatal("expected error for 502 status")
 		}
-		// Body preview should be truncated to 200 chars + "..."
 		if !strings.Contains(err.Error(), "...") {
-			t.Errorf("error should contain truncated body preview with '...', got: %v", err)
+			t.Errorf("error should contain truncated body preview, got: %v", err)
 		}
 	})
-}
-
-// verifyBytesReaderConsumed is a helper that verifies a bytes.Reader was
-// fully consumed by handleDownloadStatus (it drains the body for reuse).
-func verifyBytesReaderConsumed(t *testing.T, r *bytes.Reader) {
-	t.Helper()
-	remaining, _ := io.ReadAll(r)
-	if len(remaining) > 0 {
-		t.Errorf("expected body to be fully consumed, but %d bytes remain", len(remaining))
-	}
 }
 
 // ============================================================================

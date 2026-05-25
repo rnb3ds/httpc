@@ -2,13 +2,13 @@ package httpc
 
 import "strconv"
 
-// FormatBytes formats a byte count as a human-readable string (e.g., "1.50 MB").
-func FormatBytes(bytes int64) string {
+// formatBytes formats a byte count as a human-readable string (e.g., "1.50 MB").
+func formatBytes(bytes int64) string {
 	return formatUnit(float64(bytes), "B", "")
 }
 
-// FormatSpeed formats a byte-per-second rate as a human-readable string (e.g., "1.50 MB/s").
-func FormatSpeed(bytesPerSecond float64) string {
+// formatSpeed formats a byte-per-second rate as a human-readable string (e.g., "1.50 MB/s").
+func formatSpeed(bytesPerSecond float64) string {
 	return formatUnit(bytesPerSecond, "B", "/s")
 }
 

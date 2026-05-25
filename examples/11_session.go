@@ -61,16 +61,9 @@ func demonstrateBasicSession() {
 	fmt.Printf("Session headers: %d\n", len(session.GetHeaders()))
 
 	// Set cookies
-	if err := session.SetCookie(&http.Cookie{
-		Name:  "session_id",
-		Value: "abc123",
-	}); err != nil {
-		log.Printf("Operation failed: %v\n", err)
-		return
-	}
-	if err := session.SetCookie(&http.Cookie{
-		Name:  "preferences",
-		Value: "theme_dark",
+	if err := session.SetCookies([]*http.Cookie{
+		{Name: "session_id", Value: "abc123"},
+		{Name: "preferences", Value: "theme_dark"},
 	}); err != nil {
 		log.Printf("Operation failed: %v\n", err)
 		return

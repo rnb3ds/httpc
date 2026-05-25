@@ -16,6 +16,7 @@ import (
 
 // retryableStatusCodes is the single source of truth for HTTP status codes
 // that warrant automatic retry. Used by both retry.go and errors.go.
+// Read-only after initialization — must not be mutated (concurrent reads).
 var retryableStatusCodes = map[int]bool{
 	408: true, // Request Timeout
 	429: true, // Too Many Requests
@@ -61,6 +62,11 @@ const (
 	// ErrorTypeHTTP indicates an HTTP-level error (4xx, 5xx responses).
 	ErrorTypeHTTP
 )
+
+// ClientError objects escape to callers who may hold references indefinitely,
+// so they cannot be safely pooled. Direct allocation avoids pool overhead
+// for objects that are never returned.
+
 
 // ClientError represents a classified HTTP client error with context about the failed request.
 type ClientError struct {
@@ -128,9 +134,10 @@ func (e *ClientError) Unwrap() error {
 
 // WithType returns a copy of the error with the specified type set.
 func (e *ClientError) WithType(t ErrorType) *ClientError {
-	cp := *e
+	cp := &ClientError{}
+	*cp = *e
 	cp.Type = t
-	return &cp
+	return cp
 }
 
 // IsRetryable determines if the error is retryable based on its type and cause.
@@ -348,21 +355,21 @@ func classifyErrorWithSanitizedURL(err error, sanitizedURL, method string, attem
 	// cp.Cause retains the original chain, not err (which wraps existingErr).
 	var existingErr *ClientError
 	if errors.As(err, &existingErr) {
-		cp := *existingErr
+		cp := &ClientError{}
+		*cp = *existingErr
 		cp.URL = sanitizedURL
 		cp.Method = method
 		if attempts > 0 {
 			cp.Attempts = attempts
 		}
-		return &cp
+		return cp
 	}
 
-	clientErr := &ClientError{
-		Cause:    err,
-		URL:      sanitizedURL,
-		Method:   method,
-		Attempts: attempts,
-	}
+	clientErr := &ClientError{}
+	clientErr.Cause = err
+	clientErr.URL = sanitizedURL
+	clientErr.Method = method
+	clientErr.Attempts = attempts
 
 	if errors.Is(err, context.Canceled) {
 		clientErr.Type = ErrorTypeContextCanceled

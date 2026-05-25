@@ -7,14 +7,22 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/cybergodev/httpc/internal/types"
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
+// urlCacheSize limits the number of validated URLs cached to prevent
+// unbounded memory growth in high-cardinality URL workloads (e.g., crawlers).
+const urlCacheSize = 1024
+
 // Validator validates HTTP requests for URL, header, and SSRF security.
 type Validator struct {
-	config *Config
+	config        *Config
+	validatedURLs sync.Map // url string → struct{}; avoids redundant url.Parse for repeated URLs
+	urlKeys       []string // tracks insertion order for LRU eviction
+	urlMu         sync.Mutex
 }
 
 // Compile-time interface check for requestValidator
@@ -101,12 +109,42 @@ func (v *Validator) ValidateRequest(req *Request) error {
 }
 
 func (v *Validator) validateURL(urlStr string) error {
-	// Validate and parse in one call to avoid double url.Parse
+	// Fast path: skip re-parsing URLs that have already been validated.
+	// Most workloads reuse the same base URL across many requests.
+	if _, ok := v.validatedURLs.Load(urlStr); ok {
+		return nil
+	}
+
 	parsedURL, err := validation.ValidateAndParseURL(urlStr)
 	if err != nil {
 		return err
 	}
-	return v.validateHost(parsedURL.Host)
+	if err := v.validateHost(parsedURL.Host); err != nil {
+		return err
+	}
+
+	// Evict oldest entries when cache exceeds limit.
+	v.urlMu.Lock()
+	// Re-check under lock to avoid duplicate entries from concurrent goroutines
+	if _, exists := v.validatedURLs.Load(urlStr); !exists {
+		v.validatedURLs.Store(urlStr, struct{}{})
+		v.urlKeys = append(v.urlKeys, urlStr)
+	}
+	if len(v.urlKeys) > urlCacheSize {
+		// Evict oldest 25% to amortize lock contention.
+		evictCount := urlCacheSize / 4
+		for i := 0; i < evictCount; i++ {
+			v.validatedURLs.Delete(v.urlKeys[i])
+		}
+		// Shift remaining keys, allow GC of evicted strings.
+		remaining := v.urlKeys[evictCount:]
+		newKeys := make([]string, len(remaining), len(remaining)*2)
+		copy(newKeys, remaining)
+		v.urlKeys = newKeys
+	}
+	v.urlMu.Unlock()
+
+	return nil
 }
 
 // validateHost performs comprehensive host validation to prevent SSRF attacks.
@@ -179,7 +217,6 @@ func validateCommonHeaderValue(key, value string) error {
 	return nil
 }
 
-
 // validateRequestBodySize checks the request body against the configured size limit.
 // Only validates when MaxRequestBodySize is explicitly set; does not fall back to
 // MaxResponseBodySize since they serve different purposes.
@@ -203,11 +240,13 @@ func (v *Validator) validateRequestBodySize(body any) error {
 			}
 		}
 	case *types.FormData:
-		for _, v := range b.Fields {
-			size += int64(len(v))
+		for k, v := range b.Fields {
+			// Account for: field key + value + Content-Disposition overhead (~60 bytes per field).
+			size += int64(len(k)) + int64(len(v)) + 60
 		}
 		for _, f := range b.Files {
-			size += int64(len(f.Content))
+			// Account for: filename + content + MIME headers (~120 bytes per file part).
+			size += int64(len(f.Filename)) + int64(len(f.Content)) + 120
 		}
 	default:
 		// For io.Reader and other types, caller is responsible for size control.

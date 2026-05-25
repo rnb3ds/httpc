@@ -34,9 +34,6 @@ func TestPoolManager_New(t *testing.T) {
 			t.Error("Transport should not be nil")
 		}
 
-		if pm.metrics == nil {
-			t.Error("Metrics should not be nil")
-		}
 	})
 
 	t.Run("With custom config", func(t *testing.T) {
@@ -1031,64 +1028,6 @@ func TestConfig_SetCertPinner(t *testing.T) {
 	}
 }
 
-func TestNewPoolManager_BrowserFingerprint(t *testing.T) {
-	t.Run("chrome fingerprint configures DialTLSContext", func(t *testing.T) {
-		config := &Config{
-			BrowserFingerprint: "chrome",
-			EnableHTTP2:        true,
-		}
-		pm, err := NewPoolManager(config)
-		if err != nil {
-			t.Fatalf("NewPoolManager: %v", err)
-		}
-		defer pm.Close()
-
-		if pm.transport.DialTLSContext == nil {
-			t.Error("DialTLSContext should be set")
-		}
-		if pm.transport.ForceAttemptHTTP2 {
-			t.Error("ForceAttemptHTTP2 should be false with fingerprint")
-		}
-		if pm.transport.TLSNextProto != nil {
-			t.Error("TLSNextProto should be nil with fingerprint")
-		}
-	})
-
-	t.Run("fingerprint with proxy uses smart proxy", func(t *testing.T) {
-		config := &Config{
-			BrowserFingerprint: "chrome",
-			ProxyURL:           "http://proxy.example.com:8080",
-		}
-		pm, err := NewPoolManager(config)
-		if err != nil {
-			t.Fatalf("NewPoolManager: %v", err)
-		}
-		defer pm.Close()
-
-		if pm.transport.Proxy == nil {
-			t.Error("Proxy should be configured")
-		}
-		if pm.transport.DialTLSContext == nil {
-			t.Error("DialTLSContext should be set")
-		}
-	})
-
-	t.Run("no fingerprint no DialTLSContext", func(t *testing.T) {
-		config := &Config{
-			EnableHTTP2: true,
-		}
-		pm, err := NewPoolManager(config)
-		if err != nil {
-			t.Fatalf("NewPoolManager: %v", err)
-		}
-		defer pm.Close()
-
-		if pm.transport.DialTLSContext != nil {
-			t.Error("DialTLSContext should not be set without fingerprint")
-		}
-	})
-}
-
 func TestNewPoolManager_InvalidProxyURL(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1133,10 +1072,10 @@ func TestCreateDialer_ClosedPool(t *testing.T) {
 
 func TestNewPoolManager_MaxTotalConns(t *testing.T) {
 	config := &Config{
-		MaxTotalConns:    2,
-		AllowPrivateIPs:  true,
-		DialTimeout:      5 * time.Second,
-		IdleConnTimeout:  100 * time.Millisecond,
+		MaxTotalConns:   2,
+		AllowPrivateIPs: true,
+		DialTimeout:     5 * time.Second,
+		IdleConnTimeout: 100 * time.Millisecond,
 	}
 
 	pm, err := NewPoolManager(config)

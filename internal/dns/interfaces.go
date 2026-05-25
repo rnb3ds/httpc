@@ -6,7 +6,8 @@ import (
 )
 
 // resolver defines the interface for DNS resolution.
-// Implementations can provide different resolution strategies (DoH, system DNS, etc.)
+// Used only as a compile-time contract check — not consumed as a parameter
+// or field type anywhere. Retained for documentation and future abstraction.
 type resolver interface {
 	// LookupIPAddr resolves a host name to IP addresses.
 	// It returns a slice of net.IPAddr and any error encountered.

@@ -42,7 +42,6 @@ type PoolManager struct {
 	transport   *http.Transport
 	dohResolver *dns.DoHResolver
 	proxyAddrs  []string
-	proxyURL    *url.URL // Parsed proxy URL for CONNECT tunnel in DialTLSContext
 
 	activeConns   int64
 	totalConns    int64
@@ -54,8 +53,6 @@ type PoolManager struct {
 	// Used for O(1) maxHostEntries enforcement instead of expensive sync.Map.Range counting.
 	// May drift slightly under high concurrency — acceptable for a memory-limit heuristic.
 	hostCount atomic.Int64
-
-	metrics *metrics
 
 	closed int32
 	mu     sync.RWMutex
@@ -107,12 +104,6 @@ type Config struct {
 	// DNS configuration
 	EnableDoH   bool          // Enable DNS-over-HTTPS
 	DoHCacheTTL time.Duration // DoH cache TTL
-
-	// BrowserFingerprint enables TLS ClientHello fingerprint spoofing.
-	// When set, the connection uses utls to mimic a real browser's TLS handshake
-	// instead of Go's standard crypto/tls. Supported values: "chrome", "firefox",
-	// "safari", "ios". Empty string disables fingerprint spoofing (default).
-	BrowserFingerprint string
 
 	// Certificate pinning
 	certPinner certPinner
@@ -177,8 +168,7 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 	}
 
 	pm := &PoolManager{
-		config:  config,
-		metrics: &metrics{},
+		config: config,
 	}
 
 	// Initialize DoH resolver if enabled
@@ -194,38 +184,24 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 	}
 
 	transport := &http.Transport{
-		DialContext:           pm.createDialer(),
-		TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
-		ResponseHeaderTimeout: config.ResponseHeaderTimeout,
-		IdleConnTimeout:       config.IdleConnTimeout,
-		ExpectContinueTimeout: config.ExpectContinueTimeout,
+		DialContext:            pm.createDialer(),
+		TLSHandshakeTimeout:    config.TLSHandshakeTimeout,
+		ResponseHeaderTimeout:  config.ResponseHeaderTimeout,
+		IdleConnTimeout:        config.IdleConnTimeout,
+		ExpectContinueTimeout:  config.ExpectContinueTimeout,
 		MaxResponseHeaderBytes: config.MaxResponseHeaderBytes,
-		MaxIdleConns:          config.MaxIdleConns,
-		MaxIdleConnsPerHost:   config.MaxIdleConnsPerHost,
-		MaxConnsPerHost:       config.MaxConnsPerHost,
-		ForceAttemptHTTP2:     forceAttemptHTTP2,
-		DisableCompression:    true, // Always disable automatic decompression - we handle it manually
-		DisableKeepAlives:     config.DisableKeepAlives,
+		MaxIdleConns:           config.MaxIdleConns,
+		MaxIdleConnsPerHost:    config.MaxIdleConnsPerHost,
+		MaxConnsPerHost:        config.MaxConnsPerHost,
+		ForceAttemptHTTP2:      forceAttemptHTTP2,
+		DisableCompression:     true, // Always disable automatic decompression - we handle it manually
+		DisableKeepAlives:      config.DisableKeepAlives,
 	}
 
 	// Always set TLSClientConfig — it is required for HTTPS connections
-	// through HTTP proxies (CONNECT tunnels). When DialTLSContext is also
-	// set, Go's Transport uses DialTLSContext for direct HTTPS and
-	// TLSClientConfig for proxied HTTPS, so both can coexist safely.
+	// through HTTP proxies (CONNECT tunnels).
 	transport.TLSClientConfig = pm.createTLSConfig()
 
-	// When BrowserFingerprint is set, additionally use utls for direct
-	// TLS connections to mimic a real browser's ClientHello.
-	if config.BrowserFingerprint != "" {
-		transport.DialTLSContext = pm.createDialTLSContext()
-		// Disable HTTP/2 transport when using fingerprint spoofing. The utls
-		// wrapper restricts ALPN to "http/1.1" only, so HTTP/2 should never be
-		// negotiated. Setting ForceAttemptHTTP2=false and TLSNextProto=nil
-		// ensures Go's transport never attempts HTTP/2 framing even if the
-		// negotiated protocol check somehow returns "h2".
-		transport.ForceAttemptHTTP2 = false
-		transport.TLSNextProto = nil
-	}
 	// Configure proxy settings with priority:
 	// 1. Manual proxy URL (highest priority)
 	// 2. System proxy detection (if enabled)
@@ -246,22 +222,7 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 		// infrastructure. A developer who can set ProxyURL can already bypass SSRF by
 		// connecting directly, so blocking proxy hosts adds no meaningful security.
 		pm.proxyAddrs = append(pm.proxyAddrs, proxyURL.Host)
-		pm.proxyURL = proxyURL
-
-		if config.BrowserFingerprint != "" {
-			// Smart proxy: return nil for HTTPS so Go calls DialTLSContext,
-			// which handles CONNECT + utls internally. Return proxy URL for
-			// HTTP so Go sends requests through the proxy normally.
-			parsedURL := proxyURL
-			transport.Proxy = func(req *http.Request) (*url.URL, error) {
-				if req.URL.Scheme == "https" {
-					return nil, nil
-				}
-				return parsedURL, nil
-			}
-		} else {
-			transport.Proxy = http.ProxyURL(proxyURL)
-		}
+		transport.Proxy = http.ProxyURL(proxyURL)
 	} else if config.EnableSystemProxy {
 		// No manual proxy, but system proxy detection is enabled
 		// Automatically detect system proxy settings (reads from Windows registry,
@@ -274,22 +235,7 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 			if err == nil && pu != nil {
 				pm.proxyAddrs = append(pm.proxyAddrs, pu.Host)
 
-				if config.BrowserFingerprint != "" {
-					// Store detected proxy URL so DialTLSContext can use it
-					// for CONNECT tunneling. Apply smart proxy pattern: nil
-					// for HTTPS (DialTLSContext handles CONNECT+utls internally)
-					// and proxy URL for HTTP (Go handles proxy normally).
-					pm.proxyURL = pu
-					savedURL := pu
-					transport.Proxy = func(req *http.Request) (*url.URL, error) {
-						if req.URL.Scheme == "https" {
-							return nil, nil
-						}
-						return savedURL, nil
-					}
-				} else {
-					transport.Proxy = proxyFunc
-				}
+				transport.Proxy = proxyFunc
 			} else {
 				transport.Proxy = proxyFunc
 			}
@@ -475,8 +421,13 @@ func (pm *PoolManager) resolveAndValidateAddress(address string) (string, error)
 		return address, nil
 	}
 
-	// For domain names, resolve and filter to allowed IPs
-	dnsCtx, dnsCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// For domain names, resolve and filter to allowed IPs.
+	// Cap at 10s to avoid unbounded waits; derive from DialTimeout when smaller.
+	dnsTimeout := 10 * time.Second
+	if pm.config.DialTimeout > 0 && pm.config.DialTimeout < dnsTimeout {
+		dnsTimeout = pm.config.DialTimeout
+	}
+	dnsCtx, dnsCancel := context.WithTimeout(context.Background(), dnsTimeout)
 	defer dnsCancel()
 	ipAddrs, err := net.DefaultResolver.LookupIPAddr(dnsCtx, host)
 	if err != nil {
@@ -581,12 +532,16 @@ func (tc *trackedConn) Close() error {
 	var closeErr error
 	tc.closeOnce.Do(func() {
 		atomic.StoreInt32(&tc.closed, 1)
-		atomic.AddInt64(&tc.pm.activeConns, -1)
-		if tc.pm.config.MaxTotalConns > 0 {
-			atomic.AddInt64(&tc.pm.totalConns, -1)
-		}
-		if tc.stats != nil {
-			atomic.AddInt64(&tc.stats.ActiveConns, -1)
+		// Skip counter decrements if the pool is already closed — the pool's
+		// own Close() has already cleared hostConns and reset counters.
+		if atomic.LoadInt32(&tc.pm.closed) == 0 {
+			atomic.AddInt64(&tc.pm.activeConns, -1)
+			if tc.pm.config.MaxTotalConns > 0 {
+				atomic.AddInt64(&tc.pm.totalConns, -1)
+			}
+			if tc.stats != nil {
+				atomic.AddInt64(&tc.stats.ActiveConns, -1)
+			}
 		}
 		closeErr = tc.Conn.Close()
 	})
@@ -599,7 +554,17 @@ func (pm *PoolManager) updateConnectionMetrics(host string, connTime int64, succ
 	// Trigger lazy eviction of stale host entries to prevent unbounded map growth.
 	pm.evictStaleHosts()
 
-	// Use a pre-allocated stats pointer to avoid allocation in the hot path
+	// Fast path: check if host already tracked before allocating.
+	if existing, ok := pm.hostConns.Load(host); ok {
+		stats, ok := existing.(*hostStats)
+		if !ok || stats == nil {
+			return nil // Defensive: skip update if type assertion fails
+		}
+		pm.updateHostStats(stats, connTime, success)
+		return stats
+	}
+
+	// Slow path: new host — allocate and store
 	value, loaded := pm.hostConns.LoadOrStore(host, &hostStats{
 		Host:     host,
 		LastUsed: time.Now().Unix(),
@@ -618,12 +583,17 @@ func (pm *PoolManager) updateConnectionMetrics(host string, connTime int64, succ
 		return nil // Defensive: skip update if type assertion fails
 	}
 
+	pm.updateHostStats(stats, connTime, success)
+	return stats
+}
+
+// updateHostStats applies connection metrics to an existing hostStats entry.
+func (pm *PoolManager) updateHostStats(stats *hostStats, connTime int64, success bool) {
 	if success {
 		atomic.AddInt64(&stats.TotalConns, 1)
 		atomic.AddInt64(&stats.ActiveConns, 1)
 
 		// Use mutex for latency update to ensure consistency under high contention
-		// This is acceptable since latency tracking is not on the critical path
 		stats.mu.Lock()
 		current := stats.AverageLatency
 		if current == 0 {
@@ -637,7 +607,6 @@ func (pm *PoolManager) updateConnectionMetrics(host string, connTime int64, succ
 	}
 
 	atomic.StoreInt64(&stats.LastUsed, time.Now().Unix())
-	return stats
 }
 
 // evictStaleHosts removes hostStats entries that haven't been used recently.
@@ -681,9 +650,6 @@ func (pm *PoolManager) GetTransport() *http.Transport {
 }
 
 func (pm *PoolManager) GetMetrics() metrics {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
-
 	total := atomic.LoadInt64(&pm.totalConns)
 	rejected := atomic.LoadInt64(&pm.rejectedConns)
 	active := atomic.LoadInt64(&pm.activeConns)

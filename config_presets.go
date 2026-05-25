@@ -1,42 +1,8 @@
 package httpc
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 	"time"
 )
-
-// isTestEnvironment detects if the code is running in a test environment.
-// This is used to warn against using TestingConfig in production.
-func isTestEnvironment() bool {
-	executable := filepath.Base(os.Args[0])
-	// Check for common test executable patterns
-	if strings.HasSuffix(executable, ".test") ||
-		strings.HasSuffix(executable, ".test.exe") ||
-		strings.Contains(executable, ".test.") {
-		return true
-	}
-	// Check for Go test environment
-	if os.Getenv("GO_TEST") != "" || os.Getenv("GOTEST") == "1" {
-		return true
-	}
-	return false
-}
-
-// warnTestingConfigInProduction logs a warning if TestingConfig is used outside of a test environment.
-// This is a security measure to prevent accidental use of insecure settings in production.
-func warnTestingConfigInProduction() {
-	if !isTestEnvironment() {
-		fmt.Fprintf(os.Stderr, "[SECURITY WARNING] TestingConfig is being used in a non-test environment!\n")
-		fmt.Fprintf(os.Stderr, "[SECURITY WARNING] This configuration disables critical security features:\n")
-		fmt.Fprintf(os.Stderr, "[SECURITY WARNING]   - TLS certificate verification is DISABLED\n")
-		fmt.Fprintf(os.Stderr, "[SECURITY WARNING]   - SSRF protection is DISABLED\n")
-		fmt.Fprintf(os.Stderr, "[SECURITY WARNING]   - URL/Header validation is DISABLED\n")
-		fmt.Fprintf(os.Stderr, "[SECURITY WARNING] Use SecureConfig() or DefaultConfig() for production!\n")
-	}
-}
 
 // SecureConfig returns a configuration optimized for security-critical applications.
 // This config uses stricter timeouts, disables redirects, and has SSRF protection enabled.

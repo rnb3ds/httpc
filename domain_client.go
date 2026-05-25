@@ -61,12 +61,15 @@ func NewDomain(baseURL string, config ...*Config) (DomainClienter, error) {
 	// Use deepCopyConfig to fully isolate caller's config before mutation.
 	var cfg *Config
 	if len(config) > 0 && config[0] != nil {
+		if err := ValidateConfig(config[0]); err != nil {
+			return nil, fmt.Errorf("invalid configuration: %w", err)
+		}
 		cfg = deepCopyConfig(config[0])
 	} else {
 		cfg = DefaultConfig()
 	}
 	cfg.Connection.EnableCookies = true
-	client, err := New(cfg)
+	client, err := newFromPreparedConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create domain client: %w", err)
 	}
@@ -132,6 +135,10 @@ func (dc *DomainClient) Options(path string, options ...RequestOption) (*Result,
 // If path is a full URL (with scheme), it is used directly.
 // The context parameter allows for timeout and cancellation control.
 // This method makes DomainClient compatible with the Client interface.
+//
+// Note: RequestOptions are executed twice internally — once to capture session state
+// (cookies, headers) and once for the actual request. Avoid options with side effects
+// (e.g., counters, nonce generation) or use the underlying Client directly if needed.
 func (dc *DomainClient) Request(ctx context.Context, method, path string, options ...RequestOption) (*Result, error) {
 	if err := dc.checkInit(); err != nil {
 		return nil, err
@@ -184,6 +191,9 @@ func (dc *DomainClient) DownloadFileWithContext(ctx context.Context, path string
 // DownloadWithOptionsWithContext downloads a file with custom download options and context control.
 // Response cookies are captured into the session, consistent with Request behavior.
 func (dc *DomainClient) DownloadWithOptionsWithContext(ctx context.Context, path string, downloadOpts *DownloadConfig, options ...RequestOption) (*DownloadResult, error) {
+	if downloadOpts == nil {
+		return nil, fmt.Errorf("download options cannot be nil")
+	}
 	return dc.downloadWithContext(ctx, path,
 		func(ctx context.Context, url string, opts *DownloadConfig, additional ...RequestOption) (*DownloadResult, error) {
 			return dc.client.DownloadWithOptionsWithContext(ctx, url, opts, additional...)
@@ -279,10 +289,16 @@ func (dc *DomainClient) buildURL(pathStr string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid path %q: %w", pathStr, err)
 	}
+	wantTrailingSlash := strings.HasSuffix(parsed.Path, "/")
 	result.Path = stdpath.Join(dc.parsedURL.Path, parsed.Path)
+	// path.Join strips trailing slashes; restore if the original path had one.
+	if wantTrailingSlash && !strings.HasSuffix(result.Path, "/") {
+		result.Path += "/"
+	}
 	// Prevent path traversal: ensure result stays within base path scope.
 	// Use path-separator-aware comparison to block prefix collisions
 	// (e.g., base "/a" must not allow escape to "/ab").
+	// Skip check when base path is empty (no scope restriction needed).
 	if dc.parsedURL.Path != "" && dc.parsedURL.Path != "/" {
 		if result.Path != dc.parsedURL.Path &&
 			!strings.HasPrefix(result.Path, dc.parsedURL.Path+"/") {

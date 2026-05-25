@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"strconv"
@@ -21,6 +22,66 @@ import (
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
+// maxRetriesUnset is the sentinel value for "not configured — use default".
+// Request.maxRetries is initialized to this value in pool New functions.
+const maxRetriesUnset = -1
+
+// headersMapPool reduces allocations for the per-request headers map (map[string]string).
+// Pooled maps are cleared before reuse and must not exceed 32 entries to prevent bloat.
+var headersMapPool = sync.Pool{
+	New: func() any {
+		m := make(map[string]string, 4)
+		return &m
+	},
+}
+
+// queryParamsPool reduces allocations for the per-request query params map (map[string]any).
+// Pooled maps are cleared before reuse and must not exceed 32 entries to prevent bloat.
+var queryParamsPool = sync.Pool{
+	New: func() any {
+		m := make(map[string]any, 4)
+		return &m
+	},
+}
+
+func getHeadersMap() map[string]string {
+	ptr, ok := headersMapPool.Get().(*map[string]string)
+	if !ok || ptr == nil {
+		m := make(map[string]string, 4)
+		return m
+	}
+	return *ptr
+}
+
+func putHeadersMap(m map[string]string) {
+	if m == nil || len(m) > 32 {
+		return
+	}
+	for k := range m {
+		delete(m, k)
+	}
+	headersMapPool.Put(&m)
+}
+
+func getQueryParamsMap() map[string]any {
+	ptr, ok := queryParamsPool.Get().(*map[string]any)
+	if !ok || ptr == nil {
+		m := make(map[string]any, 4)
+		return m
+	}
+	return *ptr
+}
+
+func putQueryParamsMap(m map[string]any) {
+	if m == nil || len(m) > 32 {
+		return
+	}
+	for k := range m {
+		delete(m, k)
+	}
+	queryParamsPool.Put(&m)
+}
+
 // requestPool is a typed pool for Request objects that eliminates
 // repetitive get/put/zeroing boilerplate.
 type requestPool struct {
@@ -31,7 +92,7 @@ func newRequestPool() requestPool {
 	return requestPool{
 		pool: sync.Pool{
 			New: func() any {
-				return &Request{maxRetries: -1}
+				return &Request{maxRetries: maxRetriesUnset}
 			},
 		},
 	}
@@ -40,23 +101,24 @@ func newRequestPool() requestPool {
 func (p *requestPool) get() *Request {
 	req, ok := p.pool.Get().(*Request)
 	if !ok || req == nil {
-		return &Request{maxRetries: -1}
+		return &Request{maxRetries: maxRetriesUnset}
 	}
 	return req
 }
 
 func (p *requestPool) put(req *Request) {
-	*req = Request{maxRetries: -1}
+	putHeadersMap(req.headers)
+	putQueryParamsMap(req.queryParams)
+	*req = Request{maxRetries: maxRetriesUnset}
 	p.pool.Put(req)
 }
 
 // sharedRequestPool is a global pool for Request objects used by external packages
 // (httpc middleware path, session capture). Consolidating into a single pool improves
 // hit rates under concurrency compared to multiple separate pools.
-// maxRetries defaults to -1 (unset/use config default) to match the private requestPool
-// behavior. Without this, middleware-path requests would have retries silently disabled.
+// maxRetries defaults to maxRetriesUnset so middleware-path requests use config defaults.
 var sharedRequestPool = sync.Pool{
-	New: func() any { return &Request{maxRetries: -1} },
+	New: func() any { return &Request{maxRetries: maxRetriesUnset} },
 }
 
 // AcquireRequest retrieves a Request from the shared pool.
@@ -64,19 +126,20 @@ var sharedRequestPool = sync.Pool{
 func AcquireRequest() *Request {
 	req, ok := sharedRequestPool.Get().(*Request)
 	if !ok || req == nil {
-		return &Request{}
+		return &Request{maxRetries: maxRetriesUnset}
 	}
 	return req
 }
 
 // ReleaseRequest returns a Request to the shared pool after clearing all fields.
-// Resets maxRetries to -1 so recycled requests inherit the client's retry config
-// rather than silently disabling retries.
+// Resets maxRetries to maxRetriesUnset so recycled requests inherit the client's retry config.
 func ReleaseRequest(req *Request) {
 	if req == nil {
 		return
 	}
-	*req = Request{maxRetries: -1}
+	putHeadersMap(req.headers)
+	putQueryParamsMap(req.queryParams)
+	*req = Request{maxRetries: maxRetriesUnset}
 	sharedRequestPool.Put(req)
 }
 
@@ -162,10 +225,6 @@ type Config struct {
 	EnableDoH   bool
 	DoHCacheTTL time.Duration
 
-	// BrowserFingerprint enables TLS ClientHello fingerprint spoofing.
-	// Supported values: "chrome", "firefox", "safari", "ios".
-	BrowserFingerprint string
-
 	// Redirect whitelist configuration
 	RedirectWhitelist *security.DomainWhitelist
 
@@ -194,7 +253,8 @@ type Request struct {
 	maxRedirects    *int
 	onRequest       requestCallback
 	onResponse      responseCallback
-	streamBody      bool // When true, skip buffering response body; caller reads via RawBodyReader
+	streamBody      bool   // When true, skip buffering response body; caller reads via RawBodyReader
+	sanitizedURL    string // Cached per-request sanitized URL, set by middleware on first access
 }
 
 // Compile-time interface check
@@ -212,6 +272,8 @@ func (r *Request) Context() context.Context    { return r.context }
 func (r *Request) Cookies() []http.Cookie      { return r.cookies }
 func (r *Request) FollowRedirects() *bool      { return r.followRedirects }
 func (r *Request) MaxRedirects() *int          { return r.maxRedirects }
+func (r *Request) SanitizedURL() string        { return r.sanitizedURL }
+func (r *Request) SetSanitizedURL(v string)     { r.sanitizedURL = v }
 
 // Mutators
 func (r *Request) SetMethod(v string)             { r.method = v }
@@ -219,11 +281,17 @@ func (r *Request) SetURL(v string)                { r.url = v }
 func (r *Request) SetHeaders(v map[string]string) { r.headers = v }
 func (r *Request) SetHeader(key, value string) {
 	if r.headers == nil {
-		r.headers = make(map[string]string, 4) // Pre-allocate with capacity for common headers
+		r.headers = getHeadersMap()
 	}
 	r.headers[key] = value
 }
 func (r *Request) SetQueryParams(v map[string]any) { r.queryParams = v }
+func (r *Request) EnsureQueryParams() map[string]any {
+	if r.queryParams == nil {
+		r.queryParams = getQueryParamsMap()
+	}
+	return r.queryParams
+}
 func (r *Request) SetBody(v any)                   { r.body = v }
 func (r *Request) SetTimeout(v time.Duration)      { r.timeout = v }
 func (r *Request) SetMaxRetries(v int)             { r.maxRetries = v }
@@ -248,7 +316,8 @@ type Response struct {
 	headers        http.Header
 	body           string
 	rawBody        []byte
-	bodyOnce       sync.Once          // Ensures body string is computed exactly once
+	bodyMu         sync.RWMutex       // Protects body/bodyReady for concurrent SetBody/Body access
+	bodyReady      bool               // True after body string has been computed from rawBody
 	rawBodyReader  io.ReadCloser      // Set when streamBody=true; caller must close
 	cancelFunc     context.CancelFunc // Stored for streaming mode cleanup
 	contentLength  int64
@@ -271,12 +340,24 @@ func (r *Response) StatusCode() int      { return r.statusCode }
 func (r *Response) Status() string       { return r.status }
 func (r *Response) Headers() http.Header { return r.headers }
 func (r *Response) Body() string {
-	r.bodyOnce.Do(func() {
-		if r.rawBody != nil {
-			r.body = string(r.rawBody)
-		}
-	})
-	return r.body
+	r.bodyMu.RLock()
+	if r.bodyReady {
+		b := r.body
+		r.bodyMu.RUnlock()
+		return b
+	}
+	r.bodyMu.RUnlock()
+
+	// Slow path: compute body string under write lock.
+	r.bodyMu.Lock()
+	// Double-check after acquiring write lock.
+	if !r.bodyReady && r.rawBody != nil {
+		r.body = string(r.rawBody)
+		r.bodyReady = true
+	}
+	b := r.body
+	r.bodyMu.Unlock()
+	return b
 }
 func (r *Response) RawBody() []byte              { return r.rawBody }
 func (r *Response) ContentLength() int64         { return r.contentLength }
@@ -291,16 +372,46 @@ func (r *Response) RequestURL() string           { return r.requestURL }
 func (r *Response) RequestMethod() string        { return r.requestMethod }
 func (r *Response) RawBodyReader() io.ReadCloser { return r.rawBodyReader }
 
+// TransferHeaders returns the response headers and clears the internal reference.
+// The caller takes ownership of the returned map. Used by the public layer to
+// avoid a redundant CloneHeader when converting engine.Response to Result.
+func (r *Response) TransferHeaders() http.Header {
+	h := r.headers
+	r.headers = nil
+	return h
+}
+
+// TransferRequestHeaders returns the request headers and clears the internal reference.
+func (r *Response) TransferRequestHeaders() http.Header {
+	h := r.requestHeaders
+	r.requestHeaders = nil
+	return h
+}
+
 // SetRawBodyReader replaces the raw body reader. Passing nil transfers ownership
 // away from the response so that ReleaseResponse will not close it.
-func (r *Response) SetRawBodyReader(rc io.ReadCloser) { r.rawBodyReader = rc }
+func (r *Response) SetRawBodyReader(rc io.ReadCloser) {
+	r.bodyMu.Lock()
+	r.rawBodyReader = rc
+	r.bodyMu.Unlock()
+}
 
 // Mutators (implement ResponseMutator)
 func (r *Response) SetStatusCode(v int)             { r.statusCode = v }
 func (r *Response) SetStatus(v string)              { r.status = v }
 func (r *Response) SetHeaders(v http.Header)        { r.headers = v }
-func (r *Response) SetBody(v string)                { r.body = v; r.bodyOnce.Do(func() {}) }
-func (r *Response) SetRawBody(v []byte)             { r.rawBody = v }
+func (r *Response) SetBody(v string) {
+	r.bodyMu.Lock()
+	r.body = v
+	r.bodyReady = true
+	r.bodyMu.Unlock()
+}
+func (r *Response) SetRawBody(v []byte) {
+	r.bodyMu.Lock()
+	r.rawBody = v
+	r.bodyReady = false
+	r.bodyMu.Unlock()
+}
 func (r *Response) SetContentLength(v int64)        { r.contentLength = v }
 func (r *Response) SetProto(v string)               { r.proto = v }
 func (r *Response) SetDuration(v time.Duration)     { r.duration = v }
@@ -372,7 +483,6 @@ func NewClient(config *Config, opts ...clientOption) (*Client, error) {
 		connConfig.ExemptNets = config.ExemptNets
 		connConfig.EnableDoH = config.EnableDoH
 		connConfig.DoHCacheTTL = config.DoHCacheTTL
-		connConfig.BrowserFingerprint = config.BrowserFingerprint
 		connConfig.TLSConfig = config.TLSConfig
 
 		if config.CertificatePinner != nil {
@@ -386,6 +496,7 @@ func NewClient(config *Config, opts ...clientOption) (*Client, error) {
 
 		client.transport, err = newTransport(config, client.connectionPool)
 		if err != nil {
+			client.connectionPool.Close()
 			return nil, fmt.Errorf("failed to create transport: %w", err)
 		}
 	}
@@ -522,7 +633,7 @@ func (c *Client) sleepWithContext(ctx context.Context, duration time.Duration) e
 // executeWithRetry executes a request with intelligent retry logic.
 // Optimized for performance with minimal allocations and efficient error handling.
 func (c *Client) executeWithRetry(req *Request) (*Response, error) {
-	// Determine max retries: -1 = not set (use config default), 0 = explicitly disabled
+	// Determine max retries: maxRetriesUnset = not configured (use config default), 0 = explicitly disabled
 	maxRetries := req.MaxRetries()
 	if maxRetries < 0 {
 		if c.config.CustomRetryPolicy != nil {
@@ -686,11 +797,17 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 		}
 	}
 
-	// Handle final failure cases
-	// When loop completes without early return, we've done maxRetries + 1 attempts
-	// (loop runs from 0 to maxRetries inclusive)
+	// Defensive fallback: loop exited without early return.
+	// This can only happen if executeRequest returns (nil, nil), which should
+	// never occur with the current implementation. Included for robustness.
 	if lastResp != nil {
 		lastResp.SetAttempts(maxRetries + 1)
+		// Transfer context cancel ownership for streaming responses,
+		// matching the success-path logic above.
+		if overallCancel != nil && lastResp.rawBodyReader != nil {
+			lastResp.cancelFunc = overallCancel
+			overallCancel = nil
+		}
 		return lastResp, nil
 	}
 
@@ -714,12 +831,13 @@ func captureRequestHeaders(httpReq *http.Request) http.Header {
 	if httpReq == nil {
 		return nil
 	}
-	h := cloneHeader(httpReq.Header)
+	h := CloneHeader(httpReq.Header)
 	if h == nil {
 		h = make(http.Header, 4)
 	}
 	if httpReq.ContentLength > 0 && h.Get("Content-Length") == "" {
-		h.Set("Content-Length", strconv.FormatInt(httpReq.ContentLength, 10))
+		var buf [20]byte
+		h.Set("Content-Length", string(strconv.AppendInt(buf[:0], httpReq.ContentLength, 10)))
 	}
 	if httpReq.Host != "" && h.Get("Host") == "" {
 		h.Set("Host", httpReq.Host)
@@ -806,16 +924,12 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 		*reqCopy = *req
 		reqCopy.context = execCtx
 		if req.headers != nil {
-			reqCopy.headers = make(map[string]string, len(req.headers))
-			for k, v := range req.headers {
-				reqCopy.headers[k] = v
-			}
+			reqCopy.headers = getHeadersMap()
+			maps.Copy(reqCopy.headers, req.headers)
 		}
 		if req.queryParams != nil {
-			reqCopy.queryParams = make(map[string]any, len(req.queryParams))
-			for k, v := range req.queryParams {
-				reqCopy.queryParams[k] = v
-			}
+			reqCopy.queryParams = getQueryParamsMap()
+			maps.Copy(reqCopy.queryParams, req.queryParams)
 		}
 		if len(req.cookies) > 0 {
 			reqCopy.cookies = make([]http.Cookie, len(req.cookies))
@@ -862,6 +976,7 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 	if err != nil {
 		return nil, classifyErrorWithSanitizedURL(err, sanitizeOnce(), req.Method(), 0)
 	}
+	defer putHTTPHeader(httpReq.Header)
 
 	httpResp, err := c.transport.RoundTrip(httpReq)
 
@@ -957,11 +1072,13 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 }
 
 // getHealthStatus returns the current health status of the client.
+// Reserved for future public health check API — currently only used in tests.
 func (c *Client) getHealthStatus() healthStatus {
 	return c.metrics.getHealthStatus()
 }
 
 // isHealthy returns true if the client is healthy (error rate < 10%).
+// Reserved for future public health check API — currently only used in tests.
 func (c *Client) isHealthy() bool {
 	return c.metrics.isHealthy()
 }

@@ -2,7 +2,6 @@ package httpc
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -99,27 +98,6 @@ func BenchmarkClient_Concurrent_Requests(b *testing.B) {
 // MICRO-BENCHMARKS - Isolate internal hot-path operations
 // ============================================================================
 
-func BenchmarkMicro_URLCache(b *testing.B) {
-	urls := []string{
-		"https://api.example.com/v1/users",
-		"https://api.example.com/v1/users?page=1&limit=10",
-		"https://cdn.example.com/static/image.png",
-		"https://auth.example.com/oauth/token",
-	}
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		for _, u := range urls {
-			_, err := getDefaultTestClient().Get(u)
-			if err != nil {
-				_ = err
-			}
-		}
-	}
-}
-
 func BenchmarkMicro_Headers(b *testing.B) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -194,17 +172,8 @@ func BenchmarkMicro_ResultReuse(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		ReleaseResult(result)
+		releaseResult(result)
 	}
-}
-
-// getDefaultTestClient returns a client for micro-benchmarks (does not connect)
-func getDefaultTestClient() Client {
-	config := DefaultConfig()
-	config.Security.AllowPrivateIPs = true
-	config.Retry.MaxRetries = 0
-	client, _ := New(config)
-	return client
 }
 
 // ============================================================================
@@ -631,25 +600,6 @@ func BenchmarkClient_QueryParams_Typed(b *testing.B) {
 // ============================================================================
 // COMPONENT-LEVEL BENCHMARKS - Isolate specific operations
 // ============================================================================
-
-func BenchmarkJSONMarshal(b *testing.B) {
-	payload := map[string]interface{}{
-		"name":  "test",
-		"value": 123,
-		"tags":  []string{"a", "b", "c"},
-		"nested": map[string]interface{}{
-			"key": "value",
-			"num": 456,
-		},
-	}
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		_, _ = json.Marshal(payload)
-	}
-}
 
 func BenchmarkQueryEncode(b *testing.B) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

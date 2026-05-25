@@ -264,6 +264,7 @@ HTTPC uses the following synchronization mechanisms internally:
 | `result.SaveToFile()` | ❌ No | Each goroutine needs own Result |
 | `domainClient.SetHeader()` | ✅ Yes | Safe for concurrent calls |
 | `domainClient.SetCookie()` | ✅ Yes | Safe for concurrent calls |
+| `domainClient.Close()` | ✅ Yes | Safe to call once |
 
 ## Common Pitfalls
 

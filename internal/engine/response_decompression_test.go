@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/andybalholm/brotli"
 	"time"
 )
 
@@ -26,11 +25,11 @@ func TestResponseProcessor_Decompression(t *testing.T) {
 	processor := newResponseProcessor(config)
 
 	tests := []struct {
-		name       string
-		encoding   string
-		content    string
-		wantBody   string
-		wantErr    bool
+		name        string
+		encoding    string
+		content     string
+		wantBody    string
+		wantErr     bool
 		errContains string
 	}{
 		// Gzip cases
@@ -84,14 +83,7 @@ func TestResponseProcessor_Decompression(t *testing.T) {
 			wantBody: strings.Repeat("The quick brown fox jumps over the lazy dog. ", 50),
 			wantErr:  false,
 		},
-		// Brotli case
-		{
-			name:     "Brotli decompression",
-			encoding: "br",
-			content:  "Brotli compressed content for testing",
-			wantBody: "Brotli compressed content for testing",
-			wantErr:  false,
-		},
+
 		// No encoding / identity / unknown cases
 		{
 			name:     "No Content-Encoding header",
@@ -146,17 +138,6 @@ func TestResponseProcessor_Decompression(t *testing.T) {
 				}
 				if err := deflateWriter.Close(); err != nil {
 					t.Fatalf("Failed to close deflate writer: %v", err)
-				}
-				bodyReader = &buf
-			case "br":
-				var buf bytes.Buffer
-				brotliWriter := brotli.NewWriter(&buf)
-				_, err := brotliWriter.Write([]byte(tt.content))
-				if err != nil {
-					t.Fatalf("Failed to write brotli data: %v", err)
-				}
-				if err := brotliWriter.Close(); err != nil {
-					t.Fatalf("Failed to close brotli writer: %v", err)
 				}
 				bodyReader = &buf
 			}
@@ -219,9 +200,9 @@ func TestResponseProcessor_InvalidCompressedData(t *testing.T) {
 	processor := newResponseProcessor(config)
 
 	tests := []struct {
-		name       string
-		encoding   string
-		rawData    string
+		name     string
+		encoding string
+		rawData  string
 	}{
 		{
 			name:     "Invalid gzip data",
@@ -493,7 +474,7 @@ func TestCreateDecompressor_UnsupportedEncodings(t *testing.T) {
 		wantErr     bool
 		errContains string
 	}{
-		{"brotli supported", "br", false, ""},
+		{"brotli unsupported", "br", true, "brotli"},
 		{"compress rejected", "compress", true, "LZW"},
 		{"x-compress rejected", "x-compress", true, "LZW"},
 		{"identity pass-through", "identity", false, ""},

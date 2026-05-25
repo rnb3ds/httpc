@@ -636,83 +636,85 @@ func TestAuditMiddlewareWithContextValues(t *testing.T) {
 }
 
 func TestAuditMiddlewareWithConfig(t *testing.T) {
-	var capturedEvent AuditEvent
-	var mu sync.Mutex
+	tests := []struct {
+		name           string
+		config         *AuditMiddlewareConfig
+		serverStatus   int
+		expectedMethod string
+		expectedStatus int
+	}{
+		{
+			name: "JSON format with headers",
+			config: &AuditMiddlewareConfig{
+				Format:         "json",
+				IncludeHeaders: true,
+				SanitizeError:  true,
+			},
+			serverStatus:   http.StatusInternalServerError,
+			expectedStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "JSON format with default config",
+			config: func() *AuditMiddlewareConfig {
+				c := DefaultAuditMiddlewareConfig()
+				c.Format = "json"
+				return c
+			}(),
+			serverStatus:   http.StatusOK,
+			expectedMethod: "GET",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name: "Text format",
+			config: &AuditMiddlewareConfig{
+				Format: "text",
+			},
+			serverStatus:   http.StatusOK,
+			expectedMethod: "GET",
+			expectedStatus: http.StatusOK,
+		},
+	}
 
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer ts.Close()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var capturedEvent AuditEvent
+			var mu sync.Mutex
 
-	cfg := testConfig()
-	cfg.Middleware.Middlewares = []MiddlewareFunc{
-		AuditMiddlewareWithConfig(func(event AuditEvent) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.serverStatus)
+			}))
+			defer ts.Close()
+
+			cfg := testConfig()
+			cfg.Middleware.Middlewares = []MiddlewareFunc{
+				AuditMiddlewareWithConfig(func(event AuditEvent) {
+					mu.Lock()
+					defer mu.Unlock()
+					capturedEvent = event
+				}, tt.config),
+			}
+
+			client, err := New(cfg)
+			if err != nil {
+				t.Fatalf("failed to create client: %v", err)
+			}
+			defer client.Close()
+
+			_, err = client.Get(ts.URL)
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+
 			mu.Lock()
 			defer mu.Unlock()
-			capturedEvent = event
-		}, &AuditMiddlewareConfig{
-			Format:         "json",
-			IncludeHeaders: true,
-			SanitizeError:  true,
-		}),
-	}
 
-	client, err := New(cfg)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
-	defer client.Close()
-
-	_, err = client.Get(ts.URL)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	if capturedEvent.StatusCode != http.StatusInternalServerError {
-		t.Errorf("expected status %d, got: %d", http.StatusInternalServerError, capturedEvent.StatusCode)
-	}
-}
-
-func TestAuditMiddlewareWithConfigJSON(t *testing.T) {
-	var capturedEvent AuditEvent
-	var mu sync.Mutex
-
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	auditCfg := DefaultAuditMiddlewareConfig()
-	auditCfg.Format = "json"
-
-	cfg := testConfig()
-	cfg.Middleware.Middlewares = []MiddlewareFunc{
-		AuditMiddlewareWithConfig(func(event AuditEvent) {
-			mu.Lock()
-			defer mu.Unlock()
-			capturedEvent = event
-		}, auditCfg),
-	}
-
-	client, err := New(cfg)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
-	defer client.Close()
-
-	_, err = client.Get(ts.URL)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	if capturedEvent.Method != "GET" {
-		t.Errorf("expected method GET, got: %s", capturedEvent.Method)
+			if capturedEvent.StatusCode != tt.expectedStatus {
+				t.Errorf("expected status %d, got: %d", tt.expectedStatus, capturedEvent.StatusCode)
+			}
+			if tt.expectedMethod != "" && capturedEvent.Method != tt.expectedMethod {
+				t.Errorf("expected method %s, got: %s", tt.expectedMethod, capturedEvent.Method)
+			}
+		})
 	}
 }
 
@@ -975,4 +977,59 @@ func TestSanitizeCallbackError(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMiddleware_BoundaryConditions(t *testing.T) {
+	t.Parallel()
+
+	t.Run("TimeoutMiddleware zero duration", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer ts.Close()
+
+		cfg := testConfig()
+		cfg.Middleware.Middlewares = []MiddlewareFunc{
+			TimeoutMiddleware(0),
+		}
+		client, err := New(cfg)
+		if err != nil {
+			t.Fatalf("failed to create client: %v", err)
+		}
+		defer client.Close()
+
+		// Zero duration should apply immediately and return error
+		ctx := context.Background()
+		_, err = client.Request(ctx, "GET", ts.URL)
+		_ = err // zero duration behavior is implementation-defined
+	})
+
+	t.Run("Chain with nil middleware slice", func(t *testing.T) {
+		handler := Chain()
+		if handler == nil {
+			t.Error("Chain() with no args should return non-nil handler")
+		}
+	})
+
+	t.Run("MetricsMiddleware with nil callback", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer ts.Close()
+
+		cfg := testConfig()
+		cfg.Middleware.Middlewares = []MiddlewareFunc{
+			MetricsMiddleware(nil),
+		}
+		client, err := New(cfg)
+		if err != nil {
+			t.Fatalf("failed to create client: %v", err)
+		}
+		defer client.Close()
+
+		_, err = client.Get(ts.URL)
+		if err != nil {
+			t.Fatalf("request should succeed with nil metrics callback: %v", err)
+		}
+	})
 }

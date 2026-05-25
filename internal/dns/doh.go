@@ -38,6 +38,12 @@ type DoHProvider struct {
 	Name     string
 	Template string // URL template with {name} placeholder
 	Priority int
+
+	// Pre-computed template parts for fast URL building (set by NewDoHResolver)
+	urlPrefix string // portion before {name}
+	urlMiddle string // portion between {name} and {type}
+	urlSuffix string // portion after {type}
+	hasTypePH bool   // template contains {type} placeholder
 }
 
 // cacheEntry holds cached DNS resolution results
@@ -106,6 +112,23 @@ func NewDoHResolver(providers []*DoHProvider, cacheTTL time.Duration) *DoHResolv
 		providers: providers,
 	}
 	r.cacheTTL.Store(int64(cacheTTL))
+
+	// Pre-split URL templates for fast URL building
+	for i := range r.providers {
+		p := r.providers[i]
+		parts := strings.SplitN(p.Template, "{name}", 2)
+		p.urlPrefix = parts[0]
+		if len(parts) > 1 {
+			rest := parts[1]
+			typeParts := strings.SplitN(rest, "{type}", 2)
+			p.urlMiddle = typeParts[0]
+			if len(typeParts) > 1 {
+				p.urlSuffix = typeParts[1]
+				p.hasTypePH = true
+			}
+		}
+	}
+
 	return r
 }
 
@@ -120,12 +143,11 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 	if cached, ok := r.cache.Load(host); ok {
 		if entry, typeOk := cached.(*cacheEntry); typeOk && entry != nil {
 			if time.Now().Before(entry.Expires) {
-				// Deep copy to prevent caller mutations from affecting cached data
+				// Shallow copy the slice header. net.IP values from DNS are
+				// treated as read-only by all callers, so sharing the underlying
+				// byte data is safe and avoids per-IP allocations.
 				ips := make([]net.IPAddr, len(entry.IPs))
-				for i, addr := range entry.IPs {
-					ips[i] = net.IPAddr{IP: make(net.IP, len(addr.IP)), Zone: addr.Zone}
-					copy(ips[i].IP, addr.IP)
-				}
+				copy(ips, entry.IPs)
 				return ips, nil
 			}
 			// Expired — atomically delete and decrement counter only if we win the race
@@ -156,12 +178,11 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 				}
 				if r.cacheSize.CompareAndSwap(current, current+1) {
 					cacheTTL := time.Duration(r.cacheTTL.Load())
-					// Deep copy IPs for cache isolation
+					// IPs from lookupWithProvider are fresh allocations.
+					// Shallow copy for cache isolation: the slice header is independent
+					// while the underlying net.IP data is shared (read-only per contract).
 					cachedIPs := make([]net.IPAddr, len(ips))
-					for j, addr := range ips {
-						cachedIPs[j] = net.IPAddr{IP: make(net.IP, len(addr.IP)), Zone: addr.Zone}
-						copy(cachedIPs[j].IP, addr.IP)
-					}
+					copy(cachedIPs, ips)
 					newEntry := &cacheEntry{
 						IPs:     cachedIPs,
 						Expires: time.Now().Add(cacheTTL),
@@ -216,7 +237,7 @@ func (r *DoHResolver) lookupWithProvider(ctx context.Context, provider *DoHProvi
 	resAAAA := <-chAAAA
 
 	// Merge results: return any IPs found
-	var ips []net.IPAddr
+	ips := make([]net.IPAddr, 0, len(resA.ips)+len(resAAAA.ips))
 	if resA.err == nil {
 		ips = append(ips, resA.ips...)
 	}
@@ -236,16 +257,30 @@ func (r *DoHResolver) lookupWithProvider(ctx context.Context, provider *DoHProvi
 
 // lookupRecordType queries a specific DNS record type (A or AAAA) via DoH.
 func (r *DoHResolver) lookupRecordType(ctx context.Context, provider *DoHProvider, escapedHost, recordType string) ([]net.IPAddr, error) {
-	// Build request URL: replace {name} and {type} placeholders
-	requestURL := strings.Replace(provider.Template, "{name}", escapedHost, 1)
-	requestURL = strings.Replace(requestURL, "{type}", recordType, 1)
-	// Fallback: append type parameter if template doesn't have {type}
-	if !strings.Contains(provider.Template, "{type}") {
-		sep := "&"
-		if !strings.Contains(requestURL, "?") {
-			sep = "?"
+	// Build request URL using pre-split template parts (avoids strings.Replace allocations)
+	var requestURL string
+	if provider.urlPrefix != "" || provider.urlMiddle != "" {
+		requestURL = provider.urlPrefix + escapedHost + provider.urlMiddle
+		if provider.hasTypePH {
+			requestURL += recordType + provider.urlSuffix
+		} else {
+			sep := "&"
+			if !strings.Contains(requestURL, "?") {
+				sep = "?"
+			}
+			requestURL += sep + "type=" + recordType
 		}
-		requestURL += sep + "type=" + recordType
+	} else {
+		// Fallback for providers without pre-split templates
+		requestURL = strings.Replace(provider.Template, "{name}", escapedHost, 1)
+		requestURL = strings.Replace(requestURL, "{type}", recordType, 1)
+		if !strings.Contains(provider.Template, "{type}") {
+			sep := "&"
+			if !strings.Contains(requestURL, "?") {
+				sep = "?"
+			}
+			requestURL += sep + "type=" + recordType
+		}
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", requestURL, nil)
@@ -325,7 +360,7 @@ func (r *DoHResolver) parseJSONResponse(body []byte, host string) ([]net.IPAddr,
 		return nil, fmt.Errorf("DNS query returned status %d", resp.Status)
 	}
 
-	var ips []net.IPAddr
+	ips := make([]net.IPAddr, 0, 4)
 	for _, answer := range resp.Answer {
 		// Type 1 = A record (IPv4), Type 28 = AAAA record (IPv6)
 		if answer.Type == 1 || answer.Type == 28 {
@@ -374,7 +409,7 @@ func (r *DoHResolver) parseWireFormatResponse(body []byte, host string) ([]net.I
 	if err != nil {
 		return nil, fmt.Errorf("invalid answer count: %w", err)
 	}
-	var ips []net.IPAddr
+	ips := make([]net.IPAddr, 0, 4)
 
 	for i := 0; i < int(anCount); i++ {
 		_, newOffset, err := parseDomain(body, offset, 0)

@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net"
 	"net/http"
-	"os"
 	"sync"
 	"sync/atomic"
 
@@ -122,11 +122,17 @@ func New(config ...*Config) (Client, error) {
 		if err := ValidateConfig(config[0]); err != nil {
 			return nil, fmt.Errorf("invalid configuration: %w", err)
 		}
-		cfg = config[0]
+		cfg = deepCopyConfig(config[0])
 	} else {
 		cfg = DefaultConfig()
 	}
 
+	return newFromPreparedConfig(cfg)
+}
+
+// newFromPreparedConfig creates a client from an already-validated and deep-copied config.
+// Used internally by NewDomain to avoid redundant validation and deep copy.
+func newFromPreparedConfig(cfg *Config) (Client, error) {
 	engineConfig, err := convertToEngineConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert configuration: %w", err)
@@ -134,8 +140,11 @@ func New(config ...*Config) (Client, error) {
 
 	// Warn if InsecureSkipVerify is enabled outside test environment.
 	if cfg.Security.InsecureSkipVerify && !isTestEnvironment() {
-		fmt.Fprintf(os.Stderr, "[SECURITY WARNING] InsecureSkipVerify is enabled - TLS certificate verification is DISABLED\n")
-		fmt.Fprintf(os.Stderr, "[SECURITY WARNING] This should only be used in testing. Use SecureConfig() for production.\n")
+		insecureSkipVerifyWarnOnce.Do(func() {
+			w := getSecurityWarnOutput()
+			fmt.Fprintf(w, "[SECURITY WARNING] InsecureSkipVerify is enabled - TLS certificate verification is DISABLED\n")
+			fmt.Fprintf(w, "[SECURITY WARNING] This should only be used in testing. Use SecureConfig() for production.\n")
+		})
 	}
 
 	engineClient, err := engine.NewClient(engineConfig)
@@ -200,6 +209,12 @@ func deepCopyConfig(src *Config) *Config {
 	if len(src.Security.SSRFExemptCIDRs) > 0 {
 		dst.Security.SSRFExemptCIDRs = make([]string, len(src.Security.SSRFExemptCIDRs))
 		copy(dst.Security.SSRFExemptCIDRs, src.Security.SSRFExemptCIDRs)
+	}
+
+	// Transfer cached parsed CIDRs (pointer slice is safe to share — net.IPNet is read-only)
+	if len(src.parsedCIDRs) > 0 {
+		dst.parsedCIDRs = make([]*net.IPNet, len(src.parsedCIDRs))
+		copy(dst.parsedCIDRs, src.parsedCIDRs)
 	}
 
 	return &dst
@@ -351,6 +366,9 @@ func releaseMiddlewareRequest(req *engine.Request) {
 // explicitly release it via releaseResponseMutator(). Returning (nil, error) while
 // holding an unreleased response will cause a pool leak.
 func (c *clientImpl) executeRequest(ctx context.Context, method, url string, options []RequestOption) (ResponseMutator, error) {
+	if c.engine != nil && c.engine.IsClosed() {
+		return nil, ErrClientClosed
+	}
 	if !c.hasMiddlewares {
 		return c.engine.Request(ctx, method, url, options...)
 	}
@@ -457,37 +475,37 @@ func doPackage(fn func(Client, string, ...RequestOption) (*Result, error), url s
 	return fn(client, url, options...)
 }
 
-// Get makes a GET request to the specified URL using the default client. Call ReleaseResult when done to reduce GC pressure.
+// Get makes a GET request to the specified URL using the default client. Results are pooled; GC handles cleanup automatically.
 func Get(url string, options ...RequestOption) (*Result, error) {
 	return doPackage(Client.Get, url, options...)
 }
 
-// Post makes a POST request to the specified URL using the default client. Call ReleaseResult when done to reduce GC pressure.
+// Post makes a POST request to the specified URL using the default client. Results are pooled; GC handles cleanup automatically.
 func Post(url string, options ...RequestOption) (*Result, error) {
 	return doPackage(Client.Post, url, options...)
 }
 
-// Put makes a PUT request to the specified URL using the default client. Call ReleaseResult when done to reduce GC pressure.
+// Put makes a PUT request to the specified URL using the default client. Results are pooled; GC handles cleanup automatically.
 func Put(url string, options ...RequestOption) (*Result, error) {
 	return doPackage(Client.Put, url, options...)
 }
 
-// Patch makes a PATCH request to the specified URL using the default client. Call ReleaseResult when done to reduce GC pressure.
+// Patch makes a PATCH request to the specified URL using the default client. Results are pooled; GC handles cleanup automatically.
 func Patch(url string, options ...RequestOption) (*Result, error) {
 	return doPackage(Client.Patch, url, options...)
 }
 
-// Delete makes a DELETE request to the specified URL using the default client. Call ReleaseResult when done to reduce GC pressure.
+// Delete makes a DELETE request to the specified URL using the default client. Results are pooled; GC handles cleanup automatically.
 func Delete(url string, options ...RequestOption) (*Result, error) {
 	return doPackage(Client.Delete, url, options...)
 }
 
-// Head makes a HEAD request to the specified URL using the default client. Call ReleaseResult when done to reduce GC pressure.
+// Head makes a HEAD request to the specified URL using the default client. Results are pooled; GC handles cleanup automatically.
 func Head(url string, options ...RequestOption) (*Result, error) {
 	return doPackage(Client.Head, url, options...)
 }
 
-// Options makes an OPTIONS request to the specified URL using the default client. Call ReleaseResult when done to reduce GC pressure.
+// Options makes an OPTIONS request to the specified URL using the default client. Results are pooled; GC handles cleanup automatically.
 func Options(url string, options ...RequestOption) (*Result, error) {
 	return doPackage(Client.Options, url, options...)
 }
@@ -528,12 +546,12 @@ func SetDefaultClient(client Client) error {
 		return fmt.Errorf("only clients created by this package are supported")
 	}
 
+	defaultClientMu.Lock()
+	defer defaultClientMu.Unlock()
+
 	if impl.engine.IsClosed() {
 		return fmt.Errorf("cannot set a closed client as default")
 	}
-
-	defaultClientMu.Lock()
-	defer defaultClientMu.Unlock()
 
 	// Swap the old client with the new one
 	var closeErr error
@@ -575,10 +593,9 @@ func getResult() *Result {
 	return r
 }
 
-// ReleaseResult returns a Result to the pool for reuse.
-// Call this when you're done with the Result to reduce garbage collection pressure.
-// WARNING: Do not use the Result after calling ReleaseResult.
-func ReleaseResult(r *Result) {
+// releaseResult returns a Result to the pool for reuse.
+// WARNING: Do not use the Result after calling releaseResult.
+func releaseResult(r *Result) {
 	if r == nil {
 		return
 	}
@@ -613,18 +630,39 @@ func convertResponseToResult(resp ResponseMutator) *Result {
 		return nil
 	}
 
-	requestCookies := extractRequestCookies(resp.RequestHeaders())
+	// Optimization: transfer request header ownership from the engine Response
+	// instead of cloning. Fall back to Headers() for middleware-wrapped responses.
+	var requestHeaders http.Header
+	if engineResp, ok := resp.(*engine.Response); ok {
+		requestHeaders = engineResp.TransferRequestHeaders()
+	} else {
+		requestHeaders = resp.RequestHeaders()
+	}
+	requestCookies := extractRequestCookies(requestHeaders)
 
 	// Use pooled Result object
 	result := getResult()
 	result.Request.URL = resp.RequestURL()
 	result.Request.Method = resp.RequestMethod()
-	result.Request.Headers = resp.RequestHeaders()
+	// Transfer request header ownership: captureRequestHeaders already cloned
+	// the headers in the engine layer. Since the engine Response is released
+	// right after this call, we can take ownership of the cloned map directly,
+	// avoiding a second clone.
+	result.Request.Headers = requestHeaders
+	requestHeaders = nil // prevent accidental use
 	result.Request.Cookies = requestCookies
 	result.Response.StatusCode = resp.StatusCode()
 	result.Response.Status = resp.Status()
 	result.Response.Proto = resp.Proto()
-	result.Response.Headers = resp.Headers()
+	// Optimization: transfer response header ownership from the engine Response
+	// instead of cloning. The engine clones httpResp.Header during Process(),
+	// so this map is already owned by the engine and safe to take.
+	// Fall back to clone for middleware-wrapped ResponseMutator implementations.
+	if engineResp, ok := resp.(*engine.Response); ok {
+		result.Response.Headers = engineResp.TransferHeaders()
+	} else {
+		result.Response.Headers = cloneHeaders(resp.Headers())
+	}
 	// Convert body directly from raw bytes, bypassing the engine's lazy
 	// string conversion (sync.Once). The engine Response is released right
 	// after this call, so its cached body string would be wasted.
@@ -654,6 +692,12 @@ func extractRequestCookies(headers http.Header) []*http.Cookie {
 	}
 
 	return parseCookieHeader(cookieHeader)
+}
+
+// cloneHeaders returns a deep copy of http.Header. Delegates to the engine's
+// batch-allocation CloneHeader to avoid duplicating the logic.
+func cloneHeaders(h http.Header) http.Header {
+	return engine.CloneHeader(h)
 }
 
 func createCookieJar(enableCookies bool) (http.CookieJar, error) {

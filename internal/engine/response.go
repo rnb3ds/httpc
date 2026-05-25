@@ -8,8 +8,6 @@ import (
 	"io"
 	"net/http"
 	"sync"
-
-	"github.com/andybalholm/brotli"
 )
 
 // gzipReaderPool pools gzip.Reader objects to reduce allocations during decompression.
@@ -29,13 +27,6 @@ var flateReaderPool = sync.Pool{
 	New: func() any {
 		// Create a dummy reader to initialize the pool
 		return flate.NewReader(bytes.NewReader(nil))
-	},
-}
-
-// brotliReaderPool pools brotli.Reader objects to reduce allocations during decompression.
-var brotliReaderPool = sync.Pool{
-	New: func() any {
-		return brotli.NewReader(bytes.NewReader(nil))
 	},
 }
 
@@ -215,7 +206,9 @@ func (p *responseProcessor) Process(httpResp *http.Response) (*Response, error) 
 	resp := getResponse()
 	resp.SetStatusCode(httpResp.StatusCode)
 	resp.SetStatus(httpResp.Status)
-	resp.SetHeaders(httpResp.Header)
+	// Clone headers so the engine owns the copy. This enables TransferHeaders()
+	// in the public layer to take ownership without a second clone.
+	resp.SetHeaders(CloneHeader(httpResp.Header))
 	resp.SetRawBody(body)
 	// Body string is lazily converted on first access via Body() to avoid
 	// doubling memory when caller only uses RawBody
@@ -380,9 +373,9 @@ func (p *responseProcessor) createDecompressor(reader io.Reader, encoding string
 			// Check if it also implements flate.Resetter
 			if resetter, ok := pooled.(flate.Resetter); ok {
 				if err := resetter.Reset(reader, nil); err != nil {
-					// SECURITY: Reset failed - discard the reader instead of returning to pool.
+					// SECURITY: Reset failed - close and discard the reader instead of returning to pool.
 					// A reader in error state may cause issues for subsequent users.
-					// The discarded reader will be garbage collected.
+					_ = pooled.Close()
 					return flate.NewReader(reader), nil
 				}
 				wrapper, _ := flateReaderWrapperPool.Get().(*pooledFlateReader)
@@ -392,22 +385,12 @@ func (p *responseProcessor) createDecompressor(reader io.Reader, encoding string
 				wrapper.reader = pooled
 				return wrapper, nil
 			}
-			// Doesn't implement Resetter, discard and create new
+			// Doesn't implement Resetter, close and discard
+				_ = pooled.Close()
 		}
 		return flate.NewReader(reader), nil
 	case "br":
-		if pooled, ok := brotliReaderPool.Get().(*brotli.Reader); ok && pooled != nil {
-			if err := pooled.Reset(reader); err != nil {
-				return io.NopCloser(brotli.NewReader(reader)), nil
-			}
-			wrapper, _ := brotliReaderWrapperPool.Get().(*pooledBrotliReader)
-			if wrapper == nil {
-				wrapper = &pooledBrotliReader{}
-			}
-			wrapper.Reader = pooled
-			return wrapper, nil
-		}
-		return io.NopCloser(brotli.NewReader(reader)), nil
+		return nil, fmt.Errorf("brotli compression not supported")
 	case "compress", "x-compress":
 		return nil, fmt.Errorf("LZW compression not supported")
 	case "identity", "":
@@ -476,28 +459,6 @@ func (r *pooledFlateReader) Close() error {
 	r.reader = nil
 	// Return wrapper to pool
 	flateReaderWrapperPool.Put(r)
-	return nil
-}
-
-// pooledBrotliReader wraps a pooled brotli.Reader and returns it to the pool on Close.
-type pooledBrotliReader struct {
-	*brotli.Reader
-}
-
-// brotliReaderWrapperPool reduces allocations for the pooledBrotliReader wrapper struct.
-var brotliReaderWrapperPool = sync.Pool{
-	New: func() any { return &pooledBrotliReader{} },
-}
-
-func (r *pooledBrotliReader) Close() error {
-	if r.Reader == nil {
-		return nil
-	}
-	// Reset to nil reader for safety before returning to pool
-	_ = r.Reset(bytes.NewReader(nil))
-	brotliReaderPool.Put(r.Reader)
-	r.Reader = nil
-	brotliReaderWrapperPool.Put(r)
 	return nil
 }
 

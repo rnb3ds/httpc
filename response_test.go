@@ -15,103 +15,64 @@ import (
 // ============================================================================
 
 // ----------------------------------------------------------------------------
-// Basic Result Usage
+// Basic Result Usage and Convenience Methods
 // ----------------------------------------------------------------------------
 
 func TestResult_BasicUsage(t *testing.T) {
 	t.Parallel()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-Custom-Header", "custom-value")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"message":"success","code":200}`))
-	}))
-	defer server.Close()
-
-	client, _ := newTestClient()
-	defer client.Close()
-
-	result, err := client.Get(server.URL)
-	if err != nil {
-		t.Fatalf("Request failed: %v", err)
+	tests := []struct {
+		name           string
+		contentType    string
+		body           string
+		extraHeaders   map[string]string
+	}{
+		{"JSON response", "application/json", `{"message":"success","code":200}`, map[string]string{"X-Custom-Header": "custom-value"}},
+		{"Text response", "text/plain", "response body", map[string]string{"X-Header-1": "value1", "X-Header-2": "value2"}},
+		{"Empty body", "text/plain", "", nil},
 	}
 
-	// Test status code
-	if result.StatusCode() != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", result.StatusCode())
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", tt.contentType)
+				for k, v := range tt.extraHeaders {
+					w.Header().Set(k, v)
+				}
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
 
-	// Test body
-	body := result.Body()
-	if body == "" {
-		t.Error("Body should not be empty")
-	}
+			client, _ := newTestClient()
+			defer client.Close()
 
-	// Test response info
-	if result.Response == nil {
-		t.Fatal("Response info should not be nil")
-	}
-	if result.Response.StatusCode != http.StatusOK {
-		t.Error("Response status code mismatch")
-	}
-	if result.Response.Headers.Get("Content-Type") != "application/json" {
-		t.Error("Content-Type header not found")
-	}
-	if result.Response.Headers.Get("X-Custom-Header") != "custom-value" {
-		t.Error("Custom header not found")
-	}
-}
+			result, err := client.Get(server.URL)
+			if err != nil {
+				t.Fatalf("Request failed: %v", err)
+			}
 
-// ----------------------------------------------------------------------------
-// Convenience Methods
-// ----------------------------------------------------------------------------
-
-func TestResult_ConvenienceMethods(t *testing.T) {
-	t.Parallel()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		w.Header().Set("X-Header-1", "value1")
-		w.Header().Set("X-Header-2", "value2")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("response body"))
-	}))
-	defer server.Close()
-
-	client, _ := newTestClient()
-	defer client.Close()
-
-	result, err := client.Get(server.URL)
-	if err != nil {
-		t.Fatalf("Request failed: %v", err)
-	}
-
-	// Test Body()
-	if result.Body() != "response body" {
-		t.Errorf("Expected 'response body', got %s", result.Body())
-	}
-
-	// Test RawBody()
-	bytes := result.RawBody()
-	if string(bytes) != "response body" {
-		t.Error("RawBody() mismatch")
-	}
-
-	// Test StatusCode()
-	if result.StatusCode() != http.StatusOK {
-		t.Errorf("Expected 200, got %d", result.StatusCode())
-	}
-
-	// Test Response headers
-	if result.Response.Headers.Get("Content-Type") != "text/plain" {
-		t.Error("Header failed for Content-Type")
-	}
-	if result.Response.Headers.Get("X-Header-1") != "value1" {
-		t.Error("Header failed for X-Header-1")
-	}
-	if result.Response.Headers.Get("X-Header-2") != "value2" {
-		t.Error("Header failed for X-Header-2")
+			if result.StatusCode() != http.StatusOK {
+				t.Errorf("Expected status 200, got %d", result.StatusCode())
+			}
+			if result.Body() != tt.body {
+				t.Errorf("Expected body %q, got %q", tt.body, result.Body())
+			}
+			if result.Response == nil {
+				t.Fatal("Response should not be nil")
+			}
+			if result.Response.Headers.Get("Content-Type") != tt.contentType {
+				t.Errorf("Expected Content-Type %q, got %q", tt.contentType, result.Response.Headers.Get("Content-Type"))
+			}
+			for k, v := range tt.extraHeaders {
+				if result.Response.Headers.Get(k) != v {
+					t.Errorf("Expected header %s: %s, got %s", k, v, result.Response.Headers.Get(k))
+				}
+			}
+			if string(result.RawBody()) != tt.body {
+				t.Errorf("RawBody() = %q, want %q", string(result.RawBody()), tt.body)
+			}
+		})
 	}
 }
 
@@ -442,29 +403,40 @@ func TestResult_NilAndEmptyAccessors(t *testing.T) {
 func TestResult_Unmarshal_Boundaries(t *testing.T) {
 	t.Parallel()
 
-	t.Run("empty body", func(t *testing.T) {
-		r := &Result{Response: &ResponseInfo{RawBody: []byte{}}}
-		var v map[string]interface{}
-		if err := r.Unmarshal(&v); err == nil {
-			t.Error("expected error for empty body")
-		}
-	})
+	tests := []struct {
+		name    string
+		result  *Result
+		wantErr bool
+	}{
+		{"empty body", &Result{Response: &ResponseInfo{RawBody: []byte{}}}, true},
+		{"nil RawBody", &Result{Response: &ResponseInfo{RawBody: nil}}, true},
+		{"oversized body", &Result{Response: &ResponseInfo{RawBody: make([]byte, 50*1024*1024+1)}}, true},
+		{"nil pointer target", &Result{Response: &ResponseInfo{RawBody: []byte(`{}`)}}, true},
+		{"non-pointer target", &Result{Response: &ResponseInfo{RawBody: []byte(`{}`)}}, true},
+		{"non-UTF8 body", &Result{Response: &ResponseInfo{RawBody: []byte{0xff, 0xfe, 0xfd}}}, true},
+	}
 
-	t.Run("nil RawBody", func(t *testing.T) {
-		r := &Result{Response: &ResponseInfo{RawBody: nil}}
-		var v map[string]interface{}
-		if err := r.Unmarshal(&v); err == nil {
-			t.Error("expected error for nil body")
-		}
-	})
-
-	t.Run("oversized body", func(t *testing.T) {
-		r := &Result{Response: &ResponseInfo{RawBody: make([]byte, 50*1024*1024+1)}}
-		var v map[string]interface{}
-		if err := r.Unmarshal(&v); err == nil {
-			t.Error("expected error for oversized body")
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			switch tt.name {
+			case "nil pointer target":
+				var v map[string]interface{}
+				if err := tt.result.Unmarshal(v); err == nil {
+					t.Error("expected error for nil pointer target")
+				}
+			case "non-pointer target":
+				var v int
+				if err := tt.result.Unmarshal(v); err == nil {
+					t.Error("expected error for non-pointer target")
+				}
+			default:
+				var v map[string]interface{}
+				if err := tt.result.Unmarshal(&v); (err != nil) != tt.wantErr {
+					t.Errorf("Unmarshal() error = %v, wantErr %v", err, tt.wantErr)
+				}
+			}
+		})
+	}
 }
 
 // ----------------------------------------------------------------------------

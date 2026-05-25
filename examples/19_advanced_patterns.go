@@ -95,11 +95,10 @@ func demonstrateResultPool() {
 	defer client.Close()
 
 	const numRequests = 10
-	start := time.Now()
 
-	// Without pool - each Result is garbage collected
-	fmt.Println("Without pool optimization:")
-	start = time.Now()
+	// Results are automatically pooled internally for reduced GC pressure.
+	fmt.Println("Results are automatically returned to an internal pool by GC.")
+	start := time.Now()
 	for i := 0; i < numRequests; i++ {
 		resp, err := client.Get("https://httpbin.org/get")
 		if err != nil {
@@ -108,31 +107,12 @@ func demonstrateResultPool() {
 		_ = resp.Body()
 	}
 	fmt.Printf("  %d requests completed in %v\n", numRequests, time.Since(start))
-
-	// With pool - Results are reused
-	fmt.Println("\nWith pool optimization (ReleaseResult):")
-	start = time.Now()
-	for i := 0; i < numRequests; i++ {
-		resp, err := client.Get("https://httpbin.org/get")
-		if err != nil {
-			continue
-		}
-		_ = resp.Body()           // Use the result
-		httpc.ReleaseResult(resp) // Return to pool for reuse
-	}
-	fmt.Printf("  %d requests completed in %v\n", numRequests, time.Since(start))
-
-	fmt.Println("\nWhen to use ReleaseResult:")
-	fmt.Println("  - High-throughput applications (1000+ requests/sec)")
-	fmt.Println("  - Memory-constrained environments")
-	fmt.Println("  - Long-running services")
-	fmt.Println("\nWARNING: Never use Result after calling ReleaseResult!")
 	fmt.Println()
 }
 
 // demonstrateStreamBody shows streaming mode for large responses
 func demonstrateStreamBody() {
-	fmt.Println("--- Example 3: Stream Body Mode ---")
+	fmt.Println("--- Example 3: Save Response to File ---")
 
 	client, err := httpc.New()
 	if err != nil {
@@ -141,12 +121,10 @@ func demonstrateStreamBody() {
 	}
 	defer client.Close()
 
-	// WithStreamBody(true) avoids buffering the entire response into memory.
-	// The download methods use this internally.
-	// For manual use, combine with SaveToFile for memory-efficient processing.
-	resp, err := client.Get("https://httpbin.org/get",
-		httpc.WithStreamBody(true),
-	)
+	// SaveToFile writes the response body directly to disk.
+	// For large file downloads, prefer DownloadFile/DownloadWithOptions
+	// which use streaming internally to avoid buffering the entire body.
+	resp, err := client.Get("https://httpbin.org/get")
 	if err != nil {
 		log.Printf("Request failed: %v\n", err)
 		return
@@ -155,18 +133,17 @@ func demonstrateStreamBody() {
 	fmt.Printf("Status: %d\n", resp.StatusCode())
 	fmt.Printf("Body length: %d bytes\n", len(resp.RawBody()))
 
-	// Save streamed response directly to file
-	err = resp.SaveToFile("downloads/stream-example.json")
+	err = resp.SaveToFile("downloads/response.json")
 	if err != nil {
 		fmt.Printf("SaveToFile: %v\n", err)
 	} else {
-		fmt.Println("Saved to downloads/stream-example.json")
+		fmt.Println("Saved to downloads/response.json")
 	}
 
-	fmt.Println("\nWhen to use WithStreamBody:")
-	fmt.Println("  - Downloading large files (avoids buffering entire body in memory)")
-	fmt.Println("  - Processing streaming APIs (NDJSON, SSE)")
-	fmt.Println("  - Memory-constrained environments")
+	fmt.Println("\nWhen to use SaveToFile vs DownloadFile:")
+	fmt.Println("  - SaveToFile: for small-to-medium responses already in memory")
+	fmt.Println("  - DownloadFile: for large files (streams directly to disk)")
+	fmt.Println("  - DownloadWithOptions: for large files with progress/checksum/resume")
 	fmt.Println()
 }
 
@@ -275,7 +252,7 @@ func demonstrateMemoryOptimization() {
 
 	fmt.Println("Optimization tips:")
 	fmt.Println("  1. Reuse client instances (don't create new clients per request)")
-	fmt.Println("  2. Use ReleaseResult() for high-throughput scenarios")
+	fmt.Println("  2. Results are automatically pooled for reduced GC pressure")
 	fmt.Println("  3. Configure appropriate timeouts to avoid goroutine leaks")
 	fmt.Println("  4. Use PerformanceConfig() for high-concurrency applications")
 	fmt.Println("  5. Close clients when done (releases connection pool)")

@@ -179,9 +179,9 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	}
 
 	// Use streaming mode to avoid buffering the entire response body into memory.
-	streamOptions := make([]RequestOption, len(options)+1)
+	streamOptions := make([]RequestOption, len(options), len(options)+1)
 	copy(streamOptions, options)
-	streamOptions[len(options)] = WithStreamBody(true)
+	streamOptions = append(streamOptions, WithStreamBody(true))
 
 	rawResp, err := c.executeRequest(ctx, "GET", url, streamOptions)
 	if err != nil {
@@ -193,6 +193,7 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 
 	engResp, ok := rawResp.(*engine.Response)
 	if !ok {
+		// Non-engine responses come from middleware chains and are their responsibility.
 		releaseResponseMutator(rawResp)
 		return nil, fmt.Errorf("unexpected response type from download request")
 	}
@@ -248,6 +249,9 @@ func prepareResumeState(filePath string, opts *DownloadConfig, options []Request
 
 	var resumeOffset int64
 	if fileInfo, err := os.Stat(validatedPath); err == nil {
+		if fileInfo.IsDir() {
+			return "", 0, nil, fmt.Errorf("path is a directory, not a file: %s", validatedPath)
+		}
 		if !opts.Overwrite && !opts.ResumeDownload {
 			return "", 0, nil, fmt.Errorf("%w: %s", ErrFileExists, validatedPath)
 		}
@@ -256,10 +260,9 @@ func prepareResumeState(filePath string, opts *DownloadConfig, options []Request
 		if opts.ResumeDownload {
 			resumeOffset = fileInfo.Size()
 			rangeOption := WithHeader("Range", fmt.Sprintf("bytes=%d-", resumeOffset))
-			combined := make([]RequestOption, len(options)+1)
+			combined := make([]RequestOption, len(options), len(options)+1)
 			copy(combined, options)
-			combined[len(options)] = rangeOption
-			options = combined
+			options = append(combined, rangeOption)
 		}
 	}
 
@@ -371,7 +374,7 @@ func writeDownloadBody(bodyReader io.Reader, filePath string, opts *DownloadConf
 	}
 	if opts.ProgressCallback != nil {
 		totalSize := contentLength
-		if resumed {
+		if resumed && totalSize > 0 {
 			totalSize += resumeOffset
 		}
 		writer = &progressWriter{
@@ -420,7 +423,7 @@ func writeDownloadBody(bodyReader io.Reader, filePath string, opts *DownloadConf
 	// Final callback with complete stats
 	if opts.ProgressCallback != nil {
 		totalSize := contentLength
-		if resumed {
+		if resumed && totalSize > 0 {
 			totalSize += resumeOffset
 		}
 		opts.ProgressCallback(resumeOffset+bytesWritten, totalSize, avgSpeed)
@@ -474,17 +477,45 @@ func getSystemPaths() []string {
 	}
 }
 
-// systemPathsOnce ensures getSystemPaths() is called only once.
+// normalizedSystemEntry holds a pre-normalized system path for fast comparison.
+// envPattern is non-empty only on Windows for env-var patterns (e.g., "%systemroot%").
+type normalizedSystemEntry struct {
+	normalized string
+	envPattern string // original "%VAR%" pattern, empty for literal paths
+}
+
 var (
-	systemPathsOnce   sync.Once
-	cachedSystemPaths []string
+	systemPathsOnce sync.Once
+	cachedSystemPaths []normalizedSystemEntry
 )
 
-func getSystemPathsCached() []string {
-	systemPathsOnce.Do(func() {
-		cachedSystemPaths = getSystemPaths()
-	})
-	return cachedSystemPaths
+// initNormalizedSystemPaths pre-computes normalized system paths once.
+// Paths are cleaned, lowercased (Windows), and separator-normalized at init
+// time so isSystemPath only needs a single HasPrefix check per entry.
+func initNormalizedSystemPaths() {
+	raw := getSystemPaths()
+	cachedSystemPaths = make([]normalizedSystemEntry, len(raw))
+	for i, p := range raw {
+		// Windows env-var patterns (e.g., "%systemroot%") are expanded at
+		// check time, so store the original pattern and skip static normalization.
+		if strings.HasPrefix(p, "%") && runtime.GOOS == "windows" {
+			cachedSystemPaths[i] = normalizedSystemEntry{envPattern: p}
+			continue
+		}
+		p = filepath.Clean(p)
+		if runtime.GOOS == "windows" {
+			p = strings.ToLower(p)
+			p = strings.ReplaceAll(p, "/", "\\")
+		} else {
+			p = strings.ReplaceAll(p, "\\", "/")
+		}
+		// Ensure trailing separator to prevent prefix collision
+		// (e.g., "C:\Windows" must not match "C:\WindowsEvil").
+		if !strings.HasSuffix(p, string(filepath.Separator)) {
+			p += string(filepath.Separator)
+		}
+		cachedSystemPaths[i] = normalizedSystemEntry{normalized: p}
+	}
 }
 
 func calculateSpeed(bytes int64, duration time.Duration) float64 {
@@ -615,47 +646,39 @@ func checkParentDirSymlinks(dir string, depth int) error {
 	return nil
 }
 
-func isSystemPath(path string) bool {
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return true
-	}
+// isSystemPath checks whether the given absolute path falls within a protected
+// system directory. The caller must supply an already-resolved absolute path
+// (e.g., from prepareFilePath) — no redundant filepath.Abs is performed.
+func isSystemPath(absPath string) bool {
+	systemPathsOnce.Do(initNormalizedSystemPaths)
 
-	cleanPath := filepath.Clean(absPath)
-
-	systemPaths := getSystemPathsCached()
-
-	// Normalize cleanPath once outside the loop
-	cleanPathForCompare := cleanPath
+	// Normalize the input path once for comparison
+	pathNorm := absPath
 	if runtime.GOOS == "windows" {
-		cleanPathForCompare = strings.ToLower(cleanPath)
-		cleanPathForCompare = strings.ReplaceAll(cleanPathForCompare, "/", "\\")
+		pathNorm = strings.ToLower(pathNorm)
+		pathNorm = strings.ReplaceAll(pathNorm, "/", "\\")
 	} else {
-		cleanPathForCompare = strings.ReplaceAll(cleanPathForCompare, "\\", "/")
+		pathNorm = strings.ReplaceAll(pathNorm, "\\", "/")
+	}
+	// Ensure trailing separator for consistent prefix matching
+	if !strings.HasSuffix(pathNorm, string(filepath.Separator)) {
+		pathNorm += string(filepath.Separator)
 	}
 
-	for _, sysPath := range systemPaths {
-		// Handle environment variable patterns on Windows.
-		// Append trailing separator after expansion to prevent prefix collision
-		// (e.g., expanded "C:\Windows" must not match "C:\WindowsEvil").
-		if strings.HasPrefix(sysPath, "%") && runtime.GOOS == "windows" {
-			expanded := os.ExpandEnv(sysPath)
-			if expanded != sysPath {
-				normalized := strings.TrimRight(strings.ToLower(expanded), "\\") + "\\"
-				if strings.HasPrefix(cleanPathForCompare, normalized) {
-					return true
-				}
+	for _, entry := range cachedSystemPaths {
+		if entry.envPattern != "" {
+			// Windows env-var pattern: expand at check time
+			expanded := os.ExpandEnv(entry.envPattern)
+			if expanded == entry.envPattern {
+				continue // env var not set
 			}
+			normalized := strings.TrimRight(strings.ToLower(expanded), "\\") + "\\"
+			if strings.HasPrefix(pathNorm, normalized) {
+				return true
+			}
+			continue
 		}
-
-		sysPathForCompare := sysPath
-		if runtime.GOOS == "windows" {
-			sysPathForCompare = strings.ToLower(sysPathForCompare)
-		} else {
-			sysPathForCompare = strings.ReplaceAll(sysPathForCompare, "\\", "/")
-		}
-
-		if strings.HasPrefix(cleanPathForCompare, sysPathForCompare) {
+		if strings.HasPrefix(pathNorm, entry.normalized) {
 			return true
 		}
 	}

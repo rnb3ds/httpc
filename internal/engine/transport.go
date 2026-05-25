@@ -47,16 +47,20 @@ func (s *redirectSettings) addRedirect(url string) {
 }
 
 // getChain returns the redirect chain as a slice.
-// Returns a copy to prevent mutation.
+// Returns a freshly allocated copy to prevent mutation.
 func (s *redirectSettings) getChain() []string {
 	if s.chainLen == 0 {
 		return nil
 	}
+	if s.chainLen <= maxInlineRedirects {
+		// Fast path: use inline data directly without pool overhead
+		chain := make([]string, s.chainLen)
+		copy(chain, s.inlineChain[:s.chainLen])
+		return chain
+	}
 	chain := make([]string, s.chainLen)
 	if s.overflowChain != nil {
 		copy(chain, s.overflowChain)
-	} else {
-		copy(chain, s.inlineChain[:s.chainLen])
 	}
 	return chain
 }
@@ -92,6 +96,7 @@ func getRedirectSettings() *redirectSettings {
 	if !ok || s == nil {
 		return &redirectSettings{}
 	}
+	*s = redirectSettings{}
 	return s
 }
 

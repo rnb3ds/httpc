@@ -23,7 +23,7 @@ func main() {
 
 	fmt.Println("\n[OK] All compression examples completed successfully!")
 	fmt.Println("\nNote:")
-	fmt.Println("  - The library automatically detects and decompresses gzip, deflate, and brotli responses")
+	fmt.Println("  - The library automatically detects and decompresses gzip and deflate responses")
 	fmt.Println("  - Decompression is based on the Content-Encoding header")
 	fmt.Println("  - Legacy compress formats (LZW) are not supported")
 	fmt.Println("  - To request compressed responses, set Accept-Encoding header")
@@ -33,7 +33,7 @@ func main() {
 func demonstrateGzipDecompression() {
 	fmt.Println("1. Automatic gzip decompression:")
 	headers := map[string]string{
-		"Accept-Encoding": "gzip, deflate, br",
+		"Accept-Encoding": "gzip, deflate",
 		"User-Agent":      "httpc-example/1.0",
 	}
 
@@ -54,7 +54,7 @@ func demonstrateGzipDecompression() {
 func demonstrateGzipFromServer() {
 	fmt.Println("2. Testing with another gzip endpoint:")
 	headers := map[string]string{
-		"Accept-Encoding": "gzip, deflate, br",
+		"Accept-Encoding": "gzip, deflate",
 		"User-Agent":      "httpc-example/1.0",
 	}
 

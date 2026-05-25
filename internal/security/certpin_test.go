@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"fmt"
 	"math/big"
 	"testing"
 	"time"
@@ -356,4 +357,29 @@ func TestPublicKeyPinnerFromBase64(t *testing.T) {
 			t.Errorf("nil pinner should allow all, got error: %v", err)
 		}
 	})
+}
+
+// TestPinCacheEviction verifies that the certificate pin cache evicts entries
+// when it exceeds pinCacheMaxSize, preventing unbounded memory growth.
+func TestPinCacheEviction(t *testing.T) {
+	hash := base64.StdEncoding.EncodeToString([]byte("test-hash-32-bytes-long-enough!!"))
+	pinner, err := newSPKIHashPinner(hash)
+	if err != nil {
+		t.Fatalf("newSPKIHashPinner failed: %v", err)
+	}
+
+	// Generate many unique rawCerts to fill the cache beyond pinCacheMaxSize
+	for i := 0; i < pinCacheMaxSize+100; i++ {
+		// Each call adds unique fingerprint entries to pinCache
+		rawCerts := [][]byte{[]byte(fmt.Sprintf("cert-data-%d", i))}
+		_ = pinner.VerifyPeerCertificate(rawCerts, nil)
+	}
+
+	pinner.mu.RLock()
+	cacheSize := len(pinner.pinCache)
+	pinner.mu.RUnlock()
+
+	if cacheSize > pinCacheMaxSize {
+		t.Errorf("pinCache grew to %d entries, expected max ~%d", cacheSize, pinCacheMaxSize)
+	}
 }

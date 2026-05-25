@@ -1,7 +1,6 @@
 package httpc_test
 
 import (
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1049,49 +1048,10 @@ func TestDomainClient_RealWorldScenario(t *testing.T) {
 }
 
 // ============================================================================
-// DOWNLOAD TESTS - File downloads with automatic state management
+// DOWNLOAD TESTS - File downloads with domain-specific automatic state management
+// Basic download, resume, overwrite, and progress are tested in download_test.go.
+// These tests focus on DomainClient-specific auto-header/cookie behavior.
 // ============================================================================
-
-func TestDomainClient_DownloadFile_Basic(t *testing.T) {
-	content := []byte("test file content")
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.WriteHeader(http.StatusOK)
-		w.Write(content)
-	}))
-	defer server.Close()
-
-	client, err := httpc.NewDomain(server.URL, httpc.TestingConfig())
-	if err != nil {
-		t.Fatalf("NewDomain error = %v", err)
-	}
-	defer client.Close()
-
-	tmpFile := filepath.Join(os.TempDir(), "test_download_basic.txt")
-	defer os.Remove(tmpFile)
-
-	result, err := client.DownloadFile("/file.txt", tmpFile)
-	if err != nil {
-		t.Fatalf("DownloadFile error = %v", err)
-	}
-
-	if result.StatusCode != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", result.StatusCode)
-	}
-
-	if result.BytesWritten != int64(len(content)) {
-		t.Errorf("Expected %d bytes, got %d", len(content), result.BytesWritten)
-	}
-
-	data, err := os.ReadFile(tmpFile)
-	if err != nil {
-		t.Fatalf("ReadFile error = %v", err)
-	}
-
-	if string(data) != string(content) {
-		t.Errorf("File content mismatch, got %s", string(data))
-	}
-}
 
 func TestDomainClient_DownloadFile_WithAutoHeaders(t *testing.T) {
 	content := []byte("test content with headers")
@@ -1267,145 +1227,6 @@ func TestDomainClient_DownloadFile_WithPathOptions(t *testing.T) {
 				t.Error("Expected server to be called")
 			}
 		})
-	}
-}
-
-func TestDomainClient_DownloadWithOptions_Progress(t *testing.T) {
-	content := []byte(strings.Repeat("x", 1024*10)) // 10KB
-	progressCalls := 0
-	var lastProgress int64
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
-		w.WriteHeader(http.StatusOK)
-		w.Write(content)
-	}))
-	defer server.Close()
-
-	client, err := httpc.NewDomain(server.URL, httpc.TestingConfig())
-	if err != nil {
-		t.Fatalf("NewDomain error = %v", err)
-	}
-	defer client.Close()
-
-	tmpFile := filepath.Join(os.TempDir(), "test_download_progress.txt")
-	defer os.Remove(tmpFile)
-
-	opts := httpc.DefaultDownloadConfig()
-	opts.FilePath = tmpFile
-	opts.ProgressCallback = func(downloaded, total int64, speed float64) {
-		progressCalls++
-		lastProgress = downloaded
-	}
-
-	result, err := client.DownloadWithOptions("/file.bin", opts)
-	if err != nil {
-		t.Fatalf("DownloadWithOptions error = %v", err)
-	}
-
-	if result.StatusCode != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", result.StatusCode)
-	}
-
-	if progressCalls == 0 {
-		t.Error("Progress callback was not called")
-	}
-
-	if lastProgress != int64(len(content)) {
-		t.Errorf("Expected final progress %d, got %d", len(content), lastProgress)
-	}
-}
-
-func TestDomainClient_DownloadWithOptions_Overwrite(t *testing.T) {
-	initialContent := []byte("initial content")
-	updatedContent := []byte("updated content")
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write(updatedContent)
-	}))
-	defer server.Close()
-
-	client, err := httpc.NewDomain(server.URL, httpc.TestingConfig())
-	if err != nil {
-		t.Fatalf("NewDomain error = %v", err)
-	}
-	defer client.Close()
-
-	tmpFile := filepath.Join(os.TempDir(), "test_download_overwrite.txt")
-	defer os.Remove(tmpFile)
-
-	os.WriteFile(tmpFile, initialContent, 0644)
-
-	opts := httpc.DefaultDownloadConfig()
-	opts.FilePath = tmpFile
-	opts.Overwrite = true
-
-	result, err := client.DownloadWithOptions("/file.txt", opts)
-	if err != nil {
-		t.Fatalf("DownloadWithOptions error = %v", err)
-	}
-
-	if result.StatusCode != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", result.StatusCode)
-	}
-
-	data, _ := os.ReadFile(tmpFile)
-	if string(data) != string(updatedContent) {
-		t.Errorf("Expected updated content, got %s", string(data))
-	}
-}
-
-func TestDomainClient_DownloadWithOptions_Resume(t *testing.T) {
-	fullContent := []byte(strings.Repeat("x", 1024*10)) // 10KB
-	partialContent := fullContent[:5*1024]              // First 5KB
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rangeHeader := r.Header.Get("Range")
-		if rangeHeader != "" {
-			// Range request: return the remaining content
-			w.Header().Set("Content-Range", "bytes 5120-10239/10240")
-			w.WriteHeader(http.StatusPartialContent)
-			w.Write(fullContent[5*1024:])
-		} else {
-			// Normal request: return partial content
-			w.WriteHeader(http.StatusOK)
-			w.Write(partialContent)
-		}
-	}))
-	defer server.Close()
-
-	client, err := httpc.NewDomain(server.URL, httpc.TestingConfig())
-	if err != nil {
-		t.Fatalf("NewDomain error = %v", err)
-	}
-	defer client.Close()
-
-	tmpFile := filepath.Join(os.TempDir(), "test_download_resume.txt")
-	defer os.Remove(tmpFile)
-
-	os.WriteFile(tmpFile, partialContent, 0644)
-
-	opts := httpc.DefaultDownloadConfig()
-	opts.FilePath = tmpFile
-	opts.ResumeDownload = true
-
-	result, err := client.DownloadWithOptions("/file.bin", opts)
-	if err != nil {
-		t.Fatalf("DownloadWithOptions error = %v", err)
-	}
-
-	if result.StatusCode != http.StatusPartialContent {
-		t.Errorf("Expected status 206, got %d", result.StatusCode)
-	}
-
-	if !result.Resumed {
-		t.Error("Expected Resumed to be true")
-	}
-
-	data, _ := os.ReadFile(tmpFile)
-	if len(data) != len(fullContent) {
-		t.Errorf("Expected %d bytes, got %d", len(fullContent), len(data))
 	}
 }
 

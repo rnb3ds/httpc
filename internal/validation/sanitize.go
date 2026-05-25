@@ -9,6 +9,7 @@ import (
 // sensitiveQueryParamNames contains query parameter names whose values should be
 // redacted when sanitizing URLs for logging and error messages.
 // Shared across packages to avoid duplicate definitions.
+// Read-only after initialization — must not be mutated (concurrent reads).
 var sensitiveQueryParamNames = map[string]bool{
 	// OAuth and authentication tokens
 	"token": true, "access_token": true, "refresh_token": true,
@@ -67,10 +68,53 @@ func IsSensitiveQueryParam(name string) bool {
 	return sensitiveQueryParamNames[asciiToLower(name)]
 }
 
-// SensitiveQueryParamNames returns the set of sensitive query parameter names.
-// Used internally to check URLs for sensitive content without importing the map directly.
-func SensitiveQueryParamNames() map[string]bool {
-	return sensitiveQueryParamNames
+
+
+// redactSensitiveParams replaces values of sensitive query parameters with [REDACTED].
+// Operates directly on the raw query string to avoid url.Values allocation.
+func redactSensitiveParams(rawQuery string) string {
+	b := getSanitizeBuilder()
+	b.Grow(len(rawQuery) + 64)
+
+	start := 0
+	for start <= len(rawQuery) {
+		// Find the end of this parameter (next & or end of string)
+		end := len(rawQuery)
+		if ampIdx := strings.IndexByte(rawQuery[start:], '&'); ampIdx >= 0 {
+			end = start + ampIdx
+		}
+
+		// Split into key=value at the first =
+		param := rawQuery[start:end]
+		if eqIdx := strings.IndexByte(param, '='); eqIdx >= 0 {
+			key := param[:eqIdx]
+			if isSensitiveQueryParamCI(key) {
+				b.WriteString(key)
+				b.WriteString("=[REDACTED]")
+			} else {
+				b.WriteString(param)
+			}
+		} else {
+			// Key without value
+			if isSensitiveQueryParamCI(param) {
+				b.WriteString(param)
+				b.WriteString("=[REDACTED]")
+			} else {
+				b.WriteString(param)
+			}
+		}
+
+		if end < len(rawQuery) {
+			b.WriteByte('&')
+			start = end + 1
+		} else {
+			break
+		}
+	}
+
+	result := b.String()
+	putSanitizeBuilder(b)
+	return result
 }
 
 // SanitizeURL removes credentials and redacts sensitive query parameters from a URL
@@ -108,7 +152,7 @@ func SanitizeURL(urlStr string) string {
 	// If there are query params, check if any are sensitive before parsing.
 	// This avoids the expensive url.Parse + query encode cycle for non-sensitive URLs.
 	if idx := strings.IndexByte(urlStr, '?'); idx >= 0 {
-		if hasSensitiveQueryParams(urlStr[idx+1:]) {
+		if HasSensitiveQueryParams(urlStr[idx+1:]) {
 			// Fall through to full parsing below
 		} else if !strings.ContainsAny(urlStr, "@# ") {
 			return urlStr
@@ -120,19 +164,10 @@ func SanitizeURL(urlStr string) string {
 		return urlStr
 	}
 
-	// Redact sensitive query parameters
-	if parsedURL.RawQuery != "" {
-		query := parsedURL.Query()
-		redacted := false
-		for key := range query {
-			if isSensitiveQueryParamCI(key) {
-				query.Set(key, "[REDACTED]")
-				redacted = true
-			}
-		}
-		if redacted {
-			parsedURL.RawQuery = query.Encode()
-		}
+	// Redact sensitive query parameters directly on raw query string
+	// to avoid url.Values map allocation from Query()/Encode() round-trip.
+	if parsedURL.RawQuery != "" && HasSensitiveQueryParams(parsedURL.RawQuery) {
+		parsedURL.RawQuery = redactSensitiveParams(parsedURL.RawQuery)
 	}
 
 	// Clear fragment to prevent credential leakage (e.g., OAuth implicit grants)
@@ -175,10 +210,10 @@ var sanitizeBuilderPool = sync.Pool{
 	},
 }
 
-// hasSensitiveQueryParams checks if any key-value pair in the query string
+// HasSensitiveQueryParams checks if any key-value pair in the query string
 // has a sensitive parameter name. Uses byte-level ASCII lowercase to avoid
 // allocations from strings.ToLower.
-func hasSensitiveQueryParams(query string) bool {
+func HasSensitiveQueryParams(query string) bool {
 	for {
 		// Extract key before '='
 		eqIdx := strings.IndexByte(query, '=')

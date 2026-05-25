@@ -90,27 +90,19 @@ func demonstrateStateManagement() {
 	defer client.Close()
 
 	// Set persistent headers
-	if err := client.SetHeader("X-API-Version", "v1"); err != nil {
-		log.Printf("Operation failed: %v\n", err)
-		return
-	}
-	if err := client.SetHeader("X-Client-ID", "client-123"); err != nil {
+	if err := client.SetHeaders(map[string]string{
+		"X-API-Version": "v1",
+		"X-Client-ID":   "client-123",
+	}); err != nil {
 		log.Printf("Operation failed: %v\n", err)
 		return
 	}
 	fmt.Printf("✓ Set %d headers\n", len(client.GetHeaders()))
 
 	// Add cookies manually
-	if err := client.SetCookie(&http.Cookie{
-		Name:  "session",
-		Value: "abc123",
-	}); err != nil {
-		log.Printf("Operation failed: %v\n", err)
-		return
-	}
-	if err := client.SetCookie(&http.Cookie{
-		Name:  "preferences",
-		Value: "dark_mode",
+	if err := client.SetCookies([]*http.Cookie{
+		{Name: "session", Value: "abc123"},
+		{Name: "preferences", Value: "dark_mode"},
 	}); err != nil {
 		log.Printf("Operation failed: %v\n", err)
 		return

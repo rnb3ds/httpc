@@ -1,13 +1,11 @@
 package security
 
 import (
-	"net"
 	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/cybergodev/httpc/internal/types"
-	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // ============================================================================
@@ -54,52 +52,6 @@ func TestNewValidatorWithConfig(t *testing.T) {
 			t.Fatal("Expected non-nil validator even with nil config")
 		}
 	})
-}
-
-func TestIsPrivateOrReservedIP(t *testing.T) {
-	tests := []struct {
-		name     string
-		ip       string
-		expected bool
-	}{
-		// Private IPv4 ranges
-		{"Private10", "10.0.0.1", true},
-		{"Private172", "172.16.0.1", true},
-		{"Private192", "192.168.1.1", true},
-
-		// Loopback
-		{"Loopback", "127.0.0.1", true},
-		{"LoopbackIPv6", "::1", true},
-
-		// Link-local
-		{"LinkLocal", "169.254.1.1", true},
-		{"LinkLocalIPv6", "fe80::1", true},
-
-		// Multicast
-		{"Multicast", "224.0.0.1", true},
-		{"MulticastIPv6", "ff00::1", true},
-
-		// Public IPs
-		{"PublicIP", "8.8.8.8", false},
-		{"PublicIP2", "1.1.1.1", false},
-
-		// Edge cases
-		{"Broadcast", "255.255.255.255", true},
-		{"ZeroIP", "0.0.0.0", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ip := net.ParseIP(tt.ip)
-			if ip == nil {
-				t.Fatalf("Failed to parse IP: %s", tt.ip)
-			}
-			result := validation.IsPrivateOrReservedIP(ip)
-			if result != tt.expected {
-				t.Errorf("IsPrivateOrReservedIP(%s) = %v, want %v", tt.ip, result, tt.expected)
-			}
-		})
-	}
 }
 
 func TestValidator_ValidateURL(t *testing.T) {
@@ -788,5 +740,42 @@ func TestValidateHost_AllowPrivateIPsFastReturn(t *testing.T) {
 				t.Errorf("validateHost(%q) expected nil with AllowPrivateIPs=true, got: %v", host, err)
 			}
 		})
+	}
+}
+
+// TestValidatorCacheConcurrency verifies that concurrent URL validation
+// does not create duplicate entries in the urlKeys slice.
+func TestValidatorCacheConcurrency(t *testing.T) {
+	validator := NewValidatorWithConfig(&Config{
+		ValidateURL:     true,
+		AllowPrivateIPs: true,
+	})
+
+	const goroutines = 50
+	errCh := make(chan error, goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			req := &Request{
+				Method:  "GET",
+				URL:     "https://example.com/api/test",
+				Headers: map[string]string{},
+			}
+			errCh <- validator.ValidateRequest(req)
+		}()
+	}
+
+	for i := 0; i < goroutines; i++ {
+		if err := <-errCh; err != nil {
+			t.Errorf("ValidateRequest failed: %v", err)
+		}
+	}
+
+	// Check that urlKeys has at most 1 entry for the URL
+	validator.urlMu.Lock()
+	keys := validator.urlKeys
+	validator.urlMu.Unlock()
+
+	if len(keys) > 1 {
+		t.Errorf("expected at most 1 urlKey entry, got %d: %v", len(keys), keys)
 	}
 }

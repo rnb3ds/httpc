@@ -67,10 +67,9 @@ func demonstrateBodyFormats(client httpc.Client) {
 		fmt.Printf("✓ Form: Status %d\n", resp.StatusCode())
 	}
 
-	// Plain text
+	// Plain text (Content-Type auto-detected as text/plain for string input)
 	resp, err = client.Post("https://echo.hoppscotch.io",
 		httpc.WithBody("Hello, this is plain text!"),
-		httpc.WithHeader("Content-Type", "text/plain"),
 	)
 	if err != nil {
 		log.Printf("Text error: %v\n", err)

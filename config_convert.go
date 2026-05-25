@@ -2,13 +2,10 @@ package httpc
 
 import (
 	"crypto/tls"
-	"fmt"
-	"net"
 	"time"
 
 	"github.com/cybergodev/httpc/internal/engine"
 	"github.com/cybergodev/httpc/internal/security"
-	"github.com/cybergodev/httpc/internal/validation"
 )
 
 const (
@@ -64,10 +61,6 @@ func calculateMaxRetryDelay(cfg *Config) time.Duration {
 // convertToEngineConfig converts public Config to engine Config.
 // It uses helper functions for cleaner separation of concerns.
 func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
-	if cfg == nil {
-		cfg = DefaultConfig()
-	}
-
 	idleConnsPerHost := calculateIdleConnsPerHost(cfg.Connection.MaxConnsPerHost)
 	minTLSVersion, maxTLSVersion := resolveTLSVersions(cfg)
 	maxRetryDelay := calculateMaxRetryDelay(cfg)
@@ -98,7 +91,6 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		EnableCookies:          cfg.Connection.EnableCookies,
 		EnableDoH:              cfg.Connection.EnableDoH,
 		DoHCacheTTL:            cfg.Connection.DoHCacheTTL,
-		BrowserFingerprint:     cfg.Connection.BrowserFingerprint,
 
 		// Security settings
 		TLSConfig:               cfg.Security.TLSConfig,
@@ -123,7 +115,7 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 
 		// Middleware settings
 		UserAgent:       cfg.Middleware.UserAgent,
-		Headers:         copyHeadersMap(cfg.Middleware.Headers),
+		Headers:         cfg.Middleware.Headers,
 		FollowRedirects: cfg.Middleware.FollowRedirects,
 		MaxRedirects:    cfg.Middleware.MaxRedirects,
 	}
@@ -132,37 +124,8 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		engineConfig.RedirectWhitelist = security.NewDomainWhitelist(cfg.Security.RedirectWhitelist...)
 	}
 
-	// Parse SSRF exempt CIDRs
-	exemptNets, err := parseExemptCIDRs(cfg.Security.SSRFExemptCIDRs)
-	if err != nil {
-		return nil, err
-	}
-	engineConfig.ExemptNets = exemptNets
+	// Use cached parsed CIDRs from ValidateConfig (no re-parsing)
+	engineConfig.ExemptNets = cfg.parsedCIDRs
 
 	return engineConfig, nil
-}
-
-// parseExemptCIDRs parses and validates SSRF exempt CIDR strings.
-func parseExemptCIDRs(cidrs []string) ([]*net.IPNet, error) {
-	if len(cidrs) == 0 {
-		return nil, nil
-	}
-	exemptNets, err := validation.ParseExemptCIDRs(cidrs)
-	if err != nil {
-		return nil, fmt.Errorf("invalid SSRF exempt CIDRs: %w", err)
-	}
-	return exemptNets, nil
-}
-
-// copyHeadersMap creates a shallow copy of a string map to prevent
-// shared-reference mutation between the public Config and engine Config.
-func copyHeadersMap(src map[string]string) map[string]string {
-	if len(src) == 0 {
-		return src
-	}
-	dst := make(map[string]string, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
 }

@@ -28,10 +28,10 @@ A fast, secure HTTP client library for Go with sensible defaults, minimal depend
 - [Configuration](#configuration)
 - [Middleware](#middleware)
 - [Proxy Configuration](#proxy-configuration)
-- [TLS Fingerprinting](#tls-fingerprinting)
 - [Security Features](#security-features)
 - [Error Handling](#error-handling)
 - [Concurrency Safety](#concurrency-safety)
+- [Interfaces](#interfaces)
 - [Documentation](#documentation)
 - [License](#license)
 
@@ -45,9 +45,7 @@ A fast, secure HTTP client library for Go with sensible defaults, minimal depend
 | **High Performance** | Connection pooling, HTTP/2, goroutine-safe, `sync.Pool` optimization |
 | **Built-in Resilience** | Smart retry with exponential backoff and jitter |
 | **Developer Friendly** | Clean API, intuitive options pattern, comprehensive documentation |
-| **Minimal Dependencies** | 2 direct dependencies, no external frameworks |
-| **TLS Fingerprinting** | Browser-like TLS handshakes to bypass basic bot detection |
-| **Reliable Defaults** | Well-tested defaults, extensive test coverage |
+| **Minimal Dependencies** | 1 dependency (golang.org/x/sys), pure Go stdlib |
 | **Cookie Management** | Full cookie jar support with security validation |
 | **File Operations** | Secure file download with progress tracking and resume support |
 
@@ -489,8 +487,8 @@ result, _ := httpc.DownloadWithOptionsWithContext(ctx, url, opts)
 | `StatusCode` | `int` | HTTP status code |
 | `ContentLength` | `int64` | Content-Length from server |
 | `Resumed` | `bool` | Whether download was resumed |
-| `ActualChecksum` | `string` | Computed checksum of downloaded file |
 | `ResponseCookies` | `[]*http.Cookie` | Cookies from response |
+| `ActualChecksum` | `string` | Computed checksum of downloaded file |
 | `Proto` | `string` | HTTP protocol version (e.g., "HTTP/1.1", "HTTP/2.0") |
 | `ResponseHeaders` | `http.Header` | Response headers |
 | `RequestURL` | `string` | Actual URL requested |
@@ -715,13 +713,12 @@ client, _ := httpc.New(config)
 | **Connection** (nested: `Connection: httpc.ConnectionConfig{...}`) ||||
 | `Connection.MaxIdleConns` | `int` | `50` | Max idle connections |
 | `Connection.MaxConnsPerHost` | `int` | `10` | Max connections per host |
-| `Connection.ProxyURL` | `string` | `""` | Proxy URL (http/socks5) |
+| `Connection.ProxyURL` | `string` | `""` | Proxy URL (http/https) |
 | `Connection.EnableSystemProxy` | `bool` | `false` | Auto-detect system proxy |
 | `Connection.EnableHTTP2` | `bool` | `true` | Enable HTTP/2 |
 | `Connection.EnableCookies` | `bool` | `false` | Enable cookie jar |
 | `Connection.EnableDoH` | `bool` | `false` | Enable DNS-over-HTTPS |
 | `Connection.DoHCacheTTL` | `time.Duration` | `5m` | DoH cache duration |
-| `Connection.BrowserFingerprint` | `string` | `""` | TLS fingerprint spoofing: "chrome", "firefox", "safari", "ios" |
 | `Connection.MaxResponseHeaderBytes` | `int64` | `0` | Max response header size (0 = Go stdlib default 10MB) |
 | **Security** (nested: `Security: httpc.SecurityConfig{...}`) ||||
 | `Security.TLSConfig` | `*tls.Config` | `nil` | Custom TLS config |
@@ -737,7 +734,7 @@ client, _ := httpc.New(config)
 | `Security.RedirectWhitelist` | `[]string` | `nil` | Allowed redirect domains |
 | `Security.MaxDecompressedBodySize` | `int64` | `100MB` | Max decompressed body size (zip bomb protection) |
 | `Security.SSRFExemptCIDRs` | `[]string` | `nil` | CIDR ranges exempted from SSRF blocking |
-| `Security.CookieSecurity` | `*httpc.CookieSecurityConfig` | `nil` | Cookie security validation rules |
+| `Security.CookieSecurity` | `*CookieSecurityConfig` | `nil` | Cookie security validation rules |
 | **Retry** (nested: `Retry: httpc.RetryConfig{...}`) ||||
 | `Retry.MaxRetries` | `int` | `3` | Max retry attempts |
 | `Retry.Delay` | `time.Duration` | `1s` | Initial retry delay |
@@ -812,6 +809,8 @@ httpc.AuditMiddlewareWithConfig(func(a httpc.AuditEvent) {
 | `ReqHeaders` | `map[string][]string` | Request headers (when `IncludeHeaders: true`) |
 | `RespHeaders` | `map[string][]string` | Response headers (when `IncludeHeaders: true`) |
 
+`AuditEvent` supports JSON serialization via `MarshalJSON()`.
+
 ### Chain Multiple Middleware
 
 ```go
@@ -851,28 +850,12 @@ func CustomMiddleware() httpc.MiddlewareFunc {
 // Manual proxy
 config := httpc.DefaultConfig()
 config.Connection.ProxyURL = "http://127.0.0.1:8080"
-// Or SOCKS5: "socks5://127.0.0.1:1080"
+// Or HTTPS proxy: "https://proxy.example.com:8443"
 
 // System proxy auto-detection (Windows/macOS/Linux)
 config := httpc.DefaultConfig()
 config.Connection.EnableSystemProxy = true // Reads from environment and system settings
 ```
-
----
-
-## TLS Fingerprinting
-
-HTTPC supports TLS ClientHello fingerprint spoofing via [utls](https://github.com/refraction-networking/utls), making requests appear to come from real browsers:
-
-```go
-config := httpc.DefaultConfig()
-config.Connection.BrowserFingerprint = "chrome" // or "firefox", "safari", "ios"
-client, _ := httpc.New(config)
-```
-
-When enabled, connections use utls instead of Go's standard `crypto/tls`, producing TLS handshakes that mimic the specified browser. This helps bypass basic bot detection systems.
-
-> **Note:** This feature adds `github.com/refraction-networking/utls` as a dependency. Leave `BrowserFingerprint` empty (default) to use standard Go TLS.
 
 ---
 
@@ -1044,6 +1027,82 @@ _ = httpc.CloseDefaultClient()
 - Package-level functions safely use a shared default client
 - `Result` objects are NOT safe for concurrent access — each goroutine should use its own `Result`
 - Internal metrics use atomic operations
+
+---
+
+## Interfaces
+
+HTTPC exposes interfaces for testing and extensibility. Use these when you need to mock HTTP calls in your tests:
+
+### Doer
+
+The simplest interface — a single `Request` method:
+
+```go
+type Doer interface {
+    Request(ctx context.Context, method, url string, options ...RequestOption) (*Result, error)
+}
+```
+
+### Client
+
+The full client interface — extends `Doer` with convenience methods and download support:
+
+```go
+type Client interface {
+    Doer
+    Get(url string, options ...RequestOption) (*Result, error)
+    Post(url string, options ...RequestOption) (*Result, error)
+    Put(url string, options ...RequestOption) (*Result, error)
+    Patch(url string, options ...RequestOption) (*Result, error)
+    Delete(url string, options ...RequestOption) (*Result, error)
+    Head(url string, options ...RequestOption) (*Result, error)
+    Options(url string, options ...RequestOption) (*Result, error)
+    DownloadFile(url, filePath string, options ...RequestOption) (*DownloadResult, error)
+    DownloadWithOptions(url string, cfg *DownloadConfig, options ...RequestOption) (*DownloadResult, error)
+    DownloadFileWithContext(ctx context.Context, url, filePath string, options ...RequestOption) (*DownloadResult, error)
+    DownloadWithOptionsWithContext(ctx context.Context, url string, cfg *DownloadConfig, options ...RequestOption) (*DownloadResult, error)
+    Close() error
+}
+```
+
+### DomainClienter
+
+Extends `Client` with domain-scoped session management:
+
+```go
+type DomainClienter interface {
+    Client
+    URL() string
+    Domain() string
+    SetHeader(key, value string) error
+    SetHeaders(headers map[string]string) error
+    DeleteHeader(key string)
+    ClearHeaders()
+    GetHeaders() map[string]string
+    SetCookie(cookie *http.Cookie) error
+    SetCookies(cookies []*http.Cookie) error
+    DeleteCookie(name string)
+    ClearCookies()
+    GetCookies() []*http.Cookie
+    GetCookie(name string) *http.Cookie
+    Session() *SessionManager
+}
+```
+
+### Usage in Tests
+
+```go
+type MockClient struct {
+    httpc.Client // embed for forward compatibility
+}
+
+func (m *MockClient) Get(url string, options ...httpc.RequestOption) (*httpc.Result, error) {
+    return &httpc.Result{
+        Response: &httpc.ResponseInfo{StatusCode: 200, Body: `{"ok": true}`},
+    }, nil
+}
+```
 
 ---
 

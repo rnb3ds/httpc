@@ -262,6 +262,11 @@ result, err := client.DownloadWithOptions(url, opts)
 - `Resumed` (bool) - Whether the download was resumed from a partial file
 - `ResponseCookies` ([]*http.Cookie) - Cookies returned by the server
 - `ActualChecksum` (string) - Computed checksum of the downloaded file (only set when `Checksum` is provided)
+- `Proto` (string) - HTTP protocol version of the response (e.g., "HTTP/1.1", "HTTP/2.0")
+- `ResponseHeaders` (http.Header) - Response headers from the download
+- `RequestURL` (string) - Actual URL that was requested
+- `RequestMethod` (string) - HTTP method used for the download
+- `RequestHeaders` (http.Header) - Request headers that were sent
 
 ### Save Response to File
 
