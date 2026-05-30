@@ -51,6 +51,8 @@ func WithUserAgent(userAgent string) RequestOption {
 }
 
 // WithBasicAuth sets HTTP Basic Authentication using the provided username and password.
+// Returns an error if username is empty, or if username or password exceeds the maximum
+// length or contains invalid characters.
 func WithBasicAuth(username, password string) RequestOption {
 	return func(r *engine.Request) error {
 		if username == "" {
@@ -71,6 +73,7 @@ func WithBasicAuth(username, password string) RequestOption {
 }
 
 // WithBearerToken sets the Authorization header to "Bearer <token>".
+// Returns an error if token is empty or fails token format validation.
 func WithBearerToken(token string) RequestOption {
 	return func(r *engine.Request) error {
 		if token == "" {
@@ -86,6 +89,8 @@ func WithBearerToken(token string) RequestOption {
 }
 
 // WithQuery sets a single query parameter on the request.
+// Returns an error if the key is empty, too long, or contains invalid characters,
+// or if the formatted value exceeds the maximum allowed length.
 func WithQuery(key string, value any) RequestOption {
 	return func(r *engine.Request) error {
 		if err := validation.ValidateQueryKey(key); err != nil {
@@ -105,6 +110,8 @@ func WithQuery(key string, value any) RequestOption {
 }
 
 // WithQueryMap sets multiple query parameters from a map.
+// Returns an error if any key is empty, too long, or contains invalid characters,
+// or if any formatted value exceeds the maximum allowed length.
 func WithQueryMap(params map[string]any) RequestOption {
 	return func(r *engine.Request) error {
 		existing := r.EnsureQueryParams()
@@ -133,6 +140,7 @@ func queryValueLength(v any) int {
 
 // WithJSON sets the request body as JSON and sets Content-Type to application/json.
 // This is a convenience method; the equivalent is WithBody(data, BodyJSON).
+// Returns an error if data is nil.
 func WithJSON(data any) RequestOption {
 	return func(r *engine.Request) error {
 		if data == nil {
@@ -146,6 +154,7 @@ func WithJSON(data any) RequestOption {
 
 // WithXML sets the request body as XML and sets Content-Type to application/xml.
 // This is a convenience method; the equivalent is WithBody(data, BodyXML).
+// Returns an error if data is nil.
 func WithXML(data any) RequestOption {
 	return func(r *engine.Request) error {
 		if data == nil {
@@ -183,6 +192,10 @@ func WithXML(data any) RequestOption {
 //
 //	// Auto-detect omitted (same as BodyAuto)
 //	result, err := client.Post(ctx, url, httpc.WithBody(data))
+//
+// Returns an error if data is nil, or if the body type is incompatible with the
+// specified BodyKind (e.g., BodyMultipart requires *FormData, BodyForm requires
+// map[string]string or url.Values, BodyBinary requires []byte or string).
 func WithBody(data any, kind ...BodyKind) RequestOption {
 	return func(r *engine.Request) error {
 		if data == nil {
@@ -354,6 +367,8 @@ func setAutoDetectedBody(r *engine.Request, data any) (string, error) {
 // Each field key and value is validated for control characters and size limits.
 // This is a convenience method with per-field validation; the general-purpose
 // alternative is WithBody(data, BodyForm).
+// Returns an error if data is nil, or if any field key or value contains control
+// characters or exceeds the maximum length.
 func WithForm(data map[string]string) RequestOption {
 	return func(r *engine.Request) error {
 		if data == nil {
@@ -426,6 +441,7 @@ func validateFormInput(data any) error {
 
 // WithFormData sets the request body as multipart/form-data.
 // This is a convenience method; the equivalent is WithBody(data, BodyMultipart).
+// Returns an error if data is nil.
 func WithFormData(data *FormData) RequestOption {
 	return func(r *engine.Request) error {
 		if data == nil {
@@ -437,6 +453,8 @@ func WithFormData(data *FormData) RequestOption {
 }
 
 // WithFile adds a file upload to the request as multipart/form-data.
+// Returns an error if fieldName or filename is empty, contains invalid characters,
+// or resolves to an invalid path (e.g., ".." or ".").
 func WithFile(fieldName, filename string, content []byte) RequestOption {
 	return func(r *engine.Request) error {
 		if fieldName == "" {
@@ -471,6 +489,7 @@ func WithFile(fieldName, filename string, content []byte) RequestOption {
 }
 
 // WithTimeout sets a per-request timeout that overrides the client's default timeout.
+// Returns ErrInvalidTimeout if timeout is negative or exceeds 30 minutes.
 func WithTimeout(timeout time.Duration) RequestOption {
 	return func(r *engine.Request) error {
 		if timeout < 0 {
@@ -486,6 +505,7 @@ func WithTimeout(timeout time.Duration) RequestOption {
 
 // WithContext sets the context for the request, enabling timeout and cancellation control.
 // The context overrides the client's default timeout for this request.
+// Returns an error if ctx is nil.
 func WithContext(ctx context.Context) RequestOption {
 	return func(r *engine.Request) error {
 		if ctx == nil {
@@ -497,10 +517,11 @@ func WithContext(ctx context.Context) RequestOption {
 }
 
 // WithMaxRetries sets the maximum number of retry attempts for this request.
+// Returns ErrInvalidRetry if maxRetries is negative or exceeds 10.
 func WithMaxRetries(maxRetries int) RequestOption {
 	return func(r *engine.Request) error {
-		if maxRetries < 0 || maxRetries > 10 {
-			return fmt.Errorf("%w: must be 0-10, got %d", ErrInvalidRetry, maxRetries)
+		if maxRetries < 0 || maxRetries > maxRetryAttempts {
+			return fmt.Errorf("%w: must be 0-%d, got %d", ErrInvalidRetry, maxRetryAttempts, maxRetries)
 		}
 		r.SetMaxRetries(maxRetries)
 		return nil
@@ -526,13 +547,14 @@ func WithStreamBody(stream bool) RequestOption {
 }
 
 // WithMaxRedirects sets the maximum number of redirects to follow for this request.
+// Returns an error if maxRedirects is negative or exceeds 50.
 func WithMaxRedirects(maxRedirects int) RequestOption {
 	return func(r *engine.Request) error {
 		if maxRedirects < 0 {
 			return fmt.Errorf("maxRedirects cannot be negative")
 		}
-		if maxRedirects > 50 {
-			return fmt.Errorf("maxRedirects exceeds maximum 50")
+		if maxRedirects > maxRedirectLimit {
+			return fmt.Errorf("maxRedirects exceeds maximum %d", maxRedirectLimit)
 		}
 		r.SetMaxRedirects(&maxRedirects)
 		return nil
@@ -540,6 +562,7 @@ func WithMaxRedirects(maxRedirects int) RequestOption {
 }
 
 // WithBinary sets binary data as the request body with an optional content type.
+// Returns an error if data is nil.
 func WithBinary(data []byte, contentType ...string) RequestOption {
 	return func(r *engine.Request) error {
 		if data == nil {
@@ -558,6 +581,8 @@ func WithBinary(data []byte, contentType ...string) RequestOption {
 }
 
 // WithCookie adds a cookie to the request after validation.
+// Returns an error if the cookie name or value fails validation (empty name,
+// control characters, or invalid characters).
 func WithCookie(cookie http.Cookie) RequestOption {
 	return func(r *engine.Request) error {
 		if err := validation.ValidateCookie(&cookie); err != nil {
@@ -583,6 +608,9 @@ func ensureCookieCapacity(existing []http.Cookie, additional int) []http.Cookie 
 // WithCookies adds multiple cookies to the request after validation.
 // It is more efficient than calling WithCookie multiple times, as it
 // pre-allocates capacity and validates all cookies in a single pass.
+// Returns an error if any cookie fails validation (empty name, control
+// characters, or invalid characters). The error message includes the
+// cookie name that failed.
 //
 // Example:
 //
@@ -618,6 +646,8 @@ func WithCookies(cookies []http.Cookie) RequestOption {
 // This is a convenience method for setting multiple simple cookies at once.
 // For cookies with additional attributes (Domain, Path, Secure, etc.),
 // use WithCookie or WithCookieString instead.
+// Returns an error if any cookie name or value fails validation. The error
+// message includes the cookie name that failed.
 //
 // Example:
 //
@@ -654,6 +684,8 @@ func WithCookieMap(cookies map[string]string) RequestOption {
 }
 
 // WithCookieString adds cookies from a raw Cookie header string to the request.
+// Returns an error if the cookie string is malformed (missing '=' separator,
+// empty name) or if any parsed cookie fails validation.
 func WithCookieString(cookieString string) RequestOption {
 	return func(r *engine.Request) error {
 		if cookieString == "" {
@@ -725,6 +757,7 @@ func parseCookieString(cookieString string) ([]http.Cookie, error) {
 //	        return nil
 //	    }),
 //	)
+// Returns an error if callback is nil.
 func WithOnRequest(callback func(req RequestMutator) error) RequestOption {
 	return func(r *engine.Request) error {
 		if callback == nil {
@@ -759,6 +792,8 @@ func WithOnRequest(callback func(req RequestMutator) error) RequestOption {
 //	        return nil
 //	    }),
 //	)
+//
+// Returns an error if callback is nil.
 func WithOnResponse(callback func(resp ResponseMutator) error) RequestOption {
 	return func(r *engine.Request) error {
 		if callback == nil {
@@ -806,6 +841,9 @@ func WithOnResponse(callback func(resp ResponseMutator) error) RequestOption {
 //	result, err := client.Get("https://api.example.com",
 //	    httpc.WithSecureCookie(security),
 //	)
+//
+// Returns an error if securityConfig is nil, or if any cookie on the request
+// fails the security validation check.
 func WithSecureCookie(securityConfig *validation.CookieSecurityConfig) RequestOption {
 	return func(r *engine.Request) error {
 		if securityConfig == nil {

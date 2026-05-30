@@ -4,6 +4,31 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ---
 
+## v1.5.1 - Config Pointer Types, Performance & Documentation (2026-05-31)
+
+### Breaking
+- Config sub-configs changed to pointer types (*TimeoutConfig, etc.) — nil sub-configs auto-filled with defaults in New()
+- Migration: `httpc.Config{Timeouts: TimeoutConfig{...}}` → `httpc.Config{Timeouts: &TimeoutConfig{...}}` for all sub-config literals
+- Partial configs now work: nil sub-configs receive defaults automatically
+
+### Changed
+- Performance: pooled getLimitReader (-1 alloc/op), pooled time.Timer (-1 alloc/retry), readBody fast path threshold 16KB→512KB, buffer steal threshold 16KB→32KB
+- ValidateConfig no longer mutates caller's Config — CIDR parsing deferred to parseSSRFExemptCIDRs after deep copy
+- Renamed maxRetries constant to maxRetryAttempts; added maxRedirectLimit constant (was magic number 50)
+- Exported formatBytes→FormatBytes and formatSpeed→FormatSpeed for documentation example compilation
+- Removed dead Result sync.Pool (releaseResult was never called in production)
+
+### Fixed
+- Content-Encoding comparison now case-insensitive per RFC 7231
+- README/README_zh-CN/docs: sub-config examples now use pointer syntax (&httpc.TimeoutConfig{...})
+- Removed non-existent ReleaseResult references from README, README_zh-CN, and all docs
+- storeCookies() now copies cookie value structs preventing use-after-pool-return
+- TestParseExemptCIDRs_TableDriven now calls parseSSRFExemptCIDRs() instead of ValidateConfig()
+- download.go error message improved for non-engine ResponseMutator from middleware wrapping
+- doc.go Close() example now handles error properly in defer
+
+---
+
 ## v1.5.0 - Security Hardening, Brotli & Performance (2026-05-25)
 
 ### Breaking

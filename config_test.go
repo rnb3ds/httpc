@@ -483,25 +483,25 @@ func TestConfig_String(t *testing.T) {
 
 	t.Run("Config with all fields", func(t *testing.T) {
 		config := &Config{
-			Timeouts: TimeoutConfig{
+			Timeouts: &TimeoutConfig{
 				Request:      30 * time.Second,
 				Dial:         5 * time.Second,
 				TLSHandshake: 5 * time.Second,
 			},
-			Connection: ConnectionConfig{
+			Connection: &ConnectionConfig{
 				MaxIdleConns:    100,
 				MaxConnsPerHost: 20,
 				ProxyURL:        "http://proxy:8080",
 			},
-			Security: SecurityConfig{
+			Security: &SecurityConfig{
 				InsecureSkipVerify: true,
 				AllowPrivateIPs:    true,
 			},
-			Retry: RetryConfig{
+			Retry: &RetryConfig{
 				MaxRetries:    3,
 				BackoffFactor: 1.5,
 			},
-			Middleware: MiddlewareConfig{
+			Middleware: &MiddlewareConfig{
 				UserAgent:       "test-agent",
 				FollowRedirects: false,
 			},
@@ -694,12 +694,24 @@ func TestParseExemptCIDRs_TableDriven(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := DefaultConfig()
 			cfg.Security.SSRFExemptCIDRs = tt.cidrs
+
+			// ValidateConfig only checks CIDR format; parseSSRFExemptCIDRs
+			// does the actual parsing and fills parsedCIDRs.
 			err := ValidateConfig(cfg)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ValidateConfig with CIDRs %v error = %v, wantErr %v", tt.cidrs, err, tt.wantErr)
 				return
 			}
-			if !tt.wantErr && len(cfg.parsedCIDRs) != tt.wantLen {
+			if tt.wantErr {
+				return
+			}
+
+			err = cfg.parseSSRFExemptCIDRs()
+			if err != nil {
+				t.Errorf("parseSSRFExemptCIDRs unexpected error: %v", err)
+				return
+			}
+			if len(cfg.parsedCIDRs) != tt.wantLen {
 				t.Errorf("parsedCIDRs for %v returned %d nets, want %d", tt.cidrs, len(cfg.parsedCIDRs), tt.wantLen)
 			}
 		})
@@ -744,7 +756,7 @@ func TestCalculateMaxRetryDelay_TableDriven(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := &Config{}
+			cfg := &Config{Retry: &RetryConfig{}}
 			cfg.Retry.MaxRetryDelay = tt.maxRetryDelay
 			got := calculateMaxRetryDelay(cfg)
 			if got < tt.wantMin || got > tt.wantMax {

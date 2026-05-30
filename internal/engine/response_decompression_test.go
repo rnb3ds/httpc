@@ -374,13 +374,13 @@ func TestResponseProcessor_CaseInsensitiveEncoding(t *testing.T) {
 				Request: &http.Request{},
 			}
 
-			// Note: Current implementation is case-sensitive
-			// This test documents the behavior
-			_, err = processor.Process(httpResponse)
-			// Uppercase encodings won't be recognized, so data remains compressed
-			// This is acceptable behavior for now
-			if err != nil && !strings.Contains(err.Error(), "gzip") && !strings.Contains(err.Error(), "deflate") {
-				t.Logf("Case-sensitive encoding: %s not recognized (expected behavior)", tt.encoding)
+			// RFC 7231 Section 3.1.2.1: content-coding tokens are case-insensitive
+			resp, err := processor.Process(httpResponse)
+			if err != nil {
+				t.Fatalf("Failed to process response with encoding %q: %v", tt.encoding, err)
+			}
+			if resp.Body() != originalData {
+				t.Errorf("Expected decompressed body %q, got %q", originalData, resp.Body())
 			}
 		})
 	}

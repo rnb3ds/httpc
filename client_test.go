@@ -331,7 +331,7 @@ func TestReleaseResult(t *testing.T) {
 	client, _ := newTestClient()
 	defer client.Close()
 
-	t.Run("ReleaseAndReuse", func(t *testing.T) {
+	t.Run("BasicRequest", func(t *testing.T) {
 		result, err := client.Get(server.URL)
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
@@ -342,20 +342,15 @@ func TestReleaseResult(t *testing.T) {
 		if result.Body() == "" {
 			t.Error("Expected non-empty body")
 		}
-		releaseResult(result)
 	})
 
-	t.Run("ReleaseNil", func(t *testing.T) {
-		releaseResult(nil) // should not panic
-	})
-
-	t.Run("MultipleReleaseCycle", func(t *testing.T) {
+	t.Run("MultipleRequests", func(t *testing.T) {
 		for i := 0; i < 10; i++ {
 			result, err := client.Get(server.URL)
 			if err != nil {
 				t.Fatalf("Request %d failed: %v", i, err)
 			}
-			releaseResult(result)
+			_ = result.Body()
 		}
 	})
 }

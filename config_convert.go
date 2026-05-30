@@ -38,6 +38,9 @@ func calculateIdleConnsPerHost(maxConnsPerHost int) int {
 // resolveTLSVersions returns the minimum and maximum TLS versions from config.
 // Falls back to TLS 1.2 and TLS 1.3 if not specified.
 func resolveTLSVersions(cfg *Config) (min, max uint16) {
+	if cfg.Security == nil {
+		return tls.VersionTLS12, tls.VersionTLS13
+	}
 	min = cfg.Security.MinTLSVersion
 	if min == 0 {
 		min = tls.VersionTLS12
@@ -52,7 +55,7 @@ func resolveTLSVersions(cfg *Config) (min, max uint16) {
 // calculateMaxRetryDelay returns the maximum retry delay from configuration.
 // Uses the user-provided MaxRetryDelay if set (> 0), otherwise defaults to 30s.
 func calculateMaxRetryDelay(cfg *Config) time.Duration {
-	if cfg.Retry.MaxRetryDelay > 0 {
+	if cfg.Retry != nil && cfg.Retry.MaxRetryDelay > 0 {
 		return cfg.Retry.MaxRetryDelay
 	}
 	return 30 * time.Second

@@ -172,7 +172,7 @@ func BenchmarkMicro_ResultReuse(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		releaseResult(result)
+		_ = result.Body() // consume result
 	}
 }
 

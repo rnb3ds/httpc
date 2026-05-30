@@ -349,7 +349,7 @@ func (s *SessionManager) UpdateFromCookies(cookies []*http.Cookie) {
 	s.storeCookies(cookies)
 }
 
-// storeCookies validates and stores cookies in the session map.
+// storeCookies validates and stores copies of cookies in the session map.
 // Caller must hold s.mu.
 func (s *SessionManager) storeCookies(cookies []*http.Cookie) {
 	for _, cookie := range cookies {
@@ -362,7 +362,8 @@ func (s *SessionManager) storeCookies(cookies []*http.Cookie) {
 		if err := s.validateCookieSecurity(cookie); err != nil {
 			continue
 		}
-		s.cookies[cookie.Name] = cookie
+		cp := *cookie
+		s.cookies[cp.Name] = &cp
 	}
 }
 

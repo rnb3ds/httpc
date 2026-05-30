@@ -85,7 +85,7 @@ func BenchmarkQueryEscape_NoEscape(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		for _, s := range inputs {
-							_ = QueryEscape(s)
+			_ = QueryEscape(s)
 		}
 	}
 }
@@ -98,7 +98,7 @@ func BenchmarkQueryEscape_NeedsEscape(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		for _, s := range inputs {
-							_ = QueryEscape(s)
+			_ = QueryEscape(s)
 		}
 	}
 }

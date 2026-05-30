@@ -273,7 +273,7 @@ func (r *Request) Cookies() []http.Cookie      { return r.cookies }
 func (r *Request) FollowRedirects() *bool      { return r.followRedirects }
 func (r *Request) MaxRedirects() *int          { return r.maxRedirects }
 func (r *Request) SanitizedURL() string        { return r.sanitizedURL }
-func (r *Request) SetSanitizedURL(v string)     { r.sanitizedURL = v }
+func (r *Request) SetSanitizedURL(v string)    { r.sanitizedURL = v }
 
 // Mutators
 func (r *Request) SetMethod(v string)             { r.method = v }
@@ -292,15 +292,15 @@ func (r *Request) EnsureQueryParams() map[string]any {
 	}
 	return r.queryParams
 }
-func (r *Request) SetBody(v any)                   { r.body = v }
-func (r *Request) SetTimeout(v time.Duration)      { r.timeout = v }
-func (r *Request) SetMaxRetries(v int)             { r.maxRetries = v }
-func (r *Request) SetContext(v context.Context)    { r.context = v }
-func (r *Request) SetCookies(v []http.Cookie)      { r.cookies = v }
-func (r *Request) SetFollowRedirects(v *bool)      { r.followRedirects = v }
-func (r *Request) SetMaxRedirects(v *int)          { r.maxRedirects = v }
-func (r *Request) StreamBody() bool                { return r.streamBody }
-func (r *Request) SetStreamBody(v bool)            { r.streamBody = v }
+func (r *Request) SetBody(v any)                { r.body = v }
+func (r *Request) SetTimeout(v time.Duration)   { r.timeout = v }
+func (r *Request) SetMaxRetries(v int)          { r.maxRetries = v }
+func (r *Request) SetContext(v context.Context) { r.context = v }
+func (r *Request) SetCookies(v []http.Cookie)   { r.cookies = v }
+func (r *Request) SetFollowRedirects(v *bool)   { r.followRedirects = v }
+func (r *Request) SetMaxRedirects(v *int)       { r.maxRedirects = v }
+func (r *Request) StreamBody() bool             { return r.streamBody }
+func (r *Request) SetStreamBody(v bool)         { r.streamBody = v }
 
 // Callback accessors
 func (r *Request) OnRequest() requestCallback        { return r.onRequest }
@@ -397,9 +397,9 @@ func (r *Response) SetRawBodyReader(rc io.ReadCloser) {
 }
 
 // Mutators (implement ResponseMutator)
-func (r *Response) SetStatusCode(v int)             { r.statusCode = v }
-func (r *Response) SetStatus(v string)              { r.status = v }
-func (r *Response) SetHeaders(v http.Header)        { r.headers = v }
+func (r *Response) SetStatusCode(v int)      { r.statusCode = v }
+func (r *Response) SetStatus(v string)       { r.status = v }
+func (r *Response) SetHeaders(v http.Header) { r.headers = v }
 func (r *Response) SetBody(v string) {
 	r.bodyMu.Lock()
 	r.body = v
@@ -613,19 +613,31 @@ func (c *Client) putExecRequest(req *Request) {
 	c.execRequestPool.put(req)
 }
 
+// timerPool reduces allocations for time.Timer objects used in sleepWithContext.
+var timerPool = sync.Pool{
+	New: func() any { return time.NewTimer(0) },
+}
+
 func (c *Client) sleepWithContext(ctx context.Context, duration time.Duration) error {
 	if ctx == nil {
 		time.Sleep(duration)
 		return nil
 	}
 
-	timer := time.NewTimer(duration)
-	defer timer.Stop()
+	timer, _ := timerPool.Get().(*time.Timer)
+	if timer == nil {
+		timer = time.NewTimer(duration)
+	} else {
+		timer.Reset(duration)
+	}
 
 	select {
 	case <-ctx.Done():
+		timer.Stop()
+		timerPool.Put(timer)
 		return ctx.Err()
 	case <-timer.C:
+		timerPool.Put(timer)
 		return nil
 	}
 }
@@ -1036,7 +1048,9 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 			}
 			// io.Discard implements io.ReaderFrom with its own internal pooled buffer,
 			// so io.Copy(io.Discard, ...) already avoids per-call heap allocation.
-			_, _ = io.Copy(io.Discard, io.LimitReader(httpResp.Body, maxDrain)) // drain for connection reuse
+			drainLr := getLimitReader(httpResp.Body, maxDrain)
+			_, _ = io.Copy(io.Discard, drainLr)
+			putLimitReader(drainLr)
 			_ = httpResp.Body.Close() // best-effort cleanup
 		}
 	}()

@@ -22,10 +22,10 @@ func TestResult_BasicUsage(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		contentType    string
-		body           string
-		extraHeaders   map[string]string
+		name         string
+		contentType  string
+		body         string
+		extraHeaders map[string]string
 	}{
 		{"JSON response", "application/json", `{"message":"success","code":200}`, map[string]string{"X-Custom-Header": "custom-value"}},
 		{"Text response", "text/plain", "response body", map[string]string{"X-Header-1": "value1", "X-Header-2": "value2"}},

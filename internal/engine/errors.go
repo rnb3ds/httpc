@@ -67,7 +67,6 @@ const (
 // so they cannot be safely pooled. Direct allocation avoids pool overhead
 // for objects that are never returned.
 
-
 // ClientError represents a classified HTTP client error with context about the failed request.
 type ClientError struct {
 	Type       ErrorType

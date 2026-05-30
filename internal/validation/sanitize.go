@@ -68,8 +68,6 @@ func IsSensitiveQueryParam(name string) bool {
 	return sensitiveQueryParamNames[asciiToLower(name)]
 }
 
-
-
 // redactSensitiveParams replaces values of sensitive query parameters with [REDACTED].
 // Operates directly on the raw query string to avoid url.Values allocation.
 func redactSensitiveParams(rawQuery string) string {

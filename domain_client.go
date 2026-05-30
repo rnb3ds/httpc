@@ -65,8 +65,15 @@ func NewDomain(baseURL string, config ...*Config) (DomainClienter, error) {
 			return nil, fmt.Errorf("invalid configuration: %w", err)
 		}
 		cfg = deepCopyConfig(config[0])
+		if err := cfg.parseSSRFExemptCIDRs(); err != nil {
+			return nil, fmt.Errorf("invalid configuration: %w", err)
+		}
+		cfg = mergeNilSubConfigs(cfg)
 	} else {
 		cfg = DefaultConfig()
+	}
+	if cfg.Connection == nil {
+		cfg.Connection = &ConnectionConfig{}
 	}
 	cfg.Connection.EnableCookies = true
 	client, err := newFromPreparedConfig(cfg)
