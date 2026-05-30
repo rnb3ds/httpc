@@ -123,6 +123,10 @@ func New(config ...*Config) (Client, error) {
 			return nil, fmt.Errorf("invalid configuration: %w", err)
 		}
 		cfg = deepCopyConfig(config[0])
+		if err := cfg.parseSSRFExemptCIDRs(); err != nil {
+			return nil, fmt.Errorf("invalid configuration: %w", err)
+		}
+		cfg = mergeNilSubConfigs(cfg)
 	} else {
 		cfg = DefaultConfig()
 	}
@@ -139,7 +143,7 @@ func newFromPreparedConfig(cfg *Config) (Client, error) {
 	}
 
 	// Warn if InsecureSkipVerify is enabled outside test environment.
-	if cfg.Security.InsecureSkipVerify && !isTestEnvironment() {
+	if cfg.Security != nil && cfg.Security.InsecureSkipVerify && !isTestEnvironment() {
 		insecureSkipVerifyWarnOnce.Do(func() {
 			w := getSecurityWarnOutput()
 			fmt.Fprintf(w, "[SECURITY WARNING] InsecureSkipVerify is enabled - TLS certificate verification is DISABLED\n")
@@ -154,11 +158,11 @@ func newFromPreparedConfig(cfg *Config) (Client, error) {
 
 	client := &clientImpl{
 		engine:         engineClient,
-		hasMiddlewares: len(cfg.Middleware.Middlewares) > 0,
+		hasMiddlewares: cfg.Middleware != nil && len(cfg.Middleware.Middlewares) > 0,
 	}
 
 	// Build middleware chain if middlewares are configured
-	if client.hasMiddlewares {
+	if client.hasMiddlewares && cfg.Middleware != nil {
 		client.middlewareChain = client.buildMiddlewareChain(cfg.Middleware.Middlewares)
 	}
 
@@ -176,37 +180,59 @@ func newFromPreparedConfig(cfg *Config) (Client, error) {
 func deepCopyConfig(src *Config) *Config {
 	dst := *src
 
+	// Deep copy each sub-config pointer
+	if src.Timeouts != nil {
+		cp := *src.Timeouts
+		dst.Timeouts = &cp
+	}
+	if src.Connection != nil {
+		cp := *src.Connection
+		dst.Connection = &cp
+	}
+	if src.Security != nil {
+		cp := *src.Security
+		dst.Security = &cp
+	}
+	if src.Retry != nil {
+		cp := *src.Retry
+		dst.Retry = &cp
+	}
+	if src.Middleware != nil {
+		cp := *src.Middleware
+		dst.Middleware = &cp
+	}
+
 	// Deep copy middleware headers
-	if src.Middleware.Headers != nil {
+	if src.Middleware != nil && src.Middleware.Headers != nil {
 		dst.Middleware.Headers = make(map[string]string, len(src.Middleware.Headers))
 		maps.Copy(dst.Middleware.Headers, src.Middleware.Headers)
 	}
 
 	// Deep copy middlewares slice
-	if len(src.Middleware.Middlewares) > 0 {
+	if src.Middleware != nil && len(src.Middleware.Middlewares) > 0 {
 		dst.Middleware.Middlewares = make([]MiddlewareFunc, len(src.Middleware.Middlewares))
 		copy(dst.Middleware.Middlewares, src.Middleware.Middlewares)
 	}
 
 	// Deep copy redirect whitelist
-	if len(src.Security.RedirectWhitelist) > 0 {
+	if src.Security != nil && len(src.Security.RedirectWhitelist) > 0 {
 		dst.Security.RedirectWhitelist = make([]string, len(src.Security.RedirectWhitelist))
 		copy(dst.Security.RedirectWhitelist, src.Security.RedirectWhitelist)
 	}
 
 	// Clone TLS config if present
-	if src.Security.TLSConfig != nil {
+	if src.Security != nil && src.Security.TLSConfig != nil {
 		dst.Security.TLSConfig = src.Security.TLSConfig.Clone()
 	}
 
 	// Deep copy cookie security config if present
-	if src.Security.CookieSecurity != nil {
+	if src.Security != nil && src.Security.CookieSecurity != nil {
 		cookieSec := *src.Security.CookieSecurity
 		dst.Security.CookieSecurity = &cookieSec
 	}
 
 	// Deep copy SSRF exempt CIDRs
-	if len(src.Security.SSRFExemptCIDRs) > 0 {
+	if src.Security != nil && len(src.Security.SSRFExemptCIDRs) > 0 {
 		dst.Security.SSRFExemptCIDRs = make([]string, len(src.Security.SSRFExemptCIDRs))
 		copy(dst.Security.SSRFExemptCIDRs, src.Security.SSRFExemptCIDRs)
 	}
@@ -218,6 +244,29 @@ func deepCopyConfig(src *Config) *Config {
 	}
 
 	return &dst
+}
+
+// mergeNilSubConfigs fills nil sub-config pointers with defaults from DefaultConfig.
+// This allows callers to partially configure a Config — any nil sub-config gets
+// sensible defaults, while non-nil sub-configs are used as-is.
+func mergeNilSubConfigs(cfg *Config) *Config {
+	def := DefaultConfig()
+	if cfg.Timeouts == nil {
+		cfg.Timeouts = def.Timeouts
+	}
+	if cfg.Connection == nil {
+		cfg.Connection = def.Connection
+	}
+	if cfg.Security == nil {
+		cfg.Security = def.Security
+	}
+	if cfg.Retry == nil {
+		cfg.Retry = def.Retry
+	}
+	if cfg.Middleware == nil {
+		cfg.Middleware = def.Middleware
+	}
+	return cfg
 }
 
 // buildMiddlewareChain constructs a middleware chain from the provided middlewares.
@@ -536,6 +585,7 @@ func Request(ctx context.Context, method, url string, options ...RequestOption) 
 // SetDefaultClient sets a custom client as the default for package-level functions.
 // The previous default client is closed automatically.
 // Only *clientImpl instances created by this package are supported.
+// Returns an error if client is nil, not created by this package, or already closed.
 func SetDefaultClient(client Client) error {
 	if client == nil {
 		return fmt.Errorf("cannot set nil client as default")
@@ -563,68 +613,6 @@ func SetDefaultClient(client Client) error {
 	return closeErr
 }
 
-// resultPool reduces heap allocations for Result objects.
-// Each Result contains RequestInfo, ResponseInfo, and RequestMeta which are
-// frequently allocated in the hot path.
-var resultPool = sync.Pool{
-	New: func() any {
-		return &Result{
-			Request:  &RequestInfo{},
-			Response: &ResponseInfo{},
-			Meta:     &RequestMeta{},
-		}
-	},
-}
-
-// getResult retrieves a Result from the pool and resets its fields.
-func getResult() *Result {
-	r, ok := resultPool.Get().(*Result)
-	if !ok || r == nil {
-		return &Result{
-			Request:  &RequestInfo{},
-			Response: &ResponseInfo{},
-			Meta:     &RequestMeta{},
-		}
-	}
-	// Reset all fields to zero values
-	*r.Request = RequestInfo{}
-	*r.Response = ResponseInfo{}
-	*r.Meta = RequestMeta{}
-	return r
-}
-
-// releaseResult returns a Result to the pool for reuse.
-// WARNING: Do not use the Result after calling releaseResult.
-func releaseResult(r *Result) {
-	if r == nil {
-		return
-	}
-
-	// Guard against manually constructed Results with nil sub-structs.
-	if r.Response == nil {
-		r.Response = &ResponseInfo{}
-	}
-	if r.Request == nil {
-		r.Request = &RequestInfo{}
-	}
-	if r.Meta == nil {
-		r.Meta = &RequestMeta{}
-	}
-
-	// Sanitize sensitive body data before returning to pool.
-	// Clear the entire backing array to prevent sensitive data (tokens, PII)
-	// from persisting in pooled objects.
-	body := r.Response.RawBody
-	if len(body) > 0 {
-		clear(body)
-		r.Response.RawBody = nil
-	}
-	*r.Request = RequestInfo{}
-	*r.Response = ResponseInfo{}
-	*r.Meta = RequestMeta{}
-	resultPool.Put(r)
-}
-
 func convertResponseToResult(resp ResponseMutator) *Result {
 	if resp == nil {
 		return nil
@@ -640,42 +628,41 @@ func convertResponseToResult(resp ResponseMutator) *Result {
 	}
 	requestCookies := extractRequestCookies(requestHeaders)
 
-	// Use pooled Result object
-	result := getResult()
-	result.Request.URL = resp.RequestURL()
-	result.Request.Method = resp.RequestMethod()
-	// Transfer request header ownership: captureRequestHeaders already cloned
-	// the headers in the engine layer. Since the engine Response is released
-	// right after this call, we can take ownership of the cloned map directly,
-	// avoiding a second clone.
-	result.Request.Headers = requestHeaders
-	requestHeaders = nil // prevent accidental use
-	result.Request.Cookies = requestCookies
-	result.Response.StatusCode = resp.StatusCode()
-	result.Response.Status = resp.Status()
-	result.Response.Proto = resp.Proto()
-	// Optimization: transfer response header ownership from the engine Response
-	// instead of cloning. The engine clones httpResp.Header during Process(),
-	// so this map is already owned by the engine and safe to take.
-	// Fall back to clone for middleware-wrapped ResponseMutator implementations.
+	// Allocate fresh Result — objects are returned to callers who
+	// hold references indefinitely, so pooling provides no benefit.
+	result := &Result{
+		Request: &RequestInfo{
+			URL:     resp.RequestURL(),
+			Method:  resp.RequestMethod(),
+			Headers: requestHeaders,
+			Cookies: requestCookies,
+		},
+		Response: &ResponseInfo{
+			StatusCode: resp.StatusCode(),
+			Status:     resp.Status(),
+			Proto:      resp.Proto(),
+			// Transfer header ownership from engine Response.
+			// Fall back to clone for middleware-wrapped ResponseMutator.
+		},
+		Meta: &RequestMeta{
+			Duration:      resp.Duration(),
+			Attempts:      resp.Attempts(),
+			RedirectChain: resp.RedirectChain(),
+			RedirectCount: resp.RedirectCount(),
+		},
+	}
+
 	if engineResp, ok := resp.(*engine.Response); ok {
 		result.Response.Headers = engineResp.TransferHeaders()
 	} else {
 		result.Response.Headers = cloneHeaders(resp.Headers())
 	}
-	// Convert body directly from raw bytes, bypassing the engine's lazy
-	// string conversion (sync.Once). The engine Response is released right
-	// after this call, so its cached body string would be wasted.
 	result.Response.RawBody = resp.RawBody()
 	if len(result.Response.RawBody) > 0 {
 		result.Response.Body = string(result.Response.RawBody)
 	}
 	result.Response.ContentLength = resp.ContentLength()
 	result.Response.Cookies = resp.Cookies()
-	result.Meta.Duration = resp.Duration()
-	result.Meta.Attempts = resp.Attempts()
-	result.Meta.RedirectChain = resp.RedirectChain()
-	result.Meta.RedirectCount = resp.RedirectCount()
 
 	return result
 }

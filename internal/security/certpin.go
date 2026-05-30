@@ -2,13 +2,13 @@ package security
 
 import (
 	"crypto/sha256"
-	"sync"
 	"crypto/x509"
 	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // CertificatePinner defines the interface for certificate pinning implementations.
@@ -84,7 +84,7 @@ const pinCacheMaxSize = 1024
 // This is the most common form of certificate pinning used in HTTP Public Key Pinning (HPKP)
 // and similar security mechanisms.
 type spkiHashPinner struct {
-	hashes      map[string]bool   // Base64-encoded SHA-256 hashes of SPKI
+	hashes      map[string]bool // Base64-encoded SHA-256 hashes of SPKI
 	mu          sync.RWMutex
 	pinCache    map[string]string // fingerprint -> base64(SPKI hash)
 	pinCacheOrd []string          // insertion order for LRU eviction

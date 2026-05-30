@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 )
 
@@ -37,7 +38,7 @@ const (
 	maxBufferSize = 512 * 1024 // 512KB
 	// bufferStealThreshold is the size below which we "steal" the buffer
 	// instead of copying, reducing allocations for small responses
-	bufferStealThreshold = 16 * 1024 // 16KB
+	bufferStealThreshold = 32 * 1024 // 32KB
 
 	// SECURITY: maxCompressedSize limits the size of compressed response data
 	// to prevent decompression bomb (zip bomb) attacks. A highly compressed
@@ -284,7 +285,8 @@ func (p *responseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 
 	// Fast path: known Content-Length, not compressed, within safe size.
 	// Read directly into a pre-sized slice — avoids bytes.Buffer allocation entirely.
-	if !isCompressed && contentLength > 0 && contentLength <= int64(bufferStealThreshold) {
+	// Extended to maxBufferSize (512KB) to cover most API responses without buffer pool overhead.
+	if !isCompressed && contentLength > 0 && contentLength <= int64(maxBufferSize) {
 		body := make([]byte, contentLength)
 		n, err := io.ReadFull(reader, body)
 		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
@@ -326,7 +328,7 @@ func (p *responseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 	// Optimization path for responses within steal threshold.
 	// Two sub-thresholds based on size:
 	//   - <= 2KB (defaultBufferSize/2): copy — not worth detaching a 4KB buffer for tiny data.
-	//   - 2KB–16KB: steal — detach the buffer from the pool to eliminate a copy.
+	//   - 2KB–32KB: steal — detach the buffer from the pool to eliminate a copy.
 	if len(body) <= bufferStealThreshold {
 		if len(body) <= defaultBufferSize/2 {
 			result := make([]byte, len(body))
@@ -349,7 +351,7 @@ func (p *responseProcessor) readBody(httpResp *http.Response) ([]byte, error) {
 // createDecompressor creates an appropriate decompressor based on the encoding type.
 // Uses pooled readers for gzip and deflate to reduce allocations.
 func (p *responseProcessor) createDecompressor(reader io.Reader, encoding string) (io.ReadCloser, error) {
-	switch encoding {
+	switch strings.ToLower(encoding) {
 	case "gzip":
 		// Try to get a pooled gzip reader
 		if pooled, ok := gzipReaderPool.Get().(*gzip.Reader); ok && pooled != nil {
@@ -386,7 +388,7 @@ func (p *responseProcessor) createDecompressor(reader io.Reader, encoding string
 				return wrapper, nil
 			}
 			// Doesn't implement Resetter, close and discard
-				_ = pooled.Close()
+			_ = pooled.Close()
 		}
 		return flate.NewReader(reader), nil
 	case "br":

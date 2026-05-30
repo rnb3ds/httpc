@@ -1267,6 +1267,7 @@ func TestClient_NoRedirectFollowing(t *testing.T) {
 		t.Logf("Status: %d (may vary)", resp.StatusCode())
 	}
 }
+
 // ============================================================================
 // QUERY ESCAPE LARGE INPUT TEST
 // ============================================================================
@@ -1283,7 +1284,7 @@ func TestQueryEscape_LargeInput(t *testing.T) {
 
 	// Large string with special char near the beginning to trigger escaping
 	largeWithSpecial := "hello world" + strings.Repeat("a", maxQueryEscapeSize)
-		result = QueryEscape(largeWithSpecial)
+	result = QueryEscape(largeWithSpecial)
 	// url.QueryEscape encodes space as +
 	if !strings.Contains(result, "+") && !strings.Contains(result, "%20") {
 		t.Errorf("Expected space encoding in large string, got %q", result[:min(50, len(result))])
@@ -1524,6 +1525,7 @@ func TestPooledFlateReader(t *testing.T) {
 		}
 	})
 }
+
 // ============================================================================
 // CONTEXT CANCELLATION WITH SLEEP TEST
 // ============================================================================
@@ -1694,6 +1696,7 @@ func TestClient_RequestTimeoutOverride(t *testing.T) {
 		t.Errorf("Expected status 200, got %d", resp.StatusCode())
 	}
 }
+
 // ============================================================================
 // MAX REDIRECT LIMIT TEST
 // ============================================================================

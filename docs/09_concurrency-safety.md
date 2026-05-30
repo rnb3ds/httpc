@@ -220,9 +220,9 @@ func main() {
 }
 ```
 
-### 5. Pool Results for High-Throughput Scenarios
+### 5. Reuse Client for High-Throughput Scenarios
 
-For high-throughput scenarios, use `ReleaseResult` to reduce garbage collection:
+For high-throughput scenarios, reuse a single client instance:
 
 ```go
 func processResults(client httpc.Client, urls []string) {
@@ -235,8 +235,7 @@ func processResults(client httpc.Client, urls []string) {
         // Process result...
         fmt.Println(result.StatusCode())
 
-        // Release back to pool
-        httpc.ReleaseResult(result)
+        // No manual cleanup needed — GC handles Result objects automatically
     }
 }
 ```
@@ -250,7 +249,7 @@ HTTPC uses the following synchronization mechanisms internally:
 | Default Client | `sync.Mutex` + `atomic.Pointer` | Lazy initialization |
 | Connection Pool | `http.Transport` internal | Connection management |
 | SessionManager | `sync.RWMutex` | Thread-safe cookie/header session storage |
-| Result Pool | `sync.Pool` | Memory optimization |
+| Engine Response Pool | `sync.Pool` | Internal response object reuse |
 | Config | Immutable after creation (deep copy) | Configuration safety |
 
 ## Thread-Safe Operations Summary

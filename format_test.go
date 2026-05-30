@@ -31,9 +31,9 @@ func TestFormatBytes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := formatBytes(tt.bytes)
+			got := FormatBytes(tt.bytes)
 			if got != tt.want {
-				t.Errorf("formatBytes(%d) = %q, want %q", tt.bytes, got, tt.want)
+				t.Errorf("FormatBytes(%d) = %q, want %q", tt.bytes, got, tt.want)
 			}
 		})
 	}
@@ -62,9 +62,9 @@ func TestFormatSpeed(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := formatSpeed(tt.bytesPerSecond)
+			got := FormatSpeed(tt.bytesPerSecond)
 			if got != tt.want {
-				t.Errorf("formatSpeed(%v) = %q, want %q", tt.bytesPerSecond, got, tt.want)
+				t.Errorf("FormatSpeed(%v) = %q, want %q", tt.bytesPerSecond, got, tt.want)
 			}
 		})
 	}

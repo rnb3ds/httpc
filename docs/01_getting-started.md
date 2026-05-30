@@ -172,26 +172,23 @@ resp1, err := client.Get(url1)
 if err != nil {
     log.Fatal(err)
 }
-defer httpc.ReleaseResult(resp1)
 
 resp2, err := client.Get(url2)
 if err != nil {
     log.Fatal(err)
 }
-defer httpc.ReleaseResult(resp2)
 
 resp3, err := client.Post(url3, httpc.WithJSON(data))
 if err != nil {
     log.Fatal(err)
 }
-defer httpc.ReleaseResult(resp3)
 ```
 
 **Why close?** Closing the client releases resources like connection pools and goroutines.
 
-### Result Pooling
+### Result Objects
 
-For high-throughput scenarios, return Result objects to the pool:
+Result objects are lightweight and managed by Go's garbage collector:
 
 ```go
 result, err := client.Get(url)
@@ -202,8 +199,7 @@ if err != nil {
 // Process result...
 fmt.Println(result.Body())
 
-// Return to pool for reuse (reduces GC pressure)
-httpc.ReleaseResult(result)
+// No manual cleanup needed — GC handles it automatically
 ```
 
 ### Request Options

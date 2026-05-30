@@ -193,9 +193,11 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 
 	engResp, ok := rawResp.(*engine.Response)
 	if !ok {
-		// Non-engine responses come from middleware chains and are their responsibility.
+		// Non-engine responses come from middleware that wraps the engine.Response.
+		// Downloads require direct access to the body reader, which is only
+		// available on *engine.Response.
 		releaseResponseMutator(rawResp)
-		return nil, fmt.Errorf("unexpected response type from download request")
+		return nil, fmt.Errorf("download is not compatible with middleware that wraps ResponseMutator")
 	}
 
 	df := extractDownloadFields(engResp)
@@ -485,7 +487,7 @@ type normalizedSystemEntry struct {
 }
 
 var (
-	systemPathsOnce sync.Once
+	systemPathsOnce   sync.Once
 	cachedSystemPaths []normalizedSystemEntry
 )
 

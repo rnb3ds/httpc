@@ -643,7 +643,7 @@ client, _ := httpc.New(httpc.TestingConfig())
 ```go
 config := &httpc.Config{
     // 超时设置
-    Timeouts: httpc.TimeoutConfig{
+    Timeouts: &httpc.TimeoutConfig{
         Request:        30 * time.Second,
         Dial:           10 * time.Second,
         TLSHandshake:   10 * time.Second,
@@ -652,7 +652,7 @@ config := &httpc.Config{
     },
 
     // 连接设置
-    Connection: httpc.ConnectionConfig{
+    Connection: &httpc.ConnectionConfig{
         MaxIdleConns:    100,
         MaxConnsPerHost: 20,
         EnableHTTP2:     true,
@@ -660,7 +660,7 @@ config := &httpc.Config{
     },
 
     // 安全设置
-    Security: httpc.SecurityConfig{
+    Security: &httpc.SecurityConfig{
         MinTLSVersion:       tls.VersionTLS12,
         MaxTLSVersion:       tls.VersionTLS13,
         MaxResponseBodySize: 50 * 1024 * 1024, // 50 MB
@@ -668,7 +668,7 @@ config := &httpc.Config{
     },
 
     // 重试设置
-    Retry: httpc.RetryConfig{
+    Retry: &httpc.RetryConfig{
         MaxRetries:    3,
         Delay:         1 * time.Second,
         BackoffFactor: 2.0,
@@ -676,7 +676,7 @@ config := &httpc.Config{
     },
 
     // 中间件设置
-    Middleware: httpc.MiddlewareConfig{
+    Middleware: &httpc.MiddlewareConfig{
         UserAgent:       "MyApp/1.0",
         FollowRedirects: true,
         MaxRedirects:    10,
@@ -689,6 +689,9 @@ if err := httpc.ValidateConfig(config); err != nil {
 }
 
 client, _ := httpc.New(config)
+
+// 检查配置 (敏感值自动遮蔽)
+fmt.Println(config.String())
 ```
 
 ### 配置选项
@@ -701,6 +704,7 @@ client, _ := httpc.New(config)
 | `MinimalConfig()` | 轻量级 (无重试) |
 | `TestingConfig()` | 仅限测试 - 禁用安全特性 |
 | `ValidateConfig(cfg)` | 验证配置，返回错误 |
+| `Config.String()` | 安全字符串表示 (敏感值已遮蔽) |
 
 | 选项 | 类型 | 默认值 | 描述 |
 |------|------|--------|------|
@@ -896,6 +900,18 @@ cfg.Security.SSRFExemptCIDRs = []string{"10.0.0.0/8", "100.64.0.0/10"}
 client, _ := httpc.New(cfg)
 ```
 
+### 安全警告输出
+
+默认情况下，使用不安全配置（如 `TestingConfig()`、`InsecureSkipVerify: true`）时会在 stderr 打印安全警告。可重定向或抑制这些警告：
+
+```go
+// 抑制安全警告 (如 CI 环境)
+httpc.SetSecurityWarnOutput(io.Discard)
+
+// 或重定向到自定义日志
+httpc.SetSecurityWarnOutput(os.Stderr)
+```
+
 ---
 
 ## 错误处理
@@ -999,14 +1015,6 @@ for i := 0; i < 100; i++ {
     }()
 }
 wg.Wait()
-```
-
-### 性能优化
-
-```go
-// 使用后释放 Result 回对象池 (高吞吐场景下减少 GC 压力)
-result, _ := httpc.Get(url)
-defer httpc.ReleaseResult(result)
 ```
 
 ### 默认客户端管理

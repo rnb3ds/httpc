@@ -23,7 +23,7 @@
 // Create a client with default configuration:
 //
 //	client, err := httpc.New()
-//	defer client.Close()
+//	defer func() { _ = client.Close() }()
 //
 // Create a client with custom configuration:
 //

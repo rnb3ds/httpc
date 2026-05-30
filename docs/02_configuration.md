@@ -260,10 +260,10 @@ For fine-grained control, create a custom configuration:
 ```go
 config := &httpc.Config{
     // Network settings
-    Timeouts: httpc.TimeoutConfig{
+    Timeouts: &httpc.TimeoutConfig{
         Request: 30 * time.Second,
     },
-    Connection: httpc.ConnectionConfig{
+    Connection: &httpc.ConnectionConfig{
         MaxIdleConns:    100,
         MaxConnsPerHost: 20,
         EnableHTTP2:     true,
@@ -271,7 +271,7 @@ config := &httpc.Config{
     },
 
     // Security settings
-    Security: httpc.SecurityConfig{
+    Security: &httpc.SecurityConfig{
         MinTLSVersion:       tls.VersionTLS12,
         MaxTLSVersion:       tls.VersionTLS13,
         InsecureSkipVerify:  false,
@@ -281,14 +281,14 @@ config := &httpc.Config{
     },
 
     // Retry settings
-    Retry: httpc.RetryConfig{
+    Retry: &httpc.RetryConfig{
         MaxRetries:    3,
         Delay:         1 * time.Second,
         BackoffFactor: 2.0,
     },
 
     // Headers and features
-    Middleware: httpc.MiddlewareConfig{
+    Middleware: &httpc.MiddlewareConfig{
         UserAgent:       "MyApp/1.0",
         FollowRedirects: true,
         Headers: map[string]string{

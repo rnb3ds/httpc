@@ -21,11 +21,11 @@ import (
 
 func TestRetry_Behavior(t *testing.T) {
 	tests := []struct {
-		name            string
-		maxRetries      int
-		successAfter    int32 // succeed on Nth attempt (0 = always succeed)
-		delay           time.Duration
-		expectedStatus  int
+		name             string
+		maxRetries       int
+		successAfter     int32 // succeed on Nth attempt (0 = always succeed)
+		delay            time.Duration
+		expectedStatus   int
 		expectedAttempts int32
 	}{
 		{"SuccessOnFirstAttempt", 3, 0, 0, http.StatusOK, 1},
