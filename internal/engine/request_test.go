@@ -545,3 +545,62 @@ func TestRequest_SetHeadersAndQueryParams_Nil(t *testing.T) {
 		}
 	})
 }
+
+// TestRequest_HeaderKeysCanonical pins the canonical-key storage contract:
+// SetHeader and SetHeaders store keys in http.CanonicalHeaderKey form, so one
+// header set under multiple casings collapses onto a single entry with the
+// last write winning deterministically. Previously both raw keys coexisted
+// and the build-time canonicalizer let Go's random map iteration order pick
+// the surviving value.
+func TestRequest_HeaderKeysCanonical(t *testing.T) {
+	t.Run("SetHeader canonicalizes the stored key", func(t *testing.T) {
+		r := AcquireRequest()
+		defer ReleaseRequest(r)
+		r.SetHeader("cache-control", "max-age=0")
+		if got, ok := r.headers["Cache-Control"]; !ok || got != "max-age=0" {
+			t.Errorf("headers[Cache-Control] = %q, %v; want %q, true", got, ok, "max-age=0")
+		}
+		if len(r.headers) != 1 {
+			t.Errorf("expected 1 stored entry, got %d (%v)", len(r.headers), r.headers)
+		}
+	})
+
+	t.Run("same header two casings collapses, last write wins", func(t *testing.T) {
+		r := AcquireRequest()
+		defer ReleaseRequest(r)
+		r.SetHeader("Cache-Control", "no-store")
+		r.SetHeader("cache-control", "max-age=0")
+		if len(r.headers) != 1 {
+			t.Fatalf("expected 1 stored entry, got %d (%v)", len(r.headers), r.headers)
+		}
+		if got := r.headers["Cache-Control"]; got != "max-age=0" {
+			t.Errorf("collapsed value = %q, want last-written %q", got, "max-age=0")
+		}
+	})
+
+	t.Run("SetHeaders canonicalizes and collapses deterministically", func(t *testing.T) {
+		r := AcquireRequest()
+		defer ReleaseRequest(r)
+		r.SetHeaders(map[string]string{
+			"Accept-Language": "en-US",
+			"accept-language": "zh-CN", // 'a'(0x61) sorts after 'A'(0x41), must win
+		})
+		if len(r.headers) != 1 {
+			t.Fatalf("expected 1 stored entry, got %d (%v)", len(r.headers), r.headers)
+		}
+		if got := r.headers["Accept-Language"]; got != "zh-CN" {
+			t.Errorf("collapsed value = %q, want later-sorted %q", got, "zh-CN")
+		}
+	})
+
+	t.Run("uncanonicalizable key stored unchanged", func(t *testing.T) {
+		// Middleware calls SetHeader directly, bypassing option validation,
+		// so keys CanonicalHeaderKey leaves untouched must round-trip as-is.
+		r := AcquireRequest()
+		defer ReleaseRequest(r)
+		r.SetHeader("weird key", "v")
+		if got, ok := r.headers["weird key"]; !ok || got != "v" {
+			t.Errorf("headers[weird key] = %q, %v; want %q, true", got, ok, "v")
+		}
+	})
+}

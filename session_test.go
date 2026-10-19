@@ -310,6 +310,65 @@ func TestSessionManager_DeleteHeader(t *testing.T) {
 	}
 }
 
+// TestSessionManager_HeaderKeyCasing pins the canonical-key storage contract
+// for session headers: keys are stored in http.CanonicalHeaderKey form, the
+// same header under two casings collapses onto one entry (last write wins),
+// and DeleteHeader removes case-insensitively.
+func TestSessionManager_HeaderKeyCasing(t *testing.T) {
+	t.Run("SetHeader canonicalizes and collapses casings", func(t *testing.T) {
+		session := newTestSession(t)
+
+		if err := session.SetHeader("Cache-Control", "no-store"); err != nil {
+			t.Fatalf("SetHeader: %v", err)
+		}
+		if err := session.SetHeader("cache-control", "max-age=0"); err != nil {
+			t.Fatalf("SetHeader: %v", err)
+		}
+
+		allHeaders := session.GetHeaders()
+		if len(allHeaders) != 1 {
+			t.Fatalf("Expected 1 header after two casings, got %d (%v)", len(allHeaders), allHeaders)
+		}
+		if v, ok := allHeaders["Cache-Control"]; !ok || v != "max-age=0" {
+			t.Errorf("GetHeaders()[Cache-Control] = %q, %v; want %q, true", v, ok, "max-age=0")
+		}
+	})
+
+	t.Run("SetHeaders collapses mixed-case duplicates", func(t *testing.T) {
+		session := newTestSession(t)
+
+		err := session.SetHeaders(map[string]string{
+			"Accept-Language": "en-US",
+			"accept-language": "zh-CN", // 'a'(0x61) sorts after 'A'(0x41), must win
+		})
+		if err != nil {
+			t.Fatalf("SetHeaders: %v", err)
+		}
+
+		allHeaders := session.GetHeaders()
+		if len(allHeaders) != 1 {
+			t.Fatalf("Expected 1 header, got %d (%v)", len(allHeaders), allHeaders)
+		}
+		if v := allHeaders["Accept-Language"]; v != "zh-CN" {
+			t.Errorf("Accept-Language = %q, want later-sorted %q", v, "zh-CN")
+		}
+	})
+
+	t.Run("DeleteHeader is case-insensitive", func(t *testing.T) {
+		session := newTestSession(t)
+
+		if err := session.SetHeader("Cache-Control", "no-store"); err != nil {
+			t.Fatalf("SetHeader: %v", err)
+		}
+		session.DeleteHeader("cache-control")
+
+		allHeaders := session.GetHeaders()
+		if _, exists := allHeaders["Cache-Control"]; exists {
+			t.Error("DeleteHeader with different casing failed to remove the header")
+		}
+	})
+}
+
 func TestSessionManager_ClearHeaders(t *testing.T) {
 	session := newTestSession(t)
 

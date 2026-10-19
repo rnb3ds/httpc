@@ -13,6 +13,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -199,9 +200,10 @@ var _ types.RequestMutator = (*Request)(nil)
 func (r *Request) Method() string { return r.method }
 func (r *Request) URL() string    { return r.url }
 
-// Headers returns the internal pooled headers map. The reference is valid
-// only for the lifetime of this request: after the request is released the
-// map is cleared and recycled for other requests. Callers that need to
+// Headers returns the internal pooled headers map. Keys are stored in
+// canonical (http.CanonicalHeaderKey) form — see SetHeader. The reference is
+// valid only for the lifetime of this request: after the request is released
+// the map is cleared and recycled for other requests. Callers that need to
 // retain the data (async logging, audit) must copy it.
 func (r *Request) Headers() map[string]string { return r.headers }
 
@@ -225,7 +227,11 @@ func (r *Request) SetSanitizedURL(v string)    { r.sanitizedURL = v }
 func (r *Request) SetMethod(v string) { r.method = v }
 func (r *Request) SetURL(v string)    { r.url = v }
 
-// SetHeaders replaces all headers with a COPY of v held in a pooled map.
+// SetHeaders replaces all headers with a COPY of v held in a pooled map,
+// canonicalizing each key (see SetHeader). Keys are visited in sorted order
+// so that when v holds one header under multiple casings (e.g. "Cache-Control"
+// and "cache-control"), the later key in sort order deterministically wins —
+// not Go's randomized map iteration order.
 //
 // SECURITY (pool poisoning): Request objects are pooled, and resetRequest
 // returns whatever map is stored here to the shared headersMapPool (after
@@ -240,7 +246,9 @@ func (r *Request) SetHeaders(v map[string]string) {
 		return
 	}
 	h := getHeadersMap()
-	maps.Copy(h, v)
+	for _, k := range slices.Sorted(maps.Keys(v)) {
+		h[http.CanonicalHeaderKey(k)] = v[k]
+	}
 	r.headers = h
 }
 
@@ -249,11 +257,20 @@ func (r *Request) SetHeaders(v map[string]string) {
 // (engine-owned) and that no other reference retains it. Used by Apply.
 func (r *Request) moveHeaders(v map[string]string) { r.headers = v }
 
+// SetHeader stores a single header, canonicalizing the key via
+// http.CanonicalHeaderKey. The same header set under multiple casings
+// ("Cache-Control" and "cache-control") therefore collapses onto one
+// canonical entry with the last write winning deterministically, matching
+// http.Header.Set semantics; previously the two raw keys coexisted in the
+// map and the build-time canonicalizer let Go's random iteration order pick
+// the winner. CanonicalHeaderKey leaves keys it cannot canonicalize (set
+// directly by middleware, which bypasses option validation) unchanged, so
+// such keys behave exactly as before.
 func (r *Request) SetHeader(key, value string) {
 	if r.headers == nil {
 		r.headers = getHeadersMap()
 	}
-	r.headers[key] = value
+	r.headers[http.CanonicalHeaderKey(key)] = value
 }
 
 // SetQueryParams replaces all query parameters with a COPY of v held in a
@@ -1072,9 +1089,11 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 		case io.Reader:
 			body = v
 		default:
-			// Headers keep the caller's original key casing, so a lowercase
-			// "content-type" must still be detected — otherwise a struct body
-			// would be serialized as JSON under an XML Content-Type.
+			// Header keys are stored canonicalized (SetHeader), so a lowercase
+			// "content-type" already reads as "Content-Type" here; the
+			// CanonicalHeaderKey comparison below is a defensive no-op. Without
+			// the case-insensitive match a struct body would be serialized as
+			// JSON under an XML Content-Type.
 			existingContentType := ""
 			for k, v := range req.Headers() {
 				if http.CanonicalHeaderKey(k) == "Content-Type" {
@@ -1276,10 +1295,10 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 	// http.CanonicalHeaderKey form. The fixed keys set on every request
 	// (Content-Type / Accept-Encoding / User-Agent) use the pre-canonicalized
 	// package vars above, and config headers are pre-canonicalized at processor
-	// construction time (canonicalHeaders), so neither pays the per-call
-	// http.CanonicalHeaderKey allocation on the hot path. Only per-request user
-	// headers (req.Headers) still canonicalize, since their keys are
-	// caller-supplied and unbounded.
+	// construction time (canonicalHeaders). Per-request user headers
+	// (req.Headers) are canonicalized at store time (SetHeader/SetHeaders),
+	// so the CanonicalHeaderKey call in their loop below is an allocation-free
+	// no-op scan, kept as defense-in-depth for the invariant.
 	setHeader := func(canonKey, value string) {
 		idx := len(headerVals)
 		headerVals = append(headerVals, value)

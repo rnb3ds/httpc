@@ -318,6 +318,83 @@ func TestHeaderMiddleware(t *testing.T) {
 	}
 }
 
+// TestHeaderMiddleware_MixedCaseSingleValue pins deterministic collapse when
+// the static-header config holds one header under multiple casings: every
+// request must carry exactly one value — the one from the later key in sorted
+// order — instead of a winner chosen by Go's random map iteration order.
+func TestHeaderMiddleware_MixedCaseSingleValue(t *testing.T) {
+	var receivedValue string
+	var receivedCount int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedValue = r.Header.Get("Cache-Control")
+		receivedCount = len(r.Header["Cache-Control"])
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	cfg := testConfig()
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
+		HeaderMiddleware(&HeaderConfig{
+			Headers: map[string]string{
+				"Cache-Control": "no-store",  // sorts first, loses
+				"cache-control": "max-age=0", // sorts later, wins
+			},
+		}),
+	}
+
+	client, err := New(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	for i := 0; i < 5; i++ {
+		if _, err := client.Get(ts.URL); err != nil {
+			t.Fatalf("request %d failed: %v", i, err)
+		}
+		if receivedCount != 1 {
+			t.Fatalf("request %d: Cache-Control sent %d values, want 1", i, receivedCount)
+		}
+		if receivedValue != "max-age=0" {
+			t.Fatalf("request %d: Cache-Control = %q, want deterministically %q", i, receivedValue, "max-age=0")
+		}
+	}
+}
+
+// TestRequestIDMiddleware_ExistingHeaderLowercase verifies the direct
+// canonical-key presence check still respects a caller-supplied preset
+// header regardless of its casing.
+func TestRequestIDMiddleware_ExistingHeaderLowercase(t *testing.T) {
+	var receivedID string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedID = r.Header.Get("X-Request-ID")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	cfg := testConfig()
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
+		RequestIDMiddleware(&RequestIDConfig{
+			HeaderName: "x-request-id", // lowercase config, exercises canonicalization
+			Generator:  func() string { return "generated-id" },
+		}),
+	}
+
+	client, err := New(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	// Preset with the opposite casing — middleware must not overwrite it.
+	if _, err := client.Get(ts.URL, WithHeader("X-REQUEST-ID", "explicit-id")); err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if receivedID != "explicit-id" {
+		t.Errorf("expected 'explicit-id', got: %s", receivedID)
+	}
+}
+
 func TestHeaderMiddleware_InvalidHeader(t *testing.T) {
 	cfg := testConfig()
 	cfg.Middleware.Middlewares = []MiddlewareFunc{

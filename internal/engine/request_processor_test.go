@@ -728,6 +728,38 @@ func TestBuild_AcceptEncodingStreaming(t *testing.T) {
 	}
 }
 
+// TestBuild_HeaderKeyCasingDeterministic guards the canonical-key storage fix
+// at the wire-format boundary: one header set under two casings with different
+// values must build to a single canonical header carrying the last-written
+// value on EVERY build. Before keys were canonicalized at store time, both raw
+// entries survived until this loop and the surviving value followed Go's
+// random map iteration order.
+func TestBuild_HeaderKeyCasingDeterministic(t *testing.T) {
+	config := &Config{Timeout: 30 * time.Second}
+	processor := newRequestProcessor(config)
+
+	for i := 0; i < 20; i++ {
+		req := testRequestBuilder().
+			Method("GET").
+			URL("https://api.example.com/data").
+			Context(context.Background()).
+			Build()
+		req.SetHeader("cache-control", "max-age=0")
+		req.SetHeader("Cache-Control", "no-store")
+
+		httpReq, err := processor.Build(req)
+		if err != nil {
+			t.Fatalf("build %d: unexpected error: %v", i, err)
+		}
+		if vals := httpReq.Header["Cache-Control"]; len(vals) != 1 {
+			t.Fatalf("build %d: Cache-Control values = %v, want exactly one", i, vals)
+		}
+		if got := httpReq.Header.Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("build %d: Cache-Control = %q, want last-written %q", i, got, "no-store")
+		}
+	}
+}
+
 // TestBuild_URLUserinfoBasicAuth verifies URL credentials are converted to a
 // Basic Authorization header (net/http parity) instead of being silently
 // stripped, and that an explicit Authorization header wins.

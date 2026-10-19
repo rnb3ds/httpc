@@ -99,7 +99,9 @@ func (s *SessionManager) SetCookieSecurity(config *CookieSecurityConfig) {
 	s.cookieSecurity = config
 }
 
-// SetHeader adds or updates a header in the session.
+// SetHeader adds or updates a header in the session. The key is stored in
+// canonical (http.CanonicalHeaderKey) form, so "cache-control" and
+// "Cache-Control" address the same entry and the last write wins.
 // Returns an error if the header key or value is invalid.
 func (s *SessionManager) SetHeader(key, value string) error {
 	if s == nil {
@@ -113,11 +115,14 @@ func (s *SessionManager) SetHeader(key, value string) error {
 	defer s.mu.Unlock()
 	s.ensureMaps()
 
-	s.headers[key] = value
+	s.headers[http.CanonicalHeaderKey(key)] = value
 	return nil
 }
 
-// SetHeaders adds or updates multiple headers in the session.
+// SetHeaders adds or updates multiple headers in the session. Keys are
+// stored in canonical form (see SetHeader); input keys are visited in
+// sorted order so a header supplied under multiple casings resolves to the
+// later key in sort order, not Go's random map iteration order.
 // Returns an error if any header key or value is invalid.
 func (s *SessionManager) SetHeaders(headers map[string]string) error {
 	if s == nil {
@@ -135,11 +140,15 @@ func (s *SessionManager) SetHeaders(headers map[string]string) error {
 	defer s.mu.Unlock()
 	s.ensureMaps()
 
-	maps.Copy(s.headers, headers)
+	for _, k := range sortedKeys(headers) {
+		s.headers[http.CanonicalHeaderKey(k)] = headers[k]
+	}
 	return nil
 }
 
-// DeleteHeader removes a header from the session.
+// DeleteHeader removes a header from the session. The lookup is
+// case-insensitive: a header stored as "Cache-Control" is removed by
+// DeleteHeader("cache-control") and vice versa.
 func (s *SessionManager) DeleteHeader(key string) {
 	if s == nil {
 		return
@@ -147,7 +156,7 @@ func (s *SessionManager) DeleteHeader(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	delete(s.headers, key)
+	delete(s.headers, http.CanonicalHeaderKey(key))
 }
 
 // ClearHeaders removes all headers from the session.
@@ -161,7 +170,8 @@ func (s *SessionManager) ClearHeaders() {
 	s.headers = make(map[string]string)
 }
 
-// GetHeaders returns a copy of all session headers.
+// GetHeaders returns a copy of all session headers. Keys are in canonical
+// (http.CanonicalHeaderKey) form — see SetHeader.
 func (s *SessionManager) GetHeaders() map[string]string {
 	if s == nil {
 		return nil
@@ -470,7 +480,10 @@ func (s *SessionManager) captureFromOptions(options []RequestOption) {
 		if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
 			continue
 		}
-		s.headers[key] = value
+		// Canonicalize to keep the session-map invariant (keys arrive from
+		// tempReq.Headers() already canonical post-SetHeader; this is the
+		// no-op-scan guarantee for direct map sources).
+		s.headers[http.CanonicalHeaderKey(key)] = value
 	}
 }
 

@@ -291,17 +291,12 @@ func RequestIDMiddleware(config *RequestIDConfig) MiddlewareFunc {
 
 	return func(next Handler) Handler {
 		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
-			// Header keys are stored with the caller's original casing, so a
-			// case-insensitive scan is required to respect a header set as
-			// e.g. "x-request-id" instead of adding a duplicate.
-			exists := false
-			for k := range req.Headers() {
-				if strings.EqualFold(k, headerName) {
-					exists = true
-					break
-				}
-			}
-			if !exists {
+			// Header keys are stored canonicalized (engine Request.SetHeader),
+			// so presence is a direct map read on the canonical form. A
+			// caller-supplied header in any casing ("x-request-id") is stored
+			// under the same canonical key and is still respected.
+			canonicalName := http.CanonicalHeaderKey(headerName)
+			if _, exists := req.Headers()[canonicalName]; !exists {
 				req.SetHeader(headerName, generator())
 			}
 
@@ -413,9 +408,10 @@ func HeaderMiddleware(config *HeaderConfig) MiddlewareFunc {
 	copied := make(map[string]string, len(headers))
 	maps.Copy(copied, headers)
 
-	// Pre-validate all headers at middleware creation time
-	for key, value := range copied {
-		if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
+	// Pre-validate all headers at middleware creation time, in sorted key
+	// order so the reported offending key is deterministic (see WithHeaderMap).
+	for _, key := range sortedKeys(copied) {
+		if err := validation.ValidateHeaderKeyValue(key, copied[key]); err != nil {
 			// Return a middleware that always returns the validation error
 			return func(next Handler) Handler {
 				return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
@@ -427,8 +423,11 @@ func HeaderMiddleware(config *HeaderConfig) MiddlewareFunc {
 
 	return func(next Handler) Handler {
 		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
-			for key, value := range copied {
-				req.SetHeader(key, value)
+			// Sorted order keeps the apply loop deterministic when the config
+			// map holds one header under multiple casings: the later key in
+			// sort order wins, instead of Go's random map iteration order.
+			for _, key := range sortedKeys(copied) {
+				req.SetHeader(key, copied[key])
 			}
 
 			return next(ctx, req)
