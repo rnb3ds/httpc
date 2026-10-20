@@ -93,6 +93,14 @@ type ClientError struct {
 	// needs no further redaction in Error(). User-constructed ClientError
 	// values leave this false so Error() still sanitizes raw URLs.
 	urlSanitized bool
+	// causeMsg is a log-safe rendering of the Cause chain for errors whose
+	// raw text embeds an unredacted URL (SEC-001 M-1): net/http returns
+	// *url.Error whose message quotes the full request URL, query string
+	// included (`Get "https://…?token=…"`), so printing the cause verbatim
+	// would leak sensitive query values even though URL is sanitized. Empty
+	// means Cause.Error() is already safe and Error() prints it as-is. The
+	// Cause itself is never altered, so errors.Is/As keep working.
+	causeMsg string
 }
 
 // errorBuilderPool reduces allocations for strings.Builder in ClientError.Error()
@@ -137,7 +145,13 @@ func (e *ClientError) Error() string {
 
 	if e.Cause != nil {
 		b.WriteString(": ")
-		b.WriteString(e.Cause.Error())
+		causeText := e.Cause.Error()
+		if e.causeMsg != "" {
+			// causeMsg is the same chain with any embedded URL redacted (see
+			// redactedCauseMessage); the Cause itself is untouched.
+			causeText = e.causeMsg
+		}
+		b.WriteString(causeText)
 	}
 
 	if e.Attempts > 0 {
@@ -291,7 +305,8 @@ func (e *ClientError) isRetryableOpError(opErr *net.OpError) bool {
 func isRetryableSyscallError(errno syscall.Errno) bool {
 	switch errno {
 	case syscall.ECONNREFUSED, syscall.ECONNRESET, syscall.EPIPE,
-		syscall.ETIMEDOUT, syscall.ENETUNREACH, syscall.EHOSTUNREACH:
+		syscall.ETIMEDOUT, syscall.ENETUNREACH, syscall.EHOSTUNREACH,
+		syscall.ECONNABORTED: // mirrors WSAECONNABORTED (10053) on Windows
 		return true
 	}
 	// Check platform-specific error codes (Windows WSA errors) that are not
@@ -379,6 +394,38 @@ func classifyError(err error, reqURL, method string, attempts int) *ClientError 
 	return classifyErrorWithSanitizedURL(err, sanitizedURL, method, attempts)
 }
 
+// redactedCauseMessage returns a redacted rendering of err's full chain when
+// the chain quotes an unredacted URL (SEC-001 M-1). net/http returns *url.Error
+// whose message embeds the request URL verbatim — `Get "https://…?token=…"` —
+// so Error() must not print the raw cause text. Empty string means the chain
+// carries nothing to redact and Error() should print Cause.Error() as-is.
+func redactedCauseMessage(err error) string {
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		return ""
+	}
+	redacted := redactURLInError(err, urlErr.URL)
+	if redacted == err {
+		return ""
+	}
+	return redacted.Error()
+}
+
+// redactURLInError replaces any occurrence of rawURL inside err's message with
+// its sanitized form, so a wrapping error cannot carry credentials or
+// sensitive query values up the error chain into logs. This mirrors
+// validation.redactErrorURL's approach. When rawURL has nothing to sanitize,
+// or the message does not quote it, the original error is returned unchanged,
+// preserving its type for errors.Is/As; otherwise a new error is built from
+// the scrubbed message.
+func redactURLInError(err error, rawURL string) error {
+	sanitized := validation.SanitizeURL(rawURL)
+	if sanitized == rawURL || !strings.Contains(err.Error(), rawURL) {
+		return err
+	}
+	return errors.New(strings.ReplaceAll(err.Error(), rawURL, sanitized))
+}
+
 // classifyErrorWithSanitizedURL classifies an error using a pre-sanitized URL.
 // Use this when the same URL is reused across retry attempts to avoid re-sanitizing.
 func classifyErrorWithSanitizedURL(err error, sanitizedURL, method string, attempts int) *ClientError {
@@ -404,6 +451,7 @@ func classifyErrorWithSanitizedURL(err error, sanitizedURL, method string, attem
 
 	clientErr := &ClientError{}
 	clientErr.Cause = err
+	clientErr.causeMsg = redactedCauseMessage(err)
 	clientErr.URL = sanitizedURL
 	clientErr.urlSanitized = true
 	clientErr.Method = method

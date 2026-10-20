@@ -14,8 +14,7 @@ import (
 
 func TestCheckRedirect_CrossOriginHeaderStripping(t *testing.T) {
 	config := &Config{
-		Timeout:         30 * time.Second,
-		AllowPrivateIPs: true,
+		Timeout: 30 * time.Second, Connection: connection.Config{AllowPrivateIPs: true},
 	}
 
 	connConfig := testConnectionConfig()
@@ -69,6 +68,8 @@ func TestCheckRedirect_CrossOriginHeaderStripping(t *testing.T) {
 			redirectReq.Header.Set("Proxy-Authorization", "Basic creds")
 			redirectReq.Header.Set("Cookie", "session=abc")
 			redirectReq.Header.Set("X-Custom", "visible")
+			redirectReq.Header.Set("X-Api-Key", "sk-12345")
+			redirectReq.Header.Set("X-Auth-Token", "auth-secret")
 
 			originalURL, _ := url.Parse("https://" + tt.originalHost + "/original")
 			originalReq, _ := http.NewRequest("GET", originalURL.String(), nil)
@@ -99,15 +100,84 @@ func TestCheckRedirect_CrossOriginHeaderStripping(t *testing.T) {
 				t.Error("X-Custom header should never be stripped")
 			}
 
+			// Custom credential headers must follow the same cross-origin
+			// stripping rule as Authorization/Cookie (M-2).
+			if redirectReq.Header.Get("X-Api-Key") == "" != tt.expectAuthStripped {
+				t.Errorf("X-Api-Key stripped=%v, want=%v", redirectReq.Header.Get("X-Api-Key") == "", tt.expectAuthStripped)
+			}
+			if redirectReq.Header.Get("X-Auth-Token") == "" != tt.expectAuthStripped {
+				t.Errorf("X-Auth-Token stripped=%v, want=%v", redirectReq.Header.Get("X-Auth-Token") == "", tt.expectAuthStripped)
+			}
+
 			putRedirectSettings(settings)
 		})
 	}
 }
 
+// Config-declared sensitive headers join the built-in cross-origin strip set
+// (SEC-001 m-3): a custom credential header configured via
+// Security.SensitiveHeaders must be stripped on a cross-origin redirect and
+// preserved on a same-origin one, exactly like Authorization.
+func TestCheckRedirect_ConfigSensitiveHeadersStripped(t *testing.T) {
+	config := &Config{
+		Timeout: 30 * time.Second, Connection: connection.Config{AllowPrivateIPs: true},
+		// Mixed casing exercises canonicalization; the Authorization entry
+		// exercises dedup against the built-in set.
+		SensitiveHeaders: []string{"x-secret-key", "authorization"},
+	}
+
+	poolManager, err := connection.NewPoolManager(testConnectionConfig())
+	if err != nil {
+		t.Fatalf("Failed to create pool manager: %v", err)
+	}
+	defer func() { _ = poolManager.Close() }()
+
+	trans, err := newTransport(config, poolManager)
+	if err != nil {
+		t.Fatalf("Failed to create transport: %v", err)
+	}
+	defer func() { _ = trans.Close() }()
+
+	run := func(t *testing.T, originalHost, redirectHost string, wantStripped bool) {
+		t.Helper()
+		redirectURL, _ := url.Parse("https://" + redirectHost + "/redirected")
+		redirectReq, _ := http.NewRequest("GET", redirectURL.String(), nil)
+		redirectReq.Header.Set("X-Secret-Key", "k-123")
+		redirectReq.Header.Set("X-Harmless", "v-1")
+
+		originalURL, _ := url.Parse("https://" + originalHost + "/original")
+		originalReq, _ := http.NewRequest("GET", originalURL.String(), nil)
+
+		settings := getRedirectSettings()
+		settings.followRedirects = true
+		settings.maxRedirects = 5
+		ctx := context.WithValue(redirectReq.Context(), redirectContextKey{}, settings)
+		redirectReq = redirectReq.WithContext(ctx)
+
+		if err := trans.checkRedirect(redirectReq, []*http.Request{originalReq}); err != nil {
+			t.Fatalf("checkRedirect returned error: %v", err)
+		}
+
+		if got := redirectReq.Header.Get("X-Secret-Key"); (got == "") != wantStripped {
+			t.Errorf("X-Secret-Key stripped=%v (got %q), want stripped=%v", got == "", got, wantStripped)
+		}
+		if redirectReq.Header.Get("X-Harmless") != "v-1" {
+			t.Error("X-Harmless header should never be stripped")
+		}
+		putRedirectSettings(settings)
+	}
+
+	t.Run("cross-origin strips configured header", func(t *testing.T) {
+		run(t, "api.example.com", "evil.com", true)
+	})
+	t.Run("same-origin preserves configured header", func(t *testing.T) {
+		run(t, "example.com", "example.com", false)
+	})
+}
+
 func TestCheckRedirect_SameOriginHeadersPreserved(t *testing.T) {
 	config := &Config{
-		Timeout:         30 * time.Second,
-		AllowPrivateIPs: true,
+		Timeout: 30 * time.Second, Connection: connection.Config{AllowPrivateIPs: true},
 	}
 
 	connConfig := testConnectionConfig()
@@ -182,9 +252,9 @@ func TestClearPools(t *testing.T) {
 // AllowPrivateIPs=true disables the SSRF check so the whitelist is the only gate.
 func TestCheckRedirect_WhitelistBlock(t *testing.T) {
 	config := &Config{
-		Timeout:           30 * time.Second,
-		AllowPrivateIPs:   true,
-		RedirectWhitelist: security.NewDomainWhitelist("allowed.example.com"),
+		Timeout: 30 * time.Second,
+
+		RedirectWhitelist: security.NewDomainWhitelist("allowed.example.com"), Connection: connection.Config{AllowPrivateIPs: true},
 	}
 
 	connConfig := testConnectionConfig()
@@ -240,8 +310,7 @@ func TestCheckRedirect_WhitelistBlock(t *testing.T) {
 // private/loopback addresses and unsupported schemes are blocked.
 func TestCheckRedirect_SSRFPrivateIPBlocked(t *testing.T) {
 	config := &Config{
-		Timeout:         30 * time.Second,
-		AllowPrivateIPs: false, // SSRF protection active
+		Timeout: 30 * time.Second, Connection: connection.Config{AllowPrivateIPs: false}, // SSRF protection active
 	}
 
 	connConfig := testConnectionConfig()
@@ -300,8 +369,7 @@ func TestCheckRedirect_SSRFPrivateIPBlocked(t *testing.T) {
 // (:255-257 → "stopped after N redirects").
 func TestCheckRedirect_PolicyArms(t *testing.T) {
 	config := &Config{
-		Timeout:         30 * time.Second,
-		AllowPrivateIPs: true,
+		Timeout: 30 * time.Second, Connection: connection.Config{AllowPrivateIPs: true},
 	}
 
 	connConfig := testConnectionConfig()

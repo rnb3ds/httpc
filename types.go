@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cybergodev/httpc/internal/engine"
+	"github.com/cybergodev/httpc/internal/fingerprint"
 	"github.com/cybergodev/httpc/internal/proxypool"
 	"github.com/cybergodev/httpc/internal/types"
 	"github.com/cybergodev/httpc/internal/validation"
@@ -195,6 +196,62 @@ type SecurityConfig struct {
 	// WARNING: Only use in testing. Default: false.
 	InsecureSkipVerify bool
 
+	// TLSFingerprint enables browser transport fingerprinting: TLS
+	// ClientHello (JA3/JA4), HTTP/2 frames (SETTINGS/window updates/
+	// pseudo-header order/priorities), and a browser-coherent ordered header
+	// block including a version-matched User-Agent. Implemented in-house on
+	// upstream uTLS (TLS layer) and the enetx/http(-2) fork transports (the
+	// net/http and x/net/http2 extensions that expose wire-level ordering
+	// knobs); httpc does not depend on any third-party HTTP client for this.
+	//
+	// Values are preset names for the two shipped browser profiles —
+	// "chrome" (Chrome 152) and "firefox" (Firefox 148) — optionally with an
+	// OS suffix: "chrome-windows", "chrome-macos", "chrome-linux",
+	// "chrome-android", "chrome-ios" (and the firefox-* equivalents), plus
+	// the aliases "chrome-latest", "chrome-152", "firefox-latest",
+	// "firefox-148", "android-chrome-latest", "ios-chrome-latest". Empty
+	// string (default) uses the standard Go stack with no spoofing.
+	//
+	// Behavior notes when set:
+	//   - The httpc engine (redirects, retries, middleware, streaming) stays
+	//     in control; only the transport layer is replaced.
+	//   - Proxy pools, rotation, and circuit breaking keep working; HTTP and
+	//     SOCKS5 proxies are supported on the fingerprint path.
+	//   - The preset's header set is authoritative: same-named request
+	//     headers (User-Agent, Accept, Accept-Language, ...) are replaced by
+	//     the browser profile's values so the wire stays coherent with the
+	//     spoofed ClientHello. Custom headers pass through untouched — in
+	//     particular, an explicitly set User-Agent does NOT override the
+	//     preset on this path.
+	//   - Redirect hops stay browser-coherent: sec-fetch-site is recomputed
+	//     against the previous hop's URL, sec-fetch-user is dropped after
+	//     the first hop, and a 301/302/303-downgraded fetch request keeps
+	//     fetch-style headers after turning into GET.
+	//   - Only HTTP/1.1 and HTTP/2 are used (h2 preferred, h1 fallback),
+	//     both fully fingerprinted. The fallback replays the request, so it
+	//     only runs for failures that provably never wrote request bytes
+	//     (ALPN mismatch) or for idempotent methods — a POST whose h2 leg
+	//     failed mid-response is NOT replayed; the h2 error is returned
+	//     instead. HTTP/3 is not attempted: a QUIC-to-TCP
+	//     fallback would emit a non-browser TLS shape mid-chain.
+	//   - Certificate pinning works on this path: CertificatePinner runs as
+	//     the handshake's VerifyPeerCertificate hook (under
+	//     InsecureSkipVerify it becomes the only gate, pinning the leaf
+	//     certificate — the same trust model as the standard path).
+	//   - Connection.EnableHTTP2=false pins the fingerprint path to HTTP/1.1,
+	//     mirroring the standard stack's protocol choice.
+	//   - The fingerprint path uses its own connection-pool sizing
+	//     (MaxIdleConns 512 / MaxConnsPerHost 128): Connection.MaxIdleConns
+	//     and Connection.MaxConnsPerHost apply to the standard transport only.
+	//   - TLSConfig and MinTLSVersion/MaxTLSVersion are mutually exclusive
+	//     with this field (validation rejects the combination).
+	//   - SSRF protection uses a resolve-then-validate pre-flight instead of
+	//     the standard path's dial-layer validation; redirects are re-checked
+	//     per hop by the engine.
+	//   - Fingerprinted connections are not counted in pool metrics and do
+	//     not use Connection.EnableDoH (the backend resolves DNS itself).
+	TLSFingerprint string
+
 	// MaxResponseBodySize limits response body size in bytes. Default: 10MB.
 	MaxResponseBodySize int64
 
@@ -232,17 +289,17 @@ type SecurityConfig struct {
 	// StrictContentLength enables strict Content-Length validation. Default: true.
 	StrictContentLength bool
 
-	// CookieSecurity is currently not enforced during request processing.
-	// Cookie security validation is applied via WithSecureCookie (per
-	// request) or SessionConfig.CookieSecurity (per session).
-	// Default: nil.
-	CookieSecurity *CookieSecurityConfig
-
 	// CertificatePinner, when set, enables certificate pinning: the TLS
 	// handshake is rejected unless the server presents a pinned key/certificate,
 	// defending against MITM even if a trusted CA is compromised.
 	// Construct one with NewSPKIHashPinner, NewPublicKeyPinner, or
 	// NewCertificatePinnerChain. Default: nil (pinning disabled).
+	//
+	// Combines with TLSFingerprint: on the fingerprint path the pinner runs
+	// as the spoofed handshake's VerifyPeerCertificate hook; when
+	// InsecureSkipVerify is also set, the pinner is the only verification
+	// gate and pins the leaf certificate (verified chains are unavailable
+	// when verification is skipped).
 	//
 	// The pinner is shared by reference across clients created from the same
 	// Config (it is not deep-copied); pinner implementations are safe for
@@ -252,6 +309,26 @@ type SecurityConfig struct {
 	// RedirectWhitelist specifies allowed domains for redirects.
 	// Default: nil (all redirects allowed).
 	RedirectWhitelist []string
+
+	// SensitiveHeaders extends the set of header names treated as credentials
+	// when a redirect carries the request to a different origin: the built-in
+	// set (Authorization, Proxy-Authorization, Cookie, X-Api-Key,
+	// X-Auth-Token) is always stripped on cross-origin hops — net/http itself
+	// only covers the first three, and a custom credential header such as
+	// "X-Secret-Key" would otherwise be forwarded verbatim to whatever the
+	// Location header points at (open-redirect credential leak, CWE-525).
+	// Entries are canonicalized (matching is case-insensitive) and deduped;
+	// the built-in set is always stripped regardless. Default: nil.
+	//
+	// Note: masking in Result.String() and audit output covers only the
+	// built-in sensitive names; headers listed here remain visible there.
+	SensitiveHeaders []string
+
+	// FollowRedirects controls automatic redirect following. Default: true.
+	FollowRedirects bool
+
+	// MaxRedirects limits automatic redirects. Default: 10.
+	MaxRedirects int
 }
 
 // RetryConfig configures retry behavior for transient failures.
@@ -310,12 +387,6 @@ type RequestDefaults struct {
 	// Headers contains default headers added to every request.
 	// Default: empty (no default headers).
 	Headers map[string]string
-
-	// FollowRedirects controls automatic redirect following. Default: true.
-	FollowRedirects bool
-
-	// MaxRedirects limits automatic redirects. Default: 10.
-	MaxRedirects int
 }
 
 // Config defines the HTTP client configuration organized into logical groups.
@@ -352,9 +423,61 @@ type Config struct {
 	parsedCIDRs []*net.IPNet
 }
 
-// RequestOption is a function that modifies a request before it is sent.
-// Alias for engine.RequestOption to avoid importing the internal package.
-type RequestOption = engine.RequestOption
+// RequestOption is a value that modifies a request before it is sent.
+// It is a named interface (rather than the former func alias) so that
+// DomainClient's session capture can type-switch over the built-in option
+// types and extract cookies/headers without executing the option. The
+// unexported apply method means only this package (and RequestOptionFunc)
+// can implement it; custom behavior is expressed as a function adapted by
+// RequestOptionFunc.
+//
+//	client.Get(url, httpc.RequestOptionFunc(func(req httpc.RequestMutator) error {
+//	    req.SetHeader("X-Custom", "value")
+//	    return nil
+//	}))
+type RequestOption interface {
+	apply(RequestMutator) error
+}
+
+// RequestOptionFunc adapts a function literal to the RequestOption interface,
+// mirroring net/http's Handler/HandlerFunc split. Use it to write a custom
+// per-request option without naming the internal request type.
+//
+//	client.Get(url, httpc.RequestOptionFunc(func(req httpc.RequestMutator) error {
+//	    req.SetHeader("X-Custom", "value")
+//	    return nil
+//	}))
+//
+// A nil RequestOptionFunc is a no-op when applied.
+type RequestOptionFunc func(RequestMutator) error
+
+// apply implements RequestOption.
+func (f RequestOptionFunc) apply(r RequestMutator) error {
+	if f == nil {
+		return nil
+	}
+	return f(r)
+}
+
+// toEngineOptions adapts the facade's []RequestOption to the engine's
+// []engine.RequestOption at the boundary. Every public option carries an
+// apply(RequestMutator) error method; the engine's RequestOption is the
+// func(types.RequestMutator) error type, so each public option is re-expressed
+// as a function that calls its apply method. nil options are dropped, matching
+// the engine ApplyOptions nil-skip.
+func toEngineOptions(options []RequestOption) []engine.RequestOption {
+	if len(options) == 0 {
+		return nil
+	}
+	out := make([]engine.RequestOption, 0, len(options))
+	for _, opt := range options {
+		if opt == nil {
+			continue
+		}
+		out = append(out, func(r RequestMutator) error { return opt.apply(r) })
+	}
+	return out
+}
 
 // RetryPolicy defines the interface for custom retry behavior.
 // Alias for types.RetryPolicy to avoid importing the internal package.
@@ -368,7 +491,7 @@ type RetryPolicy = types.RetryPolicy
 //
 //	cfg := httpc.DefaultCookieSecurityConfig()
 //	cfg.RequireSecure = true
-//	config.Security.CookieSecurity = cfg
+//	result, err := client.Get(url, httpc.WithSecureCookie(cfg))
 type CookieSecurityConfig = validation.CookieSecurityConfig
 
 // DefaultCookieSecurityConfig returns a CookieSecurityConfig with default settings.
@@ -400,9 +523,25 @@ type FormData = types.FormData
 // Alias for types.FileData to avoid importing the internal package.
 type FileData = types.FileData
 
+// RequestReader provides read-only access to request data.
+// Alias for types.RequestReader to avoid importing the internal package.
+type RequestReader = types.RequestReader
+
+// RequestWriter provides write-only access to request data.
+// Alias for types.RequestWriter to avoid importing the internal package.
+type RequestWriter = types.RequestWriter
+
 // RequestMutator provides read-write access to request data for middleware.
 // Alias for types.RequestMutator to avoid importing the internal package.
 type RequestMutator = types.RequestMutator
+
+// ResponseReader provides read-only access to response data for middleware.
+// Alias for types.ResponseReader to avoid importing the internal package.
+type ResponseReader = types.ResponseReader
+
+// ResponseWriter provides write-only access to response data.
+// Alias for types.ResponseWriter to avoid importing the internal package.
+type ResponseWriter = types.ResponseWriter
 
 // ResponseMutator provides read-write access to response data for middleware.
 // Alias for types.ResponseMutator to avoid importing the internal package.
@@ -486,6 +625,8 @@ func DefaultConfig() Config {
 			ValidateURL:             true,
 			ValidateHeaders:         true,
 			StrictContentLength:     true,
+			FollowRedirects:         true,
+			MaxRedirects:            10,
 		},
 		Retry: RetryConfig{
 			MaxRetries:         3,
@@ -500,10 +641,8 @@ func DefaultConfig() Config {
 			Middlewares: nil,
 		},
 		Defaults: RequestDefaults{
-			UserAgent:       "httpc/1.0",
-			Headers:         make(map[string]string),
-			FollowRedirects: true,
-			MaxRedirects:    10,
+			UserAgent: "httpc/1.0",
+			Headers:   make(map[string]string),
 		},
 	}
 }
@@ -635,6 +774,30 @@ func ValidateConfig(cfg *Config) error {
 		}
 	}
 
+	// SensitiveHeaders entries are header names only — validate them with the
+	// same key rules as WithHeader (empty value passes: only the key is
+	// checked). Canonicalization happens in convertToEngineConfig.
+	for _, h := range cfg.Security.SensitiveHeaders {
+		if err := validation.ValidateHeaderKeyValue(h, ""); err != nil {
+			return fmt.Errorf("%w: Security.SensitiveHeaders %q: %w", ErrInvalidSecurity, h, err)
+		}
+	}
+
+	// Validate the TLS fingerprint against the preset registry (short
+	// aliases resolve first). Values that shape the ClientHello via a custom
+	// TLSConfig are mutually exclusive with spoofing: silently ignoring
+	// either side would produce a fingerprint neither party configured.
+	// Certificate pinning combines with spoofing: the pinner runs as
+	// VerifyPeerCertificate on the fingerprinted handshake.
+	if fp := cfg.Security.TLSFingerprint; fp != "" {
+		if _, ok := fingerprint.ResolvePresetName(fp); !ok {
+			return fmt.Errorf("%w: Security.TLSFingerprint %q is not a known browser preset (examples: chrome-latest, chrome-windows, chrome-android, firefox-latest; short aliases: chrome, firefox)", ErrInvalidSecurity, fp)
+		}
+		if cfg.Security.TLSConfig != nil {
+			return fmt.Errorf("%w: Security.TLSFingerprint and Security.TLSConfig are mutually exclusive — a custom tls.Config cannot shape a spoofed ClientHello", ErrInvalidSecurity)
+		}
+	}
+
 	// Validate retry settings
 	if cfg.Retry.MaxRetries < 0 || cfg.Retry.MaxRetries > maxRetryAttempts {
 		return fmt.Errorf("%w: Retry.MaxRetries must be 0-%d, got %d", ErrInvalidRetry, maxRetryAttempts, cfg.Retry.MaxRetries)
@@ -650,8 +813,8 @@ func ValidateConfig(cfg *Config) error {
 	}
 
 	// Validate request defaults
-	if cfg.Defaults.MaxRedirects < 0 || cfg.Defaults.MaxRedirects > maxRedirectLimit {
-		return fmt.Errorf("%w: Defaults.MaxRedirects must be 0-%d, got %d", ErrInvalidMiddleware, maxRedirectLimit, cfg.Defaults.MaxRedirects)
+	if cfg.Security.MaxRedirects < 0 || cfg.Security.MaxRedirects > maxRedirectLimit {
+		return fmt.Errorf("%w: Security.MaxRedirects must be 0-%d, got %d", ErrInvalidMaxRedirects, maxRedirectLimit, cfg.Security.MaxRedirects)
 	}
 	if len(cfg.Defaults.UserAgent) > maxUserAgentLen || !validation.IsValidHeaderString(cfg.Defaults.UserAgent) {
 		return fmt.Errorf("%w: Defaults.UserAgent invalid: max %d chars, no control characters", ErrInvalidMiddleware, maxUserAgentLen)
@@ -728,6 +891,12 @@ func (c *Config) String() string {
 	}
 	b.WriteString(", InsecureSkipVerify: ")
 	b.WriteString(strconv.FormatBool(c.Security.InsecureSkipVerify))
+	b.WriteString(", TLSFingerprint: ")
+	if c.Security.TLSFingerprint == "" {
+		b.WriteString("<disabled>")
+	} else {
+		b.WriteString(c.Security.TLSFingerprint)
+	}
 	b.WriteString(", AllowPrivateIPs: ")
 	b.WriteString(strconv.FormatBool(c.Security.AllowPrivateIPs))
 	b.WriteString(", CertPinning: ")
@@ -736,6 +905,8 @@ func (c *Config) String() string {
 	} else {
 		b.WriteString("<disabled>")
 	}
+	b.WriteString(", FollowRedirects: ")
+	b.WriteString(strconv.FormatBool(c.Security.FollowRedirects))
 
 	b.WriteString("}, Retry:{MaxRetries: ")
 	b.Write(strconv.AppendInt(numBuf[:0], int64(c.Retry.MaxRetries), 10))
@@ -751,8 +922,6 @@ func (c *Config) String() string {
 		ua = ua[:50] + "..."
 	}
 	b.WriteString(ua)
-	b.WriteString(", FollowRedirects: ")
-	b.WriteString(strconv.FormatBool(c.Defaults.FollowRedirects))
 
 	b.WriteString("}}")
 	result := b.String()

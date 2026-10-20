@@ -356,7 +356,9 @@ func (r *Result) String() string {
 }
 
 // SaveToFile saves the response body to a file at the specified path.
-// Returns ErrResponseBodyEmpty if the response body is nil or empty.
+// Returns ErrResponseBodyEmpty if the response body is nil or empty, or
+// ErrDownloadInProgress when a Download (or another SaveToFile) targeting
+// the same path is already running in this process.
 // The file path is validated for security (path traversal, symlinks, etc.).
 //
 // The body is written to a "<path>.httpc-tmp" sibling and atomically renamed
@@ -364,7 +366,10 @@ func (r *Result) String() string {
 // in between prepareFilePath's Lstat check and the write is never opened for
 // writing, and an interrupted save never leaves a partial destination file.
 func (r *Result) SaveToFile(filePath string) error {
-	if r == nil || r.Response == nil || r.Response.RawBody == nil {
+	// len check matches Unmarshal's emptiness rule: a non-nil zero-byte body
+	// (e.g. an empty chunked response) must not silently create an empty file
+	// when the documented contract says ErrResponseBodyEmpty.
+	if r == nil || r.Response == nil || len(r.Response.RawBody) == 0 {
 		return ErrResponseBodyEmpty
 	}
 
@@ -372,6 +377,17 @@ func (r *Result) SaveToFile(filePath string) error {
 	if err != nil {
 		return fmt.Errorf("file path validation failed: %w", err)
 	}
+
+	// Serialize with Download on the same destination: both write the same
+	// "<path>.httpc-tmp" sibling, and two concurrent writers would interleave
+	// writes and double-rename into a corrupt file with no error to either
+	// caller. Same in-process scope as Download's lock (cross-process
+	// coordination remains the caller's responsibility).
+	release, ok := acquireDownloadLock(validatedPath)
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrDownloadInProgress, validatedPath)
+	}
+	defer release()
 
 	tmpPath := validatedPath + downloadTmpSuffix
 	if err := os.WriteFile(tmpPath, r.Response.RawBody, filePermissions); err != nil {

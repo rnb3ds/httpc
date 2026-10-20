@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/cybergodev/httpc/internal/engine"
 )
 
 func TestChain(t *testing.T) {
@@ -268,13 +270,88 @@ func TestTimeoutMiddleware_CancelledContext(t *testing.T) {
 	}
 }
 
-func TestDefaultTimeoutMiddlewareConfig(t *testing.T) {
-	config := DefaultTimeoutMiddlewareConfig()
-	if config == nil {
-		t.Fatal("expected non-nil config")
+// TestMiddleware_DefaultConfigs pins the zero-value contract of every
+// Default*Config constructor for the middleware family. (Consolidates the
+// former one-assert TestDefaultTimeoutMiddlewareConfig /
+// TestDefaultHeaderConfig / TestDefaultAuditConfig funcs here and
+// TestDefaultLoggingConfig from form_validation_test.go.)
+func TestMiddleware_DefaultConfigs(t *testing.T) {
+	tests := []struct {
+		name   string
+		verify func(t *testing.T)
+	}{
+		{"DefaultTimeoutMiddlewareConfig disabled", func(t *testing.T) {
+			config := DefaultTimeoutMiddlewareConfig()
+			if config == nil {
+				t.Fatal("expected non-nil config")
+			}
+			if config.Duration != 0 {
+				t.Errorf("expected Duration 0 (disabled), got %v", config.Duration)
+			}
+		}},
+		{"DefaultHeaderConfig no headers", func(t *testing.T) {
+			config := DefaultHeaderConfig()
+			if config == nil {
+				t.Fatal("expected non-nil config")
+			}
+			if config.Headers != nil {
+				t.Errorf("expected nil Headers, got: %v", config.Headers)
+			}
+		}},
+		{"DefaultLoggingConfig disabled", func(t *testing.T) {
+			cfg := DefaultLoggingConfig()
+			if cfg == nil {
+				t.Fatal("DefaultLoggingConfig() returned nil")
+			}
+			if cfg.LogFunc != nil {
+				t.Error("LogFunc should be nil by default (logging disabled)")
+			}
+		}},
+		{"DefaultMetricsConfig disabled", func(t *testing.T) {
+			config := DefaultMetricsConfig()
+			if config == nil {
+				t.Fatal("expected non-nil config")
+			}
+			if config.OnMetrics != nil {
+				t.Error("OnMetrics should be nil by default (metrics disabled)")
+			}
+		}},
+		{"DefaultRequestIDConfig header name", func(t *testing.T) {
+			config := DefaultRequestIDConfig()
+			if config == nil {
+				t.Fatal("expected non-nil config")
+			}
+			if config.HeaderName != "X-Request-ID" {
+				t.Errorf("expected HeaderName %q, got %q", "X-Request-ID", config.HeaderName)
+			}
+			if config.Generator != nil {
+				t.Error("Generator should be nil by default (crypto/rand is wired lazily)")
+			}
+		}},
+		{"DefaultAuditConfig", func(t *testing.T) {
+			config := DefaultAuditConfig()
+			if config == nil {
+				t.Fatal("expected non-nil config")
+			}
+			if config.Format != "text" {
+				t.Errorf("expected format 'text', got: %s", config.Format)
+			}
+			if config.IncludeHeaders {
+				t.Error("expected IncludeHeaders to be false")
+			}
+			if len(config.MaskHeaders) == 0 {
+				t.Error("expected MaskHeaders to have values")
+			}
+			if !config.SanitizeError {
+				t.Error("expected SanitizeError to be true")
+			}
+		}},
 	}
-	if config.Duration != 0 {
-		t.Errorf("expected Duration 0 (disabled), got %v", config.Duration)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.verify(t)
+		})
 	}
 }
 
@@ -361,37 +438,52 @@ func TestHeaderMiddleware_MixedCaseSingleValue(t *testing.T) {
 	}
 }
 
-// TestRequestIDMiddleware_ExistingHeaderLowercase verifies the direct
-// canonical-key presence check still respects a caller-supplied preset
-// header regardless of its casing.
-func TestRequestIDMiddleware_ExistingHeaderLowercase(t *testing.T) {
-	var receivedID string
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedID = r.Header.Get("X-Request-ID")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	cfg := testConfig()
-	cfg.Middleware.Middlewares = []MiddlewareFunc{
-		RequestIDMiddleware(&RequestIDConfig{
-			HeaderName: "x-request-id", // lowercase config, exercises canonicalization
-			Generator:  func() string { return "generated-id" },
-		}),
+// TestRequestIDMiddleware_ExistingHeader verifies the direct canonical-key
+// presence check respects a caller-supplied preset header regardless of the
+// casing used in the config's HeaderName or in the preset header. (Merges the
+// former ..._Lowercase variant, which differed only in casing choices.)
+func TestRequestIDMiddleware_ExistingHeader(t *testing.T) {
+	tests := []struct {
+		name        string
+		configName  string // HeaderName in RequestIDConfig
+		presetName  string // header the caller presets on the request
+		presetValue string
+	}{
+		{"canonical config name, canonical preset", "X-Request-ID", "X-Request-ID", "explicit-id"},
+		{"lowercase config name, uppercase preset", "x-request-id", "X-REQUEST-ID", "explicit-id"},
 	}
 
-	client, err := New(cfg)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
-	defer func() { _ = client.Close() }()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var receivedID string
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				receivedID = r.Header.Get("X-Request-ID")
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer ts.Close()
 
-	// Preset with the opposite casing — middleware must not overwrite it.
-	if _, err := client.Get(ts.URL, WithHeader("X-REQUEST-ID", "explicit-id")); err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	if receivedID != "explicit-id" {
-		t.Errorf("expected 'explicit-id', got: %s", receivedID)
+			cfg := testConfig()
+			cfg.Middleware.Middlewares = []MiddlewareFunc{
+				RequestIDMiddleware(&RequestIDConfig{
+					HeaderName: tt.configName,
+					Generator:  func() string { return "generated-id" },
+				}),
+			}
+
+			client, err := New(cfg)
+			if err != nil {
+				t.Fatalf("failed to create client: %v", err)
+			}
+			defer func() { _ = client.Close() }()
+
+			// Preset the header — the middleware must not overwrite it.
+			if _, err := client.Get(ts.URL, WithHeader(tt.presetName, tt.presetValue)); err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+			if receivedID != tt.presetValue {
+				t.Errorf("expected %q, got: %s", tt.presetValue, receivedID)
+			}
+		})
 	}
 }
 
@@ -423,15 +515,7 @@ func TestHeaderMiddleware_InvalidHeader(t *testing.T) {
 	}
 }
 
-func TestDefaultHeaderConfig(t *testing.T) {
-	config := DefaultHeaderConfig()
-	if config == nil {
-		t.Fatal("expected non-nil config")
-	}
-	if config.Headers != nil {
-		t.Errorf("expected nil Headers, got: %v", config.Headers)
-	}
-}
+// (TestDefaultHeaderConfig was folded into TestMiddleware_DefaultConfigs.)
 
 func TestMetricsMiddleware(t *testing.T) {
 	var metrics struct {
@@ -898,8 +982,11 @@ func TestAuditMiddlewareWithError(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	// Request to invalid URL should error
-	_, _ = client.Get("http://invalid.invalid.unreachable/test")
+	// Request to a loopback closed port: connection refused, deterministic
+	// offline. (Formerly "http://invalid.invalid.unreachable/test", which
+	// depended on real-DNS resolution of the .invalid TLD — a flake risk and
+	// a network dependency; a refused dial exercises the same error path.)
+	_, _ = client.Get("http://127.0.0.1:1/test")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -909,58 +996,87 @@ func TestAuditMiddlewareWithError(t *testing.T) {
 	}
 }
 
-func TestDefaultAuditConfig(t *testing.T) {
-	config := DefaultAuditConfig()
+// (TestDefaultAuditConfig was folded into TestMiddleware_DefaultConfigs.)
 
-	if config == nil {
-		t.Fatal("expected non-nil config")
+// TestRecoveryMiddleware_Direct drives the middleware's panic conversion
+// without a server: a next-handler that panics must surface as an error (the
+// panic value wrapped by panicToError), never as a propagated panic.
+func TestRecoveryMiddleware_Direct(t *testing.T) {
+	tests := []struct {
+		name      string
+		panicWith any
+		wantText  string
+	}{
+		{"string panic", "boom", "panic recovered: boom"},
+		{"error panic", errors.New("sentinel-cause"), "panic recovered: sentinel-cause"},
 	}
-	if config.Format != "text" {
-		t.Errorf("expected format 'text', got: %s", config.Format)
-	}
-	if config.IncludeHeaders {
-		t.Error("expected IncludeHeaders to be false")
-	}
-	if len(config.MaskHeaders) == 0 {
-		t.Error("expected MaskHeaders to have values")
-	}
-	if !config.SanitizeError {
-		t.Error("expected SanitizeError to be true")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := RecoveryMiddleware()(func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
+				panic(tt.panicWith)
+			})
+
+			req := engine.AcquireRequest()
+			defer engine.ReleaseRequest(req)
+
+			resp, err := handler(context.Background(), req)
+			if err == nil {
+				t.Fatal("expected panic to be converted to an error, got nil")
+			}
+			if resp != nil {
+				t.Errorf("expected nil response on recovered panic, got %v", resp)
+			}
+			if !strings.Contains(err.Error(), tt.wantText) {
+				t.Errorf("error %q does not contain %q", err, tt.wantText)
+			}
+		})
 	}
 }
 
-func TestRequestIDMiddleware_ExistingHeader(t *testing.T) {
-	var receivedID string
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedID = r.Header.Get("X-Request-ID")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
+// TestMetricsMiddleware_ErrorPath drives the metrics middleware's error arm
+// directly: when the wrapped handler fails, OnMetrics still fires with
+// statusCode 0 and the sanitized error, and the error propagates unchanged.
+func TestMetricsMiddleware_ErrorPath(t *testing.T) {
+	var gotMethod, gotURL string
+	var gotStatus int
+	var gotErr error
 
-	cfg := testConfig()
-	cfg.Middleware.Middlewares = []MiddlewareFunc{
-		RequestIDMiddleware(&RequestIDConfig{
-			HeaderName: "X-Request-ID",
-			Generator:  func() string { return "generated-id" },
-		}),
+	handler := MetricsMiddleware(&MetricsConfig{
+		OnMetrics: func(method, url string, statusCode int, duration time.Duration, err error) {
+			gotMethod, gotURL, gotStatus, gotErr = method, url, statusCode, err
+		},
+	})(func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
+		return nil, errors.New("upstream failure")
+	})
+
+	req := engine.AcquireRequest()
+	req.SetMethod("POST")
+	req.SetURL("http://metrics.example.com/path")
+	defer engine.ReleaseRequest(req)
+
+	_, err := handler(context.Background(), req)
+	if err == nil || err.Error() != "upstream failure" {
+		t.Fatalf("error must propagate unchanged, got: %v", err)
 	}
 
-	client, err := New(cfg)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
+	if gotMethod != "POST" {
+		t.Errorf("OnMetrics method = %q, want POST", gotMethod)
 	}
-	defer func() { _ = client.Close() }()
-
-	// Set header explicitly - middleware should not overwrite
-	_, err = client.Get(ts.URL, WithHeader("X-Request-ID", "explicit-id"))
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
+	if gotStatus != 0 {
+		t.Errorf("OnMetrics statusCode = %d, want 0 when the handler errored", gotStatus)
 	}
-
-	if receivedID != "explicit-id" {
-		t.Errorf("expected 'explicit-id', got: %s", receivedID)
+	if gotErr == nil || gotErr.Error() != "upstream failure" {
+		t.Errorf("OnMetrics error = %v, want the propagated upstream failure", gotErr)
+	}
+	if !strings.Contains(gotURL, "metrics.example.com") {
+		t.Errorf("OnMetrics URL = %q, want the request URL", gotURL)
 	}
 }
+
+// TestRequestIDMiddleware_ExistingHeader's canonical-casing row covers the
+// former standalone TestRequestIDMiddleware_ExistingHeader (deleted as a
+// duplicate of the table above).
 
 func TestAuditEventMarshalJSON(t *testing.T) {
 	event := AuditEvent{

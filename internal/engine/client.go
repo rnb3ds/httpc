@@ -4,12 +4,10 @@ package engine
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
-	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -19,7 +17,6 @@ import (
 	"time"
 
 	"github.com/cybergodev/httpc/internal/connection"
-	"github.com/cybergodev/httpc/internal/proxypool"
 	"github.com/cybergodev/httpc/internal/security"
 	"github.com/cybergodev/httpc/internal/types"
 	"github.com/cybergodev/httpc/internal/validation"
@@ -52,50 +49,47 @@ type Client struct {
 	// securityRequestPool reduces allocations for security.Request objects
 	securityRequestPool sync.Pool
 
-	// metrics tracks request statistics
-	metrics *metrics
-
-	closed int32
+	closed atomic.Int32
 
 	closeOnce sync.Once
 }
 
 // Config defines the HTTP client configuration.
 // Config should be treated as immutable after creation.
+//
+// Connection holds the transport and connection-pool settings; the engine adds
+// request, security, and retry policy on top. Sharing one connection.Config
+// value (rather than mirroring its fields here) removes the field-by-field copy
+// that previously mapped engine.Config onto connection.Config by hand — see
+// buildConnectionConfig and convertToEngineConfig.
 type Config struct {
-	Timeout                time.Duration
-	DialTimeout            time.Duration
-	KeepAlive              time.Duration
-	TLSHandshakeTimeout    time.Duration
-	ResponseHeaderTimeout  time.Duration
-	IdleConnTimeout        time.Duration
-	MaxResponseHeaderBytes int64
-	MaxIdleConns           int
-	MaxIdleConnsPerHost    int
-	MaxConnsPerHost        int
-	ProxyURL               string
+	// Connection carries the transport, TLS, proxy, cookie-jar, and connection-
+	// pool configuration. convertToEngineConfig initializes it from
+	// connection.DefaultConfig() and overrides the shared fields, so the
+	// connection-only fields (MaxTotalConns, ExpectContinueTimeout,
+	// DisableKeepAlives, ForceAttemptHTTP2) keep their defaults with no
+	// engine-side merge.
+	Connection connection.Config
 
-	// System proxy configuration
-	EnableSystemProxy bool // Automatically detect and use system proxy settings
+	// Timeout is the overall request timeout, applied at the engine level as
+	// the total budget across retries.
+	Timeout time.Duration
 
-	// Proxy pool configuration
-	ProxyPool             []string
-	ProxyPoolStrategy     proxypool.Strategy
-	ProxyFailureThreshold int
-	ProxyCooldown         time.Duration
+	// ProxyRotatePerRequest closes idle connections before each request so the
+	// transport re-evaluates the proxy pool. It is engine-only (not a
+	// connection.Config field): rotation is an engine/retry concern, not a
+	// transport setting.
 	ProxyRotatePerRequest bool
 
-	TLSConfig               *tls.Config
-	MinTLSVersion           uint16
-	MaxTLSVersion           uint16
-	InsecureSkipVerify      bool
+	// TLSFingerprint enables full-stack browser transport fingerprinting. The
+	// fingerprint adapter replaces the transport, so this is engine-only.
+	TLSFingerprint string
+
 	MaxResponseBodySize     int64
 	MaxRequestBodySize      int64
 	MaxDecompressedBodySize int64
 	ValidateURL             bool
 	ValidateHeaders         bool
-	AllowPrivateIPs         bool
-	ExemptNets              []*net.IPNet
 	StrictContentLength     bool
 
 	MaxRetries    int
@@ -124,17 +118,18 @@ type Config struct {
 	Headers         map[string]string
 	FollowRedirects bool
 	MaxRedirects    int
-	EnableHTTP2     bool
 
-	CookieJar     http.CookieJar
+	// EnableCookies enables automatic cookie handling; the jar itself lives on
+	// Connection.CookieJar.
 	EnableCookies bool
-
-	// DNS configuration
-	EnableDoH   bool
-	DoHCacheTTL time.Duration
 
 	// Redirect whitelist configuration
 	RedirectWhitelist *security.DomainWhitelist
+
+	// SensitiveHeaders extends the built-in cross-origin redirect strip set
+	// (redirectSensitiveHeaders) with caller-declared credential headers, in
+	// canonical (http.CanonicalHeaderKey) form. Empty = built-ins only.
+	SensitiveHeaders []string
 
 	// Certificate pinning
 	CertificatePinner security.CertificatePinner
@@ -154,7 +149,6 @@ func NewClient(config *Config, opts ...clientOption) (*Client, error) {
 
 	client := &Client{
 		config:          config,
-		metrics:         &metrics{},
 		requestPool:     newRequestPool(),
 		execRequestPool: newRequestPool(),
 		securityRequestPool: sync.Pool{
@@ -191,55 +185,78 @@ func NewClient(config *Config, opts ...clientOption) (*Client, error) {
 		ValidateURL:        config.ValidateURL,
 		ValidateHeaders:    config.ValidateHeaders,
 		MaxRequestBodySize: config.MaxRequestBodySize,
-		AllowPrivateIPs:    config.AllowPrivateIPs,
-		ExemptNets:         config.ExemptNets,
+		AllowPrivateIPs:    config.Connection.AllowPrivateIPs,
+		ExemptNets:         config.Connection.ExemptNets,
 	}
 	client.validator = security.NewValidatorWithConfig(validatorConfig)
 
 	return client, nil
 }
 
-// buildConnectionConfig maps engine.Config onto connection.Config, starting
-// from connection defaults and overriding with the engine's values.
+// buildConnectionConfig returns the engine's embedded connection config,
+// starting from connection defaults and overriding any field convertToEngineConfig
+// already populated. It is the public layer (not the engine) that owns the
+// value: convertToEngineConfig seeds Config.Connection from
+// connection.DefaultConfig() and copies its public ConnectionConfig fields into
+// it, so by the time a Config reaches the engine the connection settings are
+// already final and the engine simply carries them through.
 //
-// MAINTENANCE MIRROR: engine.Config and connection.Config carry many
-// same-named fields that must be copied field-by-field here. A field added to
-// either Config but missing from this mapping compiles cleanly and silently
-// keeps its zero/default value — when adding a field, update this mapping in
-// the same change. connection.DefaultConfig fields with no engine counterpart
-// (e.g. MaxTotalConns, ExpectContinueTimeout) intentionally keep defaults.
+// connection-only fields (MaxTotalConns, ExpectContinueTimeout, DisableKeepAlives,
+// ForceAttemptHTTP2) have no public knob; they keep their connection.DefaultConfig
+// values from convertToEngineConfig. The CertificatePinner is assigned to the
+// exported Config.Connection.CertPinner field directly (no more SetCertPinner
+// side channel).
 func buildConnectionConfig(config *Config) *connection.Config {
-	connConfig := connection.DefaultConfig()
-	connConfig.MaxIdleConns = config.MaxIdleConns
-	connConfig.MaxIdleConnsPerHost = config.MaxIdleConnsPerHost
-	connConfig.MaxConnsPerHost = config.MaxConnsPerHost
-	connConfig.MaxResponseHeaderBytes = config.MaxResponseHeaderBytes
-	connConfig.DialTimeout = config.DialTimeout
-	connConfig.KeepAlive = config.KeepAlive
-	connConfig.TLSHandshakeTimeout = config.TLSHandshakeTimeout
-	connConfig.ResponseHeaderTimeout = config.ResponseHeaderTimeout
-	connConfig.IdleConnTimeout = config.IdleConnTimeout
-	connConfig.MinTLSVersion = config.MinTLSVersion
-	connConfig.MaxTLSVersion = config.MaxTLSVersion
-	connConfig.InsecureSkipVerify = config.InsecureSkipVerify
-	connConfig.EnableHTTP2 = config.EnableHTTP2
-	connConfig.ProxyURL = config.ProxyURL
-	connConfig.EnableSystemProxy = config.EnableSystemProxy
-	connConfig.ProxyPool = config.ProxyPool
-	connConfig.ProxyPoolStrategy = config.ProxyPoolStrategy
-	connConfig.ProxyFailureThreshold = config.ProxyFailureThreshold
-	connConfig.ProxyCooldown = config.ProxyCooldown
-	connConfig.CookieJar = config.CookieJar
-	connConfig.AllowPrivateIPs = config.AllowPrivateIPs
-	connConfig.ExemptNets = config.ExemptNets
-	connConfig.EnableDoH = config.EnableDoH
-	connConfig.DoHCacheTTL = config.DoHCacheTTL
-	connConfig.TLSConfig = config.TLSConfig
-
+	connConfig := &config.Connection
 	if config.CertificatePinner != nil {
-		connConfig.SetCertPinner(config.CertificatePinner)
+		connConfig.CertPinner = config.CertificatePinner
 	}
 	return connConfig
+}
+
+// closeBodyReader closes r when it is an io.Closer (best-effort). Used by the
+// retry loop once a caller-supplied io.Reader body has been buffered (or the
+// request is aborting): on the non-retry path net/http owns and closes the
+// request body, so an *os.File passed via WithBody would otherwise leak one
+// handle per request until the GC finalizer runs.
+func closeBodyReader(r io.Reader) {
+	if rc, ok := r.(io.Closer); ok {
+		_ = rc.Close() // best-effort: fully buffered or the request is aborting
+	}
+}
+
+// transferCancelOwnership moves overallCancel into resp.cancelFunc so the
+// deferred overallCancel in executeWithRetry cannot fire: streaming responses
+// need the cancel to stay alive until ReleaseResponse. It CHAINS onto any
+// cancelFunc already stored by executeRequest (a per-attempt streamCancel)
+// instead of overwriting it — overwriting would orphan that cancel func and
+// pin its timer until the deadline. Both call sites (success path and the
+// defensive (nil, nil) fallback) previously carried verbatim copies of this
+// block; the single definition keeps them from drifting.
+func transferCancelOwnership(resp *Response, overallCancel *context.CancelFunc) {
+	if *overallCancel == nil || resp.rawBodyReader == nil {
+		return
+	}
+	if prev := resp.cancelFunc; prev != nil {
+		inner, outer := prev, *overallCancel
+		resp.cancelFunc = func() { inner(); outer() }
+	} else {
+		resp.cancelFunc = *overallCancel
+	}
+	*overallCancel = nil
+}
+
+// effectiveRequestTimeout resolves the per-request timeout budget: the explicit
+// WithTimeout value when set, else the client-level Config.Timeout, unless the
+// request opts out via NoTimeout. A non-positive result means "no budget".
+func effectiveRequestTimeout(c *Client, req *Request) time.Duration {
+	if req.NoTimeout() {
+		return 0
+	}
+	if t := req.Timeout(); t > 0 {
+		return t
+	}
+	return c.config.Timeout
 }
 
 // ErrClientClosed is returned when attempting to use a closed client.
@@ -250,7 +267,7 @@ var ErrClientClosed = errors.New("client is closed")
 // transport layer with retry support, and returns the resulting Response.
 // Returns ErrClientClosed if the client has been closed.
 func (c *Client) Request(ctx context.Context, method, url string, options ...RequestOption) (*Response, error) {
-	if atomic.LoadInt32(&c.closed) == 1 {
+	if c.closed.Load() == 1 {
 		return nil, ErrClientClosed
 	}
 
@@ -265,14 +282,9 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 	// Ensure request is returned to pool after processing
 	defer c.putRequest(req)
 
-	for _, option := range options {
-		if option != nil {
-			if err := option(req); err != nil {
-				// Caller-side configuration error, not a transport failure —
-				// do not count it against health metrics.
-				return nil, fmt.Errorf("failed to apply request option: %w", err)
-			}
-		}
+	if err := ApplyOptions(req, options); err != nil {
+		// Caller-side configuration error, not a transport failure.
+		return nil, fmt.Errorf("failed to apply request option: %w", err)
 	}
 
 	// Propagate a per-request AllowPrivateIPs override to the connection dialer
@@ -290,10 +302,8 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 
 	// Use pooled security.Request for validation
 	secReq := c.getSecurityRequest()
-	secReq.Method = req.Method()
 	secReq.URL = req.URL()
 	secReq.Headers = req.Headers()
-	secReq.QueryParams = req.QueryParams()
 	secReq.Body = req.Body()
 	secReq.AllowPrivateIPs = req.AllowPrivateIPs()
 
@@ -301,8 +311,7 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 	c.putSecurityRequest(secReq)
 
 	if validationErr != nil {
-		// Caller-side validation error, not a transport failure — do not
-		// count it against health metrics.
+		// Caller-side validation error, not a transport failure.
 		return nil, fmt.Errorf("request validation failed: %w", validationErr)
 	}
 
@@ -310,11 +319,9 @@ func (c *Client) Request(ctx context.Context, method, url string, options ...Req
 	duration := time.Since(startTime)
 
 	if err != nil {
-		c.metrics.recordRequest(duration.Nanoseconds(), false)
 		return nil, err
 	}
 
-	c.metrics.recordRequest(duration.Nanoseconds(), true)
 	response.SetDuration(duration)
 	return response, nil
 }
@@ -357,39 +364,23 @@ func (c *Client) putExecRequest(req *Request) {
 	c.execRequestPool.put(req)
 }
 
-// timerPool reduces allocations for time.Timer objects used in sleepWithContext.
-var timerPool = sync.Pool{
-	New: func() any { return time.NewTimer(0) },
-}
-
 func (c *Client) sleepWithContext(ctx context.Context, duration time.Duration) error {
 	if ctx == nil {
 		time.Sleep(duration)
 		return nil
 	}
 
-	timer, _ := timerPool.Get().(*time.Timer)
-	if timer == nil {
-		timer = time.NewTimer(duration)
-	} else {
-		timer.Reset(duration)
-	}
+	// Go 1.23+ made time.Timer garbage-collectable and no longer requires the
+	// explicit channel drain after Stop; the pooled-timer micro-optimization
+	// that predates that change is needless complexity for a backoff sleep that
+	// runs a handful of times per request. A plain timer is simpler and correct.
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
 
 	select {
 	case <-ctx.Done():
-		// Per time.Timer docs: when Stop returns false the timer already fired
-		// and a value is buffered in timer.C. Drain it so the next pooled reuse
-		// does not observe a stale tick (which would wake a sleeper early).
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
-		timerPool.Put(timer)
 		return ctx.Err()
 	case <-timer.C:
-		timerPool.Put(timer)
 		return nil
 	}
 }
@@ -410,7 +401,7 @@ func (c *Client) drainAndCloseBody(body io.ReadCloser) {
 	// io.Discard implements io.ReaderFrom with its own internal pooled buffer,
 	// so io.Copy(io.Discard, ...) already avoids per-call heap allocation.
 	drainLr := getLimitReader(body, maxDrain)
-	_, _ = io.Copy(io.Discard, drainLr)
+	_, _ = io.Copy(io.Discard, drainLr) // best-effort drain for connection reuse
 	putLimitReader(drainLr)
 	_ = body.Close() // best-effort cleanup
 }
@@ -482,10 +473,14 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 		if err != nil {
 			return nil, classifyError(err, req.URL(), req.Method(), 1)
 		}
-		if resp != nil {
-			resp.SetAttempts(1)
-			resp.SetProxyURL(proxyRec.Last())
+		if resp == nil {
+			// Defensive: executeRequest must not return (nil, nil); the slow
+			// path guards the same contract (see its fallback below), and
+			// SetAttempts on a nil resp would panic here.
+			return nil, classifyError(errors.New("no response from transport"), req.URL(), req.Method(), 1)
 		}
+		resp.SetAttempts(1)
+		resp.SetProxyURL(proxyRec.Last())
 		return resp, nil
 	}
 
@@ -495,21 +490,15 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 		policy = c.config.CustomRetryPolicy
 	}
 
-	// Create a shared timeout context for all retry attempts.
-	// This ensures WithTimeout is a total budget across retries,
-	// not per-attempt. Without this, each retry gets a fresh full timeout,
-	// allowing WithTimeout(900s)+3 retries to take ~3600s instead of 900s.
+	// Shared timeout context for all retry attempts: WithTimeout is a total
+	// budget across retries, not per-attempt. Without this, each retry gets a
+	// fresh full timeout, allowing WithTimeout(900s)+3 retries to take ~3600s
+	// instead of 900s.
 	retryCtx := req.Context()
 	if retryCtx == nil {
 		retryCtx = backgroundCtx
 	}
-	retryTimeout := req.Timeout()
-	// NoTimeout suppresses only the client-level default; an explicit
-	// per-request timeout (req.Timeout() > 0) and any context deadline are
-	// still honored.
-	if !req.NoTimeout() && retryTimeout <= 0 && c.config.Timeout > 0 {
-		retryTimeout = c.config.Timeout
-	}
+	retryTimeout := effectiveRequestTimeout(c, req)
 	var overallCancel context.CancelFunc
 	if retryTimeout > 0 {
 		if existingDeadline, hasDeadline := retryCtx.Deadline(); !hasDeadline {
@@ -543,16 +532,31 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 	// SECURITY: Cap at maxRetryBodySize to prevent OOM from large streams.
 	if req.body != nil {
 		if r, ok := req.body.(io.Reader); ok {
+			// Fail fast on an already-cancelled context BEFORE buffering up to
+			// 100MB: ctx cancellation does not interrupt reading a caller
+			// supplied source (e.g. a file), and the request can only fail
+			// with the same error class after the read.
+			if retryCtx != nil {
+				if err := retryCtx.Err(); err != nil {
+					if overallCancel != nil {
+						overallCancel()
+					}
+					return nil, classifyError(err, req.URL(), req.Method(), 0)
+				}
+			}
+
 			const maxRetryBodySize int64 = 100 * 1024 * 1024 // 100MB
 			limited := io.LimitReader(r, maxRetryBodySize+1)
 			buf, readErr := io.ReadAll(limited)
 			if readErr != nil {
+				closeBodyReader(r) // aborting: the caller's reader is not reused
 				if overallCancel != nil {
 					overallCancel()
 				}
 				return nil, classifyError(fmt.Errorf("buffer request body failed: %w", readErr), req.URL(), req.Method(), 0)
 			}
 			if int64(len(buf)) > maxRetryBodySize {
+				closeBodyReader(r) // aborting (body too large to retry)
 				if overallCancel != nil {
 					overallCancel()
 				}
@@ -561,6 +565,9 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 					req.URL(), req.Method(), 0,
 				)
 			}
+			// The buffered copy replaces the caller's reader from here on —
+			// close the original so it cannot leak (see closeBodyReader).
+			closeBodyReader(r)
 			req.body = buf
 		}
 	}
@@ -606,14 +613,26 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 
 		resp, err := c.executeRequest(req, false)
 
+		// Computed once and reused by the debug log and the retry decision
+		// below: RetryPolicy implementations are caller-supplied and may carry
+		// side effects (counters, circuit breakers), so HTTPC_DEBUG must not
+		// cause a second ShouldRetry call per attempt.
+		respShouldRetry := false
+		if resp != nil {
+			respShouldRetry = policy.ShouldRetry(resp, nil, attempt)
+		}
+
 		if httpcDebug() {
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "[httpc] attempt=%d ERROR: %v (retryable=%v)\n",
-					attempt, err, classifyError(err, "", "", 0).IsRetryable())
+				// SECURITY (SEC-001 M-1): print the sanitized classification,
+				// not the raw error — net/http *url.Error embeds the full
+				// request URL (query string included) in its message.
+				dbgErr := classifyErrorWithSanitizedURL(err, sanitizedURL, reqMethod, attempt+1)
+				fmt.Fprintf(os.Stderr, "[httpc] attempt=%d ERROR: %s (retryable=%v)\n",
+					attempt, dbgErr.Error(), dbgErr.IsRetryable())
 			} else if resp != nil {
-				shouldRetry := policy.ShouldRetry(resp, nil, attempt)
 				fmt.Fprintf(os.Stderr, "[httpc] attempt=%d status=%d shouldRetry=%v attemptLtMax=%v proxyIdx=%d\n",
-					attempt, resp.StatusCode(), shouldRetry, attempt < maxRetries,
+					attempt, resp.StatusCode(), respShouldRetry, attempt < maxRetries,
 					func() int {
 						if useProxyRotation {
 							return baseProxyIdx + attempt
@@ -635,14 +654,21 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 			proxyConnFailed := useProxyRotation && attempt < maxRetries &&
 				errors.Is(err, connection.ErrProxyConnectionFailed)
 
-			// Fast path: non-retryable errors or max retries reached
-			if (!clientErr.IsRetryable() && !proxyConnFailed) || attempt >= maxRetries {
+			// Fast path: the retry budget always wins.
+			if attempt >= maxRetries {
 				releaseLastResp(&lastResp)
 				clientErr.Attempts = attempt + 1
 				return nil, clientErr
 			}
 
-			// Check retry policy (skip for forced proxy-rotation retry)
+			// The retry policy decides. A custom RetryPolicy overrides the
+			// built-in classification (Config docs: "If set, it overrides the
+			// built-in retry logic") — previously the built-in IsRetryable()
+			// veto ran first, so a custom policy was never even consulted for
+			// an error the classifier had marked non-retryable. For the
+			// built-in engine policy this is behavior-preserving:
+			// retryEngine.ShouldRetry(nil, err, ·) delegates to the exact
+			// same classifyError call the veto used.
 			if !proxyConnFailed && !policy.ShouldRetry(nil, err, attempt) {
 				releaseLastResp(&lastResp)
 				clientErr.Attempts = attempt + 1
@@ -666,19 +692,24 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 		}
 
 		if resp != nil {
-			// Release previous intermediate response to prevent pool leak
+			// Release previous intermediate response to prevent pool leak.
+			// Defensive: per-attempt flow (return on success, release-and-nil
+			// in the retry branch) leaves lastResp nil here in practice —
+			// kept as a guard, not a live path.
 			if lastResp != nil && lastResp != resp {
 				ReleaseResponse(lastResp)
 			}
 			lastResp = resp
 
-			// Check if response status is retryable using policy
-			if policy.ShouldRetry(resp, nil, attempt) && attempt < maxRetries {
-				// Compute the delay while resp is still valid — the built-in
-				// policy may read a Retry-After header from it.
+			// Check if response status is retryable, reusing the decision
+			// computed above the debug block (single policy call per attempt).
+			if respShouldRetry && attempt < maxRetries {
+				// Compute the delay while resp is still valid — policies
+				// implementing responseDelayPolicy (e.g. the built-in engine
+				// policy's Retry-After support) may read headers from it.
 				var delay time.Duration
-				if engPolicy, ok := policy.(*retryEngine); ok {
-					delay = engPolicy.GetDelayWithResponse(attempt, resp)
+				if dp, ok := policy.(responseDelayPolicy); ok {
+					delay = dp.GetDelayWithResponse(attempt, resp)
 				} else {
 					delay = policy.GetDelay(attempt)
 				}
@@ -713,23 +744,10 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 			// Success - set attempt count and return
 			resp.SetAttempts(attempt + 1)
 			resp.SetProxyURL(proxyRec.Last())
-			// Transfer context cancel ownership: streaming responses
-			// need the cancel to stay alive until ReleaseResponse.
-			// Setting overallCancel=nil prevents the defer from cancelling.
-			// CHAIN, don't overwrite: executeRequest may already have stored a
-			// per-attempt streamCancel in resp.cancelFunc. Overwriting would
-			// orphan that cancel func and pin its timer until the deadline.
-			// (Currently the retry deadline makes the per-attempt timeout
-			// context unreachable, so this is defensive — but cheap.)
-			if overallCancel != nil && resp.rawBodyReader != nil {
-				if prev := resp.cancelFunc; prev != nil {
-					inner, outer := prev, overallCancel
-					resp.cancelFunc = func() { inner(); outer() }
-				} else {
-					resp.cancelFunc = overallCancel
-				}
-				overallCancel = nil
-			}
+			// Streaming responses need the cancel to stay alive until
+			// ReleaseResponse; currently defensive (the retry deadline makes
+			// the per-attempt streamCancel unreachable), but chaining is cheap.
+			transferCancelOwnership(resp, &overallCancel)
 			return resp, nil
 		}
 	}
@@ -740,18 +758,8 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 	if lastResp != nil {
 		lastResp.SetAttempts(maxRetries + 1)
 		lastResp.SetProxyURL(proxyRec.Last())
-		// Transfer context cancel ownership for streaming responses,
-		// matching the success-path logic above (chained, never overwritten —
-		// see the comment there).
-		if overallCancel != nil && lastResp.rawBodyReader != nil {
-			if prev := lastResp.cancelFunc; prev != nil {
-				inner, outer := prev, overallCancel
-				lastResp.cancelFunc = func() { inner(); outer() }
-			} else {
-				lastResp.cancelFunc = overallCancel
-			}
-			overallCancel = nil
-		}
+		// Same cancel ownership transfer as the success path above.
+		transferCancelOwnership(lastResp, &overallCancel)
 		return lastResp, nil
 	}
 
@@ -768,8 +776,8 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 }
 
 // captureRequestHeaders builds a complete header map from an http.Request by
-// taking ownership of httpReq.Header and enriching it with Content-Length and
-// Host (which net/http stores as separate Request fields, not in the Header map).
+// taking ownership of httpReq.Header and enriching it with Content-Length
+// (which net/http stores as a Request field, not in the Header map).
 //
 // Rather than cloning the pooled header map built by requestProcessor.Build, it
 // transfers ownership to the caller (which retains it via the Result). This
@@ -784,10 +792,13 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 // pooled map per success-path request is safe: sync.Pool simply allocates a fresh
 // map on the next get when the pool is empty — no leak, no double-recycle.
 //
-// Uses direct map lookups with pre-canonicalized keys ("Content-Length" and
-// "Host" are already canonical) to avoid the textproto.CanonicalMIMEHeaderKey
-// overhead of h.Get, and batches both value slices into a single backing array
-// to reduce N []string{value} allocations to 1.
+// Uses direct map lookups with pre-canonicalized keys ("Content-Length" is
+// already canonical) to avoid the textproto.CanonicalMIMEHeaderKey overhead of
+// h.Get. Host is intentionally NOT captured: net/http writes the Host header
+// from Request.Host (Host is in reqWriteExcludeHeader, never read from the
+// Header map), so synthesizing a Host entry here would misrepresent the wire
+// as a caller-supplied header while costing a backing-slice allocation on
+// every request.
 func captureRequestHeaders(httpReq *http.Request) http.Header {
 	if httpReq == nil {
 		return nil
@@ -806,11 +817,6 @@ func captureRequestHeaders(httpReq *http.Request) http.Header {
 		idx := len(headerVals)
 		headerVals = append(headerVals, string(strconv.AppendInt(numBuf[:0], httpReq.ContentLength, 10)))
 		h[hdrContentLength] = headerVals[idx : idx+1 : idx+1]
-	}
-	if httpReq.Host != "" && headerValueIsEmpty(h, hdrHost) {
-		idx := len(headerVals)
-		headerVals = append(headerVals, httpReq.Host)
-		h[hdrHost] = headerVals[idx : idx+1 : idx+1]
 	}
 	return h
 }
@@ -847,13 +853,7 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 		execCtx = backgroundCtx
 	}
 
-	timeout := req.Timeout()
-	// NoTimeout suppresses only the client-level default; an explicit
-	// per-request timeout (req.Timeout() > 0) and any context deadline are
-	// still honored.
-	if !req.NoTimeout() && timeout <= 0 && c.config.Timeout > 0 {
-		timeout = c.config.Timeout
-	}
+	timeout := effectiveRequestTimeout(c, req)
 
 	// Optimized: only create new context if absolutely necessary
 	var streamCancel context.CancelFunc
@@ -914,10 +914,7 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 		defer c.putExecRequest(reqCopy)
 	}
 
-	followRedirects := c.config.FollowRedirects
-	if req.FollowRedirects() != nil {
-		followRedirects = *req.FollowRedirects()
-	}
+	followRedirects := effectiveFollowRedirects(c.config, req)
 	maxRedirects := c.config.MaxRedirects
 	if req.MaxRedirects() != nil {
 		maxRedirects = *req.MaxRedirects()
@@ -963,6 +960,13 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 	if err != nil {
 		return nil, classifyErrorWithSanitizedURL(err, sanitizeOnce(), req.Method(), 0)
 	}
+	if httpResp == nil {
+		// Defensive: a caller-supplied RoundTripper may return (nil, nil).
+		// The buffered-path defer and responseProcessor.Process both
+		// dereference httpResp, so fail here instead of panicking. This keeps
+		// the (nil, nil) guard in executeWithRetry reachable.
+		return nil, classifyErrorWithSanitizedURL(errors.New("no response from transport"), sanitizeOnce(), req.Method(), 0)
+	}
 
 	// Streaming mode: skip body buffering, hand raw reader to caller.
 	// Caller is responsible for closing the body reader.
@@ -976,7 +980,7 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 		// caller-supplied Accept-Encoding (anything other than the engine's
 		// identity hint) means the encoding was explicitly requested, so the
 		// raw bytes are passed through untouched.
-		if enc := httpResp.Header.Get("Content-Encoding"); enc != "" && !strings.EqualFold(enc, "identity") {
+		if enc := strings.TrimSpace(httpResp.Header.Get("Content-Encoding")); enc != "" && !strings.EqualFold(enc, "identity") {
 			if ae := httpReq.Header.Get("Accept-Encoding"); ae == "" || ae == "identity" {
 				c.drainAndCloseBody(httpResp.Body)
 				return nil, classifyErrorWithSanitizedURL(
@@ -1034,7 +1038,7 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 	}
 
 	defer func() {
-		if httpResp.Body != nil {
+		if httpResp != nil && httpResp.Body != nil {
 			c.drainAndCloseBody(httpResp.Body)
 		}
 	}()
@@ -1073,21 +1077,9 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 	return resp, nil
 }
 
-// getHealthStatus returns the current health status of the client.
-// Reserved for future public health check API — currently only used in tests.
-func (c *Client) getHealthStatus() healthStatus {
-	return c.metrics.getHealthStatus()
-}
-
-// isHealthy returns true if the client is healthy (error rate < 10%).
-// Reserved for future public health check API — currently only used in tests.
-func (c *Client) isHealthy() bool {
-	return c.metrics.isHealthy()
-}
-
 // IsClosed returns true if the client has been closed.
 func (c *Client) IsClosed() bool {
-	return atomic.LoadInt32(&c.closed) == 1
+	return c.closed.Load() == 1
 }
 
 // Close releases the client's resources, including the connection pool and
@@ -1097,7 +1089,7 @@ func (c *Client) Close() error {
 	var closeErr error
 
 	c.closeOnce.Do(func() {
-		atomic.StoreInt32(&c.closed, 1)
+		c.closed.Store(1)
 
 		if c.connectionPool != nil {
 			if err := c.connectionPool.Close(); err != nil {
@@ -1115,8 +1107,34 @@ func (c *Client) Close() error {
 	return closeErr
 }
 
-// RequestOption is a function that modifies a Request before it is sent.
-type RequestOption func(*Request) error
+// RequestOption is a function that modifies a pooled *Request before it is
+// sent. It takes types.RequestMutator (rather than the concrete *Request) so
+// options compose through the same abstraction as middleware. The facade's
+// public RequestOption is an interface; the facade adapts it to this func type
+// at the boundary (see httpc.toEngineOptions), so the engine's
+// option-application loop stays a plain function call. Built-in facade options
+// that need engine-specific fields reach them via a type assertion on the
+// concrete *Request.
+type RequestOption func(types.RequestMutator) error
+
+// ApplyOptions runs a list of options against a concrete *Request. The
+// concrete type is what the engine pools and passes onward; RequestOption's
+// interface parameter lets external options stay decoupled from it.
+//
+// Exported (rather than unexported) because the httpc facade applies options
+// to its own pooled *Request before running the middleware chain — see
+// clientImpl.executeRequest.
+func ApplyOptions(req *Request, options []RequestOption) error {
+	for _, option := range options {
+		if option == nil {
+			continue
+		}
+		if err := option(req); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // clientOption is a functional option for configuring the Client.
 // It exists solely as a seam for tests to inject a custom transportManager;

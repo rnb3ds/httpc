@@ -33,6 +33,13 @@ func NewSPKIHashPinner(hashes ...string) (CertificatePinner, error) {
 // NewPublicKeyPinner creates a CertificatePinner from one or more DER-encoded
 // PKIX public keys (as returned by x509.MarshalPKIXPublicKey). Exported for use
 // by the public httpc package.
+//
+// PIN BASIS CAVEAT: verification hashes the certificate's raw
+// SubjectPublicKeyInfo bytes (cert.RawSubjectPublicKeyInfo), and
+// re-serializing a parsed key with x509.MarshalPKIXPublicKey can produce
+// different DER (e.g. a non-canonical AlgorithmIdentifier), which would
+// falsely reject the pin. Derive pins from the certificate's
+// RawSubjectPublicKeyInfo bytes directly for maximum fidelity.
 func NewPublicKeyPinner(publicKeys ...[]byte) (CertificatePinner, error) {
 	return newPublicKeyPinner(publicKeys...)
 }

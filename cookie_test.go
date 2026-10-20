@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/cybergodev/httpc/internal/engine"
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // ----------------------------------------------------------------------------
@@ -42,39 +43,11 @@ func TestCookie_RequestBasicOperations(t *testing.T) {
 		}
 	})
 
-	t.Run("WithCookies_batch", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			cookie1, _ := r.Cookie("cookie1")
-			cookie2, _ := r.Cookie("cookie2")
-			cookie3, _ := r.Cookie("cookie3")
-			if cookie1 == nil || cookie2 == nil || cookie3 == nil {
-				t.Error("Cookies not found")
-			}
-			if cookie1 != nil && cookie1.Value != "value1" {
-				t.Errorf("cookie1: expected value1, got %s", cookie1.Value)
-			}
-			if cookie2 != nil && cookie2.Value != "value2" {
-				t.Errorf("cookie2: expected value2, got %s", cookie2.Value)
-			}
-			if cookie3 != nil && cookie3.Value != "value3" {
-				t.Errorf("cookie3: expected value3, got %s", cookie3.Value)
-			}
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
-		client, _ := newTestClient()
-		defer func() { _ = client.Close() }()
-
-		_, err := client.Get(server.URL, WithCookies([]http.Cookie{
-			{Name: "cookie1", Value: "value1"},
-			{Name: "cookie2", Value: "value2"},
-			{Name: "cookie3", Value: "value3"},
-		}))
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-	})
+	// (A "WithCookies_batch" subtest — one WithCookies option carrying three
+	// cookies — was removed: the "WithCookies_multiple_options" subtest below
+	// sends the identical three name=value pairs and additionally covers
+	// accumulation across two separate option applications; single-cookie
+	// sending is covered by "WithCookies_single".)
 
 	t.Run("WithCookies empty and nil slice", func(t *testing.T) {
 		// Consolidates two former subtests (empty/nil slice): either must be a
@@ -310,6 +283,13 @@ func TestCookie_MapOperations(t *testing.T) {
 	})
 }
 
+// TestCookie_StringParsing round-trips WithCookieString values through a real
+// request. Only value-fidelity rows live here: pure parsing/count behavior
+// (empty string, single/multiple pairs, spaces around '=' or ';') is unit-
+// covered by TestParseCookieHeader_BoundaryConditions below, so the e2e table
+// keeps the rows whose distinguishing feature is that the VALUE arrives
+// intact (special characters, empty value, duplicate-name last-wins, long
+// values, first-'=' splitting).
 func TestCookie_StringParsing(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -318,30 +298,6 @@ func TestCookie_StringParsing(t *testing.T) {
 		expectedCookies map[string]string
 	}{
 		{
-			name:            "empty string",
-			cookieString:    "",
-			expectedCount:   0,
-			expectedCookies: map[string]string{},
-		},
-		{
-			name:          "single cookie",
-			cookieString:  "name=value",
-			expectedCount: 1,
-			expectedCookies: map[string]string{
-				"name": "value",
-			},
-		},
-		{
-			name:          "multiple cookies",
-			cookieString:  "cookie1=value1; cookie2=value2; cookie3=value3",
-			expectedCount: 3,
-			expectedCookies: map[string]string{
-				"cookie1": "value1",
-				"cookie2": "value2",
-				"cookie3": "value3",
-			},
-		},
-		{
 			name:          "complex with special chars",
 			cookieString:  "session=abc123; token=xyz-789_ABC; user=john@example.com",
 			expectedCount: 3,
@@ -349,15 +305,6 @@ func TestCookie_StringParsing(t *testing.T) {
 				"session": "abc123",
 				"token":   "xyz-789_ABC",
 				"user":    "john@example.com",
-			},
-		},
-		{
-			name:          "with spaces",
-			cookieString:  "name1 = value1 ; name2 = value2",
-			expectedCount: 2,
-			expectedCookies: map[string]string{
-				"name1": "value1",
-				"name2": "value2",
 			},
 		},
 		{
@@ -712,12 +659,23 @@ func TestWithCookies_BoundaryConditions(t *testing.T) {
 		{"control char in value", http.Cookie{Name: "ok", Value: "ba\x01d"}, true},
 		{"valid cookie", http.Cookie{Name: "session", Value: "abc123"}, false},
 		{"valid with domain", http.Cookie{Name: "token", Value: "xyz", Domain: "example.com"}, false},
+		// Name/value length limits enforced by validation.ValidateCookie
+		// (validateCookieName / validateCookieValue).
+		{"name at limit (256)", http.Cookie{Name: strings.Repeat("n", validation.MaxCookieNameLen), Value: "v"}, false},
+		{"name over limit (257)", http.Cookie{Name: strings.Repeat("n", validation.MaxCookieNameLen+1), Value: "v"}, true},
+		{"value at limit (4096)", http.Cookie{Name: "k", Value: strings.Repeat("v", validation.MaxCookieValueLen)}, false},
+		{"value over limit (4097)", http.Cookie{Name: "k", Value: strings.Repeat("v", validation.MaxCookieValueLen+1)}, true},
+		// Only CONTROL bytes (<0x20, 0x7F) are rejected in values; invalid
+		// UTF-8 sequences (e.g. a lone 0xFF) are valid cookie octets and pass
+		// both validation and the header write. This row pins the real
+		// enforced limit — do not "fix" it to expect an error.
+		{"invalid-utf8 value accepted (only control bytes rejected)", http.Cookie{Name: "k", Value: "\xff\xfe"}, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := engine.AcquireRequest()
-			err := WithCookies([]http.Cookie{tt.cookie})(req)
+			err := WithCookies([]http.Cookie{tt.cookie}).apply(req)
 			if tt.wantErr && err == nil {
 				t.Error("expected error, got nil")
 			}
@@ -765,7 +723,7 @@ func TestEnsureCookieCapacity(t *testing.T) {
 		{Name: "csrf_token", Value: "xyz"},
 		{Name: "user_pref", Value: "dark"},
 	} {
-		if err := WithCookies([]http.Cookie{c})(&r); err != nil {
+		if err := WithCookies([]http.Cookie{c}).apply(&r); err != nil {
 			t.Fatalf("WithCookies(%s): %v", c.Name, err)
 		}
 	}

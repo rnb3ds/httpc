@@ -24,8 +24,13 @@ var securityWarnMu sync.RWMutex
 var securityWarnOutput io.Writer = os.Stderr
 
 // SetSecurityWarnOutput redirects security warnings (e.g., TestingConfig, InsecureSkipVerify)
-// to the specified writer. Pass io.Discard to suppress all warnings.
+// to the specified writer. Pass io.Discard to suppress all warnings. A nil
+// writer is normalized to io.Discard — storing nil would make the next New()
+// panic inside fmt.Fprintf far from the misconfigured call site.
 func SetSecurityWarnOutput(w io.Writer) {
+	if w == nil {
+		w = io.Discard
+	}
 	securityWarnMu.Lock()
 	securityWarnOutput = w
 	securityWarnMu.Unlock()

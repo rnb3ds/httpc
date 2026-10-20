@@ -49,6 +49,13 @@ type PoolManager struct {
 	proxyAddrs  []string
 	proxyPool   *proxypool.Pool
 
+	// proxyFunc is the transport.Proxy function chosen at construction time
+	// (manual URL, proxy pool, or system proxy). Transports that dial outside
+	// this package (the fingerprint adapter) reuse it via SelectProxy so
+	// proxy-pool rotation and per-request selection behave identically on
+	// every path.
+	proxyFunc func(*http.Request) (*url.URL, error)
+
 	// atomic.Int64 (not plain int64 + atomic funcs) guarantees 8-byte
 	// alignment on 32-bit platforms, where interior struct fields are only
 	// 4-aligned and atomic 64-bit ops would panic.
@@ -61,7 +68,7 @@ type PoolManager struct {
 	// admission-hit rate.
 	acceptedConns atomic.Int64
 
-	closed int32
+	closed atomic.Bool
 
 	// NOTE: a per-host stats map (hostStats/hostConns/evictStaleHosts) was
 	// removed — it was write-only (GetMetrics reports aggregate counters
@@ -71,8 +78,15 @@ type PoolManager struct {
 	// consumer reads.
 }
 
-// certPinner defines the interface for certificate pinning
-type certPinner interface {
+// CertPinner defines the interface for certificate pinning. It is the exported
+// counterpart of the former unexported certPinner type, so the engine can plumb
+// the public security.CertificatePinner through Config as a normal field
+// instead of the SetCertPinner side channel (see buildConnectionConfig).
+//
+// security.CertificatePinner (which adds a Pin() string method) is a superset
+// of this interface, so a pinner built with the public constructors assigns
+// directly to Config.CertPinner with no adapter.
+type CertPinner interface {
 	VerifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error
 }
 
@@ -132,11 +146,8 @@ type Config struct {
 	DoHCacheTTL time.Duration // DoH cache TTL
 
 	// Certificate pinning
-	certPinner certPinner
+	CertPinner CertPinner
 }
-
-// SetCertPinner sets the certificate pinner for TLS certificate verification.
-func (c *Config) SetCertPinner(p certPinner) { c.certPinner = p }
 
 // metrics provides connection pool performance metrics.
 //
@@ -256,7 +267,7 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 		// Equivalent to http.ProxyURL(proxyURL), but records the selection
 		// into the per-request ProxyRecorder (see WithProxyRecorder) so the
 		// engine can surface which proxy served the request.
-		transport.Proxy = func(req *http.Request) (*url.URL, error) {
+		pm.proxyFunc = func(req *http.Request) (*url.URL, error) {
 			proxyRecorderFromContext(req.Context()).record(proxyURL)
 			return proxyURL, nil
 		}
@@ -284,7 +295,7 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 		// SelectIndex instead of advancing the round-robin counter. This ensures
 		// each retry attempt lands on a different proxy even when redirect-
 		// following within a single attempt consumes extra Proxy calls.
-		transport.Proxy = func(req *http.Request) (*url.URL, error) {
+		pm.proxyFunc = func(req *http.Request) (*url.URL, error) {
 			rec := proxyRecorderFromContext(req.Context())
 			if attempt, ok := proxyAttemptFromContext(req.Context()); ok {
 				u := pool.SelectIndex(attempt)
@@ -321,7 +332,7 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 			// construction, SSRF protection may block it because that host is not in
 			// proxyAddrs. For dynamically-changing localhost proxies, set
 			// Connection.ProxyURL explicitly (always exempted) or AllowPrivateIPs.
-			transport.Proxy = proxyFunc
+			pm.proxyFunc = proxyFunc
 			for _, scheme := range []string{"http", "https"} {
 				testURL, _ := url.Parse(scheme + "://example.com") // literal URL; Parse cannot fail
 				if pu, err := proxyFunc(&http.Request{URL: testURL}); err == nil && pu != nil {
@@ -339,8 +350,49 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 	}
 	// If neither condition is met, transport.Proxy remains nil (direct connection).
 
+	// Assign the resolved proxy function to the transport. Transports dialing
+	// outside this package (the fingerprint adapter) obtain the same selection
+	// through SelectProxy.
+	transport.Proxy = pm.proxyFunc
+
 	pm.transport = transport
 	return pm, nil
+}
+
+// SelectProxy returns the proxy URL that applies to a request for targetURL,
+// applying the same selection logic the standard transport path uses: the
+// per-attempt index (WithProxyAttempt) and ProxyRecorder carried on ctx are
+// honored, so proxy-pool rotation and per-request reporting behave identically
+// for external transports. Returns (nil, nil) for a direct connection.
+//
+// ctx must be non-nil; callers typically pass the request context.
+func (pm *PoolManager) SelectProxy(ctx context.Context, targetURL *url.URL) (*url.URL, error) {
+	if pm == nil || pm.proxyFunc == nil || targetURL == nil {
+		return nil, nil
+	}
+	req := (&http.Request{
+		Method: http.MethodGet,
+		URL:    targetURL,
+	}).WithContext(ctx)
+	return pm.proxyFunc(req)
+}
+
+// ReportProxyFailure records a connection-level failure against the proxy at
+// addr (canonical host:port), advancing its circuit breaker. Intended for
+// transports that dial outside this package; the standard dialer reports
+// internally.
+func (pm *PoolManager) ReportProxyFailure(addr string) {
+	if pm != nil && pm.proxyPool != nil {
+		pm.proxyPool.ReportFailure(addr)
+	}
+}
+
+// ReportProxySuccess clears the failure streak of the proxy at addr after a
+// successful request. See ReportProxyFailure.
+func (pm *PoolManager) ReportProxySuccess(addr string) {
+	if pm != nil && pm.proxyPool != nil {
+		pm.proxyPool.ReportSuccess(addr)
+	}
 }
 
 // createDialer creates an optimized dialer with SSRF protection and connection tracking.
@@ -353,7 +405,7 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 	}
 
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
-		if atomic.LoadInt32(&pm.closed) == 1 {
+		if pm.closed.Load() {
 			return nil, errors.New("connection pool is closed")
 		}
 
@@ -412,10 +464,7 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 			// Use DoH resolver for DNS lookup
 			ips, err := pm.dohResolver.LookupIPAddr(ctx, host)
 			if err != nil {
-				pm.rejectedConns.Add(1)
-				if pm.config.MaxTotalConns > 0 {
-					pm.totalConns.Add(-1)
-				}
+				pm.releaseConnSlot()
 				return nil, fmt.Errorf("DoH DNS resolution failed: %w", err)
 			}
 
@@ -427,38 +476,17 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 			if !allowPrivateIPs {
 				allowedIPs := validation.FilterAllowedIPs(resolvedIPs, pm.config.ExemptNets)
 				if len(allowedIPs) == 0 {
-					pm.rejectedConns.Add(1)
-					if pm.config.MaxTotalConns > 0 {
-						pm.totalConns.Add(-1)
-					}
+					pm.releaseConnSlot()
 					return nil, fmt.Errorf("SSRF protection: domain resolves only to blocked addresses")
 				}
 				resolvedIPs = allowedIPs
 			}
 
-			// Try to connect to each allowed IP until one succeeds. lastErr is
-			// seeded so an empty candidate list cannot render as %!w(<nil>).
-			lastErr := errors.New("no resolved addresses")
-			for _, ip := range resolvedIPs {
-				ipAddress := net.JoinHostPort(ip.String(), port)
-				conn, err := dialer.DialContext(ctx, network, ipAddress)
-
-				if err == nil {
-					pm.acceptedConns.Add(1)
-					pm.activeConns.Add(1)
-					return &trackedConn{
-						Conn: conn,
-						pm:   pm,
-					}, nil
-				}
-				lastErr = err
+			candidates := make([]string, len(resolvedIPs))
+			for i, ip := range resolvedIPs {
+				candidates[i] = net.JoinHostPort(ip.String(), port)
 			}
-
-			pm.rejectedConns.Add(1)
-			if pm.config.MaxTotalConns > 0 {
-				pm.totalConns.Add(-1)
-			}
-			return nil, fmt.Errorf("connection failed after trying %d IPs: %w", len(resolvedIPs), lastErr)
+			return pm.dialCandidates(ctx, dialer, network, candidates)
 		}
 
 		// Standard path without DoH
@@ -470,10 +498,7 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 		if !allowPrivateIPs {
 			validatedAddrs, err := pm.resolveAndValidateAddress(ctx, address)
 			if err != nil {
-				pm.rejectedConns.Add(1)
-				if pm.config.MaxTotalConns > 0 {
-					pm.totalConns.Add(-1)
-				}
+				pm.releaseConnSlot()
 				return nil, fmt.Errorf("SSRF protection: %w", err)
 			}
 			candidates = validatedAddrs
@@ -481,35 +506,50 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 			candidates = []string{address}
 		}
 
-		// Try every validated IP in turn (e.g. IPv6 unreachable → IPv4
-		// fallback), mirroring the DoH path above. All candidates passed SSRF
-		// validation, so dialing any of them is rebinding-safe.
-		var conn net.Conn
-		// Seeded so an empty candidate list cannot render as %!w(<nil>).
-		lastErr := errors.New("no validated addresses to dial")
-		for _, addr := range candidates {
-			conn, lastErr = dialer.DialContext(ctx, network, addr)
-			if conn != nil {
-				break
-			}
-		}
-
-		if conn == nil {
-			pm.rejectedConns.Add(1)
-			if pm.config.MaxTotalConns > 0 {
-				pm.totalConns.Add(-1)
-			}
-			return nil, fmt.Errorf("connection failed after trying %d address(es): %w", len(candidates), lastErr)
-		}
-
-		pm.acceptedConns.Add(1)
-		pm.activeConns.Add(1)
-
-		return &trackedConn{
-			Conn: conn,
-			pm:   pm,
-		}, nil
+		return pm.dialCandidates(ctx, dialer, network, candidates)
 	}
+}
+
+// releaseConnSlot charges a failed dial: it counts the attempt as rejected
+// and returns the MaxTotalConns slot reserved at dial entry. Single source
+// for this bookkeeping so the DoH and standard dial paths cannot drift.
+func (pm *PoolManager) releaseConnSlot() {
+	pm.rejectedConns.Add(1)
+	if pm.config.MaxTotalConns > 0 {
+		pm.totalConns.Add(-1)
+	}
+}
+
+// dialCandidates tries each candidate address in turn and returns the first
+// successful connection, mirroring IPv6→IPv4 failover; every candidate has
+// already passed SSRF validation on both paths that feed it, so dialing any
+// of them is rebinding-safe. Counter accounting (accepted/rejected/totalConns
+// and the trackedConn wrap) lives here so the DoH and standard paths share
+// one implementation — previously two near-identical 40-line blocks each
+// carried their own copies of the bookkeeping.
+func (pm *PoolManager) dialCandidates(ctx context.Context, dialer *net.Dialer, network string, candidates []string) (net.Conn, error) {
+	var conn net.Conn
+	// Seeded so an empty candidate list cannot render as %!w(<nil>).
+	lastErr := errors.New("no validated addresses to dial")
+	for _, addr := range candidates {
+		conn, lastErr = dialer.DialContext(ctx, network, addr)
+		if conn != nil {
+			break
+		}
+	}
+
+	if conn == nil {
+		pm.releaseConnSlot()
+		return nil, fmt.Errorf("connection failed after trying %d address(es): %w", len(candidates), lastErr)
+	}
+
+	pm.acceptedConns.Add(1)
+	pm.activeConns.Add(1)
+
+	return &trackedConn{
+		Conn: conn,
+		pm:   pm,
+	}, nil
 }
 
 // resolveAndValidateAddress resolves the given address and validates all resulting IPs
@@ -584,7 +624,7 @@ func (pm *PoolManager) createTLSConfig() *tls.Config {
 		// Add certificate pinning verification if configured. Chain onto any
 		// user-supplied VerifyPeerCertificate callback instead of replacing
 		// it: custom CA validation or mTLS hooks must keep working.
-		if pm.config.certPinner != nil {
+		if pm.config.CertPinner != nil {
 			orig := tlsConfig.VerifyPeerCertificate
 			pinVerify := pm.createVerifyPeerCertificate()
 			tlsConfig.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
@@ -622,7 +662,7 @@ func (pm *PoolManager) createTLSConfig() *tls.Config {
 	}
 
 	// Add certificate pinning verification if configured
-	if pm.config.certPinner != nil {
+	if pm.config.CertPinner != nil {
 		tlsConfig.VerifyPeerCertificate = pm.createVerifyPeerCertificate()
 	}
 
@@ -641,7 +681,7 @@ func (pm *PoolManager) createTLSConfig() *tls.Config {
 // successful pin.
 func (pm *PoolManager) createVerifyPeerCertificate() func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-		if err := pm.config.certPinner.VerifyPeerCertificate(rawCerts, verifiedChains); err != nil {
+		if err := pm.config.CertPinner.VerifyPeerCertificate(rawCerts, verifiedChains); err != nil {
 			return fmt.Errorf("certificate pinning failed: %w", err)
 		}
 		return nil
@@ -652,18 +692,18 @@ type trackedConn struct {
 	net.Conn
 	pm        *PoolManager
 	closeOnce sync.Once
-	closed    int32 // Atomic flag for fast double-close detection
+	closed    atomic.Bool // Atomic flag for fast double-close detection
 }
 
 func (tc *trackedConn) Close() error {
 	// Fast path: check if already closed (atomic check before sync.Once overhead)
-	if atomic.LoadInt32(&tc.closed) == 1 {
+	if tc.closed.Load() {
 		return nil
 	}
 
 	var closeErr error
 	tc.closeOnce.Do(func() {
-		atomic.StoreInt32(&tc.closed, 1)
+		tc.closed.Store(true)
 		// Counter decrements are unconditional. closeOnce guarantees they run
 		// exactly once per connection, and every dial-time increment has this
 		// matching decrement even when the pool is closed in between — keeping
@@ -742,7 +782,7 @@ func (pm *PoolManager) GetMetrics() metrics {
 // the shared transport. It is safe to call multiple times; subsequent calls
 // are no-ops. Returns any error encountered while closing sub-components.
 func (pm *PoolManager) Close() error {
-	if !atomic.CompareAndSwapInt32(&pm.closed, 0, 1) {
+	if !pm.closed.CompareAndSwap(false, true) {
 		return nil
 	}
 

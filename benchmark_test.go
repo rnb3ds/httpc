@@ -458,14 +458,8 @@ func BenchmarkResult_String(b *testing.B) {
 
 // ============================================================================
 // HELPER FUNCTIONS
+// (newBenchmarkClient lives in test_helpers_test.go, beside newTestClient)
 // ============================================================================
-
-func newBenchmarkClient() (Client, error) {
-	config := DefaultConfig()
-	config.Security.AllowPrivateIPs = true
-	config.Retry.MaxRetries = 0
-	return New(config)
-}
 
 // ============================================================================
 // MULTIPART FORM BENCHMARKS

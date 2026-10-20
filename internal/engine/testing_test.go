@@ -8,10 +8,13 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cybergodev/httpc/internal/connection"
+	"github.com/cybergodev/httpc/internal/types"
 )
 
 // errForcedFailure is returned by mockTransport for the first failFirst calls,
@@ -29,10 +32,15 @@ type mockTransport struct {
 	CallCount int
 	Requests  []*http.Request
 
-	// failFirst forces the first N RoundTrip calls to return errForcedFailure,
-	// then falls through to the normal Error/Response path. Useful for
-	// deterministic retry tests (fail-then-succeed scenarios).
+	// failFirst forces the first N RoundTrip calls to return failFirstErr
+	// (or errForcedFailure when nil), then falls through to the normal
+	// Error/Response path. Useful for deterministic retry tests
+	// (fail-then-succeed scenarios).
 	failFirst int
+
+	// failFirstErr overrides the error used by the failFirst counter, for
+	// tests that need a specific (e.g. non-retryable) failure.
+	failFirstErr error
 
 	// Redirect behavior
 	RedirectChain []string
@@ -61,6 +69,9 @@ func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	if m.failFirst > 0 {
 		m.failFirst--
+		if m.failFirstErr != nil {
+			return nil, m.failFirstErr
+		}
 		return nil, errForcedFailure
 	}
 
@@ -167,4 +178,149 @@ func testConnectionConfig() *connection.Config {
 	config := connection.DefaultConfig()
 	config.AllowPrivateIPs = true
 	return config
+}
+
+// ============================================================================
+// SHARED TEST FIXTURES
+// (consolidated here from request_processor_test.go, coverage_test.go,
+// response_processor_test.go, retry_test.go, and errors_test.go so every
+// test file in the package shares one definition)
+// ============================================================================
+
+// testRequestBuilder creates a Request with the given parameters using setters.
+// This helper function is used because Request fields are now private.
+func testRequestBuilder() *testRequest {
+	return &testRequest{}
+}
+
+type testRequest struct {
+	method          string
+	url             string
+	headers         map[string]string
+	queryParams     map[string]any
+	body            any
+	timeout         time.Duration
+	maxRetries      int
+	ctx             context.Context
+	cookies         []http.Cookie
+	followRedirects *bool
+	maxRedirects    *int
+}
+
+func (tr *testRequest) Method(v string) *testRequest              { tr.method = v; return tr }
+func (tr *testRequest) URL(v string) *testRequest                 { tr.url = v; return tr }
+func (tr *testRequest) Headers(v map[string]string) *testRequest  { tr.headers = v; return tr }
+func (tr *testRequest) QueryParams(v map[string]any) *testRequest { tr.queryParams = v; return tr }
+func (tr *testRequest) Body(v any) *testRequest                   { tr.body = v; return tr }
+func (tr *testRequest) Timeout(v time.Duration) *testRequest      { tr.timeout = v; return tr }
+func (tr *testRequest) MaxRetries(v int) *testRequest             { tr.maxRetries = v; return tr }
+func (tr *testRequest) Context(v context.Context) *testRequest    { tr.ctx = v; return tr }
+func (tr *testRequest) Cookies(v []http.Cookie) *testRequest      { tr.cookies = v; return tr }
+
+func (tr *testRequest) Build() *Request {
+	req := &Request{}
+	req.SetMethod(tr.method)
+	req.SetURL(tr.url)
+	if tr.headers != nil {
+		req.SetHeaders(tr.headers)
+	}
+	if tr.queryParams != nil {
+		req.SetQueryParams(tr.queryParams)
+	}
+	req.SetBody(tr.body)
+	req.SetTimeout(tr.timeout)
+	req.SetMaxRetries(tr.maxRetries)
+	req.SetContext(tr.ctx)
+	req.SetCookies(tr.cookies)
+	req.SetFollowRedirects(tr.followRedirects)
+	req.SetMaxRedirects(tr.maxRedirects)
+	return req
+}
+
+// fileDataHelper is a test helper for creating file data.
+type fileDataHelper struct {
+	Filename    string
+	Content     []byte
+	ContentType string
+}
+
+// formDataHelper creates a *types.FormData for testing.
+func formDataHelper(fields map[string]string, files map[string]*fileDataHelper) *types.FormData {
+	fd := &types.FormData{
+		Fields: fields,
+		Files:  make(map[string]*types.FileData),
+	}
+	for key, fh := range files {
+		if fh == nil {
+			fd.Files[key] = nil
+			continue
+		}
+		fd.Files[key] = &types.FileData{
+			Filename:    fh.Filename,
+			Content:     fh.Content,
+			ContentType: fh.ContentType,
+		}
+	}
+	return fd
+}
+
+// countingReadCloser tracks how many times Close is invoked.
+type countingReadCloser struct {
+	inner  io.Reader
+	closes int
+}
+
+func (c *countingReadCloser) Read(p []byte) (int, error) { return c.inner.Read(p) }
+func (c *countingReadCloser) Close() error {
+	c.closes++
+	return nil
+}
+
+// testRetryPolicy is a simple retry policy for testing.
+type testRetryPolicy struct {
+	maxRetries int
+	delay      time.Duration
+}
+
+func (p *testRetryPolicy) MaxRetries() int                    { return p.maxRetries }
+func (p *testRetryPolicy) GetDelay(attempt int) time.Duration { return p.delay }
+func (p *testRetryPolicy) ShouldRetry(resp types.ResponseReader, err error, attempt int) bool {
+	if err != nil {
+		return attempt < p.maxRetries
+	}
+	if resp != nil && resp.StatusCode() >= 500 {
+		return attempt < p.maxRetries
+	}
+	return false
+}
+
+// mockNetError implements net.Error for testing.
+type mockNetError struct {
+	timeout   bool
+	temporary bool
+	msg       string
+}
+
+func (e *mockNetError) Error() string   { return e.msg }
+func (e *mockNetError) Timeout() bool   { return e.timeout }
+func (e *mockNetError) Temporary() bool { return e.temporary }
+
+// testCookieJar is a minimal in-memory cookie jar for testing.
+// (Moved from coverage_test.go during its dissolution.)
+type testCookieJar struct {
+	cookies map[string][]*http.Cookie
+}
+
+func newTestCookieJar() *testCookieJar {
+	return &testCookieJar{
+		cookies: make(map[string][]*http.Cookie),
+	}
+}
+
+func (j *testCookieJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
+	j.cookies[u.Host] = append(j.cookies[u.Host], cookies...)
+}
+
+func (j *testCookieJar) Cookies(u *url.URL) []*http.Cookie {
+	return j.cookies[u.Host]
 }

@@ -2,6 +2,7 @@
 package proxy
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -9,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // Detector provides automatic system proxy detection
@@ -69,8 +72,10 @@ func (d *Detector) detect() func(*http.Request) (*url.URL, error) {
 }
 
 // detectFromEnvironment checks environment variables for proxy settings.
-// It reads the environment directly rather than calling http.ProxyFromEnvironment,
-// which caches values process-wide via sync.Once and cannot reflect later changes.
+// Unlike http.ProxyFromEnvironment's process-wide sync.Once cache, each
+// Detector re-reads the environment on its FIRST detection and caches the
+// result for that detector's lifetime — later os.Setenv calls are not
+// reflected by an already-created detector (a fresh Detector picks them up).
 func (d *Detector) detectFromEnvironment() func(*http.Request) (*url.URL, error) {
 	httpProxy := getEnvAny("HTTP_PROXY", "http_proxy")
 	httpsProxy := getEnvAny("HTTPS_PROXY", "https_proxy")
@@ -89,7 +94,11 @@ func (d *Detector) detectFromEnvironment() func(*http.Request) (*url.URL, error)
 	httpsURL, httpsErr := parseProxyURL(httpsProxy)
 
 	return func(req *http.Request) (*url.URL, error) {
-		// Don't use proxies in a CGI environment, matching net/http behavior.
+		// Don't use proxies in a CGI environment. net/http refuses
+		// HTTP_PROXY in CGI with an error (see golang.org/s/cgihttpproxy);
+		// here both schemes direct-connect — simpler, and it never proxies
+		// when the (potentially attacker-controlled) CGI environment would
+		// be the one choosing the proxy.
 		if inCGI {
 			return nil, nil
 		}
@@ -111,10 +120,13 @@ func (d *Detector) detectFromEnvironment() func(*http.Request) (*url.URL, error)
 			return nil, nil
 		}
 
-		// Select proxy URL, matching net/http's resolution order:
-		// HTTPS requests prefer HTTPS_PROXY, falling back to HTTP_PROXY.
-		// Other requests use HTTP_PROXY only (an invalid HTTPS_PROXY does not
-		// affect plain-HTTP requests — same as ProxyFromEnvironment).
+		// Select the proxy URL with the same scheme-scoped resolution as
+		// net/http's httpproxy.proxyForURL: https requests use HTTPS_PROXY
+		// only and http requests use HTTP_PROXY only. net/http has NO
+		// cross-scheme fallback in either direction — the previous fallback
+		// branches routed plaintext http:// traffic into an HTTPS_PROXY-only
+		// proxy (and https traffic into an HTTP_PROXY-only proxy), diverging
+		// from every standard-library client.
 		//
 		// A proxy env var that is SET but INVALID must surface its parse
 		// error for the schemes it governs rather than silently
@@ -129,16 +141,13 @@ func (d *Detector) detectFromEnvironment() func(*http.Request) (*url.URL, error)
 			if httpsErr != nil {
 				return nil, httpsErr
 			}
+			return nil, nil
 		}
 		if httpURL != nil {
 			return httpURL, nil
 		}
 		if httpErr != nil {
 			return nil, httpErr
-		}
-		// Fall back to HTTPS proxy for non-HTTPS requests.
-		if httpsURL != nil {
-			return httpsURL, nil
 		}
 
 		return nil, nil
@@ -205,7 +214,25 @@ func parseProxyURL(proxy string) (*url.URL, error) {
 		}
 	}
 	// Fall back to prepending "http://" for bare host:port values.
-	return url.Parse("http://" + proxy)
+	u, err = url.Parse("http://" + proxy)
+	if err != nil {
+		return nil, proxyParseError(proxy, err)
+	}
+	return u, nil
+}
+
+// proxyParseError redacts credentials from a proxy URL parse failure.
+// url.Parse errors embed the raw URL verbatim (`parse "http://user:pass@…":
+// invalid port …`), and proxy addresses frequently carry auth — the error is
+// stored per-scheme and returned to callers on every request, where it ends
+// up in logs via *url.Error chains. Keep the parse reason, drop the raw URL.
+func proxyParseError(proxy string, err error) error {
+	reason := err.Error()
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		reason = ue.Err.Error() // inner reason, without the raw URL
+	}
+	return fmt.Errorf("invalid proxy URL %q: %s", validation.SanitizeURL(proxy), reason)
 }
 
 // shouldUseProxy reports whether requests to the given host should use a proxy,

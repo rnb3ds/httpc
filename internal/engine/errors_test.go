@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/cybergodev/httpc/internal/connection"
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
@@ -152,6 +154,19 @@ func TestClientError_IsRetryable(t *testing.T) {
 			name:      "Response read with network cause is retryable",
 			err:       &ClientError{Type: ErrorTypeResponseRead, Cause: &net.OpError{Op: "read"}},
 			wantRetry: true,
+		},
+		{
+			// readfrom is the io.ReaderFrom fast path net/http uses when the
+			// response body is copied straight into a caller buffer.
+			name:      "Response read readfrom Op is retryable",
+			err:       &ClientError{Type: ErrorTypeResponseRead, Cause: &net.OpError{Op: "readfrom"}},
+			wantRetry: true,
+		},
+		{
+			// Write operations are excluded: only read-related Ops qualify.
+			name:      "Response read write Op is not retryable",
+			err:       &ClientError{Type: ErrorTypeResponseRead, Cause: &net.OpError{Op: "write"}},
+			wantRetry: false,
 		},
 		{
 			name:      "Response read without network cause is not retryable",
@@ -370,17 +385,6 @@ func TestClassifyError_NilError(t *testing.T) {
 	}
 }
 
-// mockNetError implements net.Error for testing
-type mockNetError struct {
-	timeout   bool
-	temporary bool
-	msg       string
-}
-
-func (e *mockNetError) Error() string   { return e.msg }
-func (e *mockNetError) Timeout() bool   { return e.timeout }
-func (e *mockNetError) Temporary() bool { return e.temporary }
-
 func TestClassifyError_NetError(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -464,6 +468,22 @@ func TestClientError_Code(t *testing.T) {
 				t.Errorf("Code() = %q, want %q", got, tt.expectCode)
 			}
 		})
+	}
+}
+
+// TestClientError_WithType validates the WithType method returns a copy.
+// (Moved from coverage_test.go during its dissolution.)
+func TestClientError_WithType(t *testing.T) {
+	err := &ClientError{Type: ErrorTypeNetwork}
+	result := err.WithType(ErrorTypeTimeout)
+	if result == err {
+		t.Error("WithType should return a new copy, not the same pointer")
+	}
+	if err.Type != ErrorTypeNetwork {
+		t.Errorf("Original should be unmodified, got %v", err.Type)
+	}
+	if result.Type != ErrorTypeTimeout {
+		t.Errorf("Expected ErrorTypeTimeout, got %v", result.Type)
 	}
 }
 
@@ -570,13 +590,13 @@ func TestErrorHandling_IntegrationWithClient(t *testing.T) {
 			defer server.Close()
 
 			config := &Config{
-				Timeout:         10 * time.Second, // Increase timeout
-				AllowPrivateIPs: true,
-				MaxRetries:      2,
-				RetryDelay:      50 * time.Millisecond,
-				MaxRetryDelay:   1 * time.Second,
-				BackoffFactor:   2.0,
-				Jitter:          false,
+				Timeout: 10 * time.Second, // Increase timeout
+
+				MaxRetries:    2,
+				RetryDelay:    50 * time.Millisecond,
+				MaxRetryDelay: 1 * time.Second,
+				BackoffFactor: 2.0,
+				Jitter:        false, Connection: connection.Config{AllowPrivateIPs: true},
 			}
 
 			client, err := NewClient(config)
@@ -833,9 +853,10 @@ func TestErrorHandling_TimeoutScenarios(t *testing.T) {
 			defer server.Close()
 
 			config := &Config{
-				Timeout:         tt.clientTimeout,
-				AllowPrivateIPs: true,
-				MaxRetries:      0, // Disable retry to test pure timeout
+				Timeout: tt.clientTimeout,
+
+				MaxRetries: 0, Connection: // Disable retry to test pure timeout
+				connection.Config{AllowPrivateIPs: true},
 			}
 
 			client, err := NewClient(config)
@@ -898,18 +919,26 @@ func TestErrorHandling_TimeoutScenarios(t *testing.T) {
 func TestIsRetryableSyscallError_WSAErrno(t *testing.T) {
 	// These raw WSA error codes are what Windows networking functions return.
 	// They do not match syscall.ECONNREFUSED etc. on Go 1.25+ Windows.
-	wsaErrnos := []struct {
+	type wsaErrnoCase struct {
 		name     string
 		errno    uintptr // raw WSA code value
 		retryabl bool
-	}{
-		{"WSAECONNRESET", 10054, true},
-		{"WSAETIMEDOUT", 10060, true},
-		{"WSAECONNREFUSED", 10061, true},
-		{"WSAENETUNREACH", 10051, true},
-		{"WSAEHOSTUNREACH", 10065, true},
+	}
+	wsaErrnos := []wsaErrnoCase{
 		// Non-retryable errno (folded from the retired coverage_test.go table).
 		{"EINVAL is not retryable", uintptr(syscall.EINVAL), false},
+	}
+	// The raw WSA codes are only produced by Windows networking and are only
+	// classified by the Windows-specific retryableSyscallErrorsExt; skip them
+	// elsewhere so the suite stays green under -race on Linux containers.
+	if runtime.GOOS == "windows" {
+		wsaErrnos = append(wsaErrnos,
+			wsaErrnoCase{"WSAECONNRESET", 10054, true},
+			wsaErrnoCase{"WSAETIMEDOUT", 10060, true},
+			wsaErrnoCase{"WSAECONNREFUSED", 10061, true},
+			wsaErrnoCase{"WSAENETUNREACH", 10051, true},
+			wsaErrnoCase{"WSAEHOSTUNREACH", 10065, true},
+		)
 	}
 	for _, tt := range wsaErrnos {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1025,5 +1054,92 @@ func TestClientError_IsRetryableDNSError_Causes(t *testing.T) {
 				t.Errorf("isRetryableDNSError() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// ============================================================================
+// SEC-001 M-1: error chains must not leak sensitive query parameters
+// ============================================================================
+
+// net/http returns *url.Error whose message quotes the full request URL, query
+// string included. ClientError.URL is sanitized, but Error() used to print the
+// raw cause chain verbatim, re-exposing the sensitive values. The Cause itself
+// must stay intact so errors.Is/As keep matching the original chain.
+func TestClientError_CauseChainRedactsSensitiveQuery(t *testing.T) {
+	raw := "http://host.invalid/api?token=SECRETVALUE123&x=1"
+	inner := errors.New("dial tcp: lookup host.invalid: no such host")
+	urlErr := &url.Error{Op: "Get", URL: raw, Err: inner}
+
+	clientErr := classifyErrorWithSanitizedURL(urlErr, validation.SanitizeURL(raw), "GET", 1)
+	msg := clientErr.Error()
+
+	if strings.Contains(msg, "SECRETVALUE123") {
+		t.Fatalf("error message leaks raw sensitive query value: %s", msg)
+	}
+	if !strings.Contains(msg, "token=[REDACTED]") {
+		t.Fatalf("error message should carry the redacted URL, got: %s", msg)
+	}
+	// The Cause chain itself must remain untouched for errors.Is/As.
+	if !errors.Is(clientErr, inner) {
+		t.Fatal("errors.Is no longer matches the inner sentinel through the cause chain")
+	}
+	var ue *url.Error
+	if !errors.As(clientErr, &ue) {
+		t.Fatal("errors.As no longer finds *url.Error in the cause chain")
+	}
+	if ue.URL != raw {
+		t.Fatalf("cause *url.Error was mutated: %q", ue.URL)
+	}
+}
+
+// The same leak through a wrapped *url.Error: the redaction must preserve the
+// outer wrapper's text while scrubbing the embedded URL.
+func TestClientError_CauseChainRedactsWrappedURLError(t *testing.T) {
+	raw := "https://host.invalid/download?api_key=TOPSECRET&z=1"
+	urlErr := &url.Error{Op: "Post", URL: raw, Err: errors.New("connection refused")}
+	wrapped := fmt.Errorf("attempt setup: %w", urlErr)
+
+	clientErr := classifyErrorWithSanitizedURL(wrapped, validation.SanitizeURL(raw), "POST", 2)
+	msg := clientErr.Error()
+
+	if strings.Contains(msg, "TOPSECRET") {
+		t.Fatalf("wrapped error message leaks raw sensitive query value: %s", msg)
+	}
+	if !strings.Contains(msg, "api_key=[REDACTED]") {
+		t.Fatalf("error message should carry the redacted URL, got: %s", msg)
+	}
+	if !strings.Contains(msg, "attempt setup:") {
+		t.Fatalf("redaction dropped the outer wrapper text: %s", msg)
+	}
+}
+
+// A URL with nothing sensitive keeps the verbatim cause text (no behavior
+// change for the common case).
+func TestClientError_CauseChainPlainURLUnchanged(t *testing.T) {
+	raw := "http://host.invalid/api"
+	urlErr := &url.Error{Op: "Get", URL: raw, Err: errors.New("connection refused")}
+
+	clientErr := classifyErrorWithSanitizedURL(urlErr, raw, "GET", 1)
+	msg := clientErr.Error()
+
+	if !strings.Contains(msg, `Get "http://host.invalid/api": connection refused`) {
+		t.Fatalf("plain cause text should print verbatim, got: %s", msg)
+	}
+}
+
+// url.Parse errors quote the raw URL inside the message; redactURLInError must
+// scrub it. Parse failures are what requestProcessor.Build sees when URL
+// validation is disabled. The invalid escape sits in the path (url.Parse does
+// not validate escapes in the query string), so the parse error quotes the
+// full URL including the sensitive parameter.
+func TestRedactURLInError_ParseErrorsQuoteRawURL(t *testing.T) {
+	raw := "http://host.invalid/ap%zzi?token=SECRETVALUE" // %zz in the path forces a parse error
+	_, parseErr := url.Parse(raw)
+	if parseErr == nil {
+		t.Fatal("expected url.Parse to reject the URL")
+	}
+
+	if red := redactURLInError(parseErr, raw).Error(); strings.Contains(red, "SECRETVALUE") || !strings.Contains(red, "token=[REDACTED]") {
+		t.Fatalf("parse error not redacted: %s", red)
 	}
 }

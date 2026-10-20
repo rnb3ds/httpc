@@ -203,8 +203,12 @@ const maxQueryEscapeSize = 10 * 1024 * 1024 // 10MB
 func AppendQueryEscape(b *strings.Builder, s string) {
 	// SECURITY: delegate very large inputs to the standard library to avoid the
 	// per-byte loop cost and keep parity with QueryEscape's overflow guard.
+	// url.QueryEscape encodes space as '+', which would silently switch the
+	// wire bytes for values crossing the size boundary — map back to %20
+	// (QueryEscape emits '+' only for spaces; a literal '+' arrives here as
+	// %2B, so the replacement cannot corrupt real content).
 	if len(s) > maxQueryEscapeSize {
-		b.WriteString(url.QueryEscape(s))
+		b.WriteString(strings.ReplaceAll(url.QueryEscape(s), "+", "%20"))
 		return
 	}
 

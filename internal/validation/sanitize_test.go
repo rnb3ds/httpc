@@ -295,3 +295,42 @@ func TestSanitizeURL_APiKeyVariant(t *testing.T) {
 		t.Errorf("api-key value leaked: %q", got)
 	}
 }
+
+// TestSanitizeURL_PercentEncodedSensitiveKey pins the fix for a redaction
+// bypass: a key obfuscated by percent-encoding ("%74oken" = "token") must
+// still be recognized as sensitive, otherwise its value would leak.
+func TestSanitizeURL_PercentEncodedSensitiveKey(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"percent-encoded token key", "https://example.com/a?%74oken=SECRET"},
+		{"percent-encoded api_key key", "https://example.com/a?api%5Fkey=SECRET"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SanitizeURL(tt.input)
+			if !strings.Contains(got, "[REDACTED]") {
+				t.Errorf("sensitive key not redacted: %q", got)
+			}
+			if strings.Contains(got, "SECRET") {
+				t.Errorf("sensitive value leaked: %q", got)
+			}
+		})
+	}
+}
+
+// TestSanitizeURL_UnparseableQueryOnly pins the SEC-001 M-1 fail-closed fix: a
+// URL that url.Parse rejects (no userinfo, but a sensitive query parameter)
+// must still have the parameter redacted. url.Parse errors quote the raw URL,
+// so an intact return would leak the value the parseable path redacts. The
+// invalid escape is in the path — url.Parse does not validate query escapes.
+func TestSanitizeURL_UnparseableQueryOnly(t *testing.T) {
+	got := SanitizeURL("http://host.invalid/ap%zzi?token=SECRETVALUE")
+	if !strings.Contains(got, "token=[REDACTED]") {
+		t.Errorf("sensitive parameter not redacted on the unparseable path: %q", got)
+	}
+	if strings.Contains(got, "SECRETVALUE") {
+		t.Errorf("sensitive value leaked on the unparseable path: %q", got)
+	}
+}

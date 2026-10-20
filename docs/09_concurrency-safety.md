@@ -260,7 +260,7 @@ HTTPC uses the following synchronization mechanisms internally:
 | `client.Close()` | ✅ Yes | Idempotent — safe to call multiple times (subsequent calls are no-ops) |
 | `client.Download()` | ✅ Yes | Safe for concurrent downloads to *different* file paths. Two concurrent downloads targeting the **same** path fail fast with `ErrDownloadInProgress` (in-process guard; cross-process coordination is the caller's responsibility) |
 | `result.Unmarshal()` (concurrent reads) | ✅ Yes | `Result` is immutable after return — safe to call concurrently on the same instance |
-| `result.SaveToFile()` | ✅ Yes | Read-only w.r.t. the `Result`; concurrent writes to the same *file path* are the caller's responsibility |
+| `result.SaveToFile()` | ✅ Yes | Read-only w.r.t. the `Result`. Concurrent saves/downloads targeting the **same** path fail fast with `ErrDownloadInProgress` (same in-process lock as `Download`; cross-process coordination is the caller's responsibility) |
 | `domainClient.SetHeader()` | ✅ Yes | Safe for concurrent calls |
 | `domainClient.SetCookie()` | ✅ Yes | Safe for concurrent calls |
 | `domainClient.Close()` | ✅ Yes | Idempotent — safe to call multiple times (subsequent calls are no-ops) |

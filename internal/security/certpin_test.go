@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 )
@@ -68,83 +69,65 @@ func TestExportedConstructors(t *testing.T) {
 	}
 	hash := sha256.Sum256(pubKeyBytes)
 	validHash := base64.StdEncoding.EncodeToString(hash[:])
+	secondDigest := sha256.Sum256([]byte("different"))
+	hash2 := base64.StdEncoding.EncodeToString(secondDigest[:])
 
-	t.Run("NewSPKIHashPinner valid", func(t *testing.T) {
-		pinner, err := NewSPKIHashPinner(validHash)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if pinner == nil {
-			t.Fatal("expected non-nil pinner")
-		}
-		if pinner.Pin() == "" {
-			t.Error("expected non-empty Pin() description")
-		}
-	})
+	tests := []struct {
+		name    string
+		build   func() (CertificatePinner, error)
+		wantErr bool
+	}{
+		{"NewSPKIHashPinner valid", func() (CertificatePinner, error) {
+			return NewSPKIHashPinner(validHash)
+		}, false},
+		{"NewSPKIHashPinner multiple for rotation", func() (CertificatePinner, error) {
+			return NewSPKIHashPinner(validHash, hash2)
+		}, false},
+		{"NewSPKIHashPinner empty returns error", func() (CertificatePinner, error) {
+			return NewSPKIHashPinner()
+		}, true},
+		{"NewSPKIHashPinner invalid base64 returns error", func() (CertificatePinner, error) {
+			return NewSPKIHashPinner("not-valid-base64!!!")
+		}, true},
+		{"NewPublicKeyPinner valid", func() (CertificatePinner, error) {
+			return NewPublicKeyPinner(pubKeyBytes)
+		}, false},
+		{"NewPublicKeyPinner empty returns error", func() (CertificatePinner, error) {
+			return NewPublicKeyPinner()
+		}, true},
+		{"NewCertificatePinnerChain", func() (CertificatePinner, error) {
+			a, err := NewSPKIHashPinner(validHash)
+			if err != nil {
+				return nil, err
+			}
+			b, err := NewSPKIHashPinner(hash2)
+			if err != nil {
+				return nil, err
+			}
+			return NewCertificatePinnerChain(a, b), nil
+		}, false},
+	}
 
-	t.Run("NewSPKIHashPinner multiple for rotation", func(t *testing.T) {
-		hash2 := sha256.Sum256([]byte("different"))
-		pinner, err := NewSPKIHashPinner(validHash, base64.StdEncoding.EncodeToString(hash2[:]))
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if pinner == nil {
-			t.Fatal("expected non-nil pinner")
-		}
-	})
-
-	t.Run("NewSPKIHashPinner empty returns error", func(t *testing.T) {
-		_, err := NewSPKIHashPinner()
-		if err == nil {
-			t.Error("expected error for no hashes")
-		}
-	})
-
-	t.Run("NewSPKIHashPinner invalid base64 returns error", func(t *testing.T) {
-		_, err := NewSPKIHashPinner("not-valid-base64!!!")
-		if err == nil {
-			t.Error("expected error for invalid base64")
-		}
-	})
-
-	t.Run("NewPublicKeyPinner valid", func(t *testing.T) {
-		pinner, err := NewPublicKeyPinner(pubKeyBytes)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if pinner == nil {
-			t.Fatal("expected non-nil pinner")
-		}
-		if pinner.Pin() == "" {
-			t.Error("expected non-empty Pin() description")
-		}
-	})
-
-	t.Run("NewPublicKeyPinner empty returns error", func(t *testing.T) {
-		_, err := NewPublicKeyPinner()
-		if err == nil {
-			t.Error("expected error for no public keys")
-		}
-	})
-
-	t.Run("NewCertificatePinnerChain", func(t *testing.T) {
-		a, err := NewSPKIHashPinner(validHash)
-		if err != nil {
-			t.Fatalf("NewSPKIHashPinner: %v", err)
-		}
-		hash2 := sha256.Sum256([]byte("different"))
-		b, err := NewSPKIHashPinner(base64.StdEncoding.EncodeToString(hash2[:]))
-		if err != nil {
-			t.Fatalf("NewSPKIHashPinner: %v", err)
-		}
-		chain := NewCertificatePinnerChain(a, b)
-		if chain == nil {
-			t.Fatal("expected non-nil chain")
-		}
-		if chain.Pin() == "" {
-			t.Error("expected non-empty Pin() description")
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pinner, err := tt.build()
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if pinner == nil {
+				t.Fatal("expected non-nil pinner")
+			}
+			if pinner.Pin() == "" {
+				t.Error("expected non-empty Pin() description")
+			}
+		})
+	}
 }
 
 func TestPublicKeyPinner(t *testing.T) {
@@ -369,56 +352,61 @@ func TestCertificatePinnerChain(t *testing.T) {
 	})
 }
 
-// TestSPKIHashPinnerConstruction covers base64 SPKI-hash construction and
-// verification semantics (replaces the former newPublicKeyPinnerFromBase64
-// tests; the hash is computed from the raw SPKI bytes, matching the verify
-// path since the M23 fix).
+// TestSPKIHashPinnerConstruction covers base64 SPKI-hash construction as a
+// table (valid/invalid hash formats, trimming, pin counts) plus the
+// raw-SPKI-hash verification round-trip (replaces the former
+// newPublicKeyPinnerFromBase64 tests; the hash is computed from the raw SPKI
+// bytes, matching the verify path since the M23 fix).
 func TestSPKIHashPinnerConstruction(t *testing.T) {
 	certDER, cert, _ := generateTestCertificate(t)
 	spkiHash := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
 	spkiHashBase64 := base64.StdEncoding.EncodeToString(spkiHash[:])
+	secondDigest := sha256.Sum256([]byte("another-spki-hash"))
+	hash2 := base64.StdEncoding.EncodeToString(secondDigest[:])
+	notSHA256 := base64.StdEncoding.EncodeToString([]byte("wrong-hash-32-bytes-long-enough!!")) // 33 bytes
 
-	t.Run("valid hash", func(t *testing.T) {
-		pinner, err := newSPKIHashPinner(spkiHashBase64)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if pinner == nil {
-			t.Fatal("expected non-nil pinner")
-		}
-		if pinner.Pin() == "" {
-			t.Error("expected non-empty pin description")
-		}
-	})
+	tests := []struct {
+		name     string
+		hashes   []string
+		wantErr  bool
+		contains string // substring of the expected error message
+		wantPins int    // pin count in the Pin() description on success
+	}{
+		{"valid hash", []string{spkiHashBase64}, false, "", 1},
+		{"multiple hashes", []string{spkiHashBase64, hash2}, false, "", 2},
+		{"no hashes at all", nil, true, "at least one valid SPKI hash is required", 0},
+		{"empty hash returns error", []string{""}, true, "at least one valid SPKI hash is required", 0},
+		{"whitespace hash is trimmed", []string{"  " + spkiHashBase64 + "  "}, false, "", 1},
+		{"invalid base64 returns error", []string{"not-valid-base64!!!"}, true, "invalid base64 hash", 0},
+		{"wrong-length hash rejected at construction", []string{notSHA256}, true, "invalid SPKI hash", 0},
+	}
 
-	t.Run("multiple hashes", func(t *testing.T) {
-		second := sha256.Sum256([]byte("another-spki-hash"))
-		hash2 := base64.StdEncoding.EncodeToString(second[:])
-		pinner, err := newSPKIHashPinner(spkiHashBase64, hash2)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if pinner == nil {
-			t.Fatal("expected non-nil pinner")
-		}
-	})
-
-	t.Run("empty hash returns error", func(t *testing.T) {
-		_, err := newSPKIHashPinner("")
-		if err == nil {
-			t.Error("expected error for empty hash")
-		}
-	})
-
-	t.Run("whitespace hash is trimmed", func(t *testing.T) {
-		pinner, err := newSPKIHashPinner("  " + spkiHashBase64 + "  ")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if pinner == nil {
-			t.Fatal("expected non-nil pinner")
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pinner, err := newSPKIHashPinner(tt.hashes...)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tt.contains != "" && !strings.Contains(err.Error(), tt.contains) {
+					t.Errorf("error %q should contain %q", err.Error(), tt.contains)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if pinner == nil {
+				t.Fatal("expected non-nil pinner")
+			}
+			if pinner.Pin() == "" {
+				t.Error("expected non-empty pin description")
+			}
+			if want := fmt.Sprintf("spki-pins:%d", tt.wantPins); pinner.Pin() != want {
+				t.Errorf("Pin() = %q, want %q", pinner.Pin(), want)
+			}
+		})
+	}
 
 	t.Run("verify matching certificate", func(t *testing.T) {
 		pinner, err := newSPKIHashPinner(spkiHashBase64)
@@ -444,14 +432,6 @@ func TestSPKIHashPinnerConstruction(t *testing.T) {
 		}
 	})
 
-	t.Run("wrong-length hash rejected at construction", func(t *testing.T) {
-		notSHA256 := base64.StdEncoding.EncodeToString([]byte("wrong-hash-32-bytes-long-enough!!")) // 33 bytes
-		_, err := newSPKIHashPinner(notSHA256)
-		if err == nil {
-			t.Error("expected error for non-32-byte hash")
-		}
-	})
-
 	t.Run("nil pinner fails closed", func(t *testing.T) {
 		var pinner *publicKeyPinner
 		err := pinner.VerifyPeerCertificate([][]byte{certDER}, nil)
@@ -459,6 +439,79 @@ func TestSPKIHashPinnerConstruction(t *testing.T) {
 			t.Error("nil pinner must reject (fail closed), got nil error")
 		}
 	})
+}
+
+// TestSPKIHashPinner_MixedValidInvalidHashOrdering pins construction behavior
+// when valid and invalid hashes are mixed: a valid entry never rescues an
+// invalid one (validation is not short-circuited on first success), and the
+// error names the FIRST invalid hash in argument order. Blank entries remain
+// skippable even in mixed company.
+func TestSPKIHashPinner_MixedValidInvalidHashOrdering(t *testing.T) {
+	_, cert, _ := generateTestCertificate(t)
+	validDigest := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+	validHash := base64.StdEncoding.EncodeToString(validDigest[:])
+	invalidBase64 := "not-valid-base64!!!"
+	wrongLength := base64.StdEncoding.EncodeToString([]byte("wrong-hash-32-bytes-long-enough!!")) // 33 bytes
+
+	tests := []struct {
+		name     string
+		hashes   []string
+		wantErr  bool
+		contains string
+	}{
+		{"valid then invalid base64 still rejected", []string{validHash, invalidBase64}, true, "invalid base64 hash"},
+		{"invalid base64 then valid", []string{invalidBase64, validHash}, true, "invalid base64 hash"},
+		{"valid then wrong length still rejected", []string{validHash, wrongLength}, true, "invalid SPKI hash"},
+		{"wrong length before invalid base64 wins", []string{wrongLength, invalidBase64}, true, "invalid SPKI hash"},
+		{"invalid base64 before wrong length wins", []string{invalidBase64, wrongLength}, true, "invalid base64 hash"},
+		{"blank entries skipped around valid", []string{"", "   ", validHash}, false, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pinner, err := newSPKIHashPinner(tt.hashes...)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error for mixed hashes, got nil")
+				}
+				if !strings.Contains(err.Error(), tt.contains) {
+					t.Errorf("error %q should contain %q", err.Error(), tt.contains)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if pinner == nil {
+				t.Fatal("expected non-nil pinner")
+			}
+		})
+	}
+}
+
+// TestCertificatePinnerChain_ZeroPinners pins the fail-closed behavior of a
+// chain built with no pinners: verification must reject every certificate
+// ("no pinners configured") rather than silently disabling pinning.
+func TestCertificatePinnerChain_ZeroPinners(t *testing.T) {
+	certDER, _, _ := generateTestCertificate(t)
+
+	chain := newCertificatePinnerChain()
+	if chain == nil {
+		t.Fatal("expected non-nil chain struct")
+	}
+	err := chain.VerifyPeerCertificate([][]byte{certDER}, nil)
+	if err == nil {
+		t.Fatal("zero-pinner chain must fail closed, got nil error")
+	}
+	if !strings.Contains(err.Error(), "no pinners configured") {
+		t.Errorf("error %q should say 'no pinners configured'", err.Error())
+	}
+
+	// The exported constructor behaves identically.
+	exported := NewCertificatePinnerChain()
+	if err := exported.VerifyPeerCertificate([][]byte{certDER}, nil); err == nil {
+		t.Error("exported zero-pinner chain must also fail closed")
+	}
 }
 
 // TestPinCacheEviction verifies that the certificate pin cache evicts entries

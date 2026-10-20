@@ -161,16 +161,13 @@ func (p *Pool) Select(_ *http.Request) (*url.URL, error) {
 	return p.selectRoundRobin(now), nil
 }
 
-// selectRoundRobin advances the global cursor and scans forward, returning the
-// first healthy entry. The cursor advances on every call, so a retry that
-// re-invokes Select naturally lands on a different proxy.
-func (p *Pool) selectRoundRobin(now int64) *url.URL {
-	n := len(p.entries)
-	start := int(p.counter.Add(1)-1) % n
-	if start < 0 {
-		start += n
-	}
-
+// selectFrom scans entries starting at (start+i)%n, returning the first one
+// whose circuit is closed; when every circuit is open it returns the entry
+// closest to recovery (earliest open-until timestamp) as a best-effort
+// fallback rather than failing outright. start must already be normalized
+// to [0, n). Single implementation for the scan+fallback logic so
+// selectRoundRobin, selectRandom and SelectIndex cannot drift.
+func (p *Pool) selectFrom(start, n int, now int64) *url.URL {
 	var fallback *entry
 	var fallbackOpenUntil int64
 
@@ -188,34 +185,32 @@ func (p *Pool) selectRoundRobin(now int64) *url.URL {
 	return fallback.url
 }
 
-// selectRandom probes random entries, returning the first healthy one. If all
-// random probes hit open circuits it falls back to the entry closest to
+// selectRoundRobin advances the global cursor and scans forward, returning the
+// first healthy entry. The cursor advances on every call, so a retry that
+// re-invokes Select naturally lands on a different proxy.
+func (p *Pool) selectRoundRobin(now int64) *url.URL {
+	n := len(p.entries)
+	start := int(p.counter.Add(1)-1) % n
+	if start < 0 {
+		start += n
+	}
+	return p.selectFrom(start, n, now)
+}
+
+// selectRandom probes from a random entry point, returning the first healthy
+// one. If every circuit is open it falls back to the entry closest to
 // recovery.
 func (p *Pool) selectRandom(now int64) *url.URL {
 	n := len(p.entries)
 
 	// Random start + sequential scan. Bounded random probing (n draws with
 	// replacement) misses the only healthy entry with probability
-	// ((n-m)/n)^n — ~35% for n=10, m=1 — and then the fallback below returns
-	// a known-dead proxy. The rotation scan keeps the random entry point but
-	// guarantees a healthy proxy is returned whenever one exists.
-	start := rand.IntN(n)
-	for i := 0; i < n; i++ {
-		if e := p.entries[(start+i)%n]; e.openUntil.Load() <= now {
-			return e.url
-		}
-	}
-
-	var fallback *entry
-	var fallbackOpenUntil int64
-	for _, e := range p.entries {
-		ou := e.openUntil.Load()
-		if fallback == nil || ou < fallbackOpenUntil {
-			fallback = e
-			fallbackOpenUntil = ou
-		}
-	}
-	return fallback.url
+	// ((n-m)/n)^n — ~35% for n=10, m=1 — and then the fallback inside
+	// selectFrom returns a known-dead proxy. The rotation scan keeps the
+	// random entry point but guarantees a healthy proxy is returned whenever
+	// one exists (the scan covers all n entries; the fallback tracks the
+	// global minimum open-until across the same sweep).
+	return p.selectFrom(rand.IntN(n), n, now)
 }
 
 // NextIndex atomically advances the round-robin cursor once and returns the
@@ -251,21 +246,7 @@ func (p *Pool) SelectIndex(attempt int) *url.URL {
 		start += n
 	}
 
-	var fallback *entry
-	var fallbackOpenUntil int64
-
-	for i := 0; i < n; i++ {
-		e := p.entries[(start+i)%n]
-		ou := e.openUntil.Load()
-		if ou <= now {
-			return e.url
-		}
-		if fallback == nil || ou < fallbackOpenUntil {
-			fallback = e
-			fallbackOpenUntil = ou
-		}
-	}
-	return fallback.url
+	return p.selectFrom(start, n, now)
 }
 
 // ReportFailure records a connection-level failure for the proxy at the given

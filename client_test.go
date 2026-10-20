@@ -281,6 +281,10 @@ func TestClient_ErrorHandling(t *testing.T) {
 // Request Option Tests - Additional Coverage
 // ----------------------------------------------------------------------------
 
+// TestRequest_WithOptions exercises the Request/Post facade with option-layer
+// bodies. (The former "WithContext" subtest was removed: client.Get delegates
+// to Request(backgroundCtx, ...), so TestWithContext/valid context
+// (request_test.go) drives the identical Request path.)
 func TestRequest_WithOptions(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -289,18 +293,6 @@ func TestRequest_WithOptions(t *testing.T) {
 
 	client, _ := newTestClient()
 	defer func() { _ = client.Close() }()
-
-	t.Run("WithContext", func(t *testing.T) {
-		type ctxKey string
-		ctx := context.WithValue(context.Background(), ctxKey("test-key"), "test-value")
-		result, err := client.Request(ctx, "GET", server.URL)
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-		if result.StatusCode() != http.StatusOK {
-			t.Errorf("Expected status 200, got %d", result.StatusCode())
-		}
-	})
 
 	t.Run("WithBinary", func(t *testing.T) {
 		binaryData := []byte{0x00, 0x01, 0x02, 0x03, 0xFF}
@@ -572,6 +564,12 @@ func TestCreateCookieJar_PublicSuffixList(t *testing.T) {
 			t.Errorf("expected nil jar without error, got jar=%v err=%v", jar, err)
 		}
 	})
+
+	// NOTE on the error arm (createCookieJar returning a non-nil error): it
+	// is unreachable through the public surface — cookiejar.New only fails on
+	// a nil *Options, which this constructor never passes (Go stdlib returns
+	// a nil error for every &cookiejar.Options{} it is handed). Covering it
+	// would require dependency injection; it is dead code in practice.
 }
 
 // TestRequest_StreamBodyRejectedOnFacade verifies Get + WithStreamBody fails
@@ -682,6 +680,19 @@ func TestCloneHeaders(t *testing.T) {
 	t.Run("nil", func(t *testing.T) {
 		if cloneHeaders(nil) != nil {
 			t.Error("cloneHeaders(nil) should return nil")
+		}
+	})
+
+	t.Run("empty map", func(t *testing.T) {
+		// An initialized-but-empty header map must clone to an initialized
+		// empty map (engine.CloneHeader's n==0 fast path), not to nil — a nil
+		// return would make later Set calls panic on the clone.
+		got := cloneHeaders(http.Header{})
+		if got == nil {
+			t.Fatal("cloneHeaders(empty map) returned nil, want non-nil empty map")
+		}
+		if len(got) != 0 {
+			t.Errorf("cloneHeaders(empty map) = %v, want empty", got)
 		}
 	})
 

@@ -3,6 +3,8 @@ package security
 import (
 	"strings"
 	"sync"
+
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // DomainWhitelist manages a list of allowed domains for redirect validation.
@@ -60,31 +62,9 @@ func normalizeDomain(domain string) string {
 	// Build normalized string
 	result := domain[start:end]
 	if needsLower {
-		return asciiToLowerDomain(result)
+		return validation.ASCIILower(result)
 	}
 	return result
-}
-
-// asciiToLowerDomain lowercases ASCII letters using a stack buffer, skipping
-// strings.ToLower's generic (Unicode-aware) scan. The lowered copy still
-// allocates — the caller needs it as a map key — but hostnames are ASCII by
-// the time they reach the whitelist (IDN names arrive punycode-encoded), so
-// the ASCII-only loop is safe and cheaper. Longer-than-buffer names (invalid
-// hostnames in practice) fall back to strings.ToLower for correctness.
-func asciiToLowerDomain(s string) string {
-	var buf [128]byte
-	if len(s) > len(buf) {
-		return strings.ToLower(s)
-	}
-	b := buf[:len(s)]
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		b[i] = c
-	}
-	return string(b)
 }
 
 // NewDomainWhitelist creates a new DomainWhitelist from a list of domains.

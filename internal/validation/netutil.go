@@ -82,9 +82,33 @@ func isPrivateOrReservedIP(ip net.IP) bool {
 			embeddedIP := net.IPv4(ip[2], ip[3], ip[4], ip[5])
 			return isPrivateOrReservedIP(embeddedIP)
 		}
+		// IPv4-compatible ::/96 (::a.b.c.d) and IPv4-translated
+		// ::ffff:0:0/96 (::ffff:0:a.b.c.d), both deprecated, embed an IPv4
+		// target the To4 normalization above does not unwrap (To4 only
+		// recognizes the ::ffff:a.b.c.d mapped form) — the same
+		// embedded-target bypass the NAT64/6to4 blocks guard against, and
+		// inconsistent to leave open while those are closed. Unwrap and
+		// re-validate the embedded IPv4. (::1 and the unspecified address
+		// were already caught by the checks above.)
+		if ip[10] == 0 && ip[11] == 0 && allZero(ip[0:10]) {
+			return isPrivateOrReservedIP(net.IPv4(ip[12], ip[13], ip[14], ip[15]))
+		}
+		if ip[8] == 0xff && ip[9] == 0xff && ip[10] == 0 && ip[11] == 0 && allZero(ip[0:8]) {
+			return isPrivateOrReservedIP(net.IPv4(ip[12], ip[13], ip[14], ip[15]))
+		}
 	}
 
 	return false
+}
+
+// allZero reports whether every byte in b is zero.
+func allZero(b []byte) bool {
+	for _, v := range b {
+		if v != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // isIPExempted checks if an IP address matches any of the exempt CIDR ranges.
@@ -244,7 +268,11 @@ func ValidateAndParseURL(urlStr string) (*url.URL, error) {
 
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
-		return nil, fmt.Errorf("invalid URL: %w", err)
+		// SECURITY: url.Parse errors embed the raw input verbatim
+		// (`parse "…": …`), which may carry userinfo credentials. Redact so a
+		// malformed URL with an embedded password cannot leak it up the error
+		// chain into logs — the same treatment ValidateProxyURL already applies.
+		return nil, fmt.Errorf("invalid URL: %w", redactErrorURL(err, urlStr))
 	}
 	if parsedURL.Scheme == "" {
 		return nil, fmt.Errorf("URL scheme is required")
@@ -366,6 +394,17 @@ func ValidateSSRFHost(host string, exemptNets []*net.IPNet) error {
 	hostname := host
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		hostname = h
+	}
+
+	// Strip the square brackets net/url keeps on IPv6 literals without a port
+	// ("[::1]"): SplitHostPort only removes them together with the port, and
+	// net.ParseIP / isLocalhost reject bracketed strings. Without this, a bare
+	// bracketed literal sailed through every check below — and when a proxy is
+	// configured, the dialer-level SSRF validation is bypassed entirely
+	// (pool.go: proxy connections dial the proxy address, not the target), so
+	// this pre-check is then the only line of defense.
+	if len(hostname) >= 2 && hostname[0] == '[' && hostname[len(hostname)-1] == ']' {
+		hostname = hostname[1 : len(hostname)-1]
 	}
 
 	// Normalize the fully-qualified trailing dot ("localhost." is a legal FQDN

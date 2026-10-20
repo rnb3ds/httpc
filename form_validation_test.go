@@ -55,14 +55,5 @@ func TestValidateFormInput(t *testing.T) {
 	}
 }
 
-// TestDefaultLoggingConfig verifies the default constructor returns a usable
-// config with logging disabled.
-func TestDefaultLoggingConfig(t *testing.T) {
-	cfg := DefaultLoggingConfig()
-	if cfg == nil {
-		t.Fatal("DefaultLoggingConfig() returned nil")
-	}
-	if cfg.LogFunc != nil {
-		t.Error("LogFunc should be nil by default (logging disabled)")
-	}
-}
+// (TestDefaultLoggingConfig was folded into TestMiddleware_DefaultConfigs in
+// middleware_test.go, beside the other middleware default-config contracts.)

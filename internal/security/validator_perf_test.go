@@ -31,8 +31,7 @@ func BenchmarkValidateURL_Invalid(b *testing.B) {
 func BenchmarkValidateRequest_Minimal(b *testing.B) {
 	v := newValidator()
 	req := &Request{
-		Method: "GET",
-		URL:    "https://api.example.com/v1/users",
+		URL: "https://api.example.com/v1/users",
 	}
 
 	b.ReportAllocs()
@@ -46,8 +45,7 @@ func BenchmarkValidateRequest_Minimal(b *testing.B) {
 func BenchmarkValidateRequest_WithHeaders(b *testing.B) {
 	v := newValidator()
 	req := &Request{
-		Method: "POST",
-		URL:    "https://api.example.com/v1/users",
+		URL: "https://api.example.com/v1/users",
 		Headers: map[string]string{
 			"Content-Type":      "application/json",
 			"Authorization":     "Bearer token123",

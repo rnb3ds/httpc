@@ -277,8 +277,16 @@ func (p *responseProcessor) Process(httpResp *http.Response) (*Response, error) 
 	// response. The encoding string is passed to readBody so it doesn't
 	// need to repeat this lookup.
 	encoding := ""
-	if vals := httpResp.Header[hdrContentEncoding]; len(vals) > 0 && vals[0] != "" {
-		encoding = vals[0]
+	if vals := httpResp.Header[hdrContentEncoding]; len(vals) > 0 {
+		// RFC 9110 §8.4.1: "identity" is the absence of compression. Normalize
+		// it here so readBody, the size limits and the StrictContentLength
+		// check treat an explicit identity exactly like a missing header —
+		// otherwise an identity response would be capped by the much larger
+		// MaxDecompressedBodySize and skip strict length validation. The
+		// streaming path (executeRequest) applies the same rule.
+		if v := strings.TrimSpace(vals[0]); v != "" && !strings.EqualFold(v, "identity") {
+			encoding = v
+		}
 	}
 	wasCompressed := encoding != ""
 
@@ -339,6 +347,20 @@ func (p *responseProcessor) Process(httpResp *http.Response) (*Response, error) 
 // SECURITY: Implements protection against decompression bomb attacks.
 func (p *responseProcessor) readBody(httpResp *http.Response, encoding string) ([]byte, error) {
 	if httpResp.Body == nil {
+		return nil, nil
+	}
+
+	// A known-empty body is a zero-allocation exit. net/http sets Body to the
+	// http.NoBody sentinel for a Content-Length: 0 (or otherwise bodyless)
+	// response; its Read returns (0, io.EOF) immediately and never produces a
+	// byte. Checking the sentinel (rather than ContentLength alone) keeps the
+	// fast path exact: unit tests construct http.Response values with a plain
+	// io.NopCloser(strings.NewReader(...)) Body whose ContentLength defaults to
+	// 0 but whose bytes must still be read, and such readers are not NoBody.
+	// Compressed responses are excluded even when Body == NoBody, because the
+	// decompressor path reports a Content-Length: 0 + Content-Encoding mismatch
+	// as an error rather than silently yielding an empty body.
+	if httpResp.Body == http.NoBody && encoding == "" {
 		return nil, nil
 	}
 
@@ -460,11 +482,7 @@ func (p *responseProcessor) readBody(httpResp *http.Response, encoding string) (
 	// used (io.CopyBuffer also prefers ReadFrom over its buffer argument),
 	// which is why none is fetched.
 	buf := getBuffer()
-	defer func() {
-		if buf.Cap() <= maxBufferSize {
-			putBuffer(buf)
-		}
-	}()
+	defer putBuffer(buf) // putBuffer itself discards oversized buffers
 
 	_, err := io.Copy(buf, reader)
 	if err != nil {
@@ -658,7 +676,7 @@ func ReleaseResponse(r *Response) {
 	r.bodyMu.RUnlock()
 
 	if rawBodyReader != nil {
-		_ = rawBodyReader.Close()
+		_ = rawBodyReader.Close() // best-effort: close errors are unactionable at release time
 	}
 	if cancelFunc != nil {
 		cancelFunc()

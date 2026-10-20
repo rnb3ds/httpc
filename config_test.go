@@ -20,20 +20,126 @@ import (
 // Config Creation and Defaults
 // ----------------------------------------------------------------------------
 
+// TestConfig_Defaults pins the exact value of every DefaultConfig field: a
+// silently-shifted default is a behavior change for every caller starting
+// from DefaultConfig(), so regressions must fail by name, not merely "be
+// positive". (Values mirrored from DefaultConfig in types.go.)
 func TestConfig_Defaults(t *testing.T) {
 	config := DefaultConfig()
 
-	if config.Timeouts.Request <= 0 {
-		t.Error("Default timeout should be positive")
+	// Timeouts
+	if config.Timeouts.Request != 180*time.Second {
+		t.Errorf("Timeouts.Request = %v, want 180s", config.Timeouts.Request)
 	}
-	if config.Retry.MaxRetries < 0 {
-		t.Error("Default max retries should be non-negative")
+	if config.Timeouts.Dial != 10*time.Second {
+		t.Errorf("Timeouts.Dial = %v, want 10s", config.Timeouts.Dial)
 	}
-	if config.Connection.MaxIdleConns <= 0 {
-		t.Error("Default max idle connections should be positive")
+	if config.Timeouts.TLSHandshake != 10*time.Second {
+		t.Errorf("Timeouts.TLSHandshake = %v, want 10s", config.Timeouts.TLSHandshake)
 	}
-	if config.Defaults.UserAgent == "" {
-		t.Error("Default user agent should not be empty")
+	if config.Timeouts.ResponseHeader != 0 {
+		t.Errorf("Timeouts.ResponseHeader = %v, want 0 (disabled)", config.Timeouts.ResponseHeader)
+	}
+	if config.Timeouts.IdleConn != 90*time.Second {
+		t.Errorf("Timeouts.IdleConn = %v, want 90s", config.Timeouts.IdleConn)
+	}
+
+	// Connection
+	if config.Connection.MaxIdleConns != 50 {
+		t.Errorf("Connection.MaxIdleConns = %d, want 50", config.Connection.MaxIdleConns)
+	}
+	if config.Connection.MaxConnsPerHost != 10 {
+		t.Errorf("Connection.MaxConnsPerHost = %d, want 10", config.Connection.MaxConnsPerHost)
+	}
+	if config.Connection.ProxyURL != "" {
+		t.Errorf("Connection.ProxyURL = %q, want empty", config.Connection.ProxyURL)
+	}
+	if config.Connection.EnableSystemProxy {
+		t.Error("Connection.EnableSystemProxy = true, want false")
+	}
+	if !config.Connection.EnableHTTP2 {
+		t.Error("Connection.EnableHTTP2 = false, want true")
+	}
+	if config.Connection.EnableCookies {
+		t.Error("Connection.EnableCookies = true, want false")
+	}
+	if config.Connection.EnableDoH {
+		t.Error("Connection.EnableDoH = true, want false")
+	}
+	if config.Connection.DoHCacheTTL != 5*time.Minute {
+		t.Errorf("Connection.DoHCacheTTL = %v, want 5m", config.Connection.DoHCacheTTL)
+	}
+
+	// Security
+	if config.Security.TLSConfig != nil {
+		t.Error("Security.TLSConfig = non-nil, want nil")
+	}
+	if config.Security.MinTLSVersion != tls.VersionTLS12 {
+		t.Errorf("Security.MinTLSVersion = %#x, want TLS 1.2", config.Security.MinTLSVersion)
+	}
+	if config.Security.MaxTLSVersion != tls.VersionTLS13 {
+		t.Errorf("Security.MaxTLSVersion = %#x, want TLS 1.3", config.Security.MaxTLSVersion)
+	}
+	if config.Security.InsecureSkipVerify {
+		t.Error("Security.InsecureSkipVerify = true, want false")
+	}
+	if config.Security.MaxResponseBodySize != 10*1024*1024 {
+		t.Errorf("Security.MaxResponseBodySize = %d, want 10MB", config.Security.MaxResponseBodySize)
+	}
+	if config.Security.MaxDecompressedBodySize != 100*1024*1024 {
+		t.Errorf("Security.MaxDecompressedBodySize = %d, want 100MB", config.Security.MaxDecompressedBodySize)
+	}
+	if config.Security.AllowPrivateIPs {
+		t.Error("Security.AllowPrivateIPs = true, want false")
+	}
+	if !config.Security.ValidateURL {
+		t.Error("Security.ValidateURL = false, want true")
+	}
+	if !config.Security.ValidateHeaders {
+		t.Error("Security.ValidateHeaders = false, want true")
+	}
+	if !config.Security.StrictContentLength {
+		t.Error("Security.StrictContentLength = false, want true")
+	}
+	if !config.Security.FollowRedirects {
+		t.Error("Security.FollowRedirects = false, want true")
+	}
+	if config.Security.MaxRedirects != 10 {
+		t.Errorf("Security.MaxRedirects = %d, want 10", config.Security.MaxRedirects)
+	}
+
+	// Retry
+	if config.Retry.MaxRetries != 3 {
+		t.Errorf("Retry.MaxRetries = %d, want 3", config.Retry.MaxRetries)
+	}
+	if config.Retry.Delay != 1*time.Second {
+		t.Errorf("Retry.Delay = %v, want 1s", config.Retry.Delay)
+	}
+	if config.Retry.BackoffFactor != 2.0 {
+		t.Errorf("Retry.BackoffFactor = %v, want 2.0", config.Retry.BackoffFactor)
+	}
+	if !config.Retry.EnableJitter {
+		t.Error("Retry.EnableJitter = false, want true")
+	}
+	if config.Retry.MaxRetryDelay != 30*time.Second {
+		t.Errorf("Retry.MaxRetryDelay = %v, want 30s", config.Retry.MaxRetryDelay)
+	}
+	if config.Retry.RetryNonIdempotent {
+		t.Error("Retry.RetryNonIdempotent = true, want false")
+	}
+	if config.Retry.CustomPolicy != nil {
+		t.Error("Retry.CustomPolicy = non-nil, want nil")
+	}
+
+	// Middleware / Defaults
+	if config.Middleware.Middlewares != nil {
+		t.Error("Middleware.Middlewares = non-nil, want nil")
+	}
+	if config.Defaults.UserAgent != "httpc/1.0" {
+		t.Errorf("Defaults.UserAgent = %q, want %q", config.Defaults.UserAgent, "httpc/1.0")
+	}
+	if config.Defaults.Headers == nil || len(config.Defaults.Headers) != 0 {
+		t.Errorf("Defaults.Headers = %#v, want empty non-nil map", config.Defaults.Headers)
 	}
 }
 
@@ -66,7 +172,7 @@ func TestConfig_Presets(t *testing.T) {
 		if config.Retry.MaxRetries != 1 {
 			t.Errorf("Expected MaxRetries=1, got %d", config.Retry.MaxRetries)
 		}
-		if config.Defaults.FollowRedirects {
+		if config.Security.FollowRedirects {
 			t.Error("Expected FollowRedirects=false")
 		}
 	})
@@ -103,7 +209,7 @@ func TestConfig_Presets(t *testing.T) {
 		if config.Retry.MaxRetries != 0 {
 			t.Error("Minimal config should have no retries")
 		}
-		if config.Defaults.FollowRedirects {
+		if config.Security.FollowRedirects {
 			t.Error("Minimal config should not follow redirects")
 		}
 	})
@@ -243,55 +349,12 @@ func TestConfig_Validation(t *testing.T) {
 // ----------------------------------------------------------------------------
 
 func TestConfig_TLSVersions(t *testing.T) {
-	t.Run("MinTLSVersion", func(t *testing.T) {
-		tests := []struct {
-			name       string
-			minVersion uint16
-			wantErr    bool
-		}{
-			{"TLS 1.2", tls.VersionTLS12, false},
-			{"TLS 1.3", tls.VersionTLS13, false},
-		}
-
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				config := DefaultConfig()
-				config.Security.MinTLSVersion = tt.minVersion
-				client, err := New(config)
-				if (err != nil) != tt.wantErr {
-					t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
-				}
-				if client != nil {
-					_ = client.Close()
-				}
-			})
-		}
-	})
-
-	t.Run("MaxTLSVersion", func(t *testing.T) {
-		tests := []struct {
-			name       string
-			maxVersion uint16
-			wantErr    bool
-		}{
-			{"TLS 1.3", tls.VersionTLS13, false},
-			{"TLS 1.2", tls.VersionTLS12, false},
-		}
-
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				config := DefaultConfig()
-				config.Security.MaxTLSVersion = tt.maxVersion
-				client, err := New(config)
-				if (err != nil) != tt.wantErr {
-					t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
-				}
-				if client != nil {
-					_ = client.Close()
-				}
-			})
-		}
-	})
+	// (The former "MinTLSVersion" and "MaxTLSVersion" subtests were removed:
+	// both tables contained only wantErr=false rows setting the versions to
+	// their DefaultConfig values — the identical configuration every other
+	// test constructs — while the invalid-value rows live in
+	// TestValidateConfig_AdditionalBoundaries. The subtests below carry real
+	// coverage: the Min>Max rejection and the TLSConfig merge.)
 
 	t.Run("TLSVersionRange", func(t *testing.T) {
 		tests := []struct {
@@ -444,14 +507,14 @@ func TestConfig_String(t *testing.T) {
 			Security: SecurityConfig{
 				InsecureSkipVerify: true,
 				AllowPrivateIPs:    true,
+				FollowRedirects:    false,
 			},
 			Retry: RetryConfig{
 				MaxRetries:    3,
 				BackoffFactor: 1.5,
 			},
 			Defaults: RequestDefaults{
-				UserAgent:       "test-agent",
-				FollowRedirects: false,
+				UserAgent: "test-agent",
 			},
 		}
 
@@ -579,6 +642,14 @@ func TestStrictCookieSecurityConfig(t *testing.T) {
 // ----------------------------------------------------------------------------
 
 func TestValidateConfig_AdditionalBoundaries(t *testing.T) {
+	// Built before the table so a failure fails here (on the test's own
+	// goroutine) instead of inside a table closure, where FailNow would hit
+	// the parent t across a subtest boundary.
+	pinner, err := NewSPKIHashPinner(testSPKIHashSecondary)
+	if err != nil {
+		t.Fatalf("NewSPKIHashPinner: %v", err)
+	}
+
 	tests := []struct {
 		name    string
 		mutate  func(*Config)
@@ -595,6 +666,10 @@ func TestValidateConfig_AdditionalBoundaries(t *testing.T) {
 		{"negative retry delay", func(c *Config) { c.Retry.Delay = -1 * time.Second }, true},
 		{"invalid middleware headers", func(c *Config) { c.Defaults.Headers = map[string]string{"X-Bad": "value\r\nevil"} }, true},
 		{"retry delay zero", func(c *Config) { c.Retry.Delay = 0 }, false},
+		{"max retries at limit (10)", func(c *Config) { c.Retry.MaxRetries = 10 }, false},
+		{"max retries over limit (11)", func(c *Config) { c.Retry.MaxRetries = 11 }, true},
+		{"request timeout at limit (30m)", func(c *Config) { c.Timeouts.Request = 30 * time.Minute }, false},
+		{"request timeout over limit (30m+1ms)", func(c *Config) { c.Timeouts.Request = 30*time.Minute + time.Millisecond }, true},
 		{"backoff factor zero", func(c *Config) { c.Retry.BackoffFactor = 0 }, true},
 		{"negative backoff factor", func(c *Config) { c.Retry.BackoffFactor = -1 }, true},
 		{"max response body size zero", func(c *Config) { c.Security.MaxResponseBodySize = 0 }, false},
@@ -614,6 +689,23 @@ func TestValidateConfig_AdditionalBoundaries(t *testing.T) {
 		{"TLS min version above TLS 1.3", func(c *Config) { c.Security.MinTLSVersion = tls.VersionTLS13 + 1 }, true},
 		{"TLS max version above TLS 1.3", func(c *Config) { c.Security.MaxTLSVersion = 0xFFFF }, true},
 		{"TLS min version zero (unset)", func(c *Config) { c.Security.MinTLSVersion = 0 }, false},
+		{"valid TLS fingerprint chrome", func(c *Config) { c.Security.TLSFingerprint = "chrome" }, false},
+		{"valid TLS fingerprint preset name", func(c *Config) { c.Security.TLSFingerprint = "chrome-windows" }, false},
+		{"valid TLS fingerprint mobile variant", func(c *Config) { c.Security.TLSFingerprint = "chrome-ios" }, false},
+		{"valid TLS fingerprint mixed case", func(c *Config) { c.Security.TLSFingerprint = "  FireFox " }, false},
+		{"invalid TLS fingerprint", func(c *Config) { c.Security.TLSFingerprint = "opera" }, true},
+		{"invalid TLS fingerprint safari (no profile)", func(c *Config) { c.Security.TLSFingerprint = "safari" }, true},
+		{"invalid TLS fingerprint unknown version", func(c *Config) { c.Security.TLSFingerprint = "chrome-999" }, true},
+		{"invalid TLS fingerprint stale version pin", func(c *Config) { c.Security.TLSFingerprint = "chrome-155" }, true},
+		{"TLS fingerprint with custom TLSConfig rejected", func(c *Config) {
+			c.Security.TLSFingerprint = "chrome"
+			c.Security.TLSConfig = &tls.Config{}
+		}, true},
+		{"TLS fingerprint with certificate pinner accepted", func(c *Config) {
+			c.Security.TLSFingerprint = "chrome"
+			c.Security.CertificatePinner = pinner
+		}, false},
+		{"empty TLS fingerprint (disabled)", func(c *Config) { c.Security.TLSFingerprint = "" }, false},
 		{"TLS versions valid explicit range", func(c *Config) {
 			c.Security.MinTLSVersion = tls.VersionTLS11
 			c.Security.MaxTLSVersion = tls.VersionTLS12
@@ -641,17 +733,12 @@ func TestValidateConfig_AdditionalBoundaries(t *testing.T) {
 // (*Config).Validate — method form of validation
 // ----------------------------------------------------------------------------
 
+// TestConfigValidate pins the method-vs-function equivalence: (*Config).Validate
+// is a pure delegate of ValidateConfig, so the two must return identical errors
+// for the same invalid config. (The nil-receiver and DefaultConfig-valid rows
+// formerly here are covered by TestValidateConfig_AdditionalBoundaries/"nil
+// config" and by every New(DefaultConfig()) construction respectively.)
 func TestConfigValidate(t *testing.T) {
-	var nilConfig *Config
-	if err := nilConfig.Validate(); err == nil {
-		t.Error("expected error for nil receiver")
-	}
-
-	def := DefaultConfig()
-	if err := def.Validate(); err != nil {
-		t.Errorf("DefaultConfig() should be valid, got %v", err)
-	}
-
 	cfg := DefaultConfig()
 	cfg.Timeouts.Request = -1 * time.Second
 	methodErr := cfg.Validate()

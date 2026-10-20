@@ -73,8 +73,9 @@ var (
 	// MaxRetries must be 0-10, BackoffFactor must be 1.0-10.0.
 	ErrInvalidRetry = errors.New("invalid retry configuration")
 
-	// ErrInvalidMaxRedirects is returned when the per-request redirect limit
-	// is negative or exceeds 50.
+	// ErrInvalidMaxRedirects is returned when a redirect limit is invalid —
+	// the per-request limit (WithMaxRedirects) is negative or exceeds 50, or
+	// the config-level Security.MaxRedirects is negative or exceeds 50.
 	ErrInvalidMaxRedirects = errors.New("invalid max redirects")
 
 	// ErrInvalidCredentials is returned when Basic or Bearer credentials fail
@@ -90,7 +91,8 @@ var (
 	ErrInvalidSecurity = errors.New("invalid security configuration")
 
 	// ErrInvalidMiddleware is returned when middleware configuration is invalid.
-	// MaxRedirects must be 0-50, UserAgent must not exceed length limit.
+	// Defaults.UserAgent must not exceed the length limit and must not contain
+	// control characters.
 	ErrInvalidMiddleware = errors.New("invalid middleware configuration")
 
 	// ErrEmptyFilePath is returned when file path is empty.

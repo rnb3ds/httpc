@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	"github.com/cybergodev/httpc/internal/engine"
+	"github.com/cybergodev/httpc/internal/types"
 )
 
 // backgroundCtx is a convenience alias for context.Background(), used as the
@@ -76,8 +77,10 @@ type DomainClienter interface {
 
 	// URL returns the base URL this client was constructed with.
 	URL() string
-	// Domain returns the host:port of the base URL, scoping sessions and
-	// credential reuse to that exact origin.
+	// Domain returns the hostname of the base URL (without port). Origin
+	// scoping (host:port comparison) is enforced internally by
+	// targetsBaseHost — compare against url.URL.Host, not Domain(), when
+	// matching origins.
 	Domain() string
 
 	// Session header management
@@ -253,6 +256,11 @@ func copyConfig(src Config) Config {
 		copy(dst.Security.RedirectWhitelist, src.Security.RedirectWhitelist)
 	}
 
+	if len(dst.Security.SensitiveHeaders) > 0 {
+		dst.Security.SensitiveHeaders = make([]string, len(src.Security.SensitiveHeaders))
+		copy(dst.Security.SensitiveHeaders, src.Security.SensitiveHeaders)
+	}
+
 	if len(dst.Connection.ProxyPool) > 0 {
 		dst.Connection.ProxyPool = make([]string, len(src.Connection.ProxyPool))
 		copy(dst.Connection.ProxyPool, src.Connection.ProxyPool)
@@ -265,11 +273,6 @@ func copyConfig(src Config) Config {
 
 	if dst.Security.TLSConfig != nil {
 		dst.Security.TLSConfig = src.Security.TLSConfig.Clone()
-	}
-
-	if dst.Security.CookieSecurity != nil {
-		cookieSec := *src.Security.CookieSecurity
-		dst.Security.CookieSecurity = &cookieSec
 	}
 
 	if len(dst.Security.SSRFExemptCIDRs) > 0 {
@@ -319,13 +322,14 @@ func (c *clientImpl) buildMiddlewareChain(middlewares []MiddlewareFunc) Handler 
 
 		// Single option closure forwards all mutable fields from the middleware-modified request.
 		resp, err := c.engine.Request(reqCtx, req.Method(), req.URL(),
-			func(r *engine.Request) error {
+			engine.RequestOption(func(r types.RequestMutator) error {
+				engR := r.(*engine.Request)
 				// Fast path: src is the concrete *engine.Request (all built-in
 				// middleware mutates in place). Apply is owned by the engine, so
 				// new Request fields are forwarded here by construction — the
 				// facade no longer enumerates them.
 				if isEngineReq {
-					r.Apply(engReq)
+					engR.Apply(engReq)
 					return nil
 				}
 				// Fallback for a middleware that replaced req with a non-*engine.Request
@@ -341,24 +345,24 @@ func (c *clientImpl) buildMiddlewareChain(middlewares []MiddlewareFunc) Handler 
 				// writes across future requests). No facade-side copy required;
 				// the engine setter is the single copy point.
 				if headers := req.Headers(); headers != nil {
-					r.SetHeaders(headers)
+					engR.SetHeaders(headers)
 				}
 				if qp := req.QueryParams(); qp != nil {
-					r.SetQueryParams(qp)
+					engR.SetQueryParams(qp)
 				}
-				r.SetBody(req.Body())
-				r.SetTimeout(req.Timeout())
-				r.SetMaxRetries(req.MaxRetries())
-				r.SetCookies(req.Cookies())
+				engR.SetBody(req.Body())
+				engR.SetTimeout(req.Timeout())
+				engR.SetMaxRetries(req.MaxRetries())
+				engR.SetCookies(req.Cookies())
 				if fr := req.FollowRedirects(); fr != nil {
-					r.SetFollowRedirects(fr)
+					engR.SetFollowRedirects(fr)
 				}
 				if mr := req.MaxRedirects(); mr != nil {
-					r.SetMaxRedirects(mr)
+					engR.SetMaxRedirects(mr)
 				}
-				r.SetStreamBody(req.StreamBody())
+				engR.SetStreamBody(req.StreamBody())
 				return nil
-			})
+			}))
 		if err != nil {
 			return nil, err
 		}
@@ -481,7 +485,7 @@ func (c *clientImpl) executeRequest(ctx context.Context, method, url string, opt
 		return nil, ErrClientClosed
 	}
 	if !c.hasMiddlewares {
-		return c.engine.Request(ctx, method, url, options...)
+		return c.engine.Request(ctx, method, url, toEngineOptions(options)...)
 	}
 
 	engineReq := acquireMiddlewareRequest()
@@ -495,12 +499,8 @@ func (c *clientImpl) executeRequest(ctx context.Context, method, url string, opt
 	engineReq.SetURL(url)
 	engineReq.SetContext(ctx)
 
-	for _, opt := range options {
-		if opt != nil {
-			if err := opt(engineReq); err != nil {
-				return nil, fmt.Errorf("failed to apply request option: %w", err)
-			}
-		}
+	if err := engine.ApplyOptions(engineReq, toEngineOptions(options)); err != nil {
+		return nil, fmt.Errorf("failed to apply request option: %w", err)
 	}
 
 	resp, err := c.middlewareChain(ctx, engineReq)

@@ -25,12 +25,17 @@ var sensitiveQueryParamNames = map[string]bool{
 	"session_id": true, "sessionid": true,
 	// JWT and signatures
 	"jwt": true, "signature": true, "sign": true, "sig": true,
+	// OAuth/OIDC authorization-code flow and common token spellings that the
+	// concise forms above miss (accessToken lowercased, OIDC code, client id).
+	"accesstoken": true, "auth_token": true, "authtoken": true,
+	"client_id": true, "clientid": true, "code": true,
 }
 
-// asciiToLower converts ASCII uppercase letters to lowercase in-place using a
-// stack-allocated buffer. Avoids heap allocation from strings.ToLower for
-// typical short query parameter names.
-func asciiToLower(s string) string {
+// ASCIILower converts ASCII uppercase letters to lowercase in-place using a
+// stack-allocated buffer, avoiding the heap allocation strings.ToLower incurs
+// for typical short parameter names. Exported so the security package's domain
+// whitelist can reuse it instead of carrying its own identical copy.
+func ASCIILower(s string) string {
 	// Fast path: check if any uppercase exists
 	hasUpper := false
 	for i := 0; i < len(s); i++ {
@@ -59,7 +64,26 @@ func asciiToLower(s string) string {
 
 // isSensitiveQueryParamCI performs case-insensitive lookup for sensitive query param names.
 func isSensitiveQueryParamCI(name string) bool {
-	return sensitiveQueryParamNames[asciiToLower(name)]
+	return sensitiveQueryParamNames[ASCIILower(name)]
+}
+
+// isSensitiveQueryParamDecoded checks a parameter name first literally (and
+// case-insensitively), then percent-decoded. Without the decode, a key
+// obfuscated as "%74oken" (which decodes to "token") would bypass redaction
+// entirely — the lookup above matches literal bytes only. Only names
+// containing '%' incur the QueryUnescape cost.
+func isSensitiveQueryParamDecoded(name string) bool {
+	if isSensitiveQueryParamCI(name) {
+		return true
+	}
+	if !strings.Contains(name, "%") {
+		return false
+	}
+	decoded, err := url.QueryUnescape(name)
+	if err != nil || decoded == name {
+		return false
+	}
+	return isSensitiveQueryParamCI(decoded)
 }
 
 // IsSensitiveQueryParam reports whether the given query parameter name is
@@ -85,7 +109,7 @@ func redactSensitiveParams(rawQuery string) string {
 		// Split into key=value at the first =
 		param := rawQuery[start:end]
 		if key, _, found := strings.Cut(param, "="); found {
-			if isSensitiveQueryParamCI(key) {
+			if isSensitiveQueryParamDecoded(key) {
 				b.WriteString(key)
 				b.WriteString("=[REDACTED]")
 			} else {
@@ -93,7 +117,7 @@ func redactSensitiveParams(rawQuery string) string {
 			}
 		} else {
 			// Key without value
-			if isSensitiveQueryParamCI(param) {
+			if isSensitiveQueryParamDecoded(param) {
 				b.WriteString(param)
 				b.WriteString("=[REDACTED]")
 			} else {
@@ -225,7 +249,18 @@ func SanitizeURL(urlStr string) string {
 func redactUnparseableURL(s string) string {
 	at := strings.LastIndexByte(s, '@')
 	if at < 0 {
-		// No userinfo separator: nothing that looks like a credential.
+		// No userinfo separator, but a query string may still carry sensitive
+		// parameters. SEC-001 M-1: url.Parse errors quote the raw URL verbatim
+		// (`parse "…?token=…": …`), so this is the last redaction chance for a
+		// URL that never parsed — returning it intact would leak the values the
+		// parseable path redacts. Same treatment the userinfo branch below
+		// already applies to its query string.
+		if idx := strings.IndexByte(s, '?'); idx >= 0 {
+			if q := s[idx+1:]; HasSensitiveQueryParams(q) {
+				return s[:idx+1] + redactSensitiveParams(q)
+			}
+		}
+		// Nothing that looks like a credential.
 		return s
 	}
 
@@ -286,7 +321,7 @@ func HasSensitiveQueryParams(query string) bool {
 		if eqIdx := strings.IndexByte(segment, '='); eqIdx >= 0 {
 			key = segment[:eqIdx]
 		}
-		if isSensitiveQueryParamCI(key) {
+		if isSensitiveQueryParamDecoded(key) {
 			return true
 		}
 	}

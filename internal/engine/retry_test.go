@@ -3,11 +3,17 @@ package engine
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cybergodev/httpc/internal/types"
+
+	"github.com/cybergodev/httpc/internal/connection"
 )
 
 // ============================================================================
@@ -42,33 +48,40 @@ func TestRetryEngine_GetDelay_Int64Overflow(t *testing.T) {
 	}
 }
 
-func TestRetryEngine_New(t *testing.T) {
-	config := &Config{
-		MaxRetries:    3,
-		RetryDelay:    100 * time.Millisecond,
-		BackoffFactor: 2.0,
+// TestRetryEngine_NewAndMaxRetries consolidates the former constructor and
+// accessor echo tests (TestRetryEngine_New, TestRetryEngine_MaxRetries) into
+// one table.
+func TestRetryEngine_NewAndMaxRetries(t *testing.T) {
+	tests := []struct {
+		name       string
+		maxRetries int
+	}{
+		{"constructor keeps config, MaxRetries 3", 3},
+		{"constructor keeps config, MaxRetries 5", 5},
 	}
 
-	engine := newRetryEngine(config)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &Config{
+				MaxRetries:    tt.maxRetries,
+				RetryDelay:    100 * time.Millisecond,
+				BackoffFactor: 2.0,
+			}
 
-	if engine == nil {
-		t.Fatal("Expected non-nil retry engine")
-	}
+			engine := newRetryEngine(config)
 
-	if engine.config != config {
-		t.Error("Config should be set")
-	}
-}
+			if engine == nil {
+				t.Fatal("Expected non-nil retry engine")
+			}
 
-func TestRetryEngine_MaxRetries(t *testing.T) {
-	config := &Config{
-		MaxRetries: 5,
-	}
+			if engine.config != config {
+				t.Error("Config should be set")
+			}
 
-	engine := newRetryEngine(config)
-
-	if engine.MaxRetries() != 5 {
-		t.Errorf("Expected MaxRetries 5, got %d", engine.MaxRetries())
+			if engine.MaxRetries() != tt.maxRetries {
+				t.Errorf("Expected MaxRetries %d, got %d", tt.maxRetries, engine.MaxRetries())
+			}
+		})
 	}
 }
 
@@ -85,6 +98,30 @@ func TestRetryEngine_ShouldRetry_MaxAttemptsExceeded(t *testing.T) {
 	if shouldRetry {
 		t.Error("Should not retry when max attempts exceeded")
 	}
+}
+
+// TestRetryEngine_ShouldRetry_Boundaries pins the policy contract at the
+// attempt-budget edge: the engine's ShouldRetry is attempt-agnostic on the
+// response path (it reports whether the STATUS is retryable; the caller in
+// executeWithRetry enforces the budget via attempt < maxRetries), and a
+// nil-response/nil-error consultation is never retryable.
+func TestRetryEngine_ShouldRetry_Boundaries(t *testing.T) {
+	engine := newRetryEngine(&Config{MaxRetries: 2})
+
+	resp := &Response{}
+	resp.SetStatusCode(http.StatusServiceUnavailable)
+
+	t.Run("response path at attempt == MaxRetries still reports retryable", func(t *testing.T) {
+		if !engine.ShouldRetry(resp, nil, 2) {
+			t.Error("policy must stay attempt-agnostic; the caller enforces the budget")
+		}
+	})
+
+	t.Run("nil response and nil error is not retryable", func(t *testing.T) {
+		if engine.ShouldRetry(nil, nil, 0) {
+			t.Error("nil/nil consultation must not be retryable")
+		}
+	})
 }
 
 func TestRetryEngine_ShouldRetry(t *testing.T) {
@@ -474,7 +511,7 @@ func TestRetryEngine_IsRetryableError(t *testing.T) {
 	}
 }
 
-// Note: mockNetError is defined in errors_test.go and shared across test files
+// Note: mockNetError is defined in testing_test.go and shared across test files
 
 func TestRetryEngine_GetJitter(t *testing.T) {
 	t.Run("Random jitter within bounds", func(t *testing.T) {
@@ -749,16 +786,14 @@ func TestExecuteWithRetry_RetryableErrorExhaustsRetries(t *testing.T) {
 	mock.SetError(retryableTimeoutErr{}) // always fails, but is retryable
 
 	config := &Config{
-		Timeout:         30 * time.Second,
-		AllowPrivateIPs: true,
-		MaxRetries:      1,
-		RetryDelay:      time.Millisecond,
-		BackoffFactor:   1.0,
-		UserAgent:       "test/1.0",
+		Timeout: 30 * time.Second,
+
+		MaxRetries:    1,
+		RetryDelay:    time.Millisecond,
+		BackoffFactor: 1.0,
+		UserAgent:     "test/1.0", Connection: connection.Config{AllowPrivateIPs: true},
 	}
-	client, err := NewClient(config, func(opts *clientOptions) {
-		opts.customTransport = mock
-	})
+	client, err := NewClient(config, withMockTransport(mock))
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -791,20 +826,18 @@ func TestExecuteWithRetry_BodyBufferedForRetry(t *testing.T) {
 	mock.SetError(retryableTimeoutErr{}) // retryable → buffer-then-retry path
 
 	config := &Config{
-		Timeout:         30 * time.Second,
-		AllowPrivateIPs: true,
-		MaxRetries:      1,
-		RetryDelay:      time.Millisecond,
-		BackoffFactor:   1.0,
-		UserAgent:       "test/1.0",
+		Timeout: 30 * time.Second,
+
+		MaxRetries:    1,
+		RetryDelay:    time.Millisecond,
+		BackoffFactor: 1.0,
+		UserAgent:     "test/1.0",
 		// The body under test rides a POST; the retry loop (and thus the
 		// io.Reader buffering branch) only engages for it when non-idempotent
 		// retries are explicitly enabled.
-		RetryNonIdempotent: true,
+		RetryNonIdempotent: true, Connection: connection.Config{AllowPrivateIPs: true},
 	}
-	client, err := NewClient(config, func(opts *clientOptions) {
-		opts.customTransport = mock
-	})
+	client, err := NewClient(config, withMockTransport(mock))
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -812,7 +845,7 @@ func TestExecuteWithRetry_BodyBufferedForRetry(t *testing.T) {
 
 	// Custom option sets the body as an io.Reader, triggering the buffering
 	// branch in executeWithRetry.
-	bodyOption := func(r *Request) error {
+	bodyOption := func(r types.RequestMutator) error {
 		r.SetBody(strings.NewReader("payload-that-must-be-buffered-for-retry"))
 		return nil
 	}
@@ -827,16 +860,16 @@ func TestExecuteWithRetry_BodyBufferedForRetry(t *testing.T) {
 }
 
 // TestSleepWithContext covers the three control-flow branches of
-// sleepWithContext (client.go:640-669): nil context (time.Sleep), timer-fires,
-// and context-cancelled-during-sleep (including the timer-drain sub-branch).
-// sleepWithContext touches only the package-level timerPool, so a zero-value
-// *Client is sufficient and avoids constructing a full transport stack.
+// sleepWithContext: nil context (time.Sleep), timer-fires, and
+// context-cancelled-during-sleep. sleepWithContext touches no client state, so
+// a zero-value *Client is sufficient and avoids constructing a full transport
+// stack.
 func TestSleepWithContext(t *testing.T) {
-	c := &Client{} // sleepWithContext uses only the timer pool, not client state
+	c := &Client{}
 
 	t.Run("nil context sleeps and returns nil", func(t *testing.T) {
 		start := time.Now()
-		//nolint:staticcheck // SA1012: nil ctx is deliberate — covers sleepWithContext:641
+		//nolint:staticcheck // SA1012: nil ctx is deliberate — covers sleepWithContext's nil branch
 		if err := c.sleepWithContext(nil, 5*time.Millisecond); err != nil {
 			t.Errorf("nil context should return nil, got %v", err)
 		}
@@ -870,11 +903,10 @@ func TestSleepWithContext(t *testing.T) {
 		}
 	})
 
-	// The timer-drain sub-branch (client.go:658-661) only runs when the timer
-	// has already fired by the time ctx is cancelled — a genuine race. Run many
-	// iterations so both the drain and no-drain sub-branches are exercised
-	// under -race.
-	t.Run("cancel races timer for drain coverage", func(t *testing.T) {
+	// Sleeps and timer Stop are now managed by the stdlib (Go 1.23+); these
+	// tight cancel/sleep races exercise the select branch under -race and guard
+	// against regressions to the timer handling.
+	t.Run("cancel races timer", func(t *testing.T) {
 		for i := 0; i < 50; i++ {
 			ctx, cancel := context.WithCancel(context.Background())
 			go func() {
@@ -894,22 +926,20 @@ func TestExecuteWithRetry_BodyBufferReadError(t *testing.T) {
 	mock := newMockTransport(200, "never reached")
 
 	config := &Config{
-		Timeout:         30 * time.Second,
-		AllowPrivateIPs: true,
-		MaxRetries:      1,
-		RetryDelay:      time.Millisecond,
-		BackoffFactor:   1.0,
-		UserAgent:       "test/1.0",
+		Timeout: 30 * time.Second,
+
+		MaxRetries:    1,
+		RetryDelay:    time.Millisecond,
+		BackoffFactor: 1.0,
+		UserAgent:     "test/1.0", Connection: connection.Config{AllowPrivateIPs: true},
 	}
-	client, err := NewClient(config, func(opts *clientOptions) {
-		opts.customTransport = mock
-	})
+	client, err := NewClient(config, withMockTransport(mock))
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
 	defer func() { _ = client.Close() }()
 
-	bodyOption := func(r *Request) error {
+	bodyOption := func(r types.RequestMutator) error {
 		r.SetBody(errBodyReader{})
 		return nil
 	}
@@ -931,6 +961,87 @@ type errBodyReader struct{}
 
 func (errBodyReader) Read([]byte) (int, error) { return 0, errors.New("body stream broken") }
 
+// countingReadCloser is shared with response_processor_test.go (single
+// definition there).
+
+// TestExecuteWithRetry_BufferedBodyClosesOriginalReader pins the M2
+// regression: once the retry loop buffers an io.Reader body, the original
+// reader must be closed — on the non-retry path net/http owns and closes the
+// request body, so buffering without closing leaked one handle per request
+// (e.g. an *os.File via WithBody) until the GC finalizer ran.
+func TestExecuteWithRetry_BufferedBodyClosesOriginalReader(t *testing.T) {
+	mock := newMockTransport(200, "ok")
+
+	client, err := NewClient(&Config{
+		Timeout:       30 * time.Second,
+		MaxRetries:    1,
+		RetryDelay:    time.Millisecond,
+		BackoffFactor: 1.0,
+		UserAgent:     "test/1.0",
+		Connection:    connection.Config{AllowPrivateIPs: true},
+	}, withMockTransport(mock))
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	body := &countingReadCloser{inner: strings.NewReader("payload-that-gets-buffered")}
+	bodyOption := func(r types.RequestMutator) error {
+		r.SetBody(body)
+		return nil
+	}
+
+	resp, err := client.Request(backgroundCtx, "GET", "https://example.com", bodyOption)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	ReleaseResponse(resp)
+
+	if got := body.closes; got != 1 {
+		t.Errorf("original body closed %d times, want exactly 1", got)
+	}
+}
+
+// TestFastPath_ReaderBodyClosedUnderSizeLimit pins the review fix for the M8
+// wrapper: bodyLimitReader must implement Close so a caller-supplied
+// io.ReadCloser body is still closed by net/http when MaxRequestBodySize is
+// set — the io.NopCloser fallback would have leaked the handle on the
+// no-retry path.
+func TestFastPath_ReaderBodyClosedUnderSizeLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body) // best-effort drain of the tiny body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	config := &Config{
+		Timeout:            30 * time.Second,
+		MaxRequestBodySize: 16, // > body size: the request must succeed
+		Connection:         connection.Config{AllowPrivateIPs: true},
+	}
+	client, err := NewClient(config)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	body := &countingReadCloser{inner: strings.NewReader("tiny")}
+	bodyOption := func(r types.RequestMutator) error {
+		r.SetBody(body)
+		return nil
+	}
+
+	resp, err := client.Request(backgroundCtx, "POST", server.URL, bodyOption)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	ReleaseResponse(resp)
+
+	if got := body.closes; got != 1 {
+		t.Errorf("body closed %d times, want exactly 1 (net/http owns the body on the no-retry path)", got)
+	}
+}
+
 // TestExecuteWithRetry_PerRequestRetryNonIdempotentOverride covers the
 // per-request override arm of the idempotence guard: with client-level
 // RetryNonIdempotent=false, a request-level override must still allow POST
@@ -938,19 +1049,23 @@ func (errBodyReader) Read([]byte) (int, error) { return 0, errors.New("body stre
 func TestExecuteWithRetry_PerRequestRetryNonIdempotentOverride(t *testing.T) {
 	tests := []struct {
 		name        string
-		option      func(*Request) error
+		option      RequestOption
 		wantCalls   int
 		wantSuccess bool
 	}{
 		{
-			name:        "override enables POST retry",
-			option:      func(r *Request) error { allow := true; r.SetRetryNonIdempotent(&allow); return nil },
+			name: "override enables POST retry",
+			option: func(r types.RequestMutator) error {
+				allow := true
+				r.(*Request).SetRetryNonIdempotent(&allow)
+				return nil
+			},
 			wantCalls:   2,
 			wantSuccess: true,
 		},
 		{
 			name:        "no override keeps POST single-shot",
-			option:      func(*Request) error { return nil },
+			option:      func(types.RequestMutator) error { return nil },
 			wantCalls:   1,
 			wantSuccess: false,
 		},
@@ -962,19 +1077,17 @@ func TestExecuteWithRetry_PerRequestRetryNonIdempotentOverride(t *testing.T) {
 			mock.failFirst = 1
 
 			config := &Config{
-				Timeout:         30 * time.Second,
-				AllowPrivateIPs: true,
-				MaxRetries:      1,
-				RetryDelay:      time.Millisecond,
-				BackoffFactor:   1.0,
-				UserAgent:       "test/1.0",
+				Timeout: 30 * time.Second,
+
+				MaxRetries:    1,
+				RetryDelay:    time.Millisecond,
+				BackoffFactor: 1.0,
+				UserAgent:     "test/1.0",
 				// Client-level opt-in deliberately OFF: only the per-request
 				// override may enable retries for the POST.
-				RetryNonIdempotent: false,
+				RetryNonIdempotent: false, Connection: connection.Config{AllowPrivateIPs: true},
 			}
-			client, err := NewClient(config, func(opts *clientOptions) {
-				opts.customTransport = mock
-			})
+			client, err := NewClient(config, withMockTransport(mock))
 			if err != nil {
 				t.Fatalf("Failed to create client: %v", err)
 			}
@@ -1004,13 +1117,11 @@ func TestExecuteWithRetry_CustomPolicyResponseDelay(t *testing.T) {
 	mock := newMockTransport(503, "unavailable") // always retryable response
 
 	client, err := NewClient(&Config{
-		Timeout:           30 * time.Second,
-		AllowPrivateIPs:   true,
+		Timeout: 30 * time.Second,
+
 		MaxRetries:        1,
-		CustomRetryPolicy: &testRetryPolicy{maxRetries: 1, delay: 25 * time.Millisecond},
-	}, func(opts *clientOptions) {
-		opts.customTransport = mock
-	})
+		CustomRetryPolicy: &testRetryPolicy{maxRetries: 1, delay: 25 * time.Millisecond}, Connection: connection.Config{AllowPrivateIPs: true},
+	}, withMockTransport(mock))
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -1034,3 +1145,12 @@ func TestExecuteWithRetry_CustomPolicyResponseDelay(t *testing.T) {
 		t.Errorf("retry delay not honored: elapsed %v, want >= 20ms", elapsed)
 	}
 }
+
+// ============================================================================
+// CLIENT-LEVEL RETRY / TIMEOUT INTEGRATION
+// The client-integration tests formerly in this block (TestClient_RetryOnServerErrors,
+// TestClient_OverrideMaxRetries, TestClient_ExecuteRetry_MaxReached,
+// TestClient_CustomRetryPolicy, TestClient_CustomRetryPolicy_NegativeMaxRetries,
+// TestClient_MockTransportRetry, and the zero/per-request timeout tests) moved
+// to client_test.go, next to the other executeWithRetry-driven coverage.
+// ============================================================================

@@ -20,6 +20,7 @@ import "syscall"
 // These values are Windows-specific; on Unix they do not correspond to any
 // POSIX errno and will not cause false positives.
 var wsaRetryableErrors = map[syscall.Errno]bool{
+	10053: true, // WSAECONNABORTED — Connection aborted by the local host (e.g. proxy CONNECT/TLS setup torn down mid-flight); transient in practice
 	10054: true, // WSAECONNRESET — Connection reset by remote
 	10060: true, // WSAETIMEDOUT — Connection timed out
 	10061: true, // WSAECONNREFUSED — Target machine actively refused

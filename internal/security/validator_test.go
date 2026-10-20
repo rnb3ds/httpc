@@ -130,8 +130,7 @@ func TestValidator_ValidateURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := &Request{
-				Method: "GET",
-				URL:    tt.url,
+				URL: tt.url,
 			}
 
 			err := validator.ValidateRequest(req)
@@ -229,7 +228,6 @@ func TestValidator_ValidateHeaders(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := &Request{
-				Method:  "GET",
 				URL:     "http://example.com",
 				Headers: tt.headers,
 			}
@@ -295,9 +293,8 @@ func TestValidator_ValidateRequestSize(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := &Request{
-				Method: "POST",
-				URL:    "http://example.com",
-				Body:   tt.body,
+				URL:  "http://example.com",
+				Body: tt.body,
 			}
 
 			err := validator.ValidateRequest(req)
@@ -322,7 +319,7 @@ func TestValidator_ValidateRequestSize_BodyTypes(t *testing.T) {
 		validator.config.MaxRequestBodySize = 1024
 
 		values := url.Values{"key": {"value"}}
-		req := &Request{Method: "POST", URL: "http://example.com", Body: values}
+		req := &Request{URL: "http://example.com", Body: values}
 
 		err := validator.ValidateRequest(req)
 		if err != nil {
@@ -335,7 +332,7 @@ func TestValidator_ValidateRequestSize_BodyTypes(t *testing.T) {
 		validator.config.MaxRequestBodySize = 10
 
 		values := url.Values{"key": {strings.Repeat("a", 50)}}
-		req := &Request{Method: "POST", URL: "http://example.com", Body: values}
+		req := &Request{URL: "http://example.com", Body: values}
 
 		err := validator.ValidateRequest(req)
 		if err == nil {
@@ -351,7 +348,7 @@ func TestValidator_ValidateRequestSize_BodyTypes(t *testing.T) {
 			Fields: map[string]string{"username": "john"},
 			Files:  map[string]*types.FileData{"avatar": {Filename: "a.txt", Content: []byte("hello")}},
 		}
-		req := &Request{Method: "POST", URL: "http://example.com", Body: form}
+		req := &Request{URL: "http://example.com", Body: form}
 
 		err := validator.ValidateRequest(req)
 		if err != nil {
@@ -366,7 +363,7 @@ func TestValidator_ValidateRequestSize_BodyTypes(t *testing.T) {
 		form := &types.FormData{
 			Fields: map[string]string{"data": strings.Repeat("x", 100)},
 		}
-		req := &Request{Method: "POST", URL: "http://example.com", Body: form}
+		req := &Request{URL: "http://example.com", Body: form}
 
 		err := validator.ValidateRequest(req)
 		if err == nil {
@@ -381,7 +378,7 @@ func TestValidator_ValidateRequestSize_BodyTypes(t *testing.T) {
 		form := &types.FormData{
 			Files: map[string]*types.FileData{"big": {Content: make([]byte, 100)}},
 		}
-		req := &Request{Method: "POST", URL: "http://example.com", Body: form}
+		req := &Request{URL: "http://example.com", Body: form}
 
 		err := validator.ValidateRequest(req)
 		if err == nil {
@@ -398,8 +395,7 @@ func TestValidator_DisabledValidation(t *testing.T) {
 
 	// Even with invalid data, validation should pass when disabled
 	req := &Request{
-		Method: "GET",
-		URL:    "javascript:alert(1)", // Invalid scheme
+		URL: "javascript:alert(1)", // Invalid scheme
 		Headers: map[string]string{
 			"X-Test\r\n": "value\r\n", // CRLF injection
 		},
@@ -416,8 +412,7 @@ func TestValidator_ComplexScenarios(t *testing.T) {
 
 	t.Run("Valid complex request", func(t *testing.T) {
 		req := &Request{
-			Method: "POST",
-			URL:    "https://api.example.com/v1/users?page=1&limit=10",
+			URL: "https://api.example.com/v1/users?page=1&limit=10",
 			Headers: map[string]string{
 				"Content-Type":  "application/json",
 				"Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
@@ -435,8 +430,7 @@ func TestValidator_ComplexScenarios(t *testing.T) {
 
 	t.Run("Multiple validation failures", func(t *testing.T) {
 		req := &Request{
-			Method: "POST",
-			URL:    "", // Invalid: empty URL
+			URL: "", // Invalid: empty URL
 			Headers: map[string]string{
 				"X-Test\r\n": "value", // Invalid: CRLF in key
 			},
@@ -478,8 +472,7 @@ func TestValidator_SpecialCharacters(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := &Request{
-				Method: "GET",
-				URL:    tt.url,
+				URL: tt.url,
 			}
 
 			err := validator.ValidateRequest(req)
@@ -646,9 +639,8 @@ func TestValidateRequestBodySize_ZeroLimitNoValidation(t *testing.T) {
 	})
 
 	req := &Request{
-		Method: "POST",
-		URL:    "http://example.com",
-		Body:   strings.Repeat("a", 200),
+		URL:  "http://example.com",
+		Body: strings.Repeat("a", 200),
 	}
 
 	err := validator.ValidateRequest(req)
@@ -674,7 +666,6 @@ func TestValidatorCacheConcurrency(t *testing.T) {
 	for i := 0; i < goroutines; i++ {
 		go func() {
 			req := &Request{
-				Method:  "GET",
 				URL:     "https://example.com/api/test",
 				Headers: map[string]string{},
 			}
@@ -762,12 +753,14 @@ func TestValidateURL_OverrideDoesNotPoisonCache(t *testing.T) {
 }
 
 // TestValidateURL_IPv6Hosts pins SSRF handling for bracketed IPv6 literals.
-// Layering note: a bracketed IPv6 host WITH a port is rejected here at URL
-// validation. A BARE bracketed literal (no port) is not matched by
-// net.ParseIP in ValidateSSRFHost, so it passes URL validation and is blocked
-// by the connection dialer instead (see TestResolveAndValidateAddress in
-// internal/connection). If the URL layer is ever taught to strip brackets,
-// tighten the second subtest to expect an error.
+// Layering note: bracketed IPv6 hosts — with or without a port — are rejected
+// here at URL validation. validateURL passes parsedURL.Hostname() so the
+// brackets never reach ValidateSSRFHost's checks (see the C1 regression:
+// previously a bare bracketed literal passed URL validation and, under a
+// configured proxy where dialer-level validation of the target is skipped
+// entirely, had no remaining SSRF defense). The connection dialer
+// (TestResolveAndValidateAddress in internal/connection) remains the second,
+// DNS-rebinding-hardened line of defense for direct connections.
 func TestValidateURL_IPv6Hosts(t *testing.T) {
 	validator := NewValidatorWithConfig(&Config{
 		ValidateURL:     true,
@@ -786,12 +779,22 @@ func TestValidateURL_IPv6Hosts(t *testing.T) {
 		}
 	})
 
-	t.Run("bare bracketed IPv6 deferred to dialer validation", func(t *testing.T) {
-		if err := validator.validateURL("http://[::1]/", nil); err != nil {
-			t.Logf("URL layer now blocks bare bracketed IPv6 (improvement landed): %v", err)
+	t.Run("bare bracketed IPv6 loopback blocked at URL validation", func(t *testing.T) {
+		if err := validator.validateURL("http://[::1]/", nil); err == nil {
+			t.Error("SECURITY ISSUE: bare bracketed IPv6 loopback must be blocked at URL validation (proxy mode has no dialer-level defense)")
 		}
-		// No error assertion: current contract defers portless bracketed
-		// literals to the dialer-level SSRF check.
+	})
+
+	t.Run("bare bracketed IPv4-mapped loopback blocked", func(t *testing.T) {
+		if err := validator.validateURL("http://[::ffff:127.0.0.1]/", nil); err == nil {
+			t.Error("SECURITY ISSUE: bare bracketed IPv4-mapped loopback must be blocked")
+		}
+	})
+
+	t.Run("bare bracketed IPv4-mapped link-local blocked", func(t *testing.T) {
+		if err := validator.validateURL("http://[::ffff:169.254.169.254]/latest/meta-data/", nil); err == nil {
+			t.Error("SECURITY ISSUE: bare bracketed IPv4-mapped link-local must be blocked")
+		}
 	})
 }
 

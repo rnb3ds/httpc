@@ -822,9 +822,10 @@ fmt.Println(config.String())
 | `Security.MinTLSVersion` | `uint16` | `TLS 1.2` | 最低 TLS 版本 |
 | `Security.MaxTLSVersion` | `uint16` | `TLS 1.3` | 最高 TLS 版本 |
 | `Security.InsecureSkipVerify` | `bool` | `false` | 跳过 TLS 验证 (仅限测试！) |
-| `Security.CertificatePinner` | `CertificatePinner` | `nil` | 证书固定 — 即使 CA 被攻破也拒绝 MITM |
+| `Security.TLSFingerprint` | `string` | `""` | 浏览器指纹预设 — 见 [浏览器传输指纹](#浏览器传输指纹) |
+| `Security.CertificatePinner` | `CertificatePinner` | `nil` | 证书固定 — 即使 CA 被攻破也拒绝 MITM（指纹路径亦支持） |
 | `Security.MaxResponseBodySize` | `int64` | `10MB` | 最大响应体大小 |
-| `Security.MaxRequestBodySize` | `int64` | `0` | 最大请求体大小 (0 = 不限制；不会回退到 MaxResponseBodySize) |
+| `Security.MaxRequestBodySize` | `int64` | `0` | 最大请求体大小 (0 = 不限制；不会回退到 MaxResponseBodySize)。`io.Reader` 请求体在发送期强制 |
 | `Security.AllowPrivateIPs` | `bool` | `false` | 允许私有 IP (默认启用 SSRF 防护) |
 | `Security.ValidateURL` | `bool` | `true` | 启用 URL 验证 |
 | `Security.ValidateHeaders` | `bool` | `true` | 启用请求头验证 |
@@ -832,7 +833,6 @@ fmt.Println(config.String())
 | `Security.RedirectWhitelist` | `[]string` | `nil` | 允许的重定向域名 |
 | `Security.MaxDecompressedBodySize` | `int64` | `100MB` | 最大解压响应体大小 (Zip 炸弹防护) |
 | `Security.SSRFExemptCIDRs` | `[]string` | `nil` | 豁免 SSRF 阻断的 CIDR 范围 |
-| `Security.CookieSecurity` | `*CookieSecurityConfig` | `nil` | 当前未在请求处理中生效——请使用 `WithSecureCookie` 或 `SessionConfig.CookieSecurity` |
 | **重试设置** (`Retry`) ||||
 | `Retry.MaxRetries` | `int` | `3` | 最大重试次数 |
 | `Retry.Delay` | `time.Duration` | `1s` | 初始重试延迟 |
@@ -845,8 +845,9 @@ fmt.Println(config.String())
 | **默认设置** (`Defaults: httpc.RequestDefaults{...}`) ||||
 | `Defaults.UserAgent` | `string` | `"httpc/1.0"` | 默认 User-Agent |
 | `Defaults.Headers` | `map[string]string` | `{}` | 默认请求头 |
-| `Defaults.FollowRedirects` | `bool` | `true` | 跟随重定向 |
-| `Defaults.MaxRedirects` | `int` | `10` | 重定向上限;计入初始请求,即 10 最多跟随 9 次重定向 |
+| **安全设置** (`Security: httpc.SecurityConfig{...}`) ||||
+| `Security.FollowRedirects` | `bool` | `true` | 跟随重定向 |
+| `Security.MaxRedirects` | `int` | `10` | 重定向上限;计入初始请求,即 10 最多跟随 9 次重定向 |
 
 ---
 
@@ -1087,6 +1088,10 @@ cfg.Security.CertificatePinner = pinner
 client, err := httpc.New(cfg)
 ```
 
+证书固定在指纹路径（`Security.TLSFingerprint`）上同样可用：pinner 作为伪装握手的
+`VerifyPeerCertificate` 钩子运行；当同时设置 `InsecureSkipVerify` 时，pinner 成为唯一
+校验门槛并仅固定叶子证书（跳过校验时无法获得已验证链）。
+
 从证书生成 SPKI 哈希：
 
 ```bash
@@ -1112,7 +1117,84 @@ httpc.SetSecurityWarnOutput(io.Discard)
 httpc.SetSecurityWarnOutput(os.Stderr)
 ```
 
+
 ---
+
+## 浏览器传输指纹
+
+现代 WAF（Cloudflare、Akamai、DataDome）检测的远不止 User-Agent：TLS ClientHello
+（JA3/JA4）、HTTP/2 帧（SETTINGS 值与顺序、WINDOW_UPDATE、伪头顺序、优先级、HPACK
+行为），以及 header 块本身（包括与 ClientHello 版本一致的 User-Agent）。设置
+`Security.TLSFingerprint` 后，httpc 的传输层被整体替换为浏览器仿真，走完全指纹化的
+HTTP/2（优先）与 HTTP/1.1（回退）：
+
+```go
+cfg := httpc.DefaultConfig()
+cfg.Security.TLSFingerprint = "chrome-latest" // 或 "chrome-windows"、"firefox-latest" 等
+client, err := httpc.New(cfg)
+```
+
+传输层之上的全部能力保持不变：重定向、重试、中间件、流式下载与 Cookie 处理仍是
+httpc 的语义。
+
+**能力边界**：指纹化让*传输层*（TLS、HTTP/2 帧、有序 header 块）与被仿真的浏览器
+不可区分，足以对抗被动指纹检测（JA3/JA4、Akamai H2 指纹、header 顺序）。它**不能**
+对抗 —— 任何纯 HTTP 客户端都不能 —— 需要执行 JavaScript 的防线（Cloudflare
+Managed Challenge / Turnstile、DataDome、Akamai sensor）、行为评分或 IP 信誉；这类
+目标需要真实浏览器或经授权的挑战求解环节。档案是单个浏览器构建的快照，会随浏览器
+发版老化：更新流程见 `internal/fingerprint/PROFILES.md`，另有一项每周 CI 任务监测
+漂移（`.github/workflows/fingerprint-drift.yml`）。
+
+**预设名**：`chrome` / `chrome-latest` / `chrome-152`（= Chrome 152）与
+`firefox` / `firefox-latest` / `firefox-148`（= Firefox 148），均可加 OS 后缀 ——
+桌面变体 `*-windows` / `*-macos` / `*-linux`，移动变体 `*-android` / `*-ios`
+（如 `chrome-windows`、`firefox-ios`），另保留旧复合别名 `android-chrome-latest`、
+`ios-chrome-latest`。没有 Safari 档案。
+
+行为说明：
+
+- **头部集权威**：预设以浏览器档案的值替换请求中的同名头（User-Agent、Accept、
+  Accept-Language 等），使线上形态与伪装的 ClientHello 保持一致；自定义头原样透传。
+  显式设置的 User-Agent 在该路径上**不会**覆盖预设。
+- **协议**：优先 HTTP/2、回退 HTTP/1.1（经 `GetBody` 恢复请求体），两层均完全指纹化；
+  回退仅重放确定未送达服务器的请求（ALPN 协商失败）或幂等方法——POST 的 HTTP/2 腿在
+  响应中途失败时返回该错误而非重发；不尝试 HTTP/3（QUIC 到 TCP 的回退会在链路中途丢失
+  TLS 指纹）。`Connection.EnableHTTP2=false` 将该路径钉定在 HTTP/1.1。
+- **代理**：代理池、轮换与熔断语义保留（支持 HTTP 与 SOCKS5）。HTTP 明文目标经
+  HTTP 代理走 CONNECT 隧道；HTTPS 代理仅以 HTTP/1.1 CONNECT 隧道接入、代理自身证书
+  不做校验（仅目标侧握手被指纹化并校验）。
+- **重定向一致性**：每个重定向跳转都会按浏览器行为修正档案的首跳取值：针对上一跳
+  URL 重算 `sec-fetch-site`（`same-origin` / `same-site` / `cross-site`）、丢弃
+  `sec-fetch-user`（仅首跳携带）；301/302/303 将 fetch 风格请求降级为 GET 时保留
+  fetch 风格头部，而不是切换成导航头部。
+- **证书固定可用**：`CertificatePinner` 在每次指纹化握手上运行（见上文证书固定一节）；
+  `Security.TLSConfig` 仍与指纹互斥（自定义 `tls.Config` 无法塑造伪装的 ClientHello）。
+- **解压**：档案广播 `gzip, deflate, br, zstd`，指纹栈全部解码（保持流式），以
+  identity 正文交给引擎 —— 引擎看不到原始 `Content-Encoding`，解码后的流因此按
+  `MaxResponseBodySize` 限流（`MaxDecompressedBodySize` 在该路径不生效）。未知
+  `Content-Encoding` 会显式报错，而不是把压缩字节当正文返回。
+- **SSRF 防护**：以"先解析再校验"的预检方式逐请求执行（含每个重定向跳转）；
+  相比标准路径的拨号层校验略弱（存在理论上的 DNS TOCTOU 窗口）。
+- **限制**：指纹连接不计入连接池指标、不走 `Connection.EnableDoH`；不做 TLS 会话
+  恢复（每连接完整握手，同时保证指纹稳定）。移动预设（`*-android`、`*-ios`）目前
+  输出桌面端指纹字节 —— 移动变体是占位实现，待真实设备抓包后替换（见
+  `internal/fingerprint/PROFILES.md`）。
+- **已端到端实测**：`chrome-latest` 协商 h2，Akamai H2 指纹为
+  `1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p`
+  （哈希 `52d84b11737d980aef856699f885ca86`），UA 为 Chrome/152；`firefox-latest` 为
+  `1:65536;2:0;4:131072;5:16384|12517377|0|m,p,a,s`
+  （哈希 `6ea73faa8fc5aac76bded7bd238f6433`）—— 见
+  `internal/fingerprint/e2e_network_test.go`
+  （`go test -tags fingerprint_e2e ./internal/fingerprint/ -run PeetWSE2E`）。
+
+指纹传输栈为 httpc 自有实现（`internal/fingerprint`）：TLS 层基于上游
+[`refraction-networking/utls`](https://github.com/refraction-networking/utls)，HTTP/1.1
+与 HTTP/2 层使用 [`enetx/http`](https://github.com/enetx/http)、
+[`enetx/http2`](https://github.com/enetx/http2) 两个 fork（net/http 与 x/net/http2
+的线上序控扩展），解压使用 [`andybalholm/brotli`](https://github.com/andybalholm/brotli)
+与 [`klauspost/compress`](https://github.com/klauspost/compress)（zstd）。浏览器档案
+数据移植自 [`enetx/surf`](https://github.com/enetx/surf)（MIT）；httpc 不依赖该客户端
+库。`TLSFingerprint` 留空即保持标准协议栈，不引入额外依赖。
 
 ## 错误处理
 

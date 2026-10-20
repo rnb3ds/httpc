@@ -15,37 +15,86 @@ import (
 	"time"
 
 	"github.com/cybergodev/httpc/internal/engine"
+	"github.com/cybergodev/httpc/internal/types"
 	"github.com/cybergodev/httpc/internal/validation"
 )
+
+// headerOption is the named request-option type backing WithHeader. It exists
+// (rather than an anonymous closure) so SessionManager.captureFromOptions can
+// statically extract the header without executing the option — executing every
+// user option twice was the old capture-pass behavior this avoids.
+type headerOption struct {
+	key   string
+	value string
+}
+
+// apply implements the RequestOption contract for headerOption.
+func (o *headerOption) apply(r RequestMutator) error {
+	if err := validation.ValidateHeaderKeyValue(o.key, o.value); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidHeader, err)
+	}
+	r.SetHeader(o.key, o.value)
+	return nil
+}
+
+// headerMapOption is the named request-option type backing WithHeaderMap (see
+// headerOption for why it is named rather than an anonymous closure).
+type headerMapOption struct {
+	headers map[string]string
+}
+
+// apply implements the RequestOption contract for headerMapOption.
+func (o *headerMapOption) apply(r RequestMutator) error {
+	// Validate in sorted key order so the reported offending key is
+	// deterministic regardless of map iteration order.
+	for _, k := range sortedKeys(o.headers) {
+		if err := validation.ValidateHeaderKeyValue(k, o.headers[k]); err != nil {
+			return fmt.Errorf("%w %q: %w", ErrInvalidHeader, k, err)
+		}
+		r.SetHeader(k, o.headers[k])
+	}
+	return nil
+}
+
+// cookieOption is the named request-option type backing WithCookies,
+// WithCookieMap, and WithCookieString (see headerOption for why it is named).
+// The concrete cookie slice is stored so captureFromOptions can extract it
+// statically.
+type cookieOption struct {
+	cookies []http.Cookie
+}
+
+// apply implements the RequestOption contract for cookieOption.
+func (o *cookieOption) apply(r RequestMutator) error {
+	if len(o.cookies) == 0 {
+		return nil
+	}
+
+	existing := ensureCookieCapacity(r.Cookies(), len(o.cookies))
+
+	for i := range o.cookies {
+		if err := validation.ValidateCookie(&o.cookies[i]); err != nil {
+			return fmt.Errorf("invalid cookie %s: %w", o.cookies[i].Name, err)
+		}
+		existing = append(existing, o.cookies[i])
+	}
+
+	r.SetCookies(existing)
+	return nil
+}
 
 // WithHeader sets a single HTTP header on the request.
 // Returns ErrInvalidHeader if the key or value contains invalid characters
 // (CRLF injection prevention).
 func WithHeader(key, value string) RequestOption {
-	return func(r *engine.Request) error {
-		if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
-			return fmt.Errorf("%w: %w", ErrInvalidHeader, err)
-		}
-		r.SetHeader(key, value)
-		return nil
-	}
+	return &headerOption{key: key, value: value}
 }
 
 // WithHeaderMap sets multiple headers from a map.
 // Returns ErrInvalidHeader if any key or value contains invalid characters
 // (CRLF injection prevention).
 func WithHeaderMap(headers map[string]string) RequestOption {
-	return func(r *engine.Request) error {
-		// Validate in sorted key order so the reported offending key is
-		// deterministic regardless of map iteration order.
-		for _, k := range sortedKeys(headers) {
-			if err := validation.ValidateHeaderKeyValue(k, headers[k]); err != nil {
-				return fmt.Errorf("%w %q: %w", ErrInvalidHeader, k, err)
-			}
-			r.SetHeader(k, headers[k])
-		}
-		return nil
-	}
+	return &headerMapOption{headers: headers}
 }
 
 // WithUserAgent sets the User-Agent header.
@@ -58,7 +107,7 @@ func WithUserAgent(userAgent string) RequestOption {
 // Returns ErrInvalidCredentials if username is empty, or if username or password
 // exceeds the maximum length or contains invalid characters.
 func WithBasicAuth(username, password string) RequestOption {
-	return func(r *engine.Request) error {
+	return RequestOptionFunc(func(r RequestMutator) error {
 		if username == "" {
 			return fmt.Errorf("%w: username cannot be empty", ErrInvalidCredentials)
 		}
@@ -73,13 +122,13 @@ func WithBasicAuth(username, password string) RequestOption {
 		creds := username + ":" + password
 		r.SetHeader("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(creds)))
 		return nil
-	}
+	})
 }
 
 // WithBearerToken sets the Authorization header to "Bearer <token>".
 // Returns ErrInvalidCredentials if token is empty or fails token format validation.
 func WithBearerToken(token string) RequestOption {
-	return func(r *engine.Request) error {
+	return RequestOptionFunc(func(r RequestMutator) error {
 		if token == "" {
 			return fmt.Errorf("%w: token cannot be empty", ErrInvalidCredentials)
 		}
@@ -89,14 +138,14 @@ func WithBearerToken(token string) RequestOption {
 
 		r.SetHeader("Authorization", "Bearer "+token)
 		return nil
-	}
+	})
 }
 
 // WithQuery sets a single query parameter on the request.
 // Returns an error if the key is empty, too long, or contains invalid characters,
 // or if the formatted value exceeds the maximum allowed length.
 func WithQuery(key string, value any) RequestOption {
-	return func(r *engine.Request) error {
+	return RequestOptionFunc(func(r RequestMutator) error {
 		if err := validation.ValidateQueryKey(key); err != nil {
 			return err
 		}
@@ -111,18 +160,25 @@ func WithQuery(key string, value any) RequestOption {
 			return fmt.Errorf("query value too long (max %d)", validation.MaxValueLen)
 		}
 
-		params := r.EnsureQueryParams()
-		params[key] = value
+		params, ok := r.(types.QueryParamsEnsurer)
+		if !ok {
+			return fmt.Errorf("query option requires a request supporting query-param initialization")
+		}
+		params.EnsureQueryParams()[key] = value
 		return nil
-	}
+	})
 }
 
 // WithQueryMap sets multiple query parameters from a map.
 // Returns an error if any key is empty, too long, or contains invalid characters,
 // or if any formatted value exceeds the maximum allowed length.
 func WithQueryMap(params map[string]any) RequestOption {
-	return func(r *engine.Request) error {
-		existing := r.EnsureQueryParams()
+	return RequestOptionFunc(func(r RequestMutator) error {
+		ensurer, ok := r.(types.QueryParamsEnsurer)
+		if !ok {
+			return fmt.Errorf("query option requires a request supporting query-param initialization")
+		}
+		existing := ensurer.EnsureQueryParams()
 
 		// Validate in sorted key order so the reported offending key is
 		// deterministic regardless of map iteration order (see WithHeaderMap).
@@ -143,7 +199,7 @@ func WithQueryMap(params map[string]any) RequestOption {
 			existing[k] = v
 		}
 		return nil
-	}
+	})
 }
 
 // queryValueLength returns the formatted length of a query parameter value
@@ -202,28 +258,28 @@ func queryValueLength(v any) int {
 // This is a convenience method; the equivalent is WithBody(data, BodyJSON).
 // Returns an error if data is nil.
 func WithJSON(data any) RequestOption {
-	return func(r *engine.Request) error {
+	return RequestOptionFunc(func(r RequestMutator) error {
 		if data == nil {
 			return fmt.Errorf("JSON data cannot be nil")
 		}
 		r.SetBody(data)
 		r.SetHeader("Content-Type", "application/json")
 		return nil
-	}
+	})
 }
 
 // WithXML sets the request body as XML and sets Content-Type to application/xml.
 // This is a convenience method; the equivalent is WithBody(data, BodyXML).
 // Returns an error if data is nil.
 func WithXML(data any) RequestOption {
-	return func(r *engine.Request) error {
+	return RequestOptionFunc(func(r RequestMutator) error {
 		if data == nil {
 			return fmt.Errorf("XML data cannot be nil")
 		}
 		r.SetBody(data)
 		r.SetHeader("Content-Type", "application/xml")
 		return nil
-	}
+	})
 }
 
 // WithBody sets the request body with automatic or explicit type detection.
@@ -235,10 +291,9 @@ func WithXML(data any) RequestOption {
 //   - io.Reader → passed through (no Content-Type set)
 //   - other types → application/json (default)
 //
-// Note: io.Reader bodies bypass request body size validation. For untrusted sources,
-// wrap with io.LimitReader to prevent resource exhaustion:
-//
-//	limited := io.LimitReader(untrustedReader, 10<<20) // 10 MB cap
+// Note: when Security.MaxRequestBodySize is configured, io.Reader bodies are
+// enforced at send time by a counting reader that aborts the transfer once
+// the limit is crossed (known body types are sized before sending).
 //
 // Explicit kinds (BodyJSON, BodyXML, BodyForm, BodyBinary, BodyMultipart) override auto-detection.
 //
@@ -257,7 +312,7 @@ func WithXML(data any) RequestOption {
 // specified BodyKind (e.g., BodyMultipart requires *FormData, BodyForm requires
 // map[string]string or url.Values, BodyBinary requires []byte or string).
 func WithBody(data any, kind ...BodyKind) RequestOption {
-	return func(r *engine.Request) error {
+	return RequestOptionFunc(func(r RequestMutator) error {
 		if data == nil {
 			return fmt.Errorf("request body cannot be nil")
 		}
@@ -306,7 +361,7 @@ func WithBody(data any, kind ...BodyKind) RequestOption {
 		}
 
 		return nil
-	}
+	})
 }
 
 // formBuilderPool reduces allocations for building form-encoded strings.
@@ -381,7 +436,7 @@ func convertToForm(data any) (string, error) {
 // validate-then-encode ordering — validation runs first, so invalid input is
 // rejected before any encoding work — which removes the previous duplication
 // and the inconsistent ordering that existed between the two paths.
-func applyFormBody(r *engine.Request, data any) error {
+func applyFormBody(r RequestMutator, data any) error {
 	if err := validateFormInput(data); err != nil {
 		return err
 	}
@@ -414,7 +469,7 @@ func convertToBinary(data any) ([]byte, error) {
 
 // setAutoDetectedBody sets body with auto-detected content type.
 // Returns the content type to set, or empty string if no Content-Type should be set.
-func setAutoDetectedBody(r *engine.Request, data any) (string, error) {
+func setAutoDetectedBody(r RequestMutator, data any) (string, error) {
 	switch v := data.(type) {
 	case string:
 		r.SetBody(v)
@@ -464,13 +519,13 @@ func setAutoDetectedBody(r *engine.Request, data any) (string, error) {
 // Returns an error if data is nil, or if any field key or value contains control
 // characters or exceeds the maximum length.
 func WithForm(data map[string]string) RequestOption {
-	return func(r *engine.Request) error {
+	return RequestOptionFunc(func(r RequestMutator) error {
 		if data == nil {
 			return fmt.Errorf("form data cannot be nil")
 		}
 		// Shared validate-then-encode path with WithBody(BodyForm) (see applyFormBody).
 		return applyFormBody(r, data)
-	}
+	})
 }
 
 // validateFormKey checks a form field key (name) for emptiness, length, and
@@ -584,13 +639,13 @@ func sortedKeys[V any](m map[string]V) []string {
 // fails the request rather than silently dropping the file.
 // Returns an error if data is nil.
 func WithFormData(data *FormData) RequestOption {
-	return func(r *engine.Request) error {
+	return RequestOptionFunc(func(r RequestMutator) error {
 		if data == nil {
 			return fmt.Errorf("form data cannot be nil")
 		}
 		r.SetBody(data)
 		return nil
-	}
+	})
 }
 
 // WithFile adds a file upload to the request as multipart/form-data.
@@ -602,7 +657,7 @@ func WithFormData(data *FormData) RequestOption {
 // Returns an error if fieldName or filename is empty, contains invalid characters,
 // or resolves to an invalid path (e.g., ".." or ".").
 func WithFile(fieldName, filename string, content []byte) RequestOption {
-	return func(r *engine.Request) error {
+	return RequestOptionFunc(func(r RequestMutator) error {
 		if fieldName == "" {
 			return fmt.Errorf("field name cannot be empty")
 		}
@@ -642,35 +697,41 @@ func WithFile(fieldName, filename string, content []byte) RequestOption {
 			})
 		}
 		return nil
-	}
+	})
 }
 
 // WithTimeout sets a per-request timeout that overrides the client's default timeout.
-// Returns ErrInvalidTimeout if timeout is negative or exceeds 30 minutes.
+// Returns ErrInvalidTimeout if timeout is zero, negative, or exceeds 30 minutes.
+// Zero is rejected because the engine reads it as "not set" — the request would
+// silently fall back to the client's default timeout; use WithNoTimeout to
+// disable the timeout for a request.
 func WithTimeout(timeout time.Duration) RequestOption {
-	return func(r *engine.Request) error {
+	return RequestOptionFunc(func(r RequestMutator) error {
 		if timeout < 0 {
 			return fmt.Errorf("%w: cannot be negative", ErrInvalidTimeout)
+		}
+		if timeout == 0 {
+			return fmt.Errorf("%w: zero is not a valid timeout (it would silently fall back to the client default); use WithNoTimeout", ErrInvalidTimeout)
 		}
 		if timeout > maxTimeout {
 			return fmt.Errorf("%w: exceeds %v", ErrInvalidTimeout, maxTimeout)
 		}
 		r.SetTimeout(timeout)
 		return nil
-	}
+	})
 }
 
 // WithContext sets the context for the request, enabling timeout and cancellation control.
 // The context overrides the client's default timeout for this request.
 // Returns an error if ctx is nil.
 func WithContext(ctx context.Context) RequestOption {
-	return func(r *engine.Request) error {
+	return RequestOptionFunc(func(r RequestMutator) error {
 		if ctx == nil {
 			return fmt.Errorf("context cannot be nil")
 		}
 		r.SetContext(ctx)
 		return nil
-	}
+	})
 }
 
 // WithMaxRetries sets the maximum number of retry attempts for this request.
@@ -681,13 +742,13 @@ func WithContext(ctx context.Context) RequestOption {
 // Retry.RetryNonIdempotent or this request passes WithRetryNonIdempotent(true);
 // in that case MaxRetries only bounds idempotent requests.
 func WithMaxRetries(maxRetries int) RequestOption {
-	return func(r *engine.Request) error {
+	return RequestOptionFunc(func(r RequestMutator) error {
 		if maxRetries < 0 || maxRetries > maxRetryAttempts {
 			return fmt.Errorf("%w: must be 0-%d, got %d", ErrInvalidRetry, maxRetryAttempts, maxRetries)
 		}
 		r.SetMaxRetries(maxRetries)
 		return nil
-	}
+	})
 }
 
 // WithRetryNonIdempotent overrides, for this single request, whether
@@ -702,10 +763,15 @@ func WithMaxRetries(maxRetries int) RequestOption {
 // use it against endpoints that tolerate replay (or protect them with an
 // idempotency key). See RetryConfig.RetryNonIdempotent for the default policy.
 func WithRetryNonIdempotent(allow bool) RequestOption {
-	return func(r *engine.Request) error {
-		r.SetRetryNonIdempotent(&allow)
+	return RequestOptionFunc(func(r RequestMutator) error {
+		// No-op on a RequestMutator that does not expose the override: the
+		// per-request override is optional, and only the engine request carries
+		// the field (see internal/types/interfaces.go).
+		if s, ok := r.(types.RetryNonIdempotentSetter); ok {
+			s.SetRetryNonIdempotent(&allow)
+		}
 		return nil
-	}
+	})
 }
 
 // WithNoTimeout disables the client-level request timeout (Config.Timeouts.Request)
@@ -718,18 +784,22 @@ func WithRetryNonIdempotent(allow bool) RequestOption {
 // Use for long-running calls (large uploads/downloads, slow reports) on a
 // client whose default timeout would otherwise cut them off.
 func WithNoTimeout() RequestOption {
-	return func(r *engine.Request) error {
-		r.SetNoTimeout(true)
+	return RequestOptionFunc(func(r RequestMutator) error {
+		// No-op on a RequestMutator without the override (see
+		// WithRetryNonIdempotent).
+		if s, ok := r.(types.NoTimeoutSetter); ok {
+			s.SetNoTimeout(true)
+		}
 		return nil
-	}
+	})
 }
 
 // WithFollowRedirects controls whether HTTP redirects are followed for this request.
 func WithFollowRedirects(follow bool) RequestOption {
-	return func(r *engine.Request) error {
+	return RequestOptionFunc(func(r RequestMutator) error {
 		r.SetFollowRedirects(&follow)
 		return nil
-	}
+	})
 }
 
 // WithAllowPrivateIPs overrides the client's SSRF policy for this single request.
@@ -756,10 +826,14 @@ func WithFollowRedirects(follow bool) RequestOption {
 //	    httpc.WithAllowPrivateIPs(true),
 //	)
 func WithAllowPrivateIPs(allow bool) RequestOption {
-	return func(r *engine.Request) error {
-		r.SetAllowPrivateIPs(&allow)
+	return RequestOptionFunc(func(r RequestMutator) error {
+		// No-op on a RequestMutator without the override (see
+		// WithRetryNonIdempotent).
+		if s, ok := r.(types.PrivateIPSetter); ok {
+			s.SetAllowPrivateIPs(&allow)
+		}
 		return nil
-	}
+	})
 }
 
 // WithStreamBody enables streaming mode where the response body is not buffered
@@ -773,10 +847,10 @@ func WithAllowPrivateIPs(allow bool) RequestOption {
 // body would be returned silently. To stream a large body without buffering,
 // use Download.
 func WithStreamBody(stream bool) RequestOption {
-	return func(r *engine.Request) error {
+	return RequestOptionFunc(func(r RequestMutator) error {
 		r.SetStreamBody(stream)
 		return nil
-	}
+	})
 }
 
 // WithMaxRedirects sets the maximum number of redirects to follow for this request.
@@ -790,7 +864,7 @@ func WithStreamBody(stream bool) RequestOption {
 // Counting matches net/http: the limit includes the initial request, so
 // WithMaxRedirects(n) follows at most n-1 redirects (the default 10 follows 9).
 func WithMaxRedirects(maxRedirects int) RequestOption {
-	return func(r *engine.Request) error {
+	return RequestOptionFunc(func(r RequestMutator) error {
 		if maxRedirects < 0 {
 			return fmt.Errorf("%w: cannot be negative, got %d", ErrInvalidMaxRedirects, maxRedirects)
 		}
@@ -799,14 +873,14 @@ func WithMaxRedirects(maxRedirects int) RequestOption {
 		}
 		r.SetMaxRedirects(&maxRedirects)
 		return nil
-	}
+	})
 }
 
 // WithBinary sets binary data as the request body with an optional content type.
 // Returns an error if data is empty (nil or zero length — matching
 // WithBody(BodyBinary)) or the content type contains invalid characters.
 func WithBinary(data []byte, contentType ...string) RequestOption {
-	return func(r *engine.Request) error {
+	return RequestOptionFunc(func(r RequestMutator) error {
 		if len(data) == 0 {
 			return fmt.Errorf("binary data cannot be empty")
 		}
@@ -822,7 +896,7 @@ func WithBinary(data []byte, contentType ...string) RequestOption {
 		r.SetBody(data)
 		r.SetHeader("Content-Type", ct)
 		return nil
-	}
+	})
 }
 
 // ensureCookieCapacity grows the slice if needed to accommodate additional entries.
@@ -861,23 +935,13 @@ func ensureCookieCapacity(existing []http.Cookie, additional int) []http.Cookie 
 //	    httpc.WithCookies(cookies),
 //	)
 func WithCookies(cookies []http.Cookie) RequestOption {
-	return func(r *engine.Request) error {
-		if len(cookies) == 0 {
-			return nil
-		}
-
-		existing := ensureCookieCapacity(r.Cookies(), len(cookies))
-
-		for i := range cookies {
-			if err := validation.ValidateCookie(&cookies[i]); err != nil {
-				return fmt.Errorf("invalid cookie %s: %w", cookies[i].Name, err)
-			}
-			existing = append(existing, cookies[i])
-		}
-
-		r.SetCookies(existing)
-		return nil
+	if len(cookies) == 0 {
+		// No-op option rather than nil: consumers here skip nil options, but
+		// callers storing or forwarding the result should not have to defend
+		// against a nil RequestOption.
+		return RequestOptionFunc(func(RequestMutator) error { return nil })
 	}
+	return &cookieOption{cookies: cookies}
 }
 
 // WithCookieMap sets multiple cookies from a map of name-value pairs.
@@ -898,61 +962,42 @@ func WithCookies(cookies []http.Cookie) RequestOption {
 //	    httpc.WithCookieMap(cookies),
 //	)
 func WithCookieMap(cookies map[string]string) RequestOption {
-	return func(r *engine.Request) error {
-		if cookies == nil {
-			return nil
-		}
-
-		existing := ensureCookieCapacity(r.Cookies(), len(cookies))
-
-		// Iterate in sorted name order so both the reported offending cookie
-		// and the resulting Cookie header order are deterministic regardless
-		// of map iteration order (see WithHeaderMap).
-		for _, name := range sortedKeys(cookies) {
-			cookie := http.Cookie{
-				Name:  name,
-				Value: cookies[name],
-			}
-			if err := validation.ValidateCookie(&cookie); err != nil {
-				return fmt.Errorf("invalid cookie %s: %w", name, err)
-			}
-			existing = append(existing, cookie)
-		}
-
-		r.SetCookies(existing)
-		return nil
+	if cookies == nil {
+		return RequestOptionFunc(func(RequestMutator) error { return nil }) // no-op, see WithCookies
 	}
+
+	// Pre-parse the map into a slice so the option can be captured statically
+	// (see cookieOption); iteration stays in sorted name order so both the
+	// reported offending cookie and the resulting Cookie header order are
+	// deterministic regardless of map iteration order.
+	parsed := make([]http.Cookie, 0, len(cookies))
+	for _, name := range sortedKeys(cookies) {
+		parsed = append(parsed, http.Cookie{Name: name, Value: cookies[name]})
+	}
+
+	o := &cookieOption{cookies: parsed}
+	return o
 }
 
 // WithCookieString adds cookies from a raw Cookie header string to the request.
 // Returns an error if the cookie string is malformed (missing '=' separator,
 // empty name) or if any parsed cookie fails validation.
 func WithCookieString(cookieString string) RequestOption {
-	return func(r *engine.Request) error {
-		if cookieString == "" {
-			return nil
-		}
-
-		cookies, err := parseCookieString(cookieString)
-		if err != nil {
-			return fmt.Errorf("failed to parse cookie string: %w", err)
-		}
-
-		if len(cookies) == 0 {
-			return nil
-		}
-
-		existing := ensureCookieCapacity(r.Cookies(), len(cookies))
-		for i := range cookies {
-			if err := validation.ValidateCookie(&cookies[i]); err != nil {
-				return fmt.Errorf("invalid cookie %s: %w", cookies[i].Name, err)
-			}
-			existing = append(existing, cookies[i])
-		}
-		r.SetCookies(existing)
-
-		return nil
+	if cookieString == "" {
+		return RequestOptionFunc(func(RequestMutator) error { return nil }) // no-op, see WithCookies
 	}
+
+	cookies, err := parseCookieString(cookieString)
+	if err != nil {
+		return RequestOptionFunc(func(r RequestMutator) error { return fmt.Errorf("failed to parse cookie string: %w", err) })
+	}
+
+	if len(cookies) == 0 {
+		return RequestOptionFunc(func(RequestMutator) error { return nil }) // no-op, see WithCookies
+	}
+
+	o := &cookieOption{cookies: cookies}
+	return o
 }
 
 func parseCookieString(cookieString string) ([]http.Cookie, error) {
@@ -999,13 +1044,21 @@ func parseCookieString(cookieString string) ([]http.Cookie, error) {
 //
 // Returns an error if callback is nil.
 func WithOnRequest(callback func(req RequestMutator) error) RequestOption {
-	return func(r *engine.Request) error {
+	return RequestOptionFunc(func(r RequestMutator) error {
 		if callback == nil {
 			return fmt.Errorf("onRequest callback cannot be nil")
 		}
 
-		existing := r.OnRequest()
-		r.SetOnRequest(func(req *engine.Request) error {
+		// The engine request satisfies RequestCallbackSetter; other RequestMutator
+		// implementations do not carry callbacks, so the option is a no-op for
+		// them (see internal/types/interfaces.go).
+		setter, ok := r.(types.RequestCallbackSetter)
+		if !ok {
+			return nil
+		}
+
+		existing := setter.OnRequestMutator()
+		setter.SetOnRequestMutator(func(req RequestMutator) error {
 			if existing != nil {
 				if err := existing(req); err != nil {
 					return err
@@ -1014,7 +1067,7 @@ func WithOnRequest(callback func(req RequestMutator) error) RequestOption {
 			return callback(req)
 		})
 		return nil
-	}
+	})
 }
 
 // WithOnResponse registers a callback invoked after the response is received.
@@ -1035,13 +1088,20 @@ func WithOnRequest(callback func(req RequestMutator) error) RequestOption {
 //
 // Returns an error if callback is nil.
 func WithOnResponse(callback func(resp ResponseMutator) error) RequestOption {
-	return func(r *engine.Request) error {
+	return RequestOptionFunc(func(r RequestMutator) error {
 		if callback == nil {
 			return fmt.Errorf("onResponse callback cannot be nil")
 		}
 
-		existing := r.OnResponse()
-		r.SetOnResponse(func(resp *engine.Response) error {
+		// See WithOnRequest: no-op for RequestMutator implementations that do
+		// not carry callbacks.
+		setter, ok := r.(types.RequestCallbackSetter)
+		if !ok {
+			return nil
+		}
+
+		existing := setter.OnResponseMutator()
+		setter.SetOnResponseMutator(func(resp ResponseMutator) error {
 			if existing != nil {
 				if err := existing(resp); err != nil {
 					return err
@@ -1050,7 +1110,7 @@ func WithOnResponse(callback func(resp ResponseMutator) error) RequestOption {
 			return callback(resp)
 		})
 		return nil
-	}
+	})
 }
 
 // WithSecureCookie creates a request option that enforces cookie security attributes
@@ -1085,7 +1145,7 @@ func WithOnResponse(callback func(resp ResponseMutator) error) RequestOption {
 // Returns an error if securityConfig is nil, or if any cookie on the request
 // fails the security validation check.
 func WithSecureCookie(securityConfig *CookieSecurityConfig) RequestOption {
-	return func(r *engine.Request) error {
+	return RequestOptionFunc(func(r RequestMutator) error {
 		if securityConfig == nil {
 			return fmt.Errorf("security config cannot be nil")
 		}
@@ -1098,5 +1158,5 @@ func WithSecureCookie(securityConfig *CookieSecurityConfig) RequestOption {
 		}
 
 		return nil
-	}
+	})
 }

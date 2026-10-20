@@ -828,9 +828,10 @@ fmt.Println(config.String())
 | `Security.MinTLSVersion` | `uint16` | `TLS 1.2` | Minimum TLS version |
 | `Security.MaxTLSVersion` | `uint16` | `TLS 1.3` | Maximum TLS version |
 | `Security.InsecureSkipVerify` | `bool` | `false` | Skip TLS verification (testing only!) |
-| `Security.CertificatePinner` | `CertificatePinner` | `nil` | Certificate pinning — reject MITM even if CA compromised |
+| `Security.TLSFingerprint` | `string` | `""` | Browser fingerprint preset — see [Browser Transport Fingerprinting](#browser-transport-fingerprinting) |
+| `Security.CertificatePinner` | `CertificatePinner` | `nil` | Certificate pinning — reject MITM even if CA compromised (works with `TLSFingerprint`) |
 | `Security.MaxResponseBodySize` | `int64` | `10MB` | Max response body size |
-| `Security.MaxRequestBodySize` | `int64` | `0` | Max request body size (0 = no limit; does not fall back to MaxResponseBodySize) |
+| `Security.MaxRequestBodySize` | `int64` | `0` | Max request body size (0 = no limit; does not fall back to MaxResponseBodySize). `io.Reader` bodies are enforced at send time |
 | `Security.AllowPrivateIPs` | `bool` | `false` | Allow private IPs (SSRF protection enabled by default) |
 | `Security.ValidateURL` | `bool` | `true` | Enable URL validation |
 | `Security.ValidateHeaders` | `bool` | `true` | Enable header validation |
@@ -838,7 +839,6 @@ fmt.Println(config.String())
 | `Security.RedirectWhitelist` | `[]string` | `nil` | Allowed redirect domains |
 | `Security.MaxDecompressedBodySize` | `int64` | `100MB` | Max decompressed body size (zip bomb protection) |
 | `Security.SSRFExemptCIDRs` | `[]string` | `nil` | CIDR ranges exempted from SSRF blocking |
-| `Security.CookieSecurity` | `*CookieSecurityConfig` | `nil` | Currently not enforced during requests — use `WithSecureCookie` or `SessionConfig.CookieSecurity` |
 | **Retry** (`Retry: httpc.RetryConfig{...}`) ||||
 | `Retry.MaxRetries` | `int` | `3` | Max retry attempts |
 | `Retry.Delay` | `time.Duration` | `1s` | Initial retry delay |
@@ -851,8 +851,9 @@ fmt.Println(config.String())
 | **Defaults** (`Defaults: httpc.RequestDefaults{...}`) ||||
 | `Defaults.UserAgent` | `string` | `"httpc/1.0"` | Default User-Agent |
 | `Defaults.Headers` | `map[string]string` | `{}` | Default headers |
-| `Defaults.FollowRedirects` | `bool` | `true` | Follow redirects |
-| `Defaults.MaxRedirects` | `int` | `10` | Redirect limit; counts the initial request, so 10 follows at most 9 redirects |
+| **Security** (`Security: httpc.SecurityConfig{...}`) ||||
+| `Security.FollowRedirects` | `bool` | `true` | Follow redirects |
+| `Security.MaxRedirects` | `int` | `10` | Redirect limit; counts the initial request, so 10 follows at most 9 redirects |
 
 ---
 
@@ -1101,6 +1102,11 @@ cfg.Security.CertificatePinner = pinner
 client, err := httpc.New(cfg)
 ```
 
+Certificate pinning also works on the fingerprint path (`Security.TLSFingerprint`): the pinner
+runs as the spoofed handshake's `VerifyPeerCertificate` hook. With `InsecureSkipVerify` set,
+the pinner becomes the only verification gate and pins the leaf certificate (verified chains
+are unavailable when verification is skipped).
+
 Generate an SPKI hash from a certificate:
 
 ```bash
@@ -1125,6 +1131,98 @@ httpc.SetSecurityWarnOutput(io.Discard)
 // Or redirect to a custom logger
 httpc.SetSecurityWarnOutput(os.Stderr)
 ```
+
+---
+
+## Browser Transport Fingerprinting
+
+Modern WAFs (Cloudflare, Akamai, DataDome) fingerprint more than the User-Agent: the TLS
+ClientHello (JA3/JA4), the HTTP/2 frames (SETTINGS values and order, WINDOW_UPDATE,
+pseudo-header order, priorities, HPACK behavior), and the header block itself — including
+a User-Agent coherent with the ClientHello version. Setting `Security.TLSFingerprint`
+replaces httpc's transport layer with a browser emulation covering all of them at once,
+over fully fingerprinted HTTP/2 (preferred) and HTTP/1.1 (fallback):
+
+```go
+cfg := httpc.DefaultConfig()
+cfg.Security.TLSFingerprint = "chrome-latest" // or "chrome-windows", "firefox-latest", ...
+client, err := httpc.New(cfg)
+```
+
+Everything above the transport stays in charge: redirects, retries, middleware, streaming
+downloads, and cookie handling keep their httpc semantics.
+
+**Scope**: fingerprinting makes the *transport layers* — TLS, HTTP/2 framing, ordered header
+block — indistinguishable from the spoofed browser, which defeats passive fingerprinting
+(JA3/JA4, the Akamai H2 fingerprint, header order). It does **not** defeat — no pure HTTP
+client can — defenses that execute JavaScript (Cloudflare Managed Challenge / Turnstile,
+DataDome, Akamai sensor), behavioral scoring, or IP reputation; those call for a real
+browser or an authorized challenge-solving step. Profiles are snapshots of one browser
+build and age as browsers ship: `internal/fingerprint/PROFILES.md` documents the update
+runbook, and a weekly CI job watches for drift (`.github/workflows/fingerprint-drift.yml`).
+
+**Preset names** are browser profiles with optional OS suffixes: `chrome` / `chrome-latest`
+/ `chrome-152` (= Chrome 152) and `firefox` / `firefox-latest` / `firefox-148`
+(= Firefox 148), each as `*-windows` / `*-macos` / `*-linux` desktop variants and
+`*-android` / `*-ios` mobile variants (e.g. `chrome-windows`, `firefox-ios`), plus the
+legacy compound aliases `android-chrome-latest` and `ios-chrome-latest`. There is no
+Safari profile.
+
+Behavior notes:
+
+- **Header set is authoritative**: the preset replaces same-named request headers
+  (User-Agent, Accept, Accept-Language, ...) with the browser profile's values so the wire
+  stays coherent with the spoofed ClientHello; custom headers pass through untouched. An
+  explicitly set User-Agent does **not** override the preset on this path.
+- **Protocols**: HTTP/2 is preferred with HTTP/1.1 fallback (request body restored via
+  `GetBody`), both fully fingerprinted. The fallback only replays requests that cannot have
+  reached the server (ALPN mismatch) or that use idempotent methods — a POST whose HTTP/2 leg
+  fails mid-response returns the HTTP/2 error instead of being re-sent. HTTP/3 is not attempted
+  (a QUIC-to-TCP fallback would lose the TLS fingerprint mid-chain). `Connection.EnableHTTP2=false`
+  pins the path to HTTP/1.1.
+- **Proxies**: proxy pools, rotation, and circuit breaking keep working (HTTP and SOCKS5).
+  Plain-HTTP targets through an HTTP proxy traverse a CONNECT tunnel; HTTPS proxies speak
+  HTTP/1.1 CONNECT only and their own certificate is not verified (only the target's
+  handshake is fingerprinted and verified).
+- **Redirect coherence**: on every redirect hop the profile's first-hop values are corrected
+  the way a browser does: `sec-fetch-site` is recomputed against the previous hop's URL
+  (`same-origin` / `same-site` / `cross-site`), `sec-fetch-user` is dropped (first hop
+  only), and a 301/302/303 that downgrades a fetch-style request to GET keeps fetch-style
+  headers instead of switching to navigation headers.
+- **Certificate pinning works**: `CertificatePinner` runs on every fingerprinted handshake
+  (see the pinning section above). `Security.TLSConfig` remains mutually exclusive with
+  fingerprinting (a custom `tls.Config` cannot shape a spoofed ClientHello).
+- **Decompression**: the profile advertises `gzip, deflate, br, zstd` and the fingerprint
+  stack decodes all of them (streaming preserved), handing the engine identity bodies —
+  the engine cannot see the original `Content-Encoding`, so the decoded stream is capped
+  by `MaxResponseBodySize` (`MaxDecompressedBodySize` does not apply on this path). An
+  unknown `Content-Encoding` fails the request loudly instead of returning compressed
+  bytes.
+- **SSRF protection** runs as a resolve-and-validate pre-flight per request (including each
+  redirect hop); it is marginally weaker than the standard path's dial-layer validation
+  (theoretical DNS TOCTOU window).
+- **Limitations**: fingerprinted connections are not counted in pool metrics and skip
+  `Connection.EnableDoH`; TLS session resumption is not attempted (full handshakes every
+  connection, which also keeps fingerprints stable). Mobile presets (`*-android`,
+  `*-ios`) currently emit the desktop fingerprint bytes — the mobile variants are
+  placeholders pending real device captures (see `internal/fingerprint/PROFILES.md`).
+- **Verified end-to-end**: `chrome-latest` negotiates h2 with the Chrome Akamai fingerprint
+  `1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p` (hash `52d84b11737d980aef856699f885ca86`)
+  and a Chrome 152 UA; `firefox-latest` yields
+  `1:65536;2:0;4:131072;5:16384|12517377|0|m,p,a,s` (hash `6ea73faa8fc5aac76bded7bd238f6433`) —
+  see `internal/fingerprint/e2e_network_test.go`
+  (`go test -tags fingerprint_e2e ./internal/fingerprint/ -run PeetWSE2E`).
+
+The transport stack is implemented in-house (`internal/fingerprint`) on upstream
+[`refraction-networking/utls`](https://github.com/refraction-networking/utls) (TLS layer)
+plus the [`enetx/http`](https://github.com/enetx/http) and
+[`enetx/http2`](https://github.com/enetx/http2) forks — `net/http` / `x/net/http2` extended
+with the wire-level ordering knobs fingerprinting requires — and
+[`andybalholm/brotli`](https://github.com/andybalholm/brotli) +
+[`klauspost/compress`](https://github.com/klauspost/compress) (zstd) for decoding. Profile
+data was ported from [`enetx/surf`](https://github.com/enetx/surf) (MIT); httpc does not
+depend on that client library. Leave `TLSFingerprint` empty to keep the standard stack with
+no extra dependencies.
 
 ---
 

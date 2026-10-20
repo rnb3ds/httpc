@@ -33,6 +33,15 @@ func newRetryEngine(config *Config) *retryEngine {
 	}
 }
 
+// responseDelayPolicy is the optional capability a types.RetryPolicy may
+// implement to derive the backoff delay from the triggering response (e.g.
+// the built-in engine policy's Retry-After support). Declared as a separate
+// interface so custom policies can opt in without the engine asserting its
+// concrete *retryEngine type.
+type responseDelayPolicy interface {
+	GetDelayWithResponse(attempt int, resp *Response) time.Duration
+}
+
 // ShouldRetry implements types.RetryPolicy interface.
 func (r *retryEngine) ShouldRetry(resp types.ResponseReader, err error, attempt int) bool {
 	if err != nil {
@@ -52,6 +61,10 @@ func (r *retryEngine) GetDelay(attempt int) time.Duration {
 
 // GetDelayWithResponse returns the delay for the given attempt, considering response headers.
 // It first checks for Retry-After header, then falls back to exponential backoff.
+//
+// Priority note: Retry-After (capped at 60s by parseRetryAfterHeader) takes
+// precedence over MaxRetryDelay — an explicit server instruction outranks the
+// local cap. Only the exponential fallback is clamped by MaxRetryDelay.
 func (r *retryEngine) GetDelayWithResponse(attempt int, resp *Response) time.Duration {
 	// Check Retry-After header first
 	if resp != nil {

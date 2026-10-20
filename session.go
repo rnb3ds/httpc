@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"slices"
 	"sync"
 
-	"github.com/cybergodev/httpc/internal/engine"
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
@@ -207,7 +207,11 @@ func (s *SessionManager) SetCookie(cookie *http.Cookie) error {
 		return fmt.Errorf("cookie security validation failed: %w", err)
 	}
 
-	s.cookies[cookie.Name] = cookie
+	// Defensive copy, matching storeCookies/captureFromOptions: storing the
+	// caller's pointer would let later mutations of that *http.Cookie race
+	// the session's read paths (which snapshot the value under RLock).
+	cp := *cookie
+	s.cookies[cp.Name] = &cp
 	return nil
 }
 
@@ -239,9 +243,10 @@ func (s *SessionManager) SetCookies(cookies []*http.Cookie) error {
 		}
 	}
 
-	// All passed, store cookies
+	// All passed, store cookies — defensively copied (see SetCookie).
 	for _, cookie := range cookies {
-		s.cookies[cookie.Name] = cookie
+		cp := *cookie
+		s.cookies[cp.Name] = &cp
 	}
 	return nil
 }
@@ -325,16 +330,24 @@ func (s *SessionManager) prepareOptions() []RequestOption {
 	options := make([]RequestOption, 0, 2)
 
 	if cookieCount > 0 {
-		// Batch all cookies into a single option to avoid N closure allocations
-		cookies := make([]http.Cookie, 0, cookieCount)
-		for _, cookie := range s.cookies {
-			cookies = append(cookies, *cookie)
+		// Batch all cookies into a single option to avoid N closure allocations.
+		// Sorted by name so the Cookie header order is deterministic regardless
+		// of map iteration order — matching WithCookieMap's determinism
+		// contract (gateways that sign or replay-check headers care).
+		names := make([]string, 0, cookieCount)
+		for name := range s.cookies {
+			names = append(names, name)
 		}
-		options = append(options, func(r *engine.Request) error {
+		slices.Sort(names)
+		cookies := make([]http.Cookie, 0, cookieCount)
+		for _, name := range names {
+			cookies = append(cookies, *s.cookies[name])
+		}
+		options = append(options, RequestOptionFunc(func(r RequestMutator) error {
 			existing := r.Cookies()
 			r.SetCookies(append(existing, cookies...))
 			return nil
-		})
+		}))
 	}
 
 	if headerCount > 0 {
@@ -408,43 +421,41 @@ func (s *SessionManager) storeCookies(cookies []*http.Cookie) {
 	}
 }
 
-// captureFromOptions extracts cookies and headers from RequestOptions
-// and stores them in the session.
+// captureFromOptions extracts cookies and headers from RequestOptions and
+// stores them in the session.
 //
-// SECURITY: OnRequest/OnResponse callbacks are cleared before and after
-// option application to prevent side-effect duplication. Only cookies and
-// headers are extracted; callbacks, query params, and body data are discarded.
+// The extraction is STATIC: it type-switches over the named option types that
+// carry cookies or headers (cookieOption, headerOption, headerMapOption) and
+// never executes the option closure. This is the fix for the old capture pass,
+// which ran every user option a second time (so WithOnRequest/WithOnResponse
+// fired twice and side-effecting options raced). Cookies and headers set by a
+// custom (unrecognized) option are therefore NOT captured — persist session
+// state via DomainClient.SetCookie/SetHeader or SessionManager instead of an
+// inline RequestOption.
 func (s *SessionManager) captureFromOptions(options []RequestOption) {
-	if len(options) == 0 {
-		return
-	}
-
-	// Use pooled engine.Request to reduce allocations on hot path
-	tempReq := acquireMiddlewareRequest()
-	defer releaseMiddlewareRequest(tempReq)
+	var cookies []http.Cookie
+	var headers map[string]string
 
 	for _, opt := range options {
-		if opt == nil {
-			continue
-		}
-		// Session capture is best-effort: option errors are
-		// handled during actual request execution, not here.
-		// Clear callbacks before each option to prevent any WithOnRequest/
-		// WithOnResponse from accumulating closures across options.
-		tempReq.SetOnRequest(nil)
-		tempReq.SetOnResponse(nil)
-		if !applyCaptureOption(tempReq, opt) {
-			continue
+		switch o := any(opt).(type) {
+		case *cookieOption:
+			cookies = append(cookies, o.cookies...)
+		case *headerOption:
+			if headers == nil {
+				headers = make(map[string]string)
+			}
+			headers[o.key] = o.value
+		case *headerMapOption:
+			if headers == nil {
+				headers = make(map[string]string, len(o.headers))
+			}
+			for k, v := range o.headers {
+				headers[k] = v
+			}
+		default:
+			// Unrecognized option: cannot extract statically, skip.
 		}
 	}
-
-	// Clear callbacks after all options to prevent any deferred
-	// or lazy evaluation from triggering side effects after capture.
-	tempReq.SetOnRequest(nil)
-	tempReq.SetOnResponse(nil)
-
-	cookies := tempReq.Cookies()
-	headers := tempReq.Headers()
 
 	if len(cookies) == 0 && len(headers) == 0 {
 		return
@@ -454,52 +465,23 @@ func (s *SessionManager) captureFromOptions(options []RequestOption) {
 	defer s.mu.Unlock()
 	s.ensureMaps()
 
+	// Delegate to storeCookies: the same validate-then-copy gate (and the
+	// single security entry point, validateCookieSecurity) as every other
+	// write path — the previous inline copy of that gate could drift when
+	// storeCookies gains a rule. WithCookies already validates at
+	// option-application time, so this only matters for custom options that
+	// call SetCookies directly.
+	cookiePtrs := make([]*http.Cookie, len(cookies))
 	for i := range cookies {
-		cookie := &cookies[i]
-		// Same validation gate as storeCookies: basic well-formedness first,
-		// then the optional security policy. WithCookies already validates at
-		// option-application time, so this only matters for custom options
-		// that call SetCookies directly.
-		if err := validation.ValidateCookie(cookie); err != nil {
-			continue
-		}
-		if s.cookieSecurity != nil {
-			if err := validation.ValidateCookieSecurity(cookie, s.cookieSecurity); err != nil {
-				continue
-			}
-		}
-		// Copy the cookie before storing. tempReq is pooled and Cookies()
-		// returns its internal slice by reference, so &cookies[i] aliases
-		// pooled memory that is released (and reused) once this function
-		// returns. storeCookies() follows the same copy pattern.
-		cp := *cookie
-		s.cookies[cp.Name] = &cp
+		cookiePtrs[i] = &cookies[i]
 	}
+	s.storeCookies(cookiePtrs)
 
 	for key, value := range headers {
 		if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
 			continue
 		}
-		// Canonicalize to keep the session-map invariant (keys arrive from
-		// tempReq.Headers() already canonical post-SetHeader; this is the
-		// no-op-scan guarantee for direct map sources).
+		// Canonicalize to keep the session-map invariant.
 		s.headers[http.CanonicalHeaderKey(key)] = value
 	}
-}
-
-// applyCaptureOption applies one RequestOption to the session-capture request
-// and reports whether the option succeeded. A panicking option is treated
-// exactly like a failing one: skipped during capture, then surfaced as an
-// error by the actual request execution, where clientImpl.Request's default
-// panic safety net converts it. Without this guard, a user option that panics
-// would escape DomainClient.Request during the capture pass — that pass runs
-// before the request-path recover is installed, so the panic would reach the
-// caller's process.
-func applyCaptureOption(r *engine.Request, opt RequestOption) (ok bool) {
-	defer func() {
-		if rec := recover(); rec != nil {
-			ok = false
-		}
-	}()
-	return opt(r) == nil
 }

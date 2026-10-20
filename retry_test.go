@@ -331,6 +331,49 @@ func TestRetry_RetryAfterHeader(t *testing.T) {
 	t.Logf("Request completed in %v with %d attempts", duration, resp.Meta.Attempts)
 }
 
+// TestRetry_MaxRetryDelayCap verifies at the client level (public Config)
+// that Retry.MaxRetryDelay clamps the exponential backoff: with Delay=5s and
+// a 60ms cap, the retry after a first 500 must happen within the cap, not
+// after 5 seconds. (Engine-level units live in internal/engine.)
+func TestRetry_MaxRetryDelayCap(t *testing.T) {
+	var attempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&attempts, 1) == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.Security.AllowPrivateIPs = true
+	config.Retry.MaxRetries = 1
+	config.Retry.Delay = 5 * time.Second // without the cap, retry would wait 5s
+	config.Retry.MaxRetryDelay = 60 * time.Millisecond
+	config.Retry.EnableJitter = false
+	client, _ := New(config)
+	defer func() { _ = client.Close() }()
+
+	start := time.Now()
+	resp, err := client.Get(server.URL)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	if resp.StatusCode() != http.StatusOK {
+		t.Fatalf("Expected 200 after retry, got %d", resp.StatusCode())
+	}
+	if got := atomic.LoadInt32(&attempts); got != 2 {
+		t.Fatalf("Expected 2 attempts, got %d", got)
+	}
+	// Uncapped backoff would delay the retry by >= 5s. Generous upper bound
+	// (2s) keeps the test robust on slow CI while still proving the cap ran.
+	if elapsed > 2*time.Second {
+		t.Errorf("Retry took %v; MaxRetryDelay=60ms should have capped the 5s delay", elapsed)
+	}
+}
+
 // TestRetry_PerRequestMaxRetriesOption covers the WithMaxRetries per-request
 // knob (moved from request_test.go: it is retry behavior — only the knob is
 // option-layer). A flaky 500-then-200 server must recover via retries.

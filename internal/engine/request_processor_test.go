@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,67 +12,150 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cybergodev/httpc/internal/types"
 )
-
-// ============================================================================
-// REQUEST BUILDER TEST HELPERS
-// ============================================================================
-
-// testRequestBuilder creates a Request with the given parameters using setters.
-// This helper function is used because Request fields are now private.
-func testRequestBuilder() *testRequest {
-	return &testRequest{}
-}
-
-type testRequest struct {
-	method          string
-	url             string
-	headers         map[string]string
-	queryParams     map[string]any
-	body            any
-	timeout         time.Duration
-	maxRetries      int
-	ctx             context.Context
-	cookies         []http.Cookie
-	followRedirects *bool
-	maxRedirects    *int
-}
-
-func (tr *testRequest) Method(v string) *testRequest              { tr.method = v; return tr }
-func (tr *testRequest) URL(v string) *testRequest                 { tr.url = v; return tr }
-func (tr *testRequest) Headers(v map[string]string) *testRequest  { tr.headers = v; return tr }
-func (tr *testRequest) QueryParams(v map[string]any) *testRequest { tr.queryParams = v; return tr }
-func (tr *testRequest) Body(v any) *testRequest                   { tr.body = v; return tr }
-func (tr *testRequest) Timeout(v time.Duration) *testRequest      { tr.timeout = v; return tr }
-func (tr *testRequest) MaxRetries(v int) *testRequest             { tr.maxRetries = v; return tr }
-func (tr *testRequest) Context(v context.Context) *testRequest    { tr.ctx = v; return tr }
-func (tr *testRequest) Cookies(v []http.Cookie) *testRequest      { tr.cookies = v; return tr }
-func (tr *testRequest) FollowRedirects(v *bool) *testRequest      { tr.followRedirects = v; return tr }
-func (tr *testRequest) MaxRedirects(v *int) *testRequest          { tr.maxRedirects = v; return tr }
-
-func (tr *testRequest) Build() *Request {
-	req := &Request{}
-	req.SetMethod(tr.method)
-	req.SetURL(tr.url)
-	if tr.headers != nil {
-		req.SetHeaders(tr.headers)
-	}
-	if tr.queryParams != nil {
-		req.SetQueryParams(tr.queryParams)
-	}
-	req.SetBody(tr.body)
-	req.SetTimeout(tr.timeout)
-	req.SetMaxRetries(tr.maxRetries)
-	req.SetContext(tr.ctx)
-	req.SetCookies(tr.cookies)
-	req.SetFollowRedirects(tr.followRedirects)
-	req.SetMaxRedirects(tr.maxRedirects)
-	return req
-}
 
 // ============================================================================
 // REQUEST PROCESSOR TESTS
 // ============================================================================
+
+// TestRequestProcessor_Build_ClientConfigContentType pins the M3 regression:
+// client-level Config.Headers participate in the body marshal decision.
+// Auto-detection previously consulted only the per-request Content-Type, and
+// its detected value took the header slot before config headers were merged
+// (fill-empty), so a configured "application/xml" was silently overridden by
+// "application/json" — both in the marshaling and on the wire.
+func TestRequestProcessor_Build_ClientConfigContentType(t *testing.T) {
+	type xmlPayload struct {
+		XMLName xml.Name `xml:"payload"`
+		K       string   `xml:"k"`
+	}
+
+	build := func(headers, requestHeaders map[string]string) (*http.Request, error) {
+		config := &Config{Timeout: 30 * time.Second, Headers: headers}
+		processor := newRequestProcessor(config)
+		req := testRequestBuilder().
+			Method("POST").
+			URL("https://example.com").
+			Headers(requestHeaders).
+			Body(xmlPayload{K: "v"}).
+			Build()
+		return processor.Build(req)
+	}
+
+	t.Run("config XML wins over JSON auto-detection", func(t *testing.T) {
+		httpReq, err := build(map[string]string{"Content-Type": "application/xml"}, nil)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if got := httpReq.Header.Get("Content-Type"); got != "application/xml" {
+			t.Errorf("Content-Type = %q, want application/xml", got)
+		}
+		body, _ := io.ReadAll(httpReq.Body)
+		if !strings.Contains(string(body), "<k>v</k>") {
+			t.Errorf("body = %q, want XML-marshaled payload", body)
+		}
+	})
+
+	t.Run("no config header keeps JSON detection", func(t *testing.T) {
+		httpReq, err := build(nil, nil)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if got := httpReq.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", got)
+		}
+	})
+
+	t.Run("request-level header still wins", func(t *testing.T) {
+		httpReq, err := build(map[string]string{"Content-Type": "application/xml"}, map[string]string{"Content-Type": "text/xml"})
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if got := httpReq.Header.Get("Content-Type"); got != "text/xml" {
+			t.Errorf("Content-Type = %q, want text/xml", got)
+		}
+	})
+}
+
+// TestRequestProcessor_Build_ReaderBodySizeLimit pins the M8 regression:
+// Security.MaxRequestBodySize no longer fails open for raw io.Reader bodies —
+// the pre-send validator can only size known types, so Build wraps readers
+// in a counting reader that fails the transfer once the limit is crossed.
+func TestRequestProcessor_Build_ReaderBodySizeLimit(t *testing.T) {
+	processor := newRequestProcessor(&Config{Timeout: 30 * time.Second, MaxRequestBodySize: 16})
+
+	build := func(payload string) *http.Request {
+		t.Helper()
+		req := testRequestBuilder().
+			Method("POST").
+			URL("https://example.com").
+			Body(strings.NewReader(payload)).
+			Build()
+		httpReq, err := processor.Build(req)
+		if err != nil {
+			t.Fatalf("Build must not fail before send: %v", err)
+		}
+		return httpReq
+	}
+
+	t.Run("under limit passes", func(t *testing.T) {
+		body, err := io.ReadAll(build("short body").Body)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		if string(body) != "short body" {
+			t.Errorf("body = %q", body)
+		}
+	})
+
+	t.Run("exactly at limit passes", func(t *testing.T) {
+		const exact = "1234567890123456" // 16 bytes
+		body, err := io.ReadAll(build(exact).Body)
+		if err != nil {
+			t.Fatalf("exact-limit body must pass, got %v", err)
+		}
+		if string(body) != exact {
+			t.Errorf("body = %q", body)
+		}
+	})
+
+	t.Run("over limit fails at send time", func(t *testing.T) {
+		_, err := io.ReadAll(build("this payload is well over sixteen bytes").Body)
+		if err == nil || !strings.Contains(err.Error(), "exceeds limit") {
+			t.Fatalf("want limit error mid-read, got %v", err)
+		}
+	})
+}
+
+// TestRequestProcessor_Build_DoesNotLeakURLMutationIntoCache pins the shared-
+// URL defensive copy: a query-less Build hands each request its own shallow
+// copy of the process-wide cached *url.URL, so a downstream mutation of
+// req.URL (custom RoundTripper, redirect rewriting) cannot poison the cache
+// for every other request to the same URL.
+func TestRequestProcessor_Build_DoesNotLeakURLMutationIntoCache(t *testing.T) {
+	processor := newRequestProcessor(&Config{Timeout: 30 * time.Second})
+
+	build := func() *http.Request {
+		t.Helper()
+		req := testRequestBuilder().Method("GET").URL("https://example.com/cache-isolation-probe").Build()
+		httpReq, err := processor.Build(req)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		return httpReq
+	}
+
+	h1 := build()
+	h1.URL.Path = "/mutated-by-downstream" // simulate a mutating RoundTripper
+
+	h2 := build()
+	if h2.URL.Path != "/cache-isolation-probe" {
+		t.Errorf("URL cache poisoned by downstream mutation: Path = %q, want %q",
+			h2.URL.Path, "/cache-isolation-probe")
+	}
+}
 
 func TestRequestProcessor_Build(t *testing.T) {
 	config := &Config{
@@ -369,6 +453,10 @@ func TestRequestProcessor_BuildErrors(t *testing.T) {
 	}
 }
 
+// TestRequestProcessor_BodySerialization covers body-type dispatch in Build.
+// Formerly spread across this table plus standalone TestBuild_NilBody,
+// TestBuild_IOReaderBody, and TestBuild_XMLBody (coverage_test.go) — the nil,
+// io.Reader, and XML cases are rows here now.
 func TestRequestProcessor_BodySerialization(t *testing.T) {
 	config := &Config{
 		Timeout: 30 * time.Second,
@@ -379,16 +467,22 @@ func TestRequestProcessor_BodySerialization(t *testing.T) {
 
 	processor := newRequestProcessor(config)
 
+	type xmlRequest struct {
+		XMLName struct{} `xml:"request"`
+		Key     string   `xml:"key"`
+	}
+
 	tests := []struct {
-		name         string
-		body         interface{}
-		expectedType string
-		validate     func(*testing.T, io.Reader)
+		name            string
+		method          string // defaults to POST when empty
+		headers         map[string]string
+		body            any
+		wantContentType string // asserted on the built request when non-empty
+		validate        func(*testing.T, io.Reader)
 	}{
 		{
-			name:         "JSON object",
-			body:         map[string]interface{}{"key": "value"},
-			expectedType: "application/json",
+			name: "JSON object",
+			body: map[string]interface{}{"key": "value"},
 			validate: func(t *testing.T, reader io.Reader) {
 				bodyBytes, err := io.ReadAll(reader)
 				if err != nil {
@@ -406,9 +500,8 @@ func TestRequestProcessor_BodySerialization(t *testing.T) {
 			},
 		},
 		{
-			name:         "String body",
-			body:         "test string",
-			expectedType: "text/plain",
+			name: "String body",
+			body: "test string",
 			validate: func(t *testing.T, reader io.Reader) {
 				bodyBytes, err := io.ReadAll(reader)
 				if err != nil {
@@ -421,9 +514,8 @@ func TestRequestProcessor_BodySerialization(t *testing.T) {
 			},
 		},
 		{
-			name:         "Byte array body",
-			body:         []byte("test bytes"),
-			expectedType: "application/octet-stream",
+			name: "Byte array body",
+			body: []byte("test bytes"),
 			validate: func(t *testing.T, reader io.Reader) {
 				bodyBytes, err := io.ReadAll(reader)
 				if err != nil {
@@ -436,9 +528,8 @@ func TestRequestProcessor_BodySerialization(t *testing.T) {
 			},
 		},
 		{
-			name:         "URL values (form)",
-			body:         url.Values{"key": []string{"value1", "value2"}},
-			expectedType: "application/x-www-form-urlencoded",
+			name: "URL values (form)",
+			body: url.Values{"key": []string{"value1", "value2"}},
 			validate: func(t *testing.T, reader io.Reader) {
 				bodyBytes, err := io.ReadAll(reader)
 				if err != nil {
@@ -452,27 +543,163 @@ func TestRequestProcessor_BodySerialization(t *testing.T) {
 				}
 			},
 		},
+		{
+			// Formerly TestBuild_NilBody: nil body must build cleanly.
+			name:   "Nil body builds without error",
+			method: "GET",
+			body:   nil,
+		},
+		{
+			// Formerly TestBuild_IOReaderBody: a raw io.Reader body passes
+			// through to the wire unchanged.
+			name:    "io.Reader body passes through",
+			headers: map[string]string{"Content-Type": "application/octet-stream"},
+			body:    bytes.NewBufferString("raw reader data"),
+			validate: func(t *testing.T, reader io.Reader) {
+				bodyBytes, err := io.ReadAll(reader)
+				if err != nil {
+					t.Errorf("Failed to read body: %v", err)
+				}
+				if string(bodyBytes) != "raw reader data" {
+					t.Errorf("Expected 'raw reader data', got '%s'", string(bodyBytes))
+				}
+			},
+		},
+		{
+			// Formerly TestBuild_XMLBody: an XML payload with an explicit
+			// Content-Type is XML-marshaled and keeps the header.
+			name:            "XML body keeps explicit Content-Type",
+			headers:         map[string]string{"Content-Type": "application/xml"},
+			body:            &xmlRequest{Key: "value"},
+			wantContentType: "application/xml",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			request := testRequestBuilder().
-				Method("POST").
+			method := tt.method
+			if method == "" {
+				method = "POST"
+			}
+			builder := testRequestBuilder().
+				Method(method).
 				URL("https://api.example.com/data").
 				Context(context.Background()).
-				Body(tt.body).
-				Build()
+				Body(tt.body)
+			if tt.headers != nil {
+				builder = builder.Headers(tt.headers)
+			}
 
-			httpReq, err := processor.Build(request)
+			httpReq, err := processor.Build(builder.Build())
 			if err != nil {
 				t.Fatalf("Failed to build request: %v", err)
 			}
 
-			if httpReq.Body != nil {
+			if httpReq == nil {
+				t.Fatal("Expected HTTP request, got nil")
+			}
+
+			if tt.wantContentType != "" && httpReq.Header.Get("Content-Type") != tt.wantContentType {
+				t.Errorf("Expected Content-Type %s, got %s", tt.wantContentType, httpReq.Header.Get("Content-Type"))
+			}
+
+			if httpReq.Body != nil && tt.validate != nil {
 				tt.validate(t, httpReq.Body)
 			}
 		})
 	}
+}
+
+// TestBuild_MultipartFormData validates multipart form data with fields and
+// files. Moved from coverage_test.go; the former TestBuild_MultipartSpecialChars
+// is folded in as the "filename with quotes" subtest (assertions preserved —
+// the quoted filename must build successfully with a multipart Content-Type;
+// byte-level quote-escaping parity is additionally pinned by
+// TestMultipartWireParity in pools_test.go).
+func TestBuild_MultipartFormData(t *testing.T) {
+	config := &Config{Timeout: 30 * time.Second}
+	processor := newRequestProcessor(config)
+
+	build := func(t *testing.T, formData *types.FormData) *http.Request {
+		t.Helper()
+		req := testRequestBuilder().
+			Method("POST").
+			URL("https://api.example.com/upload").
+			Context(context.Background()).
+			Body(formData).
+			Build()
+
+		httpReq, err := processor.Build(req)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		return httpReq
+	}
+
+	t.Run("Fields only", func(t *testing.T) {
+		formData := formDataHelper(map[string]string{"username": "john"}, nil)
+		ct := build(t, formData).Header.Get("Content-Type")
+		if !strings.HasPrefix(ct, "multipart/form-data") {
+			t.Errorf("Expected multipart content-type, got %s", ct)
+		}
+	})
+
+	t.Run("Fields and files without content type", func(t *testing.T) {
+		files := map[string]*fileDataHelper{
+			"file1": {Filename: "test.txt", Content: []byte("file content")},
+		}
+		formData := formDataHelper(map[string]string{"field1": "value1"}, files)
+		ct := build(t, formData).Header.Get("Content-Type")
+		if !strings.HasPrefix(ct, "multipart/form-data") {
+			t.Errorf("Expected multipart content-type, got %s", ct)
+		}
+	})
+
+	t.Run("Files with content type", func(t *testing.T) {
+		files := map[string]*fileDataHelper{
+			"file1": {Filename: "test.png", Content: []byte("png data"), ContentType: "image/png"},
+		}
+		formData := formDataHelper(nil, files)
+		ct := build(t, formData).Header.Get("Content-Type")
+		if !strings.HasPrefix(ct, "multipart/form-data") {
+			t.Errorf("Expected multipart content-type, got %s", ct)
+		}
+	})
+
+	t.Run("filename with quotes", func(t *testing.T) {
+		files := map[string]*fileDataHelper{
+			"file": {Filename: `test "file".txt`, Content: []byte("data"), ContentType: "text/plain"},
+		}
+		formData := formDataHelper(nil, files)
+		ct := build(t, formData).Header.Get("Content-Type")
+		if !strings.HasPrefix(ct, "multipart/form-data") {
+			t.Errorf("Expected multipart content-type, got %s", ct)
+		}
+	})
+
+	t.Run("Nil file entry errors", func(t *testing.T) {
+		// A nil *FileData map entry means the caller's upload is missing a
+		// file. Silently dropping it (the old behavior) loses data without
+		// notice — Build must fail loudly instead.
+		files := map[string]*fileDataHelper{
+			"nil_file": nil,
+		}
+		formData := formDataHelper(nil, files)
+		req := testRequestBuilder().
+			Method("POST").
+			URL("https://api.example.com/upload").
+			Context(context.Background()).
+			Body(formData).
+			Build()
+
+		httpReq, err := processor.Build(req)
+		if err == nil {
+			t.Fatal("Expected error for nil FileData entry, got nil")
+		}
+		if httpReq != nil {
+			t.Errorf("Expected nil request on error, got %v", httpReq)
+		}
+	})
 }
 
 func TestRequestProcessor_HeaderHandling(t *testing.T) {

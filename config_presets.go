@@ -40,7 +40,7 @@ func SecureConfig() Config {
 	cfg.Retry.EnableJitter = true
 
 	// Middleware - no redirects for security
-	cfg.Defaults.FollowRedirects = false
+	cfg.Security.FollowRedirects = false
 
 	return cfg
 }
@@ -151,7 +151,7 @@ func MinimalConfig() Config {
 	cfg.Retry.EnableJitter = false
 
 	// Defaults - no redirects
-	cfg.Defaults.FollowRedirects = false
+	cfg.Security.FollowRedirects = false
 
 	return cfg
 }

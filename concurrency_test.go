@@ -1,6 +1,6 @@
-// Package concurrency_test provides concurrent safety tests for the httpc library.
+// Package httpc_test provides concurrent safety tests for the httpc library.
 // These tests verify thread-safety under high concurrency scenarios.
-package concurrency_test
+package httpc_test
 
 import (
 	"context"
@@ -19,68 +19,11 @@ import (
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
-// TestConcurrentClientRequests tests concurrent requests using the same client.
-func TestConcurrentClientRequests(t *testing.T) {
-	// Create test server with mutex for thread safety
-	var requestCount int64
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt64(&requestCount, 1)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("OK")) // best-effort test response
-	}))
-	defer server.Close()
-
-	// DefaultConfig blocks loopback (SSRF); tests must allow the private
-	// httptest server or every request silently fails validation.
-	cfg := httpc.DefaultConfig()
-	cfg.Security.AllowPrivateIPs = true
-	client, err := httpc.New(cfg)
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
-	defer func() { _ = client.Close() }()
-
-	const numGoroutines = 50
-	const requestsPerGoroutine = 10
-
-	var wg sync.WaitGroup
-	var errors int64
-	var success int64
-
-	wg.Add(numGoroutines)
-
-	for i := 0; i < numGoroutines; i++ {
-		go func(id int) {
-			defer wg.Done()
-			for j := 0; j < requestsPerGoroutine; j++ {
-				result, err := client.Get(server.URL)
-				if err != nil {
-					atomic.AddInt64(&errors, 1)
-					continue
-				}
-				if result.StatusCode() != 200 {
-					atomic.AddInt64(&errors, 1)
-					continue
-				}
-				atomic.AddInt64(&success, 1)
-			}
-		}(i)
-	}
-
-	wg.Wait()
-
-	// The counter previously ignored failures; a regression in concurrent
-	// request handling must fail this test, not just be logged.
-	if got := atomic.LoadInt64(&errors); got != 0 {
-		t.Errorf("%d of %d concurrent requests failed", got, numGoroutines*requestsPerGoroutine)
-	}
-	if got := atomic.LoadInt64(&success); got != numGoroutines*requestsPerGoroutine {
-		t.Errorf("success count = %d, want %d", got, numGoroutines*requestsPerGoroutine)
-	}
-
-	t.Logf("Concurrent test completed: %d success, %d errors, %d server requests",
-		atomic.LoadInt64(&success), atomic.LoadInt64(&errors), atomic.LoadInt64(&requestCount))
-}
+// TestConcurrentClientRequests was removed: it duplicated the contract of
+// TestClient_Concurrency/ConcurrentRequests (client_test.go) — same shared
+// client fanned out over goroutines with per-request error accounting — with
+// only the request count differing (500 vs 100). The kept variant also asserts
+// the exact server-side request count via an atomic counter.
 
 // TestConcurrentDomainClientSession tests concurrent session operations.
 func TestConcurrentDomainClientSession(t *testing.T) {

@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cybergodev/httpc/internal/engine"
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
@@ -18,41 +17,92 @@ import (
 // TestNewSessionManagerDefault (DefaultSessionConfig is its input), so no
 // separate minimal-constructor test is kept here.
 
-func TestNewSessionManagerWithConfig(t *testing.T) {
-	securityConfig := validation.StrictCookieSecurityConfig()
-	cfg := DefaultSessionConfig()
-	cfg.CookieSecurity = securityConfig
-	session, err := NewSessionManager(cfg)
+// (TestNewSessionManagerWithConfig was folded into TestNewSessionManagerDefault
+// below as its "with cookie security config" subtest — the two constructors'
+// only difference was whether CookieSecurity was preconfigured.)
 
+// TestSessionManager_SetCookie_DefensiveCopy pins the M1 regression: the
+// session must store a COPY of the caller's *http.Cookie — storing the
+// pointer would let later caller-side mutations race the session's locked
+// read paths (which snapshot values under RLock) and break the snapshot
+// semantics of GetCookies/prepareOptions. storeCookies and
+// captureFromOptions already copy; SetCookie/SetCookies must match.
+func TestSessionManager_SetCookie_DefensiveCopy(t *testing.T) {
+	sm, err := NewSessionManager(DefaultSessionConfig())
 	if err != nil {
 		t.Fatalf("NewSessionManager error: %v", err)
 	}
-	if session == nil {
-		t.Fatal("Expected non-nil SessionManager")
-	}
-	if session.cookieSecurity == nil {
-		t.Error("Expected cookieSecurity to be set")
-	}
+
+	t.Run("SetCookie", func(t *testing.T) {
+		c := &http.Cookie{Name: "sid", Value: "original"}
+		if err := sm.SetCookie(c); err != nil {
+			t.Fatalf("SetCookie error: %v", err)
+		}
+		c.Value = "mutated-by-caller"
+		got := sm.GetCookie("sid")
+		if got == nil {
+			t.Fatal("GetCookie returned nil")
+		}
+		if got.Value != "original" {
+			t.Errorf("stored cookie tracks the caller's pointer: got %q, want %q", got.Value, "original")
+		}
+	})
+
+	t.Run("SetCookies", func(t *testing.T) {
+		c := &http.Cookie{Name: "batch", Value: "original"}
+		if err := sm.SetCookies([]*http.Cookie{c}); err != nil {
+			t.Fatalf("SetCookies error: %v", err)
+		}
+		c.Value = "mutated-by-caller"
+		got := sm.GetCookie("batch")
+		if got == nil {
+			t.Fatal("GetCookie returned nil")
+		}
+		if got.Value != "original" {
+			t.Errorf("stored cookie tracks the caller's pointer: got %q, want %q", got.Value, "original")
+		}
+	})
 }
 
 func TestNewSessionManagerDefault(t *testing.T) {
-	// NewSessionManagerDefault is a shortcut for NewSessionManager(DefaultSessionConfig()).
-	session, err := NewSessionManagerDefault()
-	if err != nil {
-		t.Fatalf("NewSessionManagerDefault error: %v", err)
-	}
-	if session == nil {
-		t.Fatal("Expected non-nil SessionManager")
-	}
-	if len(session.cookies) != 0 {
-		t.Error("Expected empty cookies map")
-	}
-	if len(session.headers) != 0 {
-		t.Error("Expected empty headers map")
-	}
-	if session.cookieSecurity != nil {
-		t.Error("Expected nil cookieSecurity with default config")
-	}
+	t.Run("default config", func(t *testing.T) {
+		// NewSessionManagerDefault is a shortcut for NewSessionManager(DefaultSessionConfig()).
+		session, err := NewSessionManagerDefault()
+		if err != nil {
+			t.Fatalf("NewSessionManagerDefault error: %v", err)
+		}
+		if session == nil {
+			t.Fatal("Expected non-nil SessionManager")
+		}
+		if len(session.cookies) != 0 {
+			t.Error("Expected empty cookies map")
+		}
+		if len(session.headers) != 0 {
+			t.Error("Expected empty headers map")
+		}
+		if session.cookieSecurity != nil {
+			t.Error("Expected nil cookieSecurity with default config")
+		}
+	})
+
+	t.Run("with cookie security config", func(t *testing.T) {
+		// Formerly TestNewSessionManagerWithConfig: NewSessionManager stores a
+		// preconfigured CookieSecurity policy.
+		securityConfig := validation.StrictCookieSecurityConfig()
+		cfg := DefaultSessionConfig()
+		cfg.CookieSecurity = securityConfig
+		session, err := NewSessionManager(cfg)
+
+		if err != nil {
+			t.Fatalf("NewSessionManager error: %v", err)
+		}
+		if session == nil {
+			t.Fatal("Expected non-nil SessionManager")
+		}
+		if session.cookieSecurity == nil {
+			t.Error("Expected cookieSecurity to be set")
+		}
+	})
 }
 
 // TestSessionManagerZeroValue exercises the write methods on a zero-value
@@ -107,64 +157,99 @@ func TestSessionManagerZeroValue(t *testing.T) {
 	}
 }
 
-func TestSessionManager_SetCookieSecurity(t *testing.T) {
-	session, err := NewSessionManagerDefault()
-	if err != nil {
-		t.Fatalf("NewSessionManager error: %v", err)
-	}
-
-	// Initially no security config
-	if session.cookieSecurity != nil {
-		t.Error("Expected no cookie security initially")
-	}
-
-	// Set security config
-	securityConfig := validation.StrictCookieSecurityConfig()
-	session.SetCookieSecurity(securityConfig)
-
-	if session.cookieSecurity == nil {
-		t.Error("Expected cookieSecurity to be set")
-	}
-}
+// (TestSessionManager_SetCookieSecurity and TestSessionManager_SecurityValidation_SetCookieSecurity
+// were folded into TestSessionManager_CookieSecurityValidation below — all three
+// tested the same contract: the effective cookie-security policy (however it was
+// installed) gates SetCookie.)
 
 func TestSessionManager_CookieSecurityValidation(t *testing.T) {
-	// Create session with strict security
-	securityConfig := validation.StrictCookieSecurityConfig()
-	cfg := DefaultSessionConfig()
-	cfg.CookieSecurity = securityConfig
-	session, err := NewSessionManager(cfg)
-	if err != nil {
-		t.Fatalf("NewSessionManager error: %v", err)
-	}
+	t.Run("constructor-configured policy rejects insecure, accepts secure", func(t *testing.T) {
+		// Create session with strict security
+		securityConfig := validation.StrictCookieSecurityConfig()
+		cfg := DefaultSessionConfig()
+		cfg.CookieSecurity = securityConfig
+		session, err := NewSessionManager(cfg)
+		if err != nil {
+			t.Fatalf("NewSessionManager error: %v", err)
+		}
 
-	// Try to set insecure cookie - should fail
-	insecureCookie := &http.Cookie{
-		Name:     "session",
-		Value:    "test123",
-		Secure:   false, // Should be true for strict config
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-	}
+		// Try to set insecure cookie - should fail
+		insecureCookie := &http.Cookie{
+			Name:     "session",
+			Value:    "test123",
+			Secure:   false, // Should be true for strict config
+			HttpOnly: true,
+			SameSite: http.SameSiteStrictMode,
+		}
 
-	err = session.SetCookie(insecureCookie)
-	if err == nil {
-		t.Error("Expected error for insecure cookie with strict security")
-	}
+		err = session.SetCookie(insecureCookie)
+		if err == nil {
+			t.Error("Expected error for insecure cookie with strict security")
+		}
 
-	// Try to set secure cookie - should succeed
-	secureCookie := &http.Cookie{
-		Name:     "session",
-		Value:    "test123",
-		Secure:   true,
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-		Path:     "/",
-	}
+		// Try to set secure cookie - should succeed
+		secureCookie := &http.Cookie{
+			Name:     "session",
+			Value:    "test123",
+			Secure:   true,
+			HttpOnly: true,
+			SameSite: http.SameSiteStrictMode,
+			Path:     "/",
+		}
 
-	err = session.SetCookie(secureCookie)
-	if err != nil {
-		t.Errorf("Expected no error for secure cookie, got: %v", err)
-	}
+		err = session.SetCookie(secureCookie)
+		if err != nil {
+			t.Errorf("Expected no error for secure cookie, got: %v", err)
+		}
+	})
+
+	t.Run("setter replaces nil policy", func(t *testing.T) {
+		// Formerly TestSessionManager_SetCookieSecurity: a default session has
+		// no policy until SetCookieSecurity installs one.
+		session, err := NewSessionManagerDefault()
+		if err != nil {
+			t.Fatalf("NewSessionManager error: %v", err)
+		}
+
+		// Initially no security config
+		if session.cookieSecurity != nil {
+			t.Error("Expected no cookie security initially")
+		}
+
+		// Set security config
+		securityConfig := validation.StrictCookieSecurityConfig()
+		session.SetCookieSecurity(securityConfig)
+
+		if session.cookieSecurity == nil {
+			t.Error("Expected cookieSecurity to be set")
+		}
+	})
+
+	t.Run("setter-installed policy enforced on subsequent SetCookie", func(t *testing.T) {
+		// Formerly TestSessionManager_SecurityValidation_SetCookieSecurity:
+		// SetCookieSecurity affects subsequent SetCookie calls.
+		session, err := NewSessionManagerDefault()
+		if err != nil {
+			t.Fatalf("NewSessionManager error: %v", err)
+		}
+
+		// Set security config after creation
+		securityConfig := validation.DefaultCookieSecurityConfig()
+		securityConfig.RequireSecure = true
+		session.SetCookieSecurity(securityConfig)
+
+		// This should fail because cookie is not secure
+		insecureCookie := &http.Cookie{
+			Name:   "test",
+			Value:  "value",
+			Secure: false,
+		}
+
+		err = session.SetCookie(insecureCookie)
+		if err == nil {
+			t.Error("Expected error for insecure cookie with RequireSecure=true")
+		}
+	})
 }
 
 // newTestSession returns an initialized SessionManager, collapsing the repeated
@@ -179,134 +264,142 @@ func newTestSession(t *testing.T) *SessionManager {
 	return session
 }
 
-func TestSessionManager_SetCookie(t *testing.T) {
-	session := newTestSession(t)
+// TestSessionManager_CRUDOperations table-drives the eight one-assert
+// accessor round-trips (formerly eight standalone SetCookie/SetCookies/
+// DeleteCookie/ClearCookies/SetHeader/SetHeaders/DeleteHeader/ClearHeaders
+// funcs; each original assertion is preserved verbatim in its row).
+func TestSessionManager_CRUDOperations(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T, session *SessionManager)
+	}{
+		{"SetCookie", func(t *testing.T, session *SessionManager) {
+			// Test nil cookie
+			if err := session.SetCookie(nil); err == nil {
+				t.Error("Expected error for nil cookie")
+			}
 
-	// Test nil cookie
-	if err := session.SetCookie(nil); err == nil {
-		t.Error("Expected error for nil cookie")
+			// Test valid cookie
+			cookie := &http.Cookie{
+				Name:  "test",
+				Value: "value",
+			}
+			if err := session.SetCookie(cookie); err != nil {
+				t.Errorf("Unexpected error: %v", err)
+			}
+
+			// Verify cookie was stored
+			stored := session.GetCookie("test")
+			if stored == nil {
+				t.Fatal("Expected cookie to be stored")
+			}
+			if stored.Value != "value" {
+				t.Errorf("Expected value 'value', got %s", stored.Value)
+			}
+		}},
+		{"SetCookies", func(t *testing.T, session *SessionManager) {
+			cookies := []*http.Cookie{
+				{Name: "cookie1", Value: "value1"},
+				{Name: "cookie2", Value: "value2"},
+			}
+
+			if err := session.SetCookies(cookies); err != nil {
+				t.Errorf("Unexpected error: %v", err)
+			}
+
+			allCookies := session.GetCookies()
+			if len(allCookies) != 2 {
+				t.Errorf("Expected 2 cookies, got %d", len(allCookies))
+			}
+		}},
+		{"DeleteCookie", func(t *testing.T, session *SessionManager) {
+			// Add cookie
+			cookie := &http.Cookie{Name: "test", Value: "value"}
+			_ = session.SetCookie(cookie)
+
+			// Delete it
+			session.DeleteCookie("test")
+
+			// Verify it's gone
+			stored := session.GetCookie("test")
+			if stored != nil {
+				t.Error("Expected cookie to be deleted")
+			}
+		}},
+		{"ClearCookies", func(t *testing.T, session *SessionManager) {
+			// Add multiple cookies
+			_ = session.SetCookie(&http.Cookie{Name: "c1", Value: "v1"})
+			_ = session.SetCookie(&http.Cookie{Name: "c2", Value: "v2"})
+
+			// Clear all
+			session.ClearCookies()
+
+			// Verify empty
+			allCookies := session.GetCookies()
+			if len(allCookies) != 0 {
+				t.Errorf("Expected 0 cookies after clear, got %d", len(allCookies))
+			}
+		}},
+		{"SetHeader", func(t *testing.T, session *SessionManager) {
+			// Valid header
+			if err := session.SetHeader("X-Custom", "value"); err != nil {
+				t.Errorf("Unexpected error: %v", err)
+			}
+
+			// Invalid header (with CRLF)
+			if err := session.SetHeader("X-Bad", "value\r\nX-Injected: malicious"); err == nil {
+				t.Error("Expected error for header with CRLF")
+			}
+
+			// Oversize key / value are rejected by ValidateHeaderKeyValue limits.
+			if err := session.SetHeader("X-"+strings.Repeat("k", validation.MaxHeaderKeyLen), "value"); err == nil {
+				t.Error("Expected error for oversize header key")
+			}
+			if err := session.SetHeader("X-Key", strings.Repeat("v", validation.MaxValueLen+1)); err == nil {
+				t.Error("Expected error for oversize header value")
+			}
+		}},
+		{"SetHeaders", func(t *testing.T, session *SessionManager) {
+			headers := map[string]string{
+				"X-Header-1": "value1",
+				"X-Header-2": "value2",
+			}
+
+			if err := session.SetHeaders(headers); err != nil {
+				t.Errorf("Unexpected error: %v", err)
+			}
+
+			allHeaders := session.GetHeaders()
+			if len(allHeaders) != 2 {
+				t.Errorf("Expected 2 headers, got %d", len(allHeaders))
+			}
+		}},
+		{"DeleteHeader", func(t *testing.T, session *SessionManager) {
+			_ = session.SetHeader("X-Test", "value")
+			session.DeleteHeader("X-Test")
+
+			allHeaders := session.GetHeaders()
+			if _, exists := allHeaders["X-Test"]; exists {
+				t.Error("Expected header to be deleted")
+			}
+		}},
+		{"ClearHeaders", func(t *testing.T, session *SessionManager) {
+			_ = session.SetHeader("X-Header-1", "value1")
+			_ = session.SetHeader("X-Header-2", "value2")
+
+			session.ClearHeaders()
+
+			allHeaders := session.GetHeaders()
+			if len(allHeaders) != 0 {
+				t.Errorf("Expected 0 headers after clear, got %d", len(allHeaders))
+			}
+		}},
 	}
 
-	// Test valid cookie
-	cookie := &http.Cookie{
-		Name:  "test",
-		Value: "value",
-	}
-	if err := session.SetCookie(cookie); err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-
-	// Verify cookie was stored
-	stored := session.GetCookie("test")
-	if stored == nil {
-		t.Fatal("Expected cookie to be stored")
-	}
-	if stored.Value != "value" {
-		t.Errorf("Expected value 'value', got %s", stored.Value)
-	}
-}
-
-func TestSessionManager_SetCookies(t *testing.T) {
-	session := newTestSession(t)
-
-	cookies := []*http.Cookie{
-		{Name: "cookie1", Value: "value1"},
-		{Name: "cookie2", Value: "value2"},
-	}
-
-	if err := session.SetCookies(cookies); err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-
-	allCookies := session.GetCookies()
-	if len(allCookies) != 2 {
-		t.Errorf("Expected 2 cookies, got %d", len(allCookies))
-	}
-}
-
-func TestSessionManager_DeleteCookie(t *testing.T) {
-	session := newTestSession(t)
-
-	// Add cookie
-	cookie := &http.Cookie{Name: "test", Value: "value"}
-	_ = session.SetCookie(cookie)
-
-	// Delete it
-	session.DeleteCookie("test")
-
-	// Verify it's gone
-	stored := session.GetCookie("test")
-	if stored != nil {
-		t.Error("Expected cookie to be deleted")
-	}
-}
-
-func TestSessionManager_ClearCookies(t *testing.T) {
-	session := newTestSession(t)
-
-	// Add multiple cookies
-	_ = session.SetCookie(&http.Cookie{Name: "c1", Value: "v1"})
-	_ = session.SetCookie(&http.Cookie{Name: "c2", Value: "v2"})
-
-	// Clear all
-	session.ClearCookies()
-
-	// Verify empty
-	allCookies := session.GetCookies()
-	if len(allCookies) != 0 {
-		t.Errorf("Expected 0 cookies after clear, got %d", len(allCookies))
-	}
-}
-
-func TestSessionManager_SetHeader(t *testing.T) {
-	session := newTestSession(t)
-
-	// Valid header
-	if err := session.SetHeader("X-Custom", "value"); err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-
-	// Invalid header (with CRLF)
-	if err := session.SetHeader("X-Bad", "value\r\nX-Injected: malicious"); err == nil {
-		t.Error("Expected error for header with CRLF")
-	}
-
-	// Oversize key / value are rejected by ValidateHeaderKeyValue limits.
-	if err := session.SetHeader("X-"+strings.Repeat("k", validation.MaxHeaderKeyLen), "value"); err == nil {
-		t.Error("Expected error for oversize header key")
-	}
-	if err := session.SetHeader("X-Key", strings.Repeat("v", validation.MaxValueLen+1)); err == nil {
-		t.Error("Expected error for oversize header value")
-	}
-}
-
-func TestSessionManager_SetHeaders(t *testing.T) {
-	session := newTestSession(t)
-
-	headers := map[string]string{
-		"X-Header-1": "value1",
-		"X-Header-2": "value2",
-	}
-
-	if err := session.SetHeaders(headers); err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-
-	allHeaders := session.GetHeaders()
-	if len(allHeaders) != 2 {
-		t.Errorf("Expected 2 headers, got %d", len(allHeaders))
-	}
-}
-
-func TestSessionManager_DeleteHeader(t *testing.T) {
-	session := newTestSession(t)
-
-	_ = session.SetHeader("X-Test", "value")
-	session.DeleteHeader("X-Test")
-
-	allHeaders := session.GetHeaders()
-	if _, exists := allHeaders["X-Test"]; exists {
-		t.Error("Expected header to be deleted")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.run(t, newTestSession(t))
+		})
 	}
 }
 
@@ -369,19 +462,8 @@ func TestSessionManager_HeaderKeyCasing(t *testing.T) {
 	})
 }
 
-func TestSessionManager_ClearHeaders(t *testing.T) {
-	session := newTestSession(t)
-
-	_ = session.SetHeader("X-Header-1", "value1")
-	_ = session.SetHeader("X-Header-2", "value2")
-
-	session.ClearHeaders()
-
-	allHeaders := session.GetHeaders()
-	if len(allHeaders) != 0 {
-		t.Errorf("Expected 0 headers after clear, got %d", len(allHeaders))
-	}
-}
+// (TestSessionManager_ClearHeaders was folded into
+// TestSessionManager_CRUDOperations/ClearHeaders above.)
 
 func TestSessionManager_prepareOptions(t *testing.T) {
 	session, err := NewSessionManagerDefault()
@@ -455,31 +537,6 @@ func TestSessionManager_UpdateFromResult(t *testing.T) {
 	}
 	if cookie.Value != "server-value" {
 		t.Errorf("Expected value 'server-value', got %s", cookie.Value)
-	}
-}
-
-func TestSessionManager_SecurityValidation_SetCookieSecurity(t *testing.T) {
-	// Test that SetCookieSecurity affects subsequent SetCookie calls
-	session, err := NewSessionManagerDefault()
-	if err != nil {
-		t.Fatalf("NewSessionManager error: %v", err)
-	}
-
-	// Set security config after creation
-	securityConfig := validation.DefaultCookieSecurityConfig()
-	securityConfig.RequireSecure = true
-	session.SetCookieSecurity(securityConfig)
-
-	// This should fail because cookie is not secure
-	insecureCookie := &http.Cookie{
-		Name:   "test",
-		Value:  "value",
-		Secure: false,
-	}
-
-	err = session.SetCookie(insecureCookie)
-	if err == nil {
-		t.Error("Expected error for insecure cookie with RequireSecure=true")
 	}
 }
 
@@ -607,24 +664,36 @@ func TestSessionManager_NilReceiverSafety(t *testing.T) {
 
 // Moved from quality_regression_test.go (dissolved grab-bag file):
 // TestCaptureFromOptionsSkipsInvalidCookies guards the ValidateCookie gate in
-// captureFromOptions: cookies set by raw options that bypass WithCookies
-// validation must not enter the session store.
+// captureFromOptions: cookies extracted from built-in cookie options must pass
+// well-formedness validation before entering the session store.
 func TestCaptureFromOptionsSkipsInvalidCookies(t *testing.T) {
 	sm, err := NewSessionManagerDefault()
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw := RequestOption(func(r *engine.Request) error {
-		r.SetCookies([]http.Cookie{
+
+	// A custom RequestOptionFunc is not statically extractable: capture no
+	// longer executes user options, so its cookies must NOT enter the session.
+	sm.captureFromOptions([]RequestOption{
+		RequestOptionFunc(func(r RequestMutator) error {
+			r.SetCookies([]http.Cookie{{Name: "custom", Value: "x"}})
+			return nil
+		}),
+	})
+	if got := sm.GetCookie("custom"); got != nil {
+		t.Errorf("custom option cookies must not be captured, got %v", got)
+	}
+
+	// A built-in cookie option IS statically extracted, and its invalid cookies
+	// are rejected by the same ValidateCookie gate storeCookies uses.
+	sm.captureFromOptions([]RequestOption{
+		WithCookies([]http.Cookie{
 			{Name: "good", Value: "fine"},
 			{Name: "bad;name", Value: "invalid"}, // control/separator chars in name
-		})
-		return nil
+		}),
 	})
-	sm.captureFromOptions([]RequestOption{raw})
-
 	if got := sm.GetCookie("good"); got == nil {
-		t.Error("valid cookie from option should be captured")
+		t.Error("valid cookie from built-in option should be captured")
 	}
 	if got := sm.GetCookie("bad;name"); got != nil {
 		t.Errorf("invalid cookie should be rejected, got %v", got)

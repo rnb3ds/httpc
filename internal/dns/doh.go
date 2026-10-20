@@ -436,6 +436,8 @@ func (r *DoHResolver) lookupRecordType(ctx context.Context, provider *dohProvide
 		return nil, fmt.Errorf("DoH request failed: %w", err)
 	}
 	defer func() {
+		// Best-effort: bounded drain for keep-alive reuse; Close errors are
+		// unactionable on a body already consumed or rejected.
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxDoHResponseSize))
 		_ = resp.Body.Close()
 	}()
@@ -739,12 +741,14 @@ func getUint16(b []byte) (uint16, error) {
 }
 
 // fallbackLookupTimeout bounds the system-resolver fallback when the caller's
-// context carries no deadline. The DoH providers have already spent up to
-// ~10s (5s HTTP timeout × sequential providers × 2 record types); handing a
+// context carries no deadline. The DoH stage has already spent up to ~15s
+// worst case (sequential providers × the 5s per-request HTTP timeout; the
+// A/AAAA record types are fetched concurrently, not sequentially); handing a
 // deadline-less context to the system resolver can stall the dial far beyond
 // DialTimeout. Mirrors the 10s cap the non-DoH dialer path applies to DNS
 // (connection/pool.go resolveAndValidateAddress) so both resolution paths
-// have consistent worst-case behavior.
+// have consistent worst-case behavior. Note: the DoH stage itself is NOT
+// bounded by Config.DialTimeout — only by the per-request timeout above.
 const fallbackLookupTimeout = 10 * time.Second
 
 // fallbackLookup falls back to system DNS resolver

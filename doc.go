@@ -205,12 +205,14 @@
 //
 // # Request Defaults (RequestDefaults)
 //
-// Per-request defaults — User-Agent, default headers, redirect policy — live on
-// Config.Defaults (RequestDefaults), populated by DefaultConfig():
+// Per-request defaults — User-Agent and default headers — live on
+// Config.Defaults (RequestDefaults), populated by DefaultConfig(). Redirect
+// policy lives on Config.Security (FollowRedirects, MaxRedirects,
+// RedirectWhitelist):
 //
 //	cfg := httpc.DefaultConfig()
 //	cfg.Defaults.UserAgent = "myapp/2.0"
-//	cfg.Defaults.FollowRedirects = false
+//	cfg.Security.FollowRedirects = false
 //	cfg.Defaults.Headers["Authorization"] = "Bearer token"
 //	client, err := httpc.New(cfg)
 //

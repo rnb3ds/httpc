@@ -259,32 +259,91 @@ func TestResponseProcessor_BodySizeExactBoundary(t *testing.T) {
 	}
 }
 
-// TestResponseProcessor_IdentityBodyCappedByResponseBodySize pins the C-1
+// TestResponseProcessor_IdentityBodyCappedByResponseBodySize pins the C-1/C2
 // regression: when both limits are configured (as DefaultConfig always does),
 // an identity (non-compressed) body is capped by MaxResponseBodySize — the
 // larger MaxDecompressedBodySize must not replace it on the buffered path.
+// The cap applies whether the response carries no Content-Encoding header or
+// an explicit "identity" token (RFC 9110 §8.4.1: identity is the absence of
+// compression); before the normalization, the explicit token routed identity
+// responses through the compressed branch and its 100MB cap.
 func TestResponseProcessor_IdentityBodyCappedByResponseBodySize(t *testing.T) {
-	config := &Config{
-		Timeout:                 30 * time.Second,
-		MaxResponseBodySize:     1024,              // the stricter cap
-		MaxDecompressedBodySize: 100 * 1024 * 1024, // DefaultConfig's value
-	}
-	processor := newResponseProcessor(config)
-
-	httpResponse := &http.Response{
-		StatusCode: 200,
-		Header:     http.Header{"Content-Type": []string{"text/plain"}},
-		Body:       io.NopCloser(strings.NewReader(strings.Repeat("A", 2048))),
-		Request:    &http.Request{Method: "GET"},
+	newProcessor := func() *responseProcessor {
+		config := &Config{
+			Timeout:                 30 * time.Second,
+			MaxResponseBodySize:     1024,              // the stricter cap
+			MaxDecompressedBodySize: 100 * 1024 * 1024, // DefaultConfig's value
+		}
+		return newResponseProcessor(config)
 	}
 
-	_, err := processor.Process(httpResponse)
-	if err == nil {
-		t.Fatal("expected identity body over MaxResponseBodySize to fail, got nil")
+	overLimit := func() *http.Response {
+		return &http.Response{
+			StatusCode: 200,
+			Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			Body:       io.NopCloser(strings.NewReader(strings.Repeat("A", 2048))),
+			Request:    &http.Request{Method: "GET"},
+		}
 	}
-	if !strings.Contains(err.Error(), "exceeds limit of 1024") {
-		t.Errorf("want 'exceeds limit of 1024', got: %v", err)
-	}
+
+	t.Run("missing Content-Encoding header", func(t *testing.T) {
+		_, err := newProcessor().Process(overLimit())
+		if err == nil {
+			t.Fatal("expected identity body over MaxResponseBodySize to fail, got nil")
+		}
+		if !strings.Contains(err.Error(), "exceeds limit of 1024") {
+			t.Errorf("want 'exceeds limit of 1024', got: %v", err)
+		}
+	})
+
+	t.Run("explicit identity Content-Encoding", func(t *testing.T) {
+		resp := overLimit()
+		resp.Header = http.Header{
+			"Content-Type":     []string{"text/plain"},
+			"Content-Encoding": []string{"identity"},
+		}
+		_, err := newProcessor().Process(resp)
+		if err == nil {
+			t.Fatal("expected explicit identity body over MaxResponseBodySize to fail, got nil")
+		}
+		if !strings.Contains(err.Error(), "exceeds limit of 1024") {
+			t.Errorf("want 'exceeds limit of 1024', got: %v", err)
+		}
+	})
+
+	t.Run("padded identity token", func(t *testing.T) {
+		resp := overLimit()
+		resp.Header = http.Header{
+			"Content-Type":     []string{"text/plain"},
+			"Content-Encoding": []string{" identity "},
+		}
+		_, err := newProcessor().Process(resp)
+		if err == nil {
+			t.Fatal("expected padded identity body over MaxResponseBodySize to fail, got nil")
+		}
+	})
+
+	t.Run("small identity body still accepted", func(t *testing.T) {
+		// Sanity: normalization must not reject identity outright — bodies
+		// within the limit pass through unchanged.
+		httpResponse := &http.Response{
+			StatusCode: 200,
+			Header: http.Header{
+				"Content-Type":     []string{"text/plain"},
+				"Content-Encoding": []string{"identity"},
+			},
+			Body:    io.NopCloser(strings.NewReader(strings.Repeat("A", 512))),
+			Request: &http.Request{Method: "GET"},
+		}
+		resp, err := newProcessor().Process(httpResponse)
+		if err != nil {
+			t.Fatalf("unexpected error for small identity body: %v", err)
+		}
+		if len(resp.Body()) != 512 {
+			t.Errorf("body length = %d, want 512", len(resp.Body()))
+		}
+		ReleaseResponse(resp)
+	})
 }
 
 // TestResponseProcessor_FastPathSizeLimitMessage pins the fast-path fail-fast
@@ -684,18 +743,6 @@ func TestResponseProcessor_ContentLengthHandling(t *testing.T) {
 			}
 		})
 	}
-}
-
-// countingReadCloser tracks how many times Close is invoked.
-type countingReadCloser struct {
-	inner  io.Reader
-	closes int
-}
-
-func (c *countingReadCloser) Read(p []byte) (int, error) { return c.inner.Read(p) }
-func (c *countingReadCloser) Close() error {
-	c.closes++
-	return nil
 }
 
 // TestStreamBodyReader_CloseIdempotent verifies Close is safe to call twice:

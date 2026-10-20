@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -83,11 +84,11 @@ func TestDetectFromEnvironment(t *testing.T) {
 			wantProxy: "http://secure-proxy.example.com:8443",
 		},
 		{
-			name:      "HTTP_PROXY falls back for HTTPS request",
-			env:       map[string]string{"HTTP_PROXY": "http://fallback.example.com:8080"},
-			reqScheme: "https",
-			reqHost:   "example.com",
-			wantProxy: "http://fallback.example.com:8080",
+			name:       "HTTP_PROXY does not apply to HTTPS requests (net/http semantics)",
+			env:        map[string]string{"HTTP_PROXY": "http://fallback.example.com:8080"},
+			reqScheme:  "https",
+			reqHost:    "example.com",
+			wantDirect: true,
 		},
 		{
 			name:      "lowercase http_proxy detected",
@@ -247,12 +248,15 @@ func TestDetectFromEnvironment_CGIEnvironment(t *testing.T) {
 	}
 }
 
-func TestDetectFromEnvironment_HTTPSProxyFallsBack(t *testing.T) {
+// TestDetectFromEnvironment_NoCrossSchemeFallback pins net/http's
+// scheme-scoped proxy resolution (M10): HTTPS_PROXY never serves plain-HTTP
+// requests, exactly as httpproxy.proxyForURL never falls back across schemes
+// in either direction.
+func TestDetectFromEnvironment_NoCrossSchemeFallback(t *testing.T) {
 	originalEnv := saveAndClearProxyEnv()
 	defer restoreProxyEnv(originalEnv)
 
-	// Only HTTPS_PROXY is set; an HTTP request should still get a proxy
-	// via the fall-back branch.
+	// Only HTTPS_PROXY is set; a plain-HTTP request must direct-connect.
 	_ = os.Setenv("HTTPS_PROXY", "http://https-proxy.example.com:8443")
 
 	d := NewDetector()
@@ -266,11 +270,8 @@ func TestDetectFromEnvironment_HTTPSProxyFallsBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got == nil {
-		t.Fatal("expected non-nil proxy URL for HTTP request with HTTPS_PROXY fall-back")
-	}
-	if got.String() != "http://https-proxy.example.com:8443" {
-		t.Errorf("proxy URL = %s, want http://https-proxy.example.com:8443", got)
+	if got != nil {
+		t.Errorf("HTTP request must direct-connect when only HTTPS_PROXY is set, got proxy %s", got)
 	}
 }
 
@@ -484,6 +485,28 @@ func TestParseProxyURL(t *testing.T) {
 				t.Errorf("URL = %s, want %s", u, tt.wantURL)
 			}
 		})
+	}
+}
+
+// TestParseProxyURL_RedactsCredentialsInErrors pins the M11 regression:
+// url.Parse failures embed the raw URL verbatim (`parse "http://user:pass@…":
+// invalid port …`), and proxy env values frequently carry credentials. The
+// returned error must be redacted — it is stored per-scheme at detection time
+// and reaches callers on every request, where logs capture it.
+func TestParseProxyURL_RedactsCredentialsInErrors(t *testing.T) {
+	const secret = "secretpw"
+	// The bare "user:pass@host:port" env form (no scheme) reaches the
+	// http:// fallback, where a non-numeric port fails url.Parse quoting the
+	// full URL — credentials included — verbatim.
+	_, err := parseProxyURL("user:" + secret + "@proxy:notaport")
+	if err == nil {
+		t.Fatal("expected parse error for non-numeric port")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Errorf("proxy credentials leaked in error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "invalid proxy URL") {
+		t.Errorf("error should name the offending proxy: %v", err)
 	}
 }
 

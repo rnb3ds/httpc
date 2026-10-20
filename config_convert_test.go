@@ -200,8 +200,10 @@ func (driftTestRetryPolicy) MaxRetries() int                                   {
 // assertion here. New fields silently missing from convertToEngineConfig are
 // the top configuration risk this suite guards against.
 //
-// Derived fields (with no 1:1 source field) are asserted against their
-// documented derivation rule so the mapping contract stays explicit:
+// The engine now embeds a connection.Config, so transport/proxy/TLS fields are
+// asserted on engCfg.Connection.<Field> (mapped by buildConnectionSubConfig);
+// engine-only fields stay on engCfg.<Field>. Derived fields (with no 1:1 source
+// field) are asserted against their documented derivation rule:
 //   - KeepAlive: hard-coded defaultKeepAlive (30s) — no public knob
 //   - MaxIdleConnsPerHost: derived from MaxConnsPerHost via calculateIdleConnsPerHost
 //   - MinTLSVersion/MaxTLSVersion: defaulted to TLS 1.2/1.3 when zero
@@ -258,8 +260,8 @@ func TestConvertToEngineConfig_PropagatesAllFields(t *testing.T) {
 
 	cfg.Defaults.UserAgent = "sentinel-ua/9.9"
 	cfg.Defaults.Headers = map[string]string{"X-Sentinel": "v1", "X-Other": "v2"}
-	cfg.Defaults.FollowRedirects = false
-	cfg.Defaults.MaxRedirects = 4
+	cfg.Security.FollowRedirects = false
+	cfg.Security.MaxRedirects = 4
 
 	// SSRFExemptCIDRs must be parsed into parsedCIDRs before conversion.
 	if err := cfg.parseSSRFExemptCIDRs(); err != nil {
@@ -278,31 +280,31 @@ func TestConvertToEngineConfig_PropagatesAllFields(t *testing.T) {
 		want any
 	}{
 		{"Timeouts.Request -> Timeout", engCfg.Timeout, cfg.Timeouts.Request},
-		{"Timeouts.Dial -> DialTimeout", engCfg.DialTimeout, cfg.Timeouts.Dial},
-		{"Timeouts.TLSHandshake", engCfg.TLSHandshakeTimeout, cfg.Timeouts.TLSHandshake},
-		{"Timeouts.ResponseHeader", engCfg.ResponseHeaderTimeout, cfg.Timeouts.ResponseHeader},
-		{"Timeouts.IdleConn", engCfg.IdleConnTimeout, cfg.Timeouts.IdleConn},
+		{"Timeouts.Dial -> Connection.DialTimeout", engCfg.Connection.DialTimeout, cfg.Timeouts.Dial},
+		{"Timeouts.TLSHandshake -> Connection.TLSHandshakeTimeout", engCfg.Connection.TLSHandshakeTimeout, cfg.Timeouts.TLSHandshake},
+		{"Timeouts.ResponseHeader -> Connection.ResponseHeaderTimeout", engCfg.Connection.ResponseHeaderTimeout, cfg.Timeouts.ResponseHeader},
+		{"Timeouts.IdleConn -> Connection.IdleConnTimeout", engCfg.Connection.IdleConnTimeout, cfg.Timeouts.IdleConn},
 
-		{"Connection.MaxIdleConns", engCfg.MaxIdleConns, cfg.Connection.MaxIdleConns},
-		{"Connection.MaxConnsPerHost", engCfg.MaxConnsPerHost, cfg.Connection.MaxConnsPerHost},
-		{"Connection.MaxResponseHeaderBytes", engCfg.MaxResponseHeaderBytes, cfg.Connection.MaxResponseHeaderBytes},
-		{"Connection.ProxyURL", engCfg.ProxyURL, cfg.Connection.ProxyURL},
-		{"Connection.EnableSystemProxy", engCfg.EnableSystemProxy, cfg.Connection.EnableSystemProxy},
-		{"Connection.EnableHTTP2", engCfg.EnableHTTP2, cfg.Connection.EnableHTTP2},
+		{"Connection.MaxIdleConns", engCfg.Connection.MaxIdleConns, cfg.Connection.MaxIdleConns},
+		{"Connection.MaxConnsPerHost", engCfg.Connection.MaxConnsPerHost, cfg.Connection.MaxConnsPerHost},
+		{"Connection.MaxResponseHeaderBytes", engCfg.Connection.MaxResponseHeaderBytes, cfg.Connection.MaxResponseHeaderBytes},
+		{"Connection.ProxyURL", engCfg.Connection.ProxyURL, cfg.Connection.ProxyURL},
+		{"Connection.EnableSystemProxy", engCfg.Connection.EnableSystemProxy, cfg.Connection.EnableSystemProxy},
+		{"Connection.EnableHTTP2", engCfg.Connection.EnableHTTP2, cfg.Connection.EnableHTTP2},
 		{"Connection.EnableCookies", engCfg.EnableCookies, cfg.Connection.EnableCookies},
-		{"Connection.EnableDoH", engCfg.EnableDoH, cfg.Connection.EnableDoH},
-		{"Connection.DoHCacheTTL", engCfg.DoHCacheTTL, cfg.Connection.DoHCacheTTL},
+		{"Connection.EnableDoH", engCfg.Connection.EnableDoH, cfg.Connection.EnableDoH},
+		{"Connection.DoHCacheTTL", engCfg.Connection.DoHCacheTTL, cfg.Connection.DoHCacheTTL},
 
-		{"Security.InsecureSkipVerify", engCfg.InsecureSkipVerify, cfg.Security.InsecureSkipVerify},
+		{"Security.InsecureSkipVerify", engCfg.Connection.InsecureSkipVerify, cfg.Security.InsecureSkipVerify},
 		{"Security.MaxResponseBodySize", engCfg.MaxResponseBodySize, cfg.Security.MaxResponseBodySize},
 		{"Security.MaxRequestBodySize", engCfg.MaxRequestBodySize, cfg.Security.MaxRequestBodySize},
 		{"Security.MaxDecompressedBodySize", engCfg.MaxDecompressedBodySize, cfg.Security.MaxDecompressedBodySize},
 		{"Security.ValidateURL", engCfg.ValidateURL, cfg.Security.ValidateURL},
 		{"Security.ValidateHeaders", engCfg.ValidateHeaders, cfg.Security.ValidateHeaders},
-		{"Security.AllowPrivateIPs", engCfg.AllowPrivateIPs, cfg.Security.AllowPrivateIPs},
+		{"Security.AllowPrivateIPs", engCfg.Connection.AllowPrivateIPs, cfg.Security.AllowPrivateIPs},
 		{"Security.StrictContentLength", engCfg.StrictContentLength, cfg.Security.StrictContentLength},
-		{"Security.MinTLSVersion (explicit)", engCfg.MinTLSVersion, cfg.Security.MinTLSVersion},
-		{"Security.MaxTLSVersion (explicit)", engCfg.MaxTLSVersion, cfg.Security.MaxTLSVersion},
+		{"Security.MinTLSVersion (explicit)", engCfg.Connection.MinTLSVersion, cfg.Security.MinTLSVersion},
+		{"Security.MaxTLSVersion (explicit)", engCfg.Connection.MaxTLSVersion, cfg.Security.MaxTLSVersion},
 
 		{"Retry.MaxRetries", engCfg.MaxRetries, cfg.Retry.MaxRetries},
 		{"Retry.Delay -> RetryDelay", engCfg.RetryDelay, cfg.Retry.Delay},
@@ -311,8 +313,8 @@ func TestConvertToEngineConfig_PropagatesAllFields(t *testing.T) {
 		{"Retry.EnableJitter -> Jitter", engCfg.Jitter, cfg.Retry.EnableJitter},
 
 		{"Middleware.UserAgent", engCfg.UserAgent, cfg.Defaults.UserAgent},
-		{"Middleware.FollowRedirects", engCfg.FollowRedirects, cfg.Defaults.FollowRedirects},
-		{"Middleware.MaxRedirects", engCfg.MaxRedirects, cfg.Defaults.MaxRedirects},
+		{"Security.FollowRedirects", engCfg.FollowRedirects, cfg.Security.FollowRedirects},
+		{"Security.MaxRedirects", engCfg.MaxRedirects, cfg.Security.MaxRedirects},
 	}
 	for _, a := range assertions {
 		if a.got != a.want {
@@ -321,8 +323,8 @@ func TestConvertToEngineConfig_PropagatesAllFields(t *testing.T) {
 	}
 
 	// --- Pointer / interface / map identity (not comparable via the table above) ---
-	if engCfg.TLSConfig != sentinelTLS {
-		t.Errorf("TLSConfig pointer not propagated: got %p, want %p", engCfg.TLSConfig, sentinelTLS)
+	if engCfg.Connection.TLSConfig != sentinelTLS {
+		t.Errorf("TLSConfig pointer not propagated: got %p, want %p", engCfg.Connection.TLSConfig, sentinelTLS)
 	}
 	if engCfg.CertificatePinner != pinner {
 		t.Error("CertificatePinner not propagated (interface identity mismatch)")
@@ -335,18 +337,18 @@ func TestConvertToEngineConfig_PropagatesAllFields(t *testing.T) {
 	}
 
 	// --- Derived fields (documented derivation rules) ---
-	if engCfg.KeepAlive != 30*time.Second {
-		t.Errorf("KeepAlive (hard-coded default): got %v, want 30s", engCfg.KeepAlive)
+	if engCfg.Connection.KeepAlive != 30*time.Second {
+		t.Errorf("KeepAlive (hard-coded default): got %v, want 30s", engCfg.Connection.KeepAlive)
 	}
-	if wantIdle := calculateIdleConnsPerHost(cfg.Connection.MaxConnsPerHost); engCfg.MaxIdleConnsPerHost != wantIdle {
+	if wantIdle := calculateIdleConnsPerHost(cfg.Connection.MaxConnsPerHost); engCfg.Connection.MaxIdleConnsPerHost != wantIdle {
 		t.Errorf("MaxIdleConnsPerHost: got %d, want %d (derived from MaxConnsPerHost=%d)",
-			engCfg.MaxIdleConnsPerHost, wantIdle, cfg.Connection.MaxConnsPerHost)
+			engCfg.Connection.MaxIdleConnsPerHost, wantIdle, cfg.Connection.MaxConnsPerHost)
 	}
-	if engCfg.CookieJar == nil {
+	if engCfg.Connection.CookieJar == nil {
 		t.Error("CookieJar should be non-nil when EnableCookies=true")
 	}
-	if len(engCfg.ExemptNets) != 1 || engCfg.ExemptNets[0].String() != "10.0.0.0/8" {
-		t.Errorf("ExemptNets not parsed from SSRFExemptCIDRs: got %+v", engCfg.ExemptNets)
+	if len(engCfg.Connection.ExemptNets) != 1 || engCfg.Connection.ExemptNets[0].String() != "10.0.0.0/8" {
+		t.Errorf("ExemptNets not parsed from SSRFExemptCIDRs: got %+v", engCfg.Connection.ExemptNets)
 	}
 	if engCfg.RedirectWhitelist == nil {
 		t.Error("RedirectWhitelist should be built when Security.RedirectWhitelist is non-empty")
@@ -364,8 +366,8 @@ func TestConvertToEngineConfig_DerivedDefaults(t *testing.T) {
 		if err != nil {
 			t.Fatalf("convertToEngineConfig: %v", err)
 		}
-		if engCfg.MinTLSVersion != tls.VersionTLS12 || engCfg.MaxTLSVersion != tls.VersionTLS13 {
-			t.Errorf("TLS defaults: got min=%d max=%d, want TLS1.2/TLS1.3", engCfg.MinTLSVersion, engCfg.MaxTLSVersion)
+		if engCfg.Connection.MinTLSVersion != tls.VersionTLS12 || engCfg.Connection.MaxTLSVersion != tls.VersionTLS13 {
+			t.Errorf("TLS defaults: got min=%d max=%d, want TLS1.2/TLS1.3", engCfg.Connection.MinTLSVersion, engCfg.Connection.MaxTLSVersion)
 		}
 	})
 
@@ -387,7 +389,7 @@ func TestConvertToEngineConfig_DerivedDefaults(t *testing.T) {
 		if err != nil {
 			t.Fatalf("convertToEngineConfig: %v", err)
 		}
-		if engCfg.CookieJar != nil {
+		if engCfg.Connection.CookieJar != nil {
 			t.Error("CookieJar should be nil when EnableCookies=false")
 		}
 	})

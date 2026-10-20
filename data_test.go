@@ -150,9 +150,24 @@ func TestData_XML(t *testing.T) {
 // Multipart Form Data
 // ----------------------------------------------------------------------------
 
+// TestData_Multipart is table-driven: each row carries its FormData plus a
+// verify closure asserting (verbatim) what the server must observe. (The four
+// former subtests differed only in form shape and server-side assertions, so
+// the repeated server + client + Post scaffold is shared.)
 func TestData_Multipart(t *testing.T) {
-	t.Run("SingleFile", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	tests := []struct {
+		name   string
+		form   *FormData
+		verify func(t *testing.T, r *http.Request)
+	}{
+		{"SingleFile", &FormData{
+			Files: map[string]*FileData{
+				"file": {
+					Filename: "test.txt",
+					Content:  []byte("test content"),
+				},
+			},
+		}, func(t *testing.T, r *http.Request) {
 			if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 				t.Error("Expected Content-Type: multipart/form-data")
 			}
@@ -167,56 +182,26 @@ func TestData_Multipart(t *testing.T) {
 			if header.Filename != "test.txt" {
 				t.Errorf("Expected filename test.txt, got %s", header.Filename)
 			}
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
-		client, _ := newTestClient()
-		defer func() { _ = client.Close() }()
-
-		formData := &FormData{
+		}},
+		{"MultipleFiles", &FormData{
 			Files: map[string]*FileData{
-				"file": {
-					Filename: "test.txt",
-					Content:  []byte("test content"),
-				},
+				"file1": {Filename: "test1.txt", Content: []byte("content1")},
+				"file2": {Filename: "test2.txt", Content: []byte("content2")},
 			},
-		}
-		_, err := client.Post(server.URL, WithFormData(formData))
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-	})
-
-	t.Run("MultipleFiles", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		}, func(t *testing.T, r *http.Request) {
 			if err := r.ParseMultipartForm(10 << 20); err != nil {
 				t.Errorf("Failed to parse multipart form: %v", err)
 			}
 			if len(r.MultipartForm.File) != 2 {
 				t.Errorf("Expected 2 files, got %d", len(r.MultipartForm.File))
 			}
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
-		client, _ := newTestClient()
-		defer func() { _ = client.Close() }()
-
-		formData := &FormData{
+		}},
+		{"MixedFieldsAndFiles", &FormData{
+			Fields: map[string]string{"field1": "value1"},
 			Files: map[string]*FileData{
-				"file1": {Filename: "test1.txt", Content: []byte("content1")},
-				"file2": {Filename: "test2.txt", Content: []byte("content2")},
+				"file": {Filename: "test.txt", Content: []byte("content")},
 			},
-		}
-		_, err := client.Post(server.URL, WithFormData(formData))
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-	})
-
-	t.Run("MixedFieldsAndFiles", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		}, func(t *testing.T, r *http.Request) {
 			if err := r.ParseMultipartForm(10 << 20); err != nil {
 				t.Errorf("Failed to parse multipart form: %v", err)
 			}
@@ -226,38 +211,8 @@ func TestData_Multipart(t *testing.T) {
 			if len(r.MultipartForm.File) != 1 {
 				t.Errorf("Expected 1 file, got %d", len(r.MultipartForm.File))
 			}
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
-		client, _ := newTestClient()
-		defer func() { _ = client.Close() }()
-
-		formData := &FormData{
-			Fields: map[string]string{"field1": "value1"},
-			Files: map[string]*FileData{
-				"file": {Filename: "test.txt", Content: []byte("content")},
-			},
-		}
-		_, err := client.Post(server.URL, WithFormData(formData))
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-	})
-
-	t.Run("ContentTypes", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if err := r.ParseMultipartForm(10 << 20); err != nil {
-				t.Errorf("Failed to parse multipart form: %v", err)
-			}
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
-		client, _ := newTestClient()
-		defer func() { _ = client.Close() }()
-
-		formData := &FormData{
+		}},
+		{"ContentTypes", &FormData{
 			Files: map[string]*FileData{
 				"image": {
 					Filename:    "test.png",
@@ -270,12 +225,30 @@ func TestData_Multipart(t *testing.T) {
 					ContentType: "application/pdf",
 				},
 			},
-		}
-		_, err := client.Post(server.URL, WithFormData(formData))
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-	})
+		}, func(t *testing.T, r *http.Request) {
+			if err := r.ParseMultipartForm(10 << 20); err != nil {
+				t.Errorf("Failed to parse multipart form: %v", err)
+			}
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				tt.verify(t, r)
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+
+			client, _ := newTestClient()
+			defer func() { _ = client.Close() }()
+
+			_, err := client.Post(server.URL, WithFormData(tt.form))
+			if err != nil {
+				t.Fatalf("Request failed: %v", err)
+			}
+		})
+	}
 }
 
 // ----------------------------------------------------------------------------

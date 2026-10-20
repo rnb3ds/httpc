@@ -34,18 +34,11 @@ type Config struct {
 	ExemptNets         []*net.IPNet
 }
 
-// Request represents a security validation request with method, URL, headers, and body.
-//
-// NOTE: Method and QueryParams are populated by the engine but are currently
-// NOT read by ValidateRequest (validation covers URL, headers, and body size
-// only). They are kept as future extension points for method-specific rules
-// and query-parameter checks.
+// Request represents a security validation request with URL, headers, and body.
 type Request struct {
-	Method      string
-	URL         string
-	Headers     map[string]string
-	QueryParams map[string]any
-	Body        any
+	URL     string
+	Headers map[string]string
+	Body    any
 	// AllowPrivateIPs carries a per-request override of the client's SSRF policy.
 	// A non-nil value overrides the Validator's configured AllowPrivateIPs for this
 	// request only. nil means "use the client-level policy".
@@ -136,16 +129,23 @@ func (v *Validator) validateURL(urlStr string, override *bool) error {
 	if err != nil {
 		return err
 	}
-	if err := v.validateHost(parsedURL.Host, override); err != nil {
+	// Hostname() (no port, no IPv6 brackets) rather than Host: for a portless
+	// IPv6 literal, Host keeps its brackets ("[::1]"), which every host check
+	// in ValidateSSRFHost would miss. This mirrors the redirect path, which
+	// already passes targetURL.Hostname().
+	if err := v.validateHost(parsedURL.Hostname(), override); err != nil {
 		return err
 	}
 
 	// Only cache the result when it is stable for this client: no per-request
-	// override, and no embedded credentials. The cache is keyed by the raw urlStr,
-	// so a URL carrying userinfo (user:pass@host) would persist those credentials
-	// in the validatedURLs map and urlKeys slice; validation depends only on the
-	// host, so credentialed URLs are simply revalidated on each call instead.
-	if override != nil || parsedURL.User != nil {
+	// override, and no embedded credentials or sensitive query parameters. The
+	// cache is keyed by the raw urlStr, so a URL carrying userinfo
+	// (user:pass@host) or a sensitive query (?token=…) would persist those
+	// values in the validatedURLs map and urlKeys slice; validation depends
+	// only on the host, so such URLs are simply revalidated on each call
+	// instead (same treatment userinfo already received).
+	if override != nil || parsedURL.User != nil ||
+		(parsedURL.RawQuery != "" && validation.HasSensitiveQueryParams(parsedURL.RawQuery)) {
 		return nil
 	}
 
@@ -275,14 +275,18 @@ func (v *Validator) validateRequestBodySize(body any) error {
 			// Account for: field key + value + Content-Disposition overhead (~60 bytes per field).
 			size += int64(len(k)) + int64(len(v)) + 60
 		}
-		for _, f := range b.Files {
+		for name, f := range b.Files {
+			if f == nil {
+				return fmt.Errorf("multipart file %q has nil FileData", name)
+			}
 			// Account for: filename + content + MIME headers (~120 bytes per file part).
 			size += int64(len(f.Filename)) + int64(len(f.Content)) + 120
 		}
 	default:
-		// For io.Reader and other types, caller is responsible for size control.
-		// Use io.LimitReader to cap untrusted io.Reader sources:
-		//   limited := io.LimitReader(untrustedReader, maxBytes)
+		// io.Reader and other unknown types cannot be sized here without
+		// consuming them. The limit does not fail open: the engine wraps raw
+		// readers in a counting bodyLimitReader (internal/engine/request.go)
+		// that aborts the transfer once the limit is crossed at send time.
 		return nil
 	}
 

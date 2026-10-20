@@ -282,7 +282,7 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 		// 200 instead of 206: no range support. Truncating the existing
 		// partial file would silently destroy data the user intended to
 		// resume, so fail and leave it untouched.
-		_, _ = io.Copy(io.Discard, io.LimitReader(df.bodyReader, maxDrainBodySize))
+		drainBody(df.bodyReader)
 		return nil, fmt.Errorf("server does not support range requests (status %d); cannot resume download", df.statusCode)
 	}
 
@@ -291,7 +291,7 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	// appended after the existing prefix, silently corrupting the file.
 	if resumed {
 		if err := validateResumeContentRange(df.responseHeaders, resumeOffset); err != nil {
-			_, _ = io.Copy(io.Discard, io.LimitReader(df.bodyReader, maxDrainBodySize))
+			drainBody(df.bodyReader)
 			return nil, err
 		}
 	}
@@ -395,17 +395,24 @@ func extractDownloadFields(engResp *engine.Response) downloadFields {
 	return df
 }
 
+// drainBody reads and discards up to maxDrainBodySize bytes so an unused
+// response body does not kill connection reuse. Best-effort by design —
+// single definition for the four drain sites in the download path.
+func drainBody(r io.Reader) {
+	if r == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(r, maxDrainBodySize)) // best-effort drain for connection reuse
+}
+
 // handleDownloadStatus validates the HTTP response status for a download request.
 // Returns an error for 416 Range Not Satisfiable (with body drained),
 // an error for unexpected status codes (with body drained),
 // or nil for 200 OK / 206 Partial Content (body left intact for caller).
 func handleDownloadStatus(statusCode int, bodyReader io.Reader, resumeOffset int64) error {
 	if resumeOffset > 0 && statusCode == http.StatusRequestedRangeNotSatisfiable {
-		// Drain body for connection reuse
-		if bodyReader != nil {
-			_, _ = io.Copy(io.Discard, io.LimitReader(bodyReader, maxDrainBodySize))
-		}
-		return fmt.Errorf("server cannot satisfy range request (416)")
+		drainBody(bodyReader)
+		return fmt.Errorf("server cannot satisfy range request (416): local file already has %d bytes — the remote file may be smaller or unchanged; delete the local file or use Overwrite to restart", resumeOffset)
 	}
 
 	if statusCode != http.StatusOK && statusCode != http.StatusPartialContent {
@@ -421,7 +428,7 @@ func handleDownloadStatus(statusCode int, bodyReader io.Reader, resumeOffset int
 					bodyPreview = bodyPreview[:200] + "..."
 				}
 			}
-			_, _ = io.Copy(io.Discard, io.LimitReader(bodyReader, maxDrainBodySize))
+			drainBody(bodyReader)
 		}
 		if bodyPreview != "" {
 			return fmt.Errorf("unexpected status code: %d: %s", statusCode, bodyPreview)
@@ -480,8 +487,36 @@ func writeDownloadBody(p downloadWriteParams) (*DownloadResult, error) {
 	contentLength, downloadStart, responseCookies := p.contentLength, p.downloadStart, p.responseCookies
 	// Validate checksum algorithm BEFORE touching the destination file.
 	// A configuration error must not truncate (O_TRUNC) an existing file.
-	if opts.Checksum != "" && opts.ChecksumAlgorithm != ChecksumSHA256 && opts.ChecksumAlgorithm != "" {
+	// Unconditional in Checksum: a typo'd algorithm with no Checksum set
+	// previously passed silently, leaving the caller believing a checksum
+	// would be verified.
+	if opts.ChecksumAlgorithm != "" && opts.ChecksumAlgorithm != ChecksumSHA256 {
 		return nil, fmt.Errorf("unsupported checksum algorithm: %s", opts.ChecksumAlgorithm)
+	}
+
+	// Seed the checksum BEFORE opening the destination for writing: an error
+	// while hashing the resume prefix must not leak the destination's append
+	// handle (which locks the file on Windows until the GC finalizer runs).
+	var hasher hash.Hash
+	if opts.Checksum != "" {
+		// Algorithm already validated above; both SHA-256 and the empty
+		// default map to SHA-256.
+		hasher = sha256.New()
+		// When resuming, seed the hasher with the already-downloaded prefix so
+		// the final sum covers the complete file — opts.Checksum is by
+		// convention the hash of the whole content, while the response body
+		// only carries the bytes after resumeOffset.
+		if resumed {
+			prefix, openErr := os.Open(filePath)
+			if openErr != nil {
+				return nil, fmt.Errorf("failed to open existing file for checksum: %w", openErr)
+			}
+			_, hashErr := io.Copy(hasher, prefix)
+			_ = prefix.Close() // best-effort; read-only handle
+			if hashErr != nil {
+				return nil, fmt.Errorf("failed to hash existing file prefix: %w", hashErr)
+			}
+		}
 	}
 
 	// Non-resumed writes target the temp sibling; the final rename happens
@@ -505,26 +540,7 @@ func writeDownloadBody(p downloadWriteParams) (*DownloadResult, error) {
 	// Stream body directly from network to file — no full-body buffering.
 	// When checksum verification is requested, hash the data as it passes through.
 	var writer io.Writer = file
-	var hasher hash.Hash
-	if opts.Checksum != "" {
-		// Algorithm already validated above; both SHA-256 and the empty
-		// default map to SHA-256.
-		hasher = sha256.New()
-		// When resuming, seed the hasher with the already-downloaded prefix so
-		// the final sum covers the complete file — opts.Checksum is by
-		// convention the hash of the whole content, while the response body
-		// only carries the bytes after resumeOffset.
-		if resumed {
-			prefix, openErr := os.Open(filePath)
-			if openErr != nil {
-				return nil, fmt.Errorf("failed to open existing file for checksum: %w", openErr)
-			}
-			_, hashErr := io.Copy(hasher, prefix)
-			_ = prefix.Close() // best-effort; read-only handle
-			if hashErr != nil {
-				return nil, fmt.Errorf("failed to hash existing file prefix: %w", hashErr)
-			}
-		}
+	if hasher != nil {
 		writer = io.MultiWriter(file, hasher)
 	}
 	if opts.ProgressCallback != nil {
