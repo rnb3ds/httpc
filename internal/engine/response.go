@@ -277,8 +277,16 @@ func (p *responseProcessor) Process(httpResp *http.Response) (*Response, error) 
 	// response. The encoding string is passed to readBody so it doesn't
 	// need to repeat this lookup.
 	encoding := ""
-	if vals := httpResp.Header[hdrContentEncoding]; len(vals) > 0 && vals[0] != "" {
-		encoding = vals[0]
+	if vals := httpResp.Header[hdrContentEncoding]; len(vals) > 0 {
+		// RFC 9110 §8.4.1: "identity" is the absence of compression. Normalize
+		// it here so readBody, the size limits and the StrictContentLength
+		// check treat an explicit identity exactly like a missing header —
+		// otherwise an identity response would be capped by the much larger
+		// MaxDecompressedBodySize and skip strict length validation. The
+		// streaming path (executeRequest) applies the same rule.
+		if v := strings.TrimSpace(vals[0]); v != "" && !strings.EqualFold(v, "identity") {
+			encoding = v
+		}
 	}
 	wasCompressed := encoding != ""
 
@@ -339,6 +347,20 @@ func (p *responseProcessor) Process(httpResp *http.Response) (*Response, error) 
 // SECURITY: Implements protection against decompression bomb attacks.
 func (p *responseProcessor) readBody(httpResp *http.Response, encoding string) ([]byte, error) {
 	if httpResp.Body == nil {
+		return nil, nil
+	}
+
+	// A known-empty body is a zero-allocation exit. net/http sets Body to the
+	// http.NoBody sentinel for a Content-Length: 0 (or otherwise bodyless)
+	// response; its Read returns (0, io.EOF) immediately and never produces a
+	// byte. Checking the sentinel (rather than ContentLength alone) keeps the
+	// fast path exact: unit tests construct http.Response values with a plain
+	// io.NopCloser(strings.NewReader(...)) Body whose ContentLength defaults to
+	// 0 but whose bytes must still be read, and such readers are not NoBody.
+	// Compressed responses are excluded even when Body == NoBody, because the
+	// decompressor path reports a Content-Length: 0 + Content-Encoding mismatch
+	// as an error rather than silently yielding an empty body.
+	if httpResp.Body == http.NoBody && encoding == "" {
 		return nil, nil
 	}
 
@@ -429,14 +451,15 @@ func (p *responseProcessor) readBody(httpResp *http.Response, encoding string) (
 		if err != nil {
 			// A declared Content-Length with zero bytes read is legitimate for
 			// HEAD responses (net/http returns EOF immediately without a body);
-			// those keep the historical empty-body result. Any other EOF —
-			// partial data (io.ErrUnexpectedEOF) or EOF on the first read of a
-			// non-HEAD request — means the server truncated the body, which
-			// must surface as an error instead of a short but "successful"
-			// response. Process's strict content-length check is a second line
-			// of defense, but it is disabled by StrictContentLength=false
-			// (e.g. PerformanceConfig), which previously let truncated bodies
-			// pass silently on this path while the slow path (io.Copy) errored.
+			// those keep the historical empty-body result. Through the REAL
+			// transport that is the only producer of (EOF, 0) — truncation on
+			// a non-HEAD body surfaces as io.ErrUnexpectedEOF from ReadFull
+			// and errors below. A synthetic http.Response (custom
+			// RoundTripper) declaring Content-Length > 0 with an empty body
+			// also lands on (EOF, 0) and is accepted as an empty body; the
+			// method is not plumbed in here, and Process's strict
+			// content-length check remains the second line of defense (off
+			// under StrictContentLength=false, e.g. PerformanceConfig).
 			if err != io.EOF || n != 0 {
 				// Return the bare error: Process wraps every readBody error
 				// with "failed to read response body: %w" — repeating that
@@ -460,11 +483,7 @@ func (p *responseProcessor) readBody(httpResp *http.Response, encoding string) (
 	// used (io.CopyBuffer also prefers ReadFrom over its buffer argument),
 	// which is why none is fetched.
 	buf := getBuffer()
-	defer func() {
-		if buf.Cap() <= maxBufferSize {
-			putBuffer(buf)
-		}
-	}()
+	defer putBuffer(buf) // putBuffer itself discards oversized buffers
 
 	_, err := io.Copy(buf, reader)
 	if err != nil {
@@ -539,6 +558,9 @@ func (p *responseProcessor) createDecompressor(reader io.Reader, encoding string
 				if err := resetter.Reset(reader, nil); err != nil {
 					// SECURITY: Reset failed - close and discard the reader instead of returning to pool.
 					// A reader in error state may cause issues for subsequent users.
+					// (Deliberate fallback rather than an error, unlike the
+					// gzip branch: pinned by TestCreateDecompressor_PooledResetPaths
+					// with an injected failing Resetter.)
 					_ = pooled.Close()
 					return flate.NewReader(reader), nil
 				}
@@ -658,7 +680,7 @@ func ReleaseResponse(r *Response) {
 	r.bodyMu.RUnlock()
 
 	if rawBodyReader != nil {
-		_ = rawBodyReader.Close()
+		_ = rawBodyReader.Close() // best-effort: close errors are unactionable at release time
 	}
 	if cancelFunc != nil {
 		cancelFunc()

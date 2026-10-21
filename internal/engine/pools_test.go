@@ -7,6 +7,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -505,4 +506,262 @@ func TestPoolHelpers_EdgeCases(t *testing.T) {
 
 	// getMIMEHeader get->populate->put->get-cleared is asserted by the
 	// dedicated TestGetMIMEHeader_ReuseAndClear above.
+}
+
+// TestPooledReaders_ConcurrentClose moved to pooled_readers_test.go with the
+// other pooled reader/wrapper release-discipline coverage.
+
+// ============================================================================
+// URL / QUERY-FORMATTING HELPERS
+// (moved from coverage_test.go during its dissolution — same subject area)
+// ============================================================================
+
+// TestCloneURL validates deep copying of URL structures.
+func TestCloneURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"Nil input", "", ""},
+		{"URL with user stripped", "https://user:pass@example.com/path?q=1#frag", "https://example.com/path?q=1#frag"},
+		{"URL without user", "https://example.com/path", "https://example.com/path"},
+		{"URL with query and fragment", "https://example.com/search?q=golang#results", "https://example.com/search?q=golang#results"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.input == "" {
+				result := cloneURL(nil)
+				if result != nil {
+					t.Error("cloneURL(nil) should return nil")
+				}
+				return
+			}
+
+			parsed, err := url.Parse(tt.input)
+			if err != nil {
+				t.Fatalf("Failed to parse URL: %v", err)
+			}
+
+			cloned := cloneURL(parsed)
+
+			if cloned.String() != tt.expected {
+				t.Errorf("Clone String() = %q, want %q", cloned.String(), tt.expected)
+			}
+
+			// Verify credentials are stripped
+			if cloned.User != nil {
+				t.Error("cloneURL should not preserve credentials (User field)")
+			}
+
+			// Verify independence: modify clone should not affect original
+			cloned.Path = "/modified"
+			if parsed.Path == "/modified" {
+				t.Error("Modifying clone affected original")
+			}
+		})
+	}
+}
+
+// TestEscapeQuotes validates backslash and quote escaping per RFC 7578.
+func TestEscapeQuotes(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"No escaping needed", "hello", "hello"},
+		{"Double quotes", `say "hello"`, `say \"hello\"`},
+		{"Backslashes", `path\to\file`, `path\\to\\file`},
+		{"Mixed escapes", `mix\"ed`, `mix\\\"ed`},
+		{"Empty string", "", ""},
+		{"Only backslash", `\`, `\\`},
+		{"Only quote", `"`, `\"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := escapeQuotes(tt.input)
+			if result != tt.expected {
+				t.Errorf("escapeQuotes(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestFormatQueryParam validates type-specific formatting of query parameter values.
+func TestFormatQueryParam(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    any
+		expected string
+	}{
+		{"Nil", nil, ""},
+		{"String", "hello", "hello"},
+		{"Int", 42, "42"},
+		{"Int64", int64(100), "100"},
+		{"Int32", int32(7), "7"},
+		{"Uint", uint(5), "5"},
+		{"Uint64", uint64(200), "200"},
+		{"Uint32", uint32(15), "15"},
+		{"Float64", float64(3.14), "3.14"},
+		{"Float32", float32(2.5), "2.5"},
+		{"Bool true", true, "true"},
+		{"Bool false", false, "false"},
+		{"Other type", []int{1, 2, 3}, "[1 2 3]"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := FormatQueryParam(tt.input)
+			if result != tt.expected {
+				t.Errorf("FormatQueryParam(%v) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestAppendQueryEscape_LargeInput validates the large input fast path.
+func TestAppendQueryEscape_LargeInput(t *testing.T) {
+	// Create a string larger than maxQueryEscapeSize with no special chars
+	largeInput := strings.Repeat("a", maxQueryEscapeSize+1)
+
+	var b strings.Builder
+	AppendQueryEscape(&b, largeInput)
+	if b.String() != largeInput {
+		t.Error("Expected identity for large string without special chars")
+	}
+
+	// Large string with special char near the beginning to trigger escaping
+	largeWithSpecial := "hello world" + strings.Repeat("a", maxQueryEscapeSize)
+	b.Reset()
+	AppendQueryEscape(&b, largeWithSpecial)
+	// url.QueryEscape encodes space as +
+	result := b.String()
+	if !strings.Contains(result, "+") && !strings.Contains(result, "%20") {
+		t.Errorf("Expected space encoding in large string, got %q", result[:min(50, len(result))])
+	}
+}
+
+// ============================================================================
+// POOL LIFECYCLE / GET MECHANICS
+// (moved from coverage_test.go during its dissolution)
+// ============================================================================
+
+// TestClearResponsePools validates that clearResponsePools does not panic.
+func TestClearResponsePools(t *testing.T) {
+	clearResponsePools()
+
+	// Verify pools still work after clearing
+	buf := getBuffer()
+	if buf == nil {
+		t.Error("getBuffer returned nil after clearResponsePools")
+	}
+	putBuffer(buf)
+}
+
+// testBufferPoolLifecycle exercises the get/write/put/nil/oversize cycle for
+// a *bytes.Buffer-based sync.Pool. Collapses the identical three-subtest
+// pattern previously duplicated across multipart and JSON buffer pools.
+func testBufferPoolLifecycle(t *testing.T, get func() *bytes.Buffer, put func(*bytes.Buffer), maxSize int) {
+	t.Helper()
+
+	t.Run("get and put", func(t *testing.T) {
+		buf := get()
+		if buf == nil {
+			t.Fatal("get returned nil")
+		}
+		buf.WriteString("test data")
+		put(buf)
+	})
+
+	t.Run("put nil", func(t *testing.T) {
+		put(nil) // should not panic
+	})
+
+	t.Run("oversize discarded", func(t *testing.T) {
+		buf := get()
+		buf.Grow(maxSize + 1)
+		put(buf) // should be discarded, not pooled
+	})
+}
+
+// TestPoolLifecycle validates get/put/nil/oversize behavior for all internal
+// pools via a single table-driven entry point, replacing three previously
+// duplicated test functions.
+func TestPoolLifecycle(t *testing.T) {
+	t.Run("MultipartBuffer", func(t *testing.T) {
+		testBufferPoolLifecycle(t, getMultipartBuffer, putMultipartBuffer, maxMultipartBufferSize)
+	})
+	t.Run("JSONBuffer", func(t *testing.T) {
+		testBufferPoolLifecycle(t, getJSONBuffer, putJSONBuffer, maxJSONBufferSize)
+	})
+	// The MIMEHeader subtests were removed with the pool itself: Build's
+	// multipart encoding now writes part headers directly into the pooled
+	// buffer (see TestMultipartWireParity above).
+}
+
+// TestGetBuffer validates buffer pool get/put behavior.
+func TestGetBuffer(t *testing.T) {
+	buf := getBuffer()
+	if buf == nil {
+		t.Fatal("getBuffer returned nil")
+	}
+	buf.WriteString("test data")
+	putBuffer(buf)
+
+	// Get again should return a reset buffer
+	buf2 := getBuffer()
+	if buf2.Len() != 0 {
+		t.Error("Expected empty buffer from pool")
+	}
+	putBuffer(buf2)
+}
+
+// TestPoolGet_TypeAssertionFallback exercises the defensive fallback branch in
+// each pool's Get wrapper: when sync.Pool returns a value of the wrong type
+// (which can happen if the pool is corrupted), the wrapper must return a fresh
+// zero-value instead of panicking.
+func TestPoolGet_TypeAssertionFallback(t *testing.T) {
+	t.Run("getHeadersMap", func(t *testing.T) {
+		headersMapPool.Put("wrong type") //nolint:staticcheck // intentional wrong-type poisoning // poison the pool
+		m := getHeadersMap()
+		if m == nil {
+			t.Fatal("expected non-nil map from fallback")
+		}
+		if len(m) != 0 {
+			t.Errorf("expected empty map, got %d entries", len(m))
+		}
+	})
+
+	t.Run("getQueryParamsMap", func(t *testing.T) {
+		queryParamsPool.Put(new(int)) // poison with a different wrong type (pointer-like to satisfy SA6002)
+		m := getQueryParamsMap()
+		if m == nil {
+			t.Fatal("expected non-nil map from fallback")
+		}
+		if len(m) != 0 {
+			t.Errorf("expected empty map, got %d entries", len(m))
+		}
+	})
+
+	t.Run("getQueryParamsMap typed-nil map", func(t *testing.T) {
+		// A typed-nil map passes the type assertion (ok=true) but must still
+		// hit the fresh-map fallback.
+		queryParamsPool.Put(map[string]any(nil))
+		m := getQueryParamsMap()
+		if m == nil {
+			t.Fatal("expected fresh map for typed-nil pooled value")
+		}
+	})
+
+	t.Run("requestPool get", func(t *testing.T) {
+		rp := newRequestPool()
+		rp.pool.Put(new(int)) // poison the pool with a wrong pointer-like type
+		req := rp.get()
+		if req == nil {
+			t.Fatal("expected non-nil Request from fallback")
+		}
+	})
 }

@@ -146,28 +146,28 @@ func TestIntegration_RESTfulAPI(t *testing.T) {
 			t.Errorf("Expected status 204, got %d", resp.StatusCode())
 		}
 	})
-}
 
-func TestIntegration_UnauthorizedAccess(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") == "" {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
+	// Formerly the standalone TestIntegration_UnauthorizedAccess (folded here:
+	// a single 401 assertion belongs with the other REST scenarios). It uses
+	// its own server because the users handler above does not gate on auth.
+	t.Run("Unauthorized Access", func(t *testing.T) {
+		authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") == "" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer authServer.Close()
+
+		resp, err := client.Get(authServer.URL)
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
 		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	client, _ := newTestClient()
-	defer func() { _ = client.Close() }()
-
-	resp, err := client.Get(server.URL)
-	if err != nil {
-		t.Fatalf("Request failed: %v", err)
-	}
-	if resp.StatusCode() != http.StatusUnauthorized {
-		t.Errorf("Expected status 401 without auth, got %d", resp.StatusCode())
-	}
+		if resp.StatusCode() != http.StatusUnauthorized {
+			t.Errorf("Expected status 401 without auth, got %d", resp.StatusCode())
+		}
+	})
 }
 
 // TestIntegration_QueryParameterVariations was removed: its four subtests
@@ -179,4 +179,4 @@ func TestIntegration_UnauthorizedAccess(t *testing.T) {
 // success-rate thresholds (flaky on slow CI), the latter asserted GC-timing
 // heap growth via runtime.MemStats — not library behavior. Concurrent client
 // safety is asserted (with error checks) by TestClient_Concurrency
-// (client_test.go) and internal/concurrency.
+// (client_test.go) and the concurrent-safety suite in concurrency_test.go.

@@ -33,6 +33,15 @@ func newRetryEngine(config *Config) *retryEngine {
 	}
 }
 
+// responseDelayPolicy is the optional capability a types.RetryPolicy may
+// implement to derive the backoff delay from the triggering response (e.g.
+// the built-in engine policy's Retry-After support). Declared as a separate
+// interface so custom policies can opt in without the engine asserting its
+// concrete *retryEngine type.
+type responseDelayPolicy interface {
+	GetDelayWithResponse(attempt int, resp *Response) time.Duration
+}
+
 // ShouldRetry implements types.RetryPolicy interface.
 func (r *retryEngine) ShouldRetry(resp types.ResponseReader, err error, attempt int) bool {
 	if err != nil {
@@ -52,6 +61,10 @@ func (r *retryEngine) GetDelay(attempt int) time.Duration {
 
 // GetDelayWithResponse returns the delay for the given attempt, considering response headers.
 // It first checks for Retry-After header, then falls back to exponential backoff.
+//
+// Priority note: Retry-After (capped at 60s by parseRetryAfterHeader) takes
+// precedence over MaxRetryDelay — an explicit server instruction outranks the
+// local cap. Only the exponential fallback is clamped by MaxRetryDelay.
 func (r *retryEngine) GetDelayWithResponse(attempt int, resp *Response) time.Duration {
 	// Check Retry-After header first
 	if resp != nil {
@@ -66,6 +79,11 @@ func (r *retryEngine) GetDelayWithResponse(attempt int, resp *Response) time.Dur
 // parseRetryAfterHeader parses the Retry-After header and returns the delay duration.
 // Returns 0 if the header is not present or cannot be parsed.
 // Supports both delta-seconds and HTTP-date formats per RFC 7231.
+// Note: "Retry-After: 0" (retry immediately, legal per RFC 7231) is treated
+// as absent — a 0 return falls back to the exponential backoff, so the
+// effective delay is the configured initial Delay rather than zero. Changing
+// this would alter retry pacing for servers that send the header; treated as
+// a deliberate contract here.
 // SECURITY: The delay is capped at maxRetryAfterDelay (60s) to prevent a malicious
 // server from causing indefinite waits via unreasonably large Retry-After values.
 func parseRetryAfterHeader(headers http.Header) time.Duration {

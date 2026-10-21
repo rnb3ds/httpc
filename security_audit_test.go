@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/cybergodev/httpc/internal/engine"
 )
 
 // ============================================================================
@@ -48,7 +46,7 @@ func Test_SSRF_RedirectProtection(t *testing.T) {
 	// Create a new config that disallows private IPs for redirect testing
 	cfg := DefaultConfig()
 	cfg.Security.AllowPrivateIPs = false
-	cfg.Defaults.FollowRedirects = true
+	cfg.Security.FollowRedirects = true
 
 	client, err := New(cfg)
 	if err != nil {
@@ -260,9 +258,9 @@ func TestPanicSafety(t *testing.T) {
 			}
 			defer func() { _ = client.Close() }()
 			// Apply a failing RequestOption and verify the error propagates.
-			_, err = client.Get(server.URL, func(r *engine.Request) error {
+			_, err = client.Get(server.URL, RequestOptionFunc(func(r RequestMutator) error {
 				return fmt.Errorf("test option error")
-			})
+			}))
 			if err == nil {
 				t.Error("Expected failing RequestOption to surface as a request error")
 			}
@@ -327,8 +325,8 @@ func TestPanicSafety(t *testing.T) {
 			}
 		}},
 		// SEC-003: a panicking RequestOption must not crash DomainClient —
-		// the session-capture pass applies user options before the
-		// request-path safety net is installed, so it needs its own guard.
+		// options run once on the real request path, whose default panic
+		// safety net converts the panic to an error.
 		{"DomainClientPanicOption", func() {
 			dc, err := NewDomain(server.URL, testConfig())
 			if err != nil {
@@ -336,10 +334,42 @@ func TestPanicSafety(t *testing.T) {
 			}
 			defer func() { _ = dc.Close() }()
 			_, err = dc.Get("/",
-				func(r *engine.Request) error { panic("option panic during session capture") },
+				RequestOptionFunc(func(r RequestMutator) error { panic("option panic") }),
 			)
 			if err == nil {
 				t.Error("Expected error from panicking option in DomainClient")
+			}
+		}},
+		// SEC-003: user callbacks (WithOnRequest/WithOnResponse) run inside the
+		// engine's execution path, so the default safety net must convert a
+		// panicking callback into an error. onRequest fires pre-Build and
+		// onResponse post-response — both phases are locked in here.
+		{"OnRequestCallbackPanicDefaultNet", func() {
+			cfg := testConfig()
+			client, err := New(cfg)
+			if err != nil {
+				return
+			}
+			defer func() { _ = client.Close() }()
+			_, err = client.Get(server.URL,
+				WithOnRequest(func(RequestMutator) error { panic("callback panic before send") }),
+			)
+			if err == nil {
+				t.Error("Expected error from panicking OnRequest callback")
+			}
+		}},
+		{"OnResponseCallbackPanicDefaultNet", func() {
+			cfg := testConfig()
+			client, err := New(cfg)
+			if err != nil {
+				return
+			}
+			defer func() { _ = client.Close() }()
+			_, err = client.Get(server.URL,
+				WithOnResponse(func(ResponseMutator) error { panic("callback panic after response") }),
+			)
+			if err == nil {
+				t.Error("Expected error from panicking OnResponse callback")
 			}
 		}},
 	}
@@ -432,7 +462,7 @@ func Test_WithAllowPrivateIPs_FalseReEnablesProtection(t *testing.T) {
 func Test_WithAllowPrivateIPs_RedirectOverride(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Security.AllowPrivateIPs = false // SSRF protection enabled
-	cfg.Defaults.FollowRedirects = true
+	cfg.Security.FollowRedirects = true
 
 	client, err := New(cfg)
 	if err != nil {
@@ -509,5 +539,80 @@ func Test_SSRF_BypassAttempts(t *testing.T) {
 				t.Errorf("SECURITY ISSUE: Expected SSRF block for %q", tt.url)
 			}
 		})
+	}
+}
+
+// ============================================================================
+// SEC-001 m-3: Security.SensitiveHeaders — custom credential headers must be
+// stripped on cross-origin redirects (CWE-525)
+// ============================================================================
+
+// Test_SensitiveHeaders_StrippedOnCrossOriginRedirect runs a real redirect
+// between two httptest servers (different ports = different origins) and
+// verifies a header configured via Security.SensitiveHeaders is not forwarded
+// to the redirect target, while a non-sensitive header still is. The entry is
+// deliberately lowercase to prove canonicalization end to end.
+func Test_SensitiveHeaders_StrippedOnCrossOriginRedirect(t *testing.T) {
+	var targetHeaders http.Header
+
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHeaders = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/sink", http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	cfg := DefaultConfig()
+	cfg.Security.AllowPrivateIPs = true // httptest binds to 127.0.0.1
+	cfg.Security.SensitiveHeaders = []string{"x-secret-key"}
+
+	client, err := New(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	result, err := client.Get(redirector.URL, WithTimeout(10*time.Second),
+		WithHeader("X-Secret-Key", "k-123"),
+		WithHeader("X-Harmless", "v-1"),
+		WithBearerToken("bearer-should-strip"))
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	if result.StatusCode() != http.StatusOK {
+		t.Fatalf("Expected status 200 after redirect, got %d", result.StatusCode())
+	}
+	if targetHeaders == nil {
+		t.Fatal("Redirect target was never reached")
+	}
+
+	if v := targetHeaders.Get("X-Secret-Key"); v != "" {
+		t.Errorf("SECURITY ISSUE: configured sensitive header leaked to cross-origin target: X-Secret-Key=%q", v)
+	}
+	if v := targetHeaders.Get("Authorization"); v != "" {
+		t.Errorf("SECURITY ISSUE: built-in sensitive header leaked to cross-origin target: Authorization=%q", v)
+	}
+	if v := targetHeaders.Get("X-Harmless"); v != "v-1" {
+		t.Errorf("Non-sensitive header should survive the redirect, got %q", v)
+	}
+}
+
+// Test_SensitiveHeaders_Validation: header-name rules apply to config entries.
+func Test_SensitiveHeaders_Validation(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Security.SensitiveHeaders = []string{"X-Secret-Key", "x-Another"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid entries rejected: %v", err)
+	}
+
+	for _, bad := range []string{"", "Bad Header", "Bad\nHeader"} {
+		cfg.Security.SensitiveHeaders = []string{bad}
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("invalid entry %q accepted", bad)
+		}
 	}
 }

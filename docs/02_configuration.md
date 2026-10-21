@@ -59,8 +59,10 @@ Retry:
 
 Defaults (Request Defaults):
 - Defaults.UserAgent: "httpc/1.0"
-- Defaults.FollowRedirects: true
-- Defaults.MaxRedirects: 10
+
+Redirect policy (Security):
+- Security.FollowRedirects: true
+- Security.MaxRedirects: 10
 
 ## Security Presets
 
@@ -130,8 +132,8 @@ client, err := httpc.New(httpc.DefaultConfig())
 - Security.MaxResponseBodySize: 10 MB
 - Security.AllowPrivateIPs: false
 - Connection.EnableHTTP2: true
-- Defaults.FollowRedirects: true
-- Defaults.MaxRedirects: 10
+- Security.FollowRedirects: true
+- Security.MaxRedirects: 10
 - Connection.EnableCookies: false
 
 **Use Cases:**
@@ -208,7 +210,7 @@ defer client.Close()
 - Retry.Delay: 0
 - Retry.BackoffFactor: 1.0
 - Retry.EnableJitter: false
-- Defaults.FollowRedirects: false
+- Security.FollowRedirects: false
 
 **Use Cases:**
 - Simple one-off HTTP requests
@@ -247,7 +249,7 @@ defer client.Close()
 - Security.ValidateURL: true
 - Security.ValidateHeaders: true
 - Connection.EnableHTTP2: true
-- Defaults.FollowRedirects: false
+- Security.FollowRedirects: false
 - Connection.EnableCookies: false
 
 **Use Cases:**
@@ -284,6 +286,12 @@ config := httpc.Config{
         MaxResponseBodySize: 50 * 1024 * 1024, // 50 MB
         AllowPrivateIPs:     false,
         StrictContentLength: true,
+        FollowRedirects:     true,
+
+        // Full-stack browser transport fingerprinting (TLS + HTTP/2 +
+        // ordered header block). Empty = standard stack. See README section
+        // "Browser Transport Fingerprinting" for preset names and semantics.
+        // TLSFingerprint: "chrome-latest",
     },
 
     // Retry settings
@@ -295,8 +303,7 @@ config := httpc.Config{
 
     // Request defaults
     Defaults: httpc.RequestDefaults{
-        UserAgent:       "MyApp/1.0",
-        FollowRedirects: true,
+        UserAgent: "MyApp/1.0",
         Headers: map[string]string{
             "Accept": "application/json",
         },
@@ -440,7 +447,7 @@ client, err := httpc.New(config)
 | `Security.MaxTLSVersion`        | `uint16`      | TLS 1.3 | Maximum TLS version                |
 | `Security.InsecureSkipVerify`   | `bool`        | false   | Skip TLS verification (dangerous)  |
 | `Security.MaxResponseBodySize`  | `int64`       | 10 MB   | Max response body size             |
-| `Security.MaxRequestBodySize`   | `int64`       | 0 (no limit; no fallback) | Max request body size              |
+| `Security.MaxRequestBodySize`   | `int64`       | 0 (no limit; no fallback) | Max request body size. Known body types are sized before sending; `io.Reader` bodies are enforced at send time by a counting reader that aborts the transfer once the limit is crossed |
 | `Security.MaxDecompressedBodySize` | `int64`    | 100 MB  | Max decompressed response body size (decompression bomb protection) |
 | `Security.AllowPrivateIPs`      | `bool`        | false   | Allow private IP addresses (SSRF protection) |
 | `Security.SSRFExemptCIDRs`      | `[]string`    | nil     | CIDR ranges exempt from private IP blocking |
@@ -448,13 +455,15 @@ client, err := httpc.New(config)
 | `Security.TLSConfig`            | `*tls.Config` | nil     | Custom TLS configuration           |
 | `Security.ValidateURL`          | `bool`        | true    | Enable URL validation              |
 | `Security.ValidateHeaders`      | `bool`        | true    | Enable header validation (CRLF prevention) |
-| `Security.CookieSecurity`       | `*CookieSecurityConfig` | nil | Cookie security attributes — **currently not enforced during request processing**; enforce via `WithSecureCookie` (per request) or `SessionConfig.CookieSecurity` (per session) instead |
 | `Security.RedirectWhitelist`    | `[]string`    | nil     | Allowed domains for redirects      |
+| `Security.SensitiveHeaders`     | `[]string`    | nil     | Extra header names stripped on cross-origin redirects, in addition to the built-in set (Authorization, Proxy-Authorization, Cookie, X-Api-Key, X-Auth-Token). Use for custom credential headers (e.g. `X-Secret-Key`) so an open redirect cannot leak them; matching is case-insensitive |
+| `Security.FollowRedirects`      | `bool`        | true    | Follow HTTP redirects              |
+| `Security.MaxRedirects`         | `int`         | 10      | Maximum redirects to follow        |
 | `Security.CertificatePinner`    | `CertificatePinner` | nil | Certificate pinning for MITM defense (see `NewSPKIHashPinner`, `NewPublicKeyPinner`) |
 
 **Note:** URL and header validation are enabled by default for security.
 
-**SSRF and proxies:** when a proxy (`Connection.ProxyURL`, `ProxyPool`, or system proxy) is active, the transport dials only the proxy and the target hostname is resolved *by the proxy*. The client-side resolve-validate-dial SSRF guard therefore does not see the target's resolved IPs — only the hostname-string pre-check applies (legacy IP-literal notations like `0x7f000001` are still blocked). A public-looking hostname that resolves to a private address *at the proxy* can pivot the proxy toward its own internal network (proxy-side metadata services, etc.). Only route through proxies you control, and treat the proxy itself as the SSRF trust boundary.
+**SSRF and proxies:** when a proxy (`Connection.ProxyURL`, `ProxyPool`, or system proxy) is active, httpc resolves and validates the target hostname locally before the proxy carries the request, rejecting it when every resolved address is blocked — the same private/reserved/link-local rules as the direct path. This runs only while `AllowPrivateIPs` is `false` (the default) and honors the per-request `WithAllowPrivateIPs` override. Two caveats: the check is **fail-closed on local DNS** (a hostname this process cannot resolve is rejected even if the proxy could resolve it — reach intranet hosts via `Security.SSRFExemptCIDRs` or opt out with `AllowPrivateIPs: true`), and the direct path's **DNS-rebinding guarantee does not extend** to proxied requests (the proxy still performs its own second resolution). See `SECURITY.md` §2.
 
 ### Retry
 
@@ -470,7 +479,7 @@ client, err := httpc.New(config)
 
 **Note:** If Retry-After header is present in the response, its value takes precedence (capped at 60s).
 
-**Retry idempotency (default since v1.7.0):** retries apply only to idempotent methods (GET, HEAD, OPTIONS, TRACE, PUT, DELETE). A POST or PATCH executes exactly once even when `MaxRetries > 0` — a timeout or retryable 5xx may arrive *after* the server committed the operation, and replaying the body could duplicate it (double payment, double insert). To opt in for a replay-tolerant endpoint, set `Retry.RetryNonIdempotent: true` on the Config, or scope it to a single request with `WithRetryNonIdempotent(true)`. Idempotency keys are the safer server-side companion either way.
+**Retry idempotency (default since v1.6.3):** retries apply only to idempotent methods (GET, HEAD, OPTIONS, TRACE, PUT, DELETE). A POST or PATCH executes exactly once even when `MaxRetries > 0` — a timeout or retryable 5xx may arrive *after* the server committed the operation, and replaying the body could duplicate it (double payment, double insert). To opt in for a replay-tolerant endpoint, set `Retry.RetryNonIdempotent: true` on the Config, or scope it to a single request with `WithRetryNonIdempotent(true)`. Idempotency keys are the safer server-side companion either way.
 
 ### Middleware
 
@@ -480,14 +489,12 @@ client, err := httpc.New(config)
 
 ### Defaults (Request Defaults)
 
-Per-request defaults applied to every outgoing request: User-Agent, default
-headers, and redirect policy.
+Per-request defaults applied to every outgoing request: User-Agent and default
+headers. Redirect policy lives under Security (see the Security table above).
 
 | Field                        | Type                | Default     | Description                      |
 |------------------------------|---------------------|-------------|----------------------------------|
 | `Defaults.UserAgent`         | `string`            | "httpc/1.0" | User-Agent header                |
-| `Defaults.FollowRedirects`   | `bool`              | true        | Follow HTTP redirects            |
-| `Defaults.MaxRedirects`      | `int`               | 10          | Maximum redirects to follow      |
 | `Defaults.Headers`           | `map[string]string` | empty map (initialized) | Default headers for all requests |
 
 ## Best Practices

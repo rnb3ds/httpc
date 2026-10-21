@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"compress/flate"
 	"compress/gzip"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	"time"
@@ -292,6 +294,70 @@ func TestResponseProcessor_DecompressionWithSizeLimit(t *testing.T) {
 // used a single "gzip" Content-Encoding — the identical round-trip is the
 // "Gzip simple compressed text" case of TestResponseProcessor_Decompression.
 
+// TestResponseProcessor_DecompressedBodySizeExactBoundary pins the
+// decompressed-size cap at its edges: a body inflating to exactly
+// MaxDecompressedBodySize bytes is accepted, one byte over is rejected with
+// the DISTINCT zip-bomb message (not the plain identity-limit wording).
+func TestResponseProcessor_DecompressedBodySizeExactBoundary(t *testing.T) {
+	gzipBytes := func(t *testing.T, n int) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		gw := gzip.NewWriter(&buf)
+		if _, err := gw.Write(bytes.Repeat([]byte("A"), n)); err != nil {
+			t.Fatalf("seed gzip writer: %v", err)
+		}
+		if err := gw.Close(); err != nil {
+			t.Fatalf("close gzip writer: %v", err)
+		}
+		return buf.Bytes()
+	}
+
+	tests := []struct {
+		name    string
+		size    int
+		wantErr string // empty = expect success
+	}{
+		{"exactly at limit succeeds", 1024, ""},
+		{"one byte over fails as zip bomb", 1025, "decompressed response body exceeds limit of 1024 bytes (potential zip bomb)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &Config{
+				Timeout:                 30 * time.Second,
+				MaxResponseBodySize:     100 * 1024, // larger: the decompressed cap must govern
+				MaxDecompressedBodySize: 1024,
+			}
+			processor := newResponseProcessor(config)
+
+			httpResponse := &http.Response{
+				StatusCode: 200,
+				Header:     http.Header{"Content-Encoding": []string{"gzip"}},
+				Body:       io.NopCloser(bytes.NewReader(gzipBytes(t, tt.size))),
+				Request:    &http.Request{Method: "GET"},
+			}
+
+			resp, err := processor.Process(httpResponse)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if got := len(resp.RawBody()); got != tt.size {
+					t.Errorf("decompressed length = %d, want %d", got, tt.size)
+				}
+				ReleaseResponse(resp)
+				return
+			}
+			if err == nil {
+				t.Fatal("expected zip-bomb rejection, got success")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error = %v, want to contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestResponseProcessor_CaseInsensitiveEncoding(t *testing.T) {
 	config := &Config{
 		Timeout:             30 * time.Second,
@@ -537,4 +603,213 @@ func TestBufioReaderPoolRoundtrip(t *testing.T) {
 		t.Fatalf("recycled bufio leaked stale bytes: got %q, want %q", got, "second")
 	}
 	putBufioReader(br2)
+}
+
+// (The pooled reader/wrapper mechanics tests — TestPooledReaders_ReadEOF,
+// TestPooledLimitReader, TestPooledGzipReader_Close, TestPooledFlateReader,
+// TestPooledReaders_Close, TestPooledBodyWrappers_ConcurrentClose — moved to
+// pooled_readers_test.go, which now owns that subject area.)
+
+func TestCreateDecompressor_FlateNonResetter(t *testing.T) {
+	// Clear pools to ensure clean state
+	clearResponsePools()
+
+	config := &Config{Timeout: 30 * time.Second}
+	processor := newResponseProcessor(config)
+
+	// Put a non-Resetter io.ReadCloser into the flate pool
+	flateReaderPool.Put(io.NopCloser(bytes.NewReader([]byte("dummy"))))
+
+	// When createDecompressor gets this non-Resetter, it should fall through
+	// to creating a new flate.NewReader
+	var buf bytes.Buffer
+	fw, _ := flate.NewWriter(&buf, flate.DefaultCompression)
+	_, _ = fw.Write([]byte("flate test"))
+	_ = fw.Close()
+
+	decompressor, err := processor.createDecompressor(bytes.NewReader(buf.Bytes()), "deflate")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	data, err := io.ReadAll(decompressor)
+	if err != nil {
+		t.Fatalf("Failed to read decompressed data: %v", err)
+	}
+
+	if string(data) != "flate test" {
+		t.Errorf("Expected 'flate test', got %q", string(data))
+	}
+	_ = decompressor.Close()
+}
+
+func TestCreateDecompressor_GzipDirectNewReader(t *testing.T) {
+	// Test the fallback path where pool returns a wrong type.
+	// Clear the pool and put a non-*gzip.Reader value in it.
+	clearResponsePools()
+	gzipReaderPool.Put("not a gzip reader") //nolint:staticcheck // intentional wrong-type poisoning // wrong type
+
+	config := &Config{Timeout: 30 * time.Second}
+	processor := newResponseProcessor(config)
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	_, _ = gw.Write([]byte("direct gzip"))
+	_ = gw.Close()
+
+	decompressor, err := processor.createDecompressor(bytes.NewReader(buf.Bytes()), "gzip")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	data, err := io.ReadAll(decompressor)
+	if err != nil {
+		t.Fatalf("Failed to read: %v", err)
+	}
+
+	if string(data) != "direct gzip" {
+		t.Errorf("Expected 'direct gzip', got %q", string(data))
+	}
+	_ = decompressor.Close()
+}
+
+// TestCreateDecompressor_PooledResetPaths pins the POOLED decompressor arms
+// deterministically. clearResponsePools guarantees Get() returns the pool-New
+// value (so the pooled Reset path is taken, not the fresh-reader fallback),
+// which the ordinary end-to-end decompression tests only reach when the pool
+// happens to be warm.
+func TestCreateDecompressor_PooledResetPaths(t *testing.T) {
+	gzipWire := func(t *testing.T, payload string) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		gw := gzip.NewWriter(&buf)
+		if _, err := gw.Write([]byte(payload)); err != nil {
+			t.Fatalf("seed gzip writer: %v", err)
+		}
+		if err := gw.Close(); err != nil {
+			t.Fatalf("close gzip writer: %v", err)
+		}
+		return buf.Bytes()
+	}
+
+	flateWire := func(t *testing.T, payload string) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		fw, _ := flate.NewWriter(&buf, flate.DefaultCompression)
+		if _, err := fw.Write([]byte(payload)); err != nil {
+			t.Fatalf("seed flate writer: %v", err)
+		}
+		if err := fw.Close(); err != nil {
+			t.Fatalf("close flate writer: %v", err)
+		}
+		return buf.Bytes()
+	}
+
+	config := &Config{Timeout: 30 * time.Second}
+	processor := newResponseProcessor(config)
+
+	t.Run("pooled gzip reader is reset and reused", func(t *testing.T) {
+		clearResponsePools() // Get() now deterministically returns the pool-New reader
+
+		decompressor, err := processor.createDecompressor(
+			bytes.NewReader(gzipWire(t, "pooled gzip payload")), "gzip")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if _, isPooled := decompressor.(*pooledGzipReader); !isPooled {
+			t.Fatalf("decompressor = %T, want the pooled *pooledGzipReader wrapper", decompressor)
+		}
+		data, err := io.ReadAll(decompressor)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if string(data) != "pooled gzip payload" {
+			t.Errorf("data = %q, want %q", data, "pooled gzip payload")
+		}
+		_ = decompressor.Close()
+	})
+
+	t.Run("pooled gzip Reset failure surfaces as gzip reset error", func(t *testing.T) {
+		clearResponsePools()
+
+		// Reset parses the gzip header immediately; garbage fails it.
+		_, err := processor.createDecompressor(strings.NewReader("definitely not gzip"), "gzip")
+		if err == nil {
+			t.Fatal("expected Reset failure for invalid gzip data, got nil")
+		}
+		if !strings.Contains(err.Error(), "gzip reset") {
+			t.Errorf("error = %v, want the 'gzip reset' wording (Reset may have consumed header bytes)", err)
+		}
+	})
+
+	t.Run("pooled flate reader is reset and reused", func(t *testing.T) {
+		clearResponsePools()
+
+		decompressor, err := processor.createDecompressor(
+			bytes.NewReader(flateWire(t, "pooled flate payload")), "deflate")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if _, isPooled := decompressor.(*pooledFlateReader); !isPooled {
+			t.Fatalf("decompressor = %T, want the pooled *pooledFlateReader wrapper", decompressor)
+		}
+		data, err := io.ReadAll(decompressor)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if string(data) != "pooled flate payload" {
+			t.Errorf("data = %q, want %q", data, "pooled flate payload")
+		}
+		_ = decompressor.Close()
+	})
+
+	t.Run("pooled flate Reset failure falls back to a fresh reader", func(t *testing.T) {
+		// Replace the pool wholesale so New hands out the failing resetter:
+		// unlike a plain Put (which a GC pass can drop before Get), the New
+		// route is deterministic.
+		fake := &failingResetter{inner: bytes.NewReader(nil)}
+		flateReaderPool = sync.Pool{New: func() any { return fake }}
+		defer clearResponsePools()
+
+		wire := flateWire(t, "fallback flate payload")
+
+		decompressor, err := processor.createDecompressor(bytes.NewReader(wire), "deflate")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		data, err := io.ReadAll(decompressor)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if string(data) != "fallback flate payload" {
+			t.Errorf("data = %q, want %q (Reset failure must fall back to a fresh reader)", data, "fallback flate payload")
+		}
+		_ = decompressor.Close()
+		if fake.resetAttempts != 1 {
+			t.Errorf("Reset attempts = %d, want 1", fake.resetAttempts)
+		}
+		if fake.closes != 1 {
+			t.Errorf("poisoned reader closed %d times, want 1 (closed and discarded, not pooled)", fake.closes)
+		}
+	})
+}
+
+// failingResetter is an io.ReadCloser + flate.Resetter whose Reset always
+// fails, for driving the pooled-flate Reset-failure fallback deterministically.
+type failingResetter struct {
+	inner         io.Reader
+	resetAttempts int
+	closes        int
+}
+
+func (f *failingResetter) Read(p []byte) (int, error) { return f.inner.Read(p) }
+func (f *failingResetter) Close() error {
+	f.closes++
+	return nil
+}
+func (f *failingResetter) Reset(r io.Reader, dict []byte) error {
+	f.resetAttempts++
+	_ = r
+	_ = dict
+	return errors.New("reset always fails")
 }

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -529,6 +531,46 @@ func TestResult_String_Comprehensive(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
+// SaveToFile (moved from download_test.go — result.go's SaveToFile has one
+// home here, beside its boundary tests)
+// ----------------------------------------------------------------------------
+
+func TestResult_SaveToFile(t *testing.T) {
+	content := []byte("response content")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(content)
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.Security.AllowPrivateIPs = true
+	client, _ := New(config)
+	defer func() { _ = client.Close() }()
+
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "response-save.txt")
+
+	if err := resp.SaveToFile(filePath); err != nil {
+		t.Fatalf("SaveToFile failed: %v", err)
+	}
+
+	// Verify file content
+	savedContent, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("Failed to read saved file: %v", err)
+	}
+	if string(savedContent) != string(content) {
+		t.Errorf("Content mismatch: expected %s, got %s", string(content), string(savedContent))
+	}
+}
+
+// ----------------------------------------------------------------------------
 // SaveToFile Boundaries
 // ----------------------------------------------------------------------------
 
@@ -549,10 +591,41 @@ func TestResult_SaveToFile_Boundaries(t *testing.T) {
 		}
 	})
 
+	t.Run("empty RawBody", func(t *testing.T) {
+		// Matches Unmarshal's emptiness rule and the documented contract: a
+		// non-nil zero-byte body (e.g. an empty chunked response) must not
+		// silently create an empty file.
+		r := &Result{Response: &ResponseInfo{RawBody: []byte{}}}
+		if err := r.SaveToFile("empty-body-probe.tmp"); err != ErrResponseBodyEmpty {
+			t.Errorf("want ErrResponseBodyEmpty for zero-byte body, got %v", err)
+		}
+	})
+
 	t.Run("path traversal", func(t *testing.T) {
 		r := &Result{Response: &ResponseInfo{RawBody: []byte("data")}}
 		if err := r.SaveToFile("../../../etc/passwd"); err == nil {
 			t.Error("expected error for path traversal")
+		}
+	})
+
+	t.Run("download lock held", func(t *testing.T) {
+		// M6 regression: SaveToFile shares Download's per-path lock — a
+		// concurrent pair would interleave writes to the same ".httpc-tmp"
+		// sibling and double-rename into a corrupt file.
+		r := &Result{Response: &ResponseInfo{RawBody: []byte("data")}}
+		path := "savetofile-lock-test.tmp"
+		release, ok := acquireDownloadLock(path)
+		if !ok {
+			t.Fatal("failed to acquire download lock")
+		}
+		defer release()
+
+		err := r.SaveToFile(path)
+		if err == nil {
+			t.Fatal("expected ErrDownloadInProgress while the lock is held")
+		}
+		if !strings.Contains(err.Error(), "download already in progress") {
+			t.Errorf("want ErrDownloadInProgress, got: %v", err)
 		}
 	})
 }

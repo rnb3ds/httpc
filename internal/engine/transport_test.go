@@ -3,10 +3,13 @@ package engine
 import (
 	"context"
 	"crypto/tls"
+	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,33 +20,8 @@ import (
 // TRANSPORT LAYER TESTS
 // ============================================================================
 
-func TestTransport_Creation(t *testing.T) {
-	config := &Config{
-		Timeout: 30 * time.Second,
-
-		ValidateURL:     true,
-		ValidateHeaders: true,
-		AllowPrivateIPs: true, // Allow test server access
-		EnableHTTP2:     true,
-	}
-
-	connConfig := testConnectionConfig()
-	poolManager, err := connection.NewPoolManager(connConfig)
-	if err != nil {
-		t.Fatalf("Failed to create pool manager: %v", err)
-	}
-	defer func() { _ = poolManager.Close() }()
-
-	transport, err := newTransport(config, poolManager)
-	if err != nil {
-		t.Fatalf("Failed to create transport: %v", err)
-	}
-	defer func() { _ = transport.Close() }()
-
-	if transport == nil {
-		t.Error("Transport should not be nil")
-	}
-}
+// TestTransport_Creation was folded into TestNewTransport_ErrorPaths as the
+// "valid config" row (the standalone test only asserted non-nil on success).
 
 func TestTransport_HTTPRequest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -100,11 +78,10 @@ func TestTransport_TLSConfiguration(t *testing.T) {
 	config := &Config{
 		Timeout: 30 * time.Second,
 
-		ValidateURL:        true,
-		ValidateHeaders:    true,
-		MinTLSVersion:      tls.VersionTLS12,
-		MaxTLSVersion:      tls.VersionTLS13,
-		InsecureSkipVerify: true, // For testing
+		ValidateURL:     true,
+		ValidateHeaders: true, Connection: connection.Config{MinTLSVersion: tls.VersionTLS12,
+			MaxTLSVersion:      tls.VersionTLS13,
+			InsecureSkipVerify: true}, // For testing
 	}
 
 	connConfig := testConnectionConfig()
@@ -187,6 +164,10 @@ func TestTransport_Timeout(t *testing.T) {
 	}
 }
 
+// TestTransport_ConnectionReuse verifies keep-alive pooling with a REAL reuse
+// assertion: a wrapping dialer counts TCP dials, and 5 sequential requests to
+// the same server must produce exactly one connection (success-only checks
+// previously could not distinguish reuse from five fresh connections).
 func TestTransport_ConnectionReuse(t *testing.T) {
 	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -218,6 +199,19 @@ func TestTransport_ConnectionReuse(t *testing.T) {
 	}
 	defer func() { _ = transport.Close() }()
 
+	// Wrap the underlying dialer so every TCP dial is observable. The pooled
+	// http.Transport is quiescent at this point, so swapping DialContext
+	// cannot race an in-flight connection.
+	var dials atomic.Int32
+	origDial := transport.transport.DialContext
+	if origDial == nil {
+		origDial = (&net.Dialer{}).DialContext
+	}
+	transport.transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dials.Add(1)
+		return origDial(ctx, network, addr)
+	}
+
 	// Send multiple requests to the same server
 	for i := range 5 {
 		req, err := http.NewRequest("GET", server.URL, nil)
@@ -229,6 +223,15 @@ func TestTransport_ConnectionReuse(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Request %d failed: %v", i, err)
 		}
+		// Drain to EOF before Close: on the early-Close path net/http
+		// returns the connection to the idle pool ASYNCHRONOUSLY (the
+		// readLoop drains remaining bytes within a 50ms budget, after
+		// Close has already returned), so an immediately following
+		// request races the readLoop for the pool slot and intermittently
+		// dials a second connection — the flake this test used to show.
+		// Reading to EOF takes the synchronous put-idle-first path and
+		// makes reuse deterministic.
+		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 
 		if resp.StatusCode != 200 {
@@ -238,6 +241,9 @@ func TestTransport_ConnectionReuse(t *testing.T) {
 
 	if requestCount != 5 {
 		t.Errorf("Expected 5 requests, server received %d", requestCount)
+	}
+	if got := dials.Load(); got != 1 {
+		t.Errorf("Dials = %d, want exactly 1 (5 requests must reuse the keep-alive connection)", got)
 	}
 }
 
@@ -473,8 +479,7 @@ func TestRedirectSettings_Pool(t *testing.T) {
 func TestTransport_ValidateRedirectTarget(t *testing.T) {
 	// Create transport with SSRF protection enabled
 	config := &Config{
-		Timeout:         30 * time.Second,
-		AllowPrivateIPs: false, // SSRF protection enabled
+		Timeout: 30 * time.Second, Connection: connection.Config{AllowPrivateIPs: false}, // SSRF protection enabled
 	}
 
 	connConfig := testConnectionConfig()
@@ -532,8 +537,7 @@ func TestTransport_ValidateRedirectTarget(t *testing.T) {
 
 func TestTransport_SetRedirectPolicy(t *testing.T) {
 	config := &Config{
-		Timeout:         30 * time.Second,
-		AllowPrivateIPs: true,
+		Timeout: 30 * time.Second, Connection: connection.Config{AllowPrivateIPs: true},
 	}
 
 	connConfig := testConnectionConfig()
@@ -564,12 +568,14 @@ func TestTransport_SetRedirectPolicy(t *testing.T) {
 	}
 }
 
-func TestTransport_SetRedirectPolicyCleanup(t *testing.T) {
-	config := &Config{
-		Timeout:         30 * time.Second,
-		AllowPrivateIPs: true,
-	}
+// TestTransport_SetRedirectPolicyCleanup was removed: SetRedirectPolicy has no
+// cleanup function anymore (it returns *redirectSettings directly — covered by
+// TestTransport_SetRedirectPolicy), and the putRedirectSettings pool contract
+// is asserted by TestRedirectSettings_Pool.
 
+// TestNewTransport_ErrorPaths covers the constructor guard clauses plus the
+// valid-config success path (folded in from the former TestTransport_Creation).
+func TestNewTransport_ErrorPaths(t *testing.T) {
 	connConfig := testConnectionConfig()
 	poolManager, err := connection.NewPoolManager(connConfig)
 	if err != nil {
@@ -577,22 +583,28 @@ func TestTransport_SetRedirectPolicyCleanup(t *testing.T) {
 	}
 	defer func() { _ = poolManager.Close() }()
 
-	transport, err := newTransport(config, poolManager)
+	if _, err := newTransport(nil, poolManager); err == nil {
+		t.Error("newTransport(nil config) should error")
+	}
+	if _, err := newTransport(&Config{}, nil); err == nil {
+		t.Error("newTransport(nil pool) should error")
+	}
+
+	transport, err := newTransport(&Config{
+		Timeout: 30 * time.Second,
+
+		ValidateURL:     true,
+		ValidateHeaders: true, Connection: connection.Config{AllowPrivateIPs: true, // Allow test server access
+			EnableHTTP2: true},
+	}, poolManager)
 	if err != nil {
-		t.Fatalf("Failed to create transport: %v", err)
+		t.Fatalf("newTransport(valid config) failed: %v", err)
 	}
 	defer func() { _ = transport.Close() }()
 
-	t.Run("Cleanup function is safe to call", func(t *testing.T) {
-		_, settings := transport.SetRedirectPolicy(context.Background(), true, 5)
-		putRedirectSettings(settings) // Should not panic
-	})
-
-	t.Run("Cleanup function can be called multiple times safely", func(t *testing.T) {
-		// Note: putRedirectSettings should be idempotent or at least not panic on multiple calls
-		_, settings := transport.SetRedirectPolicy(context.Background(), true, 5)
-		putRedirectSettings(settings)
-	})
+	if transport == nil {
+		t.Error("Transport should not be nil")
+	}
 }
 
 // TestCookieOverlayJar verifies manual cookies are layered onto (not written

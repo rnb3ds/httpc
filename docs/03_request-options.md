@@ -356,10 +356,10 @@ configuration is unchanged:
 
 | Per-request option | Overrides Config field |
 |--------------------|------------------------|
-| `WithTimeout(d)` | `Config.Timeouts.Request` |
+| `WithTimeout(d)` | `Config.Timeouts.Request` — `d` must be > 0 (zero returns `ErrInvalidTimeout`; use `WithNoTimeout()` to disable the timeout for this request) |
 | `WithMaxRetries(n)` | `Config.Retry.MaxRetries` |
-| `WithFollowRedirects(b)` | `Config.Defaults.FollowRedirects` |
-| `WithMaxRedirects(n)` | `Config.Defaults.MaxRedirects` |
+| `WithFollowRedirects(b)` | `Config.Security.FollowRedirects` |
+| `WithMaxRedirects(n)` | `Config.Security.MaxRedirects` |
 | `WithContext(ctx)` | the client's default background context |
 
 All other options (headers, body, query, auth, cookies, callbacks) are request-only
@@ -494,8 +494,6 @@ cfg := httpc.DefaultSessionConfig()
 cfg.CookieSecurity = httpc.StrictCookieSecurityConfig()
 sm, err := httpc.NewSessionManager(cfg)
 ```
-
-> **Note**: the client-level `Config.Security.CookieSecurity` field is currently not wired into request processing — setting it has no effect. Use `WithSecureCookie` (per request) or `SessionConfig.CookieSecurity` (per session) instead.
 
 ## Request Callbacks
 

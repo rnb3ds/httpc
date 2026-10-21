@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -146,47 +147,12 @@ func TestDownload_BodyExceedsLimit(t *testing.T) {
 	}
 }
 
-func TestDownload_WithProgress(t *testing.T) {
-	content := []byte(strings.Repeat("x", 10240)) // 10KB
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(content)
-	}))
-	defer server.Close()
-
-	config := DefaultConfig()
-	config.Security.AllowPrivateIPs = true
-	client, _ := New(config)
-	defer func() { _ = client.Close() }()
-
-	tempDir := t.TempDir()
-	filePath := filepath.Join(tempDir, "progress-test.bin")
-
-	progressCalled := false
-	opts := &DownloadConfig{
-		FilePath: filePath,
-		ProgressCallback: func(downloaded, total int64, speed float64) {
-			progressCalled = true
-			if total > 0 {
-				t.Logf("Progress: %d/%d bytes (%.2f%%)", downloaded, total, float64(downloaded)/float64(total)*100)
-			}
-		},
-	}
-
-	result, err := client.Download(context.Background(), server.URL, opts)
-	if err != nil {
-		t.Fatalf("Download failed: %v", err)
-	}
-
-	if result.BytesWritten != int64(len(content)) {
-		t.Errorf("Expected %d bytes, got %d", len(content), result.BytesWritten)
-	}
-	if !progressCalled {
-		t.Error("Progress callback was not called")
-	}
-}
+// (TestDownload_WithProgress — client.Download e2e with a progress callback —
+// was removed as one of three progress-callback tests. The kept coverage:
+// TestWriteDownloadBody_ProgressCallback (unit, asserts the final
+// downloaded/total values) and TestDownload_PackageLevel/WithProgressCallback
+// (e2e; the package-level Download delegates to the default client's
+// Download, so the client path with a callback is still exercised.)
 
 func TestDownload_WithTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -377,40 +343,8 @@ func TestDownload_HTTPError(t *testing.T) {
 // TestDownload_CreateDirectories was folded into TestDownload_HappyPath
 // ("nested directories created" row).
 
-func TestResult_SaveToFile(t *testing.T) {
-	content := []byte("response content")
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(content)
-	}))
-	defer server.Close()
-
-	config := DefaultConfig()
-	config.Security.AllowPrivateIPs = true
-	client, _ := New(config)
-	defer func() { _ = client.Close() }()
-
-	resp, err := client.Get(server.URL)
-	if err != nil {
-		t.Fatalf("Request failed: %v", err)
-	}
-
-	tempDir := t.TempDir()
-	filePath := filepath.Join(tempDir, "response-save.txt")
-
-	if err := resp.SaveToFile(filePath); err != nil {
-		t.Fatalf("SaveToFile failed: %v", err)
-	}
-
-	// Verify file content
-	savedContent, err := os.ReadFile(filePath)
-	if err != nil {
-		t.Fatalf("Failed to read saved file: %v", err)
-	}
-	if string(savedContent) != string(content) {
-		t.Errorf("Content mismatch: expected %s, got %s", string(content), string(savedContent))
-	}
-}
+// (TestResult_SaveToFile — the happy path — moved to response_test.go, beside
+// TestResult_SaveToFile_Boundaries, so result.go's SaveToFile has one home.)
 
 // ----------------------------------------------------------------------------
 // Package-Level Download Functions
@@ -619,7 +553,12 @@ func TestPrepareFilePath_Security(t *testing.T) {
 	t.Run("Path traversal detection", func(t *testing.T) {
 		traversalPaths := []string{
 			"../../../etc/passwd",
-			"..\\..\\..\\windows\\system32",
+		}
+		// Backslash is a path separator only on Windows; on Unix it is a legal
+		// filename character, so the traversal expectation cannot hold there
+		// (this suite runs under -race on Linux containers).
+		if runtime.GOOS == "windows" {
+			traversalPaths = append(traversalPaths, `..\..\..\windows\system32`)
 		}
 
 		for _, path := range traversalPaths {
@@ -1129,6 +1068,37 @@ func TestWriteDownloadBody_UnsupportedChecksumAlgorithm(t *testing.T) {
 	}
 }
 
+func TestWriteDownloadBody_ChecksumPrefixHashedBeforeOpen(t *testing.T) {
+	// C5 regression: with resumed + Checksum, the resume-prefix hash must run
+	// BEFORE the destination is opened for append. Pointing FilePath at a
+	// directory makes prefix hashing fail (reading a directory handle errors
+	// on every platform) — the error must surface from the prefix step, proving
+	// no append handle was ever opened (and therefore none can leak; on
+	// Windows a leaked handle keeps the destination locked until the GC
+	// finalizer runs, breaking delete/rename/next-resume attempts).
+	dir := t.TempDir()
+	opts := &DownloadConfig{
+		FilePath:          dir,
+		Checksum:          "deadbeef",
+		ChecksumAlgorithm: ChecksumSHA256,
+		ResumeDownload:    true,
+	}
+
+	_, err := writeDownloadBody(downloadWriteParams{
+		bodyReader:    strings.NewReader("hello"),
+		filePath:      dir,
+		opts:          opts,
+		resumed:       true,
+		resumeOffset:  0,
+		statusCode:    206,
+		contentLength: 5,
+		downloadStart: time.Now(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "failed to hash existing file prefix") {
+		t.Fatalf("expected prefix-hash error (hash must run before destination open), got %v", err)
+	}
+}
+
 func TestWriteDownloadBody_OpenFileFailure(t *testing.T) {
 	// Passing a directory as FilePath makes the final rename fail (the body is
 	// streamed to the .httpc-tmp sibling, which cannot replace a directory).
@@ -1546,4 +1516,241 @@ func TestDownload_ResumeContentRangeMismatch(t *testing.T) {
 			t.Fatalf("Expected missing Content-Range error, got %v", err)
 		}
 	})
+}
+
+// ----------------------------------------------------------------------------
+// Checksum default algorithm / concurrent-download / complete-file resume
+// (boundary additions; semantics read from download.go writeDownloadBody,
+// acquireDownloadLock and handleDownloadStatus)
+// ----------------------------------------------------------------------------
+
+// TestDownload_ChecksumDefaultAlgorithm pins that a Checksum set WITHOUT
+// ChecksumAlgorithm defaults to SHA-256 (writeDownloadBody: "both SHA-256 and
+// the empty default map to SHA-256") — a correct hash passes and a wrong hash
+// fails, so the default verification is real, not skipped.
+func TestDownload_ChecksumDefaultAlgorithm(t *testing.T) {
+	content := []byte("checksum without explicit algorithm")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(content)
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.Security.AllowPrivateIPs = true
+	client, err := New(config)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	sum := sha256.Sum256(content)
+	goodChecksum := hex.EncodeToString(sum[:])
+	wrong := sha256.Sum256([]byte("other"))
+	badChecksum := hex.EncodeToString(wrong[:])
+
+	t.Run("correct checksum passes with default algorithm", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "default-alg-good.bin")
+		result, err := client.Download(context.Background(), server.URL, &DownloadConfig{
+			FilePath: path,
+			Checksum: goodChecksum, // ChecksumAlgorithm intentionally unset
+		})
+		if err != nil {
+			t.Fatalf("Download with default-algorithm checksum failed: %v", err)
+		}
+		if result.BytesWritten != int64(len(content)) {
+			t.Errorf("BytesWritten = %d, want %d", result.BytesWritten, len(content))
+		}
+	})
+
+	t.Run("wrong checksum fails with default algorithm", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "default-alg-bad.bin")
+		_, err := client.Download(context.Background(), server.URL, &DownloadConfig{
+			FilePath: path,
+			Checksum: badChecksum,
+		})
+		if err == nil {
+			t.Fatal("expected checksum-mismatch error, got success")
+		}
+		if !strings.Contains(err.Error(), "checksum mismatch") {
+			t.Errorf("want checksum-mismatch error, got: %v", err)
+		}
+		if _, statErr := os.Stat(path); statErr == nil {
+			t.Error("checksum-failing download must not leave the destination file behind")
+		}
+	})
+}
+
+// TestDownload_ConcurrentSamePath pins the in-process serialization contract:
+// while one Download to a path is in flight, a second Download to the SAME
+// path fails fast with ErrDownloadInProgress (rather than interleaving
+// writes); both writers proceeding would corrupt the shared temp file.
+func TestDownload_ConcurrentSamePath(t *testing.T) {
+	inFlight := make(chan struct{})
+	var once sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(inFlight) })
+		time.Sleep(300 * time.Millisecond) // hold the first download's lock
+		w.Header().Set("Content-Length", "7")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("payload"))
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.Security.AllowPrivateIPs = true
+	client, err := New(config)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	path := filepath.Join(t.TempDir(), "same-path.bin")
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := client.Download(context.Background(), server.URL, &DownloadConfig{FilePath: path})
+		firstDone <- err
+	}()
+
+	select {
+	case <-inFlight: // first download is now inside the lock
+	case <-time.After(5 * time.Second):
+		t.Fatal("first download never reached the server")
+	}
+
+	_, secondErr := client.Download(context.Background(), server.URL, &DownloadConfig{FilePath: path})
+	if !errors.Is(secondErr, ErrDownloadInProgress) {
+		t.Errorf("second download error = %v, want ErrDownloadInProgress", secondErr)
+	}
+
+	if err := <-firstDone; err != nil {
+		t.Errorf("first download failed: %v", err)
+	}
+}
+
+// TestDownload_ResumeLocalAtLeastRemote covers the resume boundary where the
+// local file already matches (or exceeds) the remote length: the Range
+// request is unsatisfiable (416), and the download fails with the specific
+// diagnosis instead of appending or truncating — leaving the complete local
+// file untouched.
+func TestDownload_ResumeLocalAtLeastRemote(t *testing.T) {
+	remote := []byte("0123456789") // 10 bytes
+
+	tests := []struct {
+		name      string
+		localSize int
+	}{
+		{"local equals remote", len(remote)},
+		{"local exceeds remote", len(remote) + 3},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotRange string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotRange = r.Header.Get("Range")
+				// A range starting at/after the file length is unsatisfiable.
+				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			}))
+			defer server.Close()
+
+			config := DefaultConfig()
+			config.Security.AllowPrivateIPs = true
+			client, err := New(config)
+			if err != nil {
+				t.Fatalf("New() error: %v", err)
+			}
+			defer func() { _ = client.Close() }()
+
+			// Local file of exactly localSize bytes (arbitrary content).
+			local := bytes.Repeat([]byte("x"), tt.localSize)
+
+			path := filepath.Join(t.TempDir(), "complete.bin")
+			if err := os.WriteFile(path, local, 0o644); err != nil {
+				t.Fatalf("WriteFile() error: %v", err)
+			}
+
+			_, err = client.Download(context.Background(), server.URL, &DownloadConfig{
+				FilePath:       path,
+				ResumeDownload: true,
+			})
+			if err == nil {
+				t.Fatal("expected 416-range error for a complete local file, got success")
+			}
+			if !strings.Contains(err.Error(), "416") {
+				t.Errorf("want 416 diagnosis, got: %v", err)
+			}
+			if want := fmt.Sprintf("bytes=%d-", tt.localSize); gotRange != want {
+				t.Errorf("Range header = %q, want %q", gotRange, want)
+			}
+
+			// The pre-existing file must be preserved byte-for-byte.
+			got, readErr := os.ReadFile(path)
+			if readErr != nil {
+				t.Fatalf("ReadFile() error: %v", readErr)
+			}
+			if !bytes.Equal(got, local) {
+				t.Errorf("local file mutated by failed resume: got %d bytes, want original %d", len(got), len(local))
+			}
+		})
+	}
+}
+
+// TestDownload_ResumeShortBodyDetected pins the Content-Range total check:
+// a 206 response that declares "bytes 8-19/20" but delivers fewer than the
+// remaining 12 bytes must fail — io.Copy sees a clean EOF on a short body,
+// so without this check a truncated file reported success (absent a
+// checksum), and the pre-existing resume prefix must be preserved.
+func TestDownload_ResumeShortBodyDetected(t *testing.T) {
+	fullContent := []byte("0123456789abcdefghij") // 20 bytes
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") != "" {
+			// Declares the full remaining range but delivers only 5 of the
+			// 12 remaining bytes.
+			w.Header().Set("Content-Range", "bytes 8-19/20")
+			w.Header().Set("Content-Length", "5")
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(fullContent[8:13])
+			return
+		}
+		w.Header().Set("Content-Length", "20")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(fullContent)
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.Security.AllowPrivateIPs = true
+	client, err := New(config)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	filePath := filepath.Join(t.TempDir(), "short.bin")
+	if err := os.WriteFile(filePath, fullContent[:8], 0o644); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	_, err = client.Download(context.Background(), server.URL, &DownloadConfig{
+		FilePath:       filePath,
+		ResumeDownload: true,
+	})
+	if err == nil {
+		t.Fatal("expected short-body error, got nil")
+	}
+	if !strings.Contains(err.Error(), "declared 20 total") {
+		t.Errorf("error should name the declared total, got: %v", err)
+	}
+
+	// The pre-existing prefix must be preserved for the next resume attempt.
+	got, readErr := os.ReadFile(filePath)
+	if readErr != nil {
+		t.Fatalf("ReadFile() error: %v", readErr)
+	}
+	if len(got) != 8 {
+		t.Errorf("file = %d bytes after failed resume, want 8 (prefix preserved)", len(got))
+	}
 }

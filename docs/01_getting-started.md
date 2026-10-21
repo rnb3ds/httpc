@@ -6,7 +6,7 @@ This guide will help you get started with HTTPC in just a few minutes.
 
 ### Requirements
 
-- Go 1.25 or higher
+- Go 1.27 or higher
 - Internet connection (for downloading dependencies)
 
 ### Install via go get
@@ -540,7 +540,6 @@ Now that you understand the basics, explore these guides:
 - **[File Downloads](07_file-download.md)** - Download files with progress tracking
 - **[Request Inspection](08_request-inspection.md)** - Debug and inspect requests
 - **[Concurrency Safety](09_concurrency-safety.md)** - Thread-safe usage patterns
-- **[API Unification & Migration](10_api-unification-and-migration.md)** - v1.5.x → v1.6.x migration guide
 
 ---
 

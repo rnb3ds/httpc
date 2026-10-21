@@ -6,10 +6,12 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 
 	"github.com/cybergodev/httpc/internal/connection"
+	"github.com/cybergodev/httpc/internal/fingerprint"
 	"github.com/cybergodev/httpc/internal/security"
 	"github.com/cybergodev/httpc/internal/validation"
 )
@@ -97,16 +99,14 @@ func putRedirectSettings(s *redirectSettings) {
 	s.followRedirects = false
 	s.maxRedirects = 0
 	s.chainLen = 0
-	// Clear inline chain to allow GC of strings
-	for i := range s.inlineChain {
-		s.inlineChain[i] = ""
-	}
+	// Clear inline chain to allow GC of strings. clear() zeroes the backing
+	// array in one memclr, cheaper than a per-element loop on the hot path
+	// (a redirectSettings is acquired per request).
+	clear(s.inlineChain[:])
 	// SECURITY: Clear overflow chain data to prevent memory leaks
 	// Each URL string reference must be cleared to allow GC
 	if s.overflowChain != nil {
-		for i := range s.overflowChain {
-			s.overflowChain[i] = ""
-		}
+		clear(s.overflowChain[:])
 		s.overflowChain = nil
 	}
 	redirectSettingsPool.Put(s)
@@ -120,6 +120,14 @@ type transport struct {
 	allowPrivateIPs   bool                      // Cached for performance in redirect checks
 	exemptNets        []*net.IPNet              // SSRF exempt CIDR ranges
 	redirectWhitelist *security.DomainWhitelist // Whitelist for redirect domains
+	// sensitiveHeaders is the effective cross-origin strip set: the built-in
+	// redirectSensitiveHeaders plus Config.SensitiveHeaders (canonicalized,
+	// deduped). Built in newTransport; read-only afterwards.
+	sensitiveHeaders []string
+	// fingerprintAdapter is non-nil when Security.TLSFingerprint is set; it
+	// replaces httpClient.Transport for all requests. The pooled transport
+	// above stays for CloseIdleConnections compatibility.
+	fingerprintAdapter *fingerprint.Adapter
 }
 
 // Compile-time interface check
@@ -140,9 +148,10 @@ func newTransport(config *Config, pool *connection.PoolManager) (*transport, err
 	t := &transport{
 		transport:         httpTransport,
 		config:            config,
-		allowPrivateIPs:   config.AllowPrivateIPs,
-		exemptNets:        config.ExemptNets,
+		allowPrivateIPs:   config.Connection.AllowPrivateIPs,
+		exemptNets:        config.Connection.ExemptNets,
 		redirectWhitelist: config.RedirectWhitelist,
+		sensitiveHeaders:  mergeSensitiveHeaders(config.SensitiveHeaders),
 	}
 
 	// Create http.Client with optional cookie jar
@@ -150,9 +159,34 @@ func newTransport(config *Config, pool *connection.PoolManager) (*transport, err
 		Transport: httpTransport,
 	}
 
+	// Browser fingerprinting replaces the underlying transport: TLS
+	// ClientHello, HTTP/2 frames, and the header block all come from the
+	// preset. Everything above (this client's redirect policy, the cookie
+	// overlay, retries) stays in charge — the adapter is a plain
+	// http.RoundTripper beneath it. Certificate pinning rides along: the
+	// adapter owns the utls.Config and runs the pinner as
+	// VerifyPeerCertificate on every fingerprinted handshake.
+	if config.TLSFingerprint != "" {
+		preset, ok := fingerprint.ResolvePresetName(config.TLSFingerprint)
+		if !ok {
+			preset = config.TLSFingerprint // validated upstream; pass through
+		}
+		t.fingerprintAdapter = fingerprint.NewAdapter(fingerprint.Config{
+			PresetName:            preset,
+			InsecureSkipVerify:    config.Connection.InsecureSkipVerify,
+			AllowPrivateIPs:       config.Connection.AllowPrivateIPs,
+			EnableHTTP2:           config.Connection.EnableHTTP2,
+			ExemptNets:            config.Connection.ExemptNets,
+			CertPinner:            config.CertificatePinner,
+			DisableSessionTickets: config.TLSFingerprintDisableSessionTickets,
+			Pool:                  pool,
+		})
+		httpClient.Transport = t.fingerprintAdapter
+	}
+
 	// Set cookie jar if enabled and provided
-	if config.EnableCookies && config.CookieJar != nil {
-		httpClient.Jar = config.CookieJar
+	if config.EnableCookies && config.Connection.CookieJar != nil {
+		httpClient.Jar = config.Connection.CookieJar
 	}
 
 	// Set a single redirect policy that reads from context
@@ -219,10 +253,15 @@ func (t *transport) checkRedirect(req *http.Request, via []*http.Request) error 
 	// — including the https → http downgrade, where credentials would cross a
 	// plaintext hop — is cross-origin; treating the http → https upgrade the
 	// same way matches net/http's own redirect header-copying behavior.
+	//
+	// Authorization, Proxy-Authorization, and Cookie are also stripped by
+	// net/http's own cross-origin redirect handling; stripping them here is
+	// defense-in-depth and keeps the full sensitive set (including custom
+	// credential headers like X-Api-Key) in one place.
 	if len(via) > 0 && !sameOrigin(via[0].URL, req.URL) {
-		req.Header.Del("Authorization")
-		req.Header.Del("Proxy-Authorization")
-		req.Header.Del("Cookie")
+		for _, h := range t.sensitiveHeaders {
+			req.Header.Del(h)
+		}
 	}
 
 	// SECURITY: Detect circular redirects to prevent infinite loops.
@@ -242,20 +281,23 @@ func (t *transport) checkRedirect(req *http.Request, via []*http.Request) error 
 				if via[len(via)-1].URL.String() == targetURL {
 					continue
 				}
-				return fmt.Errorf("circular redirect detected: %s", targetURL)
+				// SECURITY (SEC-001 M-1): the redirect target can carry
+				// sensitive query parameters from the original URL; redact
+				// before the message can reach logs.
+				return fmt.Errorf("circular redirect detected: %s", validation.SanitizeURL(targetURL))
 			}
 		}
 	}
 
 	// Redirect limit. WithMaxRedirects requires 1..50 and the config default is
-	// 10. maxRedirects == 0 is the "not explicitly set" sentinel and falls
-	// through to the default cap of 10 below — there is no unlimited mode.
-	if settings.maxRedirects > 0 && len(via) >= settings.maxRedirects {
-		return fmt.Errorf("stopped after %d redirects", settings.maxRedirects)
-	}
-
-	// Default Go limit is 10, we respect that if maxRedirects is 0
-	if settings.maxRedirects == 0 && len(via) >= 10 {
+	// 10. Any value <= 0 — the "not explicitly set" sentinel, or a negative
+	// value handed in by an internal caller — falls back to the default cap
+	// of 10; there is no unlimited mode.
+	if limit := settings.maxRedirects; limit > 0 {
+		if len(via) >= limit {
+			return fmt.Errorf("stopped after %d redirects", limit)
+		}
+	} else if len(via) >= 10 {
 		return fmt.Errorf("stopped after 10 redirects")
 	}
 
@@ -290,6 +332,44 @@ func (t *transport) validateRedirectTarget(targetURL *url.URL) error {
 	// with DNS rebinding prevention (resolves once, validates, dials IP directly).
 	// Skipping DNS here avoids a redundant resolution and a TOCTOU window.
 	return validation.ValidateSSRFHost(host, t.exemptNets)
+}
+
+// redirectSensitiveHeaders are the request header names stripped on a
+// cross-origin redirect. They mirror the facade's sensitive header set
+// (httpc.result.go sensitiveHeaders): Authorization, Cookie, and
+// Proxy-Authorization are stripped by net/http itself on cross-origin hops,
+// but custom credential headers such as X-Api-Key and X-Auth-Token are not —
+// the open-redirect + header-forwarding combination would otherwise leak them
+// to a third-party origin. Keys are canonical (http.CanonicalHeaderKey) form.
+//
+// Config.SensitiveHeaders extends this set per client (see
+// mergeSensitiveHeaders) so caller-declared credential headers get the same
+// treatment.
+var redirectSensitiveHeaders = []string{
+	"Authorization",
+	"Proxy-Authorization",
+	"Cookie",
+	"X-Api-Key",
+	"X-Auth-Token",
+}
+
+// mergeSensitiveHeaders returns the effective cross-origin strip set: the
+// built-in redirectSensitiveHeaders plus extra (Config.SensitiveHeaders),
+// canonicalized so Header.Del's canonical-form matching lines up, and deduped.
+// extra == nil yields the built-in slice unchanged (zero allocation).
+func mergeSensitiveHeaders(extra []string) []string {
+	if len(extra) == 0 {
+		return redirectSensitiveHeaders
+	}
+	merged := make([]string, 0, len(redirectSensitiveHeaders)+len(extra))
+	merged = append(merged, redirectSensitiveHeaders...)
+	for _, h := range extra {
+		c := http.CanonicalHeaderKey(h)
+		if !slices.Contains(merged, c) {
+			merged = append(merged, c)
+		}
+	}
+	return merged
 }
 
 // sameOrigin reports whether two URLs share an origin per RFC 6454: scheme,
@@ -378,7 +458,6 @@ type cookieOverlayJar struct {
 	origin string // hostname the manual cookies were set for
 }
 
-// newCookieOverlayJar builds an overlay from the request's Cookie header.
 // newCookieOverlayJar builds the overlay from an already-parsed cookie list
 // (callers parse the Cookie header once and pass the result in).
 func newCookieOverlayJar(base http.CookieJar, req *http.Request, requestCookies []*http.Cookie) *cookieOverlayJar {
@@ -427,6 +506,9 @@ func (j *cookieOverlayJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 
 // Close closes the transport and cleans up resources
 func (t *transport) Close() error {
+	if t.fingerprintAdapter != nil {
+		_ = t.fingerprintAdapter.Close() // best-effort backend cleanup
+	}
 	if t.transport != nil {
 		t.transport.CloseIdleConnections()
 	}

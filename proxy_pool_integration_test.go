@@ -1,10 +1,12 @@
 package httpc
 
 import (
+	"encoding/binary"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -554,4 +556,253 @@ func TestProxyPool_MetaProxyURL_AfterRetry(t *testing.T) {
 	if echoed := strings.TrimSpace(result.Body()); echoed != "proxy-A" {
 		t.Errorf("forwarded by %q, want proxy-A", echoed)
 	}
+}
+
+// ----------------------------------------------------------------------------
+// SOCKS5 pool entries & selection strategies
+// ----------------------------------------------------------------------------
+
+// socks5Listener starts a minimal RFC 1928 SOCKS5 server on loopback:
+// no-auth greeting + CONNECT, then a blind pipe to the dialed target. It is
+// just enough protocol for net/http's built-in SOCKS5 dialer (the transport
+// used for socks5:// proxy URLs), so a pool entry can be dialed fully offline.
+func socks5Listener(t *testing.T) net.Listener {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("socks5 listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return // listener closed
+			}
+			go serveSOCKS5(conn)
+		}
+	}()
+	return ln
+}
+
+// serveSOCKS5 handles one no-auth CONNECT request on c and pipes both ways.
+func serveSOCKS5(c net.Conn) {
+	defer func() { _ = c.Close() }()
+
+	readFull := func(n int) []byte {
+		b := make([]byte, n)
+		if _, err := io.ReadFull(c, b); err != nil {
+			return nil
+		}
+		return b
+	}
+
+	// Client greeting: VER NMETHODS METHODS...
+	hdr := readFull(2)
+	if hdr == nil || hdr[0] != 0x05 {
+		return
+	}
+	if readFull(int(hdr[1])) == nil {
+		return
+	}
+	// Select no-auth.
+	if _, err := c.Write([]byte{0x05, 0x00}); err != nil {
+		return
+	}
+
+	// Request: VER CMD(=CONNECT) RSV ATYP ADDR PORT
+	req := readFull(4)
+	if req == nil || req[1] != 0x01 {
+		return
+	}
+	var host string
+	switch req[3] {
+	case 0x01: // IPv4
+		b := readFull(4)
+		if b == nil {
+			return
+		}
+		host = net.IP(b).String()
+	case 0x04: // IPv6
+		b := readFull(16)
+		if b == nil {
+			return
+		}
+		host = net.IP(b).String()
+	case 0x03: // domain
+		l := readFull(1)
+		if l == nil {
+			return
+		}
+		b := readFull(int(l[0]))
+		if b == nil {
+			return
+		}
+		host = string(b)
+	default:
+		return
+	}
+	pb := readFull(2)
+	if pb == nil {
+		return
+	}
+	port := binary.BigEndian.Uint16(pb)
+
+	target, err := net.Dial("tcp", net.JoinHostPort(host, strconv.Itoa(int(port))))
+	if err != nil {
+		// Reply: general failure.
+		_, _ = c.Write([]byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		return
+	}
+	defer func() { _ = target.Close() }()
+
+	// Reply: succeeded, zero bound address/port.
+	if _, err := c.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); err != nil {
+		return
+	}
+
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(target, c); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(c, target); done <- struct{}{} }()
+	<-done
+}
+
+// TestProxyPool_SOCKS5EntryDialed proves a socks5:// pool entry is actually
+// dialed end-to-end (pool.Select -> transport SOCKS5 handshake -> target)
+// using only loopback listeners.
+func TestProxyPool_SOCKS5EntryDialed(t *testing.T) {
+	var proxied atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxied.Store(true)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("socks-ok"))
+	}))
+	defer target.Close()
+
+	ln := socks5Listener(t)
+
+	cfg := DefaultConfig()
+	cfg.Connection.ProxyPool = []string{"socks5://" + ln.Addr().String()}
+	cfg.Security.AllowPrivateIPs = true // both listeners are on loopback
+	cfg.Timeouts.Request = 10 * time.Second
+
+	client, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New(cfg with socks5 pool) failed: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	result, err := client.Get(target.URL)
+	if err != nil {
+		t.Fatalf("request through SOCKS5 pool entry failed: %v", err)
+	}
+	if strings.TrimSpace(result.Body()) != "socks-ok" {
+		t.Errorf("body = %q, want %q", result.Body(), "socks-ok")
+	}
+	if !proxied.Load() {
+		t.Error("target was never reached; SOCKS5 tunnel did not forward")
+	}
+	if want := "socks5://" + ln.Addr().String(); result.Meta.ProxyURL != want {
+		t.Errorf("Meta.ProxyURL = %q, want the socks pool entry %q", result.Meta.ProxyURL, want)
+	}
+}
+
+// TestProxyPool_StrategySelection verifies both pool strategies through the
+// public Config: round-robin alternates deterministically across sequential
+// requests, and random always lands inside the pool (order is intentionally
+// not asserted). Selection is observed via Result.Meta.ProxyURL.
+func TestProxyPool_StrategySelection(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer target.Close()
+
+	tests := []struct {
+		name     string
+		strategy ProxyStrategy
+		verify   func(t *testing.T, picked []string, pool map[string]bool)
+	}{
+		{
+			name:     "round robin alternates in order",
+			strategy: ProxyStrategyRoundRobin,
+			verify: func(t *testing.T, picked []string, pool map[string]bool) {
+				if len(picked) != 4 {
+					t.Fatalf("collected %d selections, want 4", len(picked))
+				}
+				// Sequential requests must cycle A,B,A,B across a 2-proxy pool.
+				for i, got := range picked {
+					want := picked[0]
+					if i%2 == 1 {
+						want = other(picked[0], pool)
+					}
+					if got != want {
+						t.Errorf("request %d used %q, want %q (round-robin order)", i, got, want)
+					}
+				}
+			},
+		},
+		{
+			name:     "random stays inside the pool",
+			strategy: ProxyStrategyRandom,
+			verify: func(t *testing.T, picked []string, pool map[string]bool) {
+				for i, got := range picked {
+					if !pool[got] {
+						t.Errorf("request %d selected %q, which is not in the pool", i, got)
+					}
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proxyA := forwardProxy("strategy-A")
+			defer proxyA.Close()
+			proxyB := forwardProxy("strategy-B")
+			defer proxyB.Close()
+
+			pool := map[string]bool{proxyA.URL: true, proxyB.URL: true}
+
+			cfg := DefaultConfig()
+			cfg.Connection.ProxyPool = []string{proxyA.URL, proxyB.URL}
+			cfg.Connection.ProxyPoolStrategy = tt.strategy
+			// Close idle conns per request so each Get re-selects a proxy
+			// (connection reuse would keep request 2 on request 1's tunnel).
+			cfg.Connection.ProxyRotatePerRequest = true
+			cfg.Security.AllowPrivateIPs = true
+			cfg.Timeouts.Request = 10 * time.Second
+
+			client, err := New(cfg)
+			if err != nil {
+				t.Fatalf("New failed: %v", err)
+			}
+			defer func() { _ = client.Close() }()
+
+			var picked []string
+			for i := 0; i < 4; i++ {
+				result, err := client.Get(target.URL)
+				if err != nil {
+					t.Fatalf("request %d failed: %v", i, err)
+				}
+				if result.Meta == nil || result.Meta.ProxyURL == "" {
+					t.Fatalf("request %d: Meta.ProxyURL not populated", i)
+				}
+				picked = append(picked, result.Meta.ProxyURL)
+			}
+			tt.verify(t, picked, pool)
+		})
+	}
+}
+
+// other returns the pool entry that is not want.
+func other(want string, pool map[string]bool) string {
+	for entry := range pool {
+		if entry != want {
+			return entry
+		}
+	}
+	return want
 }

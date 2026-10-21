@@ -67,7 +67,7 @@ func example2NoFollow() {
 
 	// Configure client to not follow redirects
 	config := httpc.DefaultConfig()
-	config.Defaults.FollowRedirects = false
+	config.Security.FollowRedirects = false
 	client, err := httpc.New(config)
 	if err != nil {
 		log.Printf("Failed to create client: %v\n", err)
@@ -94,8 +94,8 @@ func example3MaxRedirects() {
 
 	// Configure client with redirect limit
 	config := httpc.DefaultConfig()
-	config.Defaults.FollowRedirects = true
-	config.Defaults.MaxRedirects = 2 // Limit counts the initial request: at most 1 redirect is followed
+	config.Security.FollowRedirects = true
+	config.Security.MaxRedirects = 2 // Limit counts the initial request: at most 1 redirect is followed
 	client, err := httpc.New(config)
 	if err != nil {
 		log.Printf("Failed to create client: %v\n", err)
@@ -201,7 +201,7 @@ func example6ManualHandling() {
 
 	// Disable automatic redirects
 	config := httpc.DefaultConfig()
-	config.Defaults.FollowRedirects = false
+	config.Security.FollowRedirects = false
 	client, err := httpc.New(config)
 	if err != nil {
 		log.Printf("Failed to create client: %v\n", err)
@@ -276,7 +276,7 @@ func example7RedirectWhitelist() {
 	// Only allow redirects to httpbin.org — redirects to any other domain
 	// are blocked even when FollowRedirects is true.
 	config := httpc.DefaultConfig()
-	config.Defaults.FollowRedirects = true
+	config.Security.FollowRedirects = true
 	config.Security.RedirectWhitelist = []string{"httpbin.org"}
 
 	client, err := httpc.New(config)

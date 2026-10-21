@@ -136,7 +136,7 @@ func demonstrateCustomConfig() {
 	config.Connection.MaxIdleConns = 200
 	config.Connection.MaxConnsPerHost = 50
 	config.Defaults.UserAgent = "MyApp/1.0"
-	config.Defaults.FollowRedirects = true
+	config.Security.FollowRedirects = true
 	config.Connection.EnableCookies = true
 
 	// Validate configuration before use (method form; httpc.ValidateConfig(&config) is equivalent)
@@ -239,7 +239,7 @@ func demonstrateConfigComparison() {
 	} else {
 		fmt.Printf("  Status: %d\n", resp.StatusCode())
 	}
-	minimalClient.Close()
+	_ = minimalClient.Close()
 	fmt.Println("  No retries, short timeouts, minimal features")
 	fmt.Println("  Use case: Simple scripts, CLI tools, one-shot requests")
 }

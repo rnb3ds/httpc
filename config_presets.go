@@ -39,8 +39,8 @@ func SecureConfig() Config {
 	cfg.Retry.Delay = 2 * time.Second
 	cfg.Retry.EnableJitter = true
 
-	// Middleware - no redirects for security
-	cfg.Defaults.FollowRedirects = false
+	// Security - no redirects for security
+	cfg.Security.FollowRedirects = false
 
 	return cfg
 }
@@ -53,6 +53,11 @@ func SecureConfig() Config {
 // If you need to disable these for maximum performance in a trusted environment,
 // manually set cfg.Security.ValidateURL = false and cfg.Security.ValidateHeaders = false, but be
 // aware of the security implications (injection attacks, SSRF).
+//
+// NOTE: EnableCookies is set to true with no PublicSuffixList. For sites
+// where cookie leakage across subdomains matters, set
+// cfg.Connection.PublicSuffixList = publicsuffix.List
+// (golang.org/x/net/publicsuffix) before calling New.
 func PerformanceConfig() Config {
 	cfg := DefaultConfig()
 
@@ -150,8 +155,8 @@ func MinimalConfig() Config {
 	cfg.Retry.BackoffFactor = 1.0
 	cfg.Retry.EnableJitter = false
 
-	// Defaults - no redirects
-	cfg.Defaults.FollowRedirects = false
+	// Security - no redirects
+	cfg.Security.FollowRedirects = false
 
 	return cfg
 }

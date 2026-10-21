@@ -321,7 +321,11 @@ func (r *Result) String() string {
 				b.WriteString(", ")
 			}
 			first = false
-			if sensitiveHeaders[key] {
+			// Canonicalize before the lookup: hand-built Results (docs
+			// bless constructing Result directly) may carry non-canonical
+			// keys ("authorization"), which a raw-key check would miss —
+			// printing the credential name unmasked.
+			if sensitiveHeaders[http.CanonicalHeaderKey(key)] {
 				b.WriteString(key)
 				b.WriteString(": ***")
 			} else {
@@ -355,8 +359,12 @@ func (r *Result) String() string {
 	return result
 }
 
-// SaveToFile saves the response body to a file at the specified path.
-// Returns ErrResponseBodyEmpty if the response body is nil or empty.
+// SaveToFile saves the response body to a file at the specified path,
+// overwriting any existing destination unconditionally (unlike Download,
+// which returns ErrFileExists unless Overwrite is set).
+// Returns ErrResponseBodyEmpty if the response body is nil or empty, or
+// ErrDownloadInProgress when a Download (or another SaveToFile) targeting
+// the same path is already running in this process.
 // The file path is validated for security (path traversal, symlinks, etc.).
 //
 // The body is written to a "<path>.httpc-tmp" sibling and atomically renamed
@@ -364,7 +372,10 @@ func (r *Result) String() string {
 // in between prepareFilePath's Lstat check and the write is never opened for
 // writing, and an interrupted save never leaves a partial destination file.
 func (r *Result) SaveToFile(filePath string) error {
-	if r == nil || r.Response == nil || r.Response.RawBody == nil {
+	// len check matches Unmarshal's emptiness rule: a non-nil zero-byte body
+	// (e.g. an empty chunked response) must not silently create an empty file
+	// when the documented contract says ErrResponseBodyEmpty.
+	if r == nil || r.Response == nil || len(r.Response.RawBody) == 0 {
 		return ErrResponseBodyEmpty
 	}
 
@@ -373,10 +384,45 @@ func (r *Result) SaveToFile(filePath string) error {
 		return fmt.Errorf("file path validation failed: %w", err)
 	}
 
+	// Serialize with Download on the same destination: both write the same
+	// "<path>.httpc-tmp" sibling, and two concurrent writers would interleave
+	// writes and double-rename into a corrupt file with no error to either
+	// caller. Same in-process scope as Download's lock (cross-process
+	// coordination remains the caller's responsibility).
+	release, ok := acquireDownloadLock(validatedPath)
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrDownloadInProgress, validatedPath)
+	}
+	defer release()
+
 	tmpPath := validatedPath + downloadTmpSuffix
-	if err := os.WriteFile(tmpPath, r.Response.RawBody, filePermissions); err != nil {
-		_ = os.Remove(tmpPath) // best-effort cleanup of a partial write
+	// SECURITY: mirror prepareFilePath's destination check on the temp
+	// sibling — os.WriteFile's O_CREATE|O_TRUNC follows a symlink planted at
+	// this predictable name.
+	if err := rejectSymlink(tmpPath); err != nil {
+		return err
+	}
+	// Write via an explicit handle + Sync rather than os.WriteFile: matching
+	// writeDownloadBody's crash-consistency posture, the rename below must
+	// not publish content that a power loss could still lose. os.WriteFile
+	// never fsyncs.
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, filePermissions)
+	if err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
+	}
+	if _, err := f.Write(r.Response.RawBody); err != nil {
+		_ = f.Close() // best-effort cleanup of a partial write
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close() // best-effort cleanup
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to sync file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to close file: %w", err)
 	}
 	if err := os.Rename(tmpPath, validatedPath); err != nil {
 		_ = os.Remove(tmpPath) // best-effort cleanup

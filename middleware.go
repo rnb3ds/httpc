@@ -52,7 +52,8 @@ type AuditEvent struct {
 	// Duration covers all attempts, including retry delays; serialized as
 	// durationMs by MarshalJSON.
 	Duration time.Duration `json:"-"`
-	// Attempts is the number of requests sent (1 when no retry occurred).
+	// Attempts is the number of requests sent (1 when no retry occurred;
+	// 0 when the request errored before a response arrived).
 	Attempts int `json:"attempts"`
 	// Error is the request error, if any; marshaled as a string with
 	// sensitive details removed.
@@ -96,7 +97,10 @@ type AuditConfig struct {
 	// If nil, the middleware is a no-op.
 	OnAudit func(event AuditEvent)
 
-	// Format specifies the output format: "text" (default) or "json"
+	// Format is a reserved field with no current effect: audit events are
+	// delivered as the structured AuditEvent value via OnAudit, and the
+	// rendering (text, JSON, ...) is entirely the callback's choice. Setting
+	// "text" or "json" here does nothing.
 	Format string
 
 	// IncludeHeaders includes request/response headers in the audit log
@@ -222,7 +226,10 @@ func LoggingMiddleware(config *LoggingConfig) MiddlewareFunc {
 			sanitizedURL := getOrComputeSanitizedURL(req)
 
 			if err != nil {
-				log("%s %s -> error: %v (%v)", req.Method(), sanitizedURL, err, duration)
+				// Sanitize like MetricsMiddleware does: non-ClientError types
+				// (e.g. *url.Error) embed the raw URL — credentials included.
+				sanitizedErr := sanitizeCallbackError(err, req.URL(), sanitizedURL)
+				log("%s %s -> error: %v (%v)", req.Method(), sanitizedURL, sanitizedErr, duration)
 			} else {
 				log("%s %s -> %d (%v)", req.Method(), sanitizedURL, status, duration)
 			}
@@ -291,17 +298,12 @@ func RequestIDMiddleware(config *RequestIDConfig) MiddlewareFunc {
 
 	return func(next Handler) Handler {
 		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
-			// Header keys are stored with the caller's original casing, so a
-			// case-insensitive scan is required to respect a header set as
-			// e.g. "x-request-id" instead of adding a duplicate.
-			exists := false
-			for k := range req.Headers() {
-				if strings.EqualFold(k, headerName) {
-					exists = true
-					break
-				}
-			}
-			if !exists {
+			// Header keys are stored canonicalized (engine Request.SetHeader),
+			// so presence is a direct map read on the canonical form. A
+			// caller-supplied header in any casing ("x-request-id") is stored
+			// under the same canonical key and is still respected.
+			canonicalName := http.CanonicalHeaderKey(headerName)
+			if _, exists := req.Headers()[canonicalName]; !exists {
 				req.SetHeader(headerName, generator())
 			}
 
@@ -413,9 +415,10 @@ func HeaderMiddleware(config *HeaderConfig) MiddlewareFunc {
 	copied := make(map[string]string, len(headers))
 	maps.Copy(copied, headers)
 
-	// Pre-validate all headers at middleware creation time
-	for key, value := range copied {
-		if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
+	// Pre-validate all headers at middleware creation time, in sorted key
+	// order so the reported offending key is deterministic (see WithHeaderMap).
+	for _, key := range sortedKeys(copied) {
+		if err := validation.ValidateHeaderKeyValue(key, copied[key]); err != nil {
 			// Return a middleware that always returns the validation error
 			return func(next Handler) Handler {
 				return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
@@ -425,10 +428,21 @@ func HeaderMiddleware(config *HeaderConfig) MiddlewareFunc {
 		}
 	}
 
+	// OPTIMIZATION: sort the keys ONCE at construction and capture the ordered
+	// slice — the config map is immutable from this point on (copied is never
+	// mutated), so the deterministic apply loop below must not re-sort (and
+	// re-allocate the key slice) on every request. The old per-request
+	// sortedKeys call was O(n log n) with a heap allocation per request on the
+	// middleware hot path.
+	orderedKeys := sortedKeys(copied)
+
 	return func(next Handler) Handler {
 		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
-			for key, value := range copied {
-				req.SetHeader(key, value)
+			// Sorted order keeps the apply loop deterministic when the config
+			// map holds one header under multiple casings: the later key in
+			// sort order wins, instead of Go's random map iteration order.
+			for _, key := range orderedKeys {
+				req.SetHeader(key, copied[key])
 			}
 
 			return next(ctx, req)

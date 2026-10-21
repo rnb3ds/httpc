@@ -2,8 +2,11 @@ package httpc
 
 import (
 	"crypto/tls"
+	"net/http"
+	"slices"
 	"time"
 
+	"github.com/cybergodev/httpc/internal/connection"
 	"github.com/cybergodev/httpc/internal/engine"
 	"github.com/cybergodev/httpc/internal/security"
 )
@@ -90,8 +93,6 @@ func calculateMaxRetries(cfg *Config) int {
 // convertToEngineConfig converts public Config to engine Config.
 // It uses helper functions for cleaner separation of concerns.
 func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
-	idleConnsPerHost := calculateIdleConnsPerHost(cfg.Connection.MaxConnsPerHost)
-	minTLSVersion, maxTLSVersion := resolveTLSVersions(cfg)
 	maxRetryDelay := calculateMaxRetryDelay(cfg)
 
 	cookieJar, err := createCookieJar(cfg.Connection.EnableCookies, cfg.Connection.PublicSuffixList)
@@ -101,44 +102,27 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 
 	engineConfig := &engine.Config{
 		// Timeout settings
-		Timeout:               cfg.Timeouts.Request,
-		DialTimeout:           cfg.Timeouts.Dial,
-		KeepAlive:             defaultKeepAlive,
-		TLSHandshakeTimeout:   cfg.Timeouts.TLSHandshake,
-		ResponseHeaderTimeout: cfg.Timeouts.ResponseHeader,
-		IdleConnTimeout:       cfg.Timeouts.IdleConn,
+		Timeout: cfg.Timeouts.Request,
 
-		// Connection settings
-		MaxIdleConns:           cfg.Connection.MaxIdleConns,
-		MaxIdleConnsPerHost:    idleConnsPerHost,
-		MaxConnsPerHost:        cfg.Connection.MaxConnsPerHost,
-		MaxResponseHeaderBytes: cfg.Connection.MaxResponseHeaderBytes,
-		ProxyURL:               cfg.Connection.ProxyURL,
-		EnableSystemProxy:      cfg.Connection.EnableSystemProxy,
-		ProxyPool:              cfg.Connection.ProxyPool,
-		ProxyPoolStrategy:      cfg.Connection.ProxyPoolStrategy,
-		ProxyFailureThreshold:  cfg.Connection.ProxyFailureThreshold,
-		ProxyCooldown:          cfg.Connection.ProxyCooldown,
-		ProxyRotatePerRequest:  cfg.Connection.ProxyRotatePerRequest,
-		EnableHTTP2:            cfg.Connection.EnableHTTP2,
-		CookieJar:              cookieJar,
-		EnableCookies:          cfg.Connection.EnableCookies,
-		EnableDoH:              cfg.Connection.EnableDoH,
-		DoHCacheTTL:            cfg.Connection.DoHCacheTTL,
+		// Connection settings — the engine embeds a connection.Config seeded
+		// from connection defaults and overridden with the public values. This
+		// is the single mapping point for transport/proxy/TLS fields; the
+		// engine no longer re-copies them (see engine.buildConnectionConfig).
+		Connection: buildConnectionSubConfig(cfg, cookieJar),
+
+		ProxyRotatePerRequest: cfg.Connection.ProxyRotatePerRequest,
+		EnableCookies:         cfg.Connection.EnableCookies,
 
 		// Security settings
-		TLSConfig:               cfg.Security.TLSConfig,
-		MinTLSVersion:           minTLSVersion,
-		MaxTLSVersion:           maxTLSVersion,
-		InsecureSkipVerify:      cfg.Security.InsecureSkipVerify,
-		MaxResponseBodySize:     cfg.Security.MaxResponseBodySize,
-		MaxRequestBodySize:      cfg.Security.MaxRequestBodySize,
-		MaxDecompressedBodySize: cfg.Security.MaxDecompressedBodySize,
-		ValidateURL:             cfg.Security.ValidateURL,
-		ValidateHeaders:         cfg.Security.ValidateHeaders,
-		AllowPrivateIPs:         cfg.Security.AllowPrivateIPs,
-		StrictContentLength:     cfg.Security.StrictContentLength,
-		CertificatePinner:       cfg.Security.CertificatePinner,
+		TLSFingerprint:                      cfg.Security.TLSFingerprint,
+		TLSFingerprintDisableSessionTickets: cfg.Security.TLSFingerprintDisableSessionTickets,
+		MaxResponseBodySize:                 cfg.Security.MaxResponseBodySize,
+		MaxRequestBodySize:                  cfg.Security.MaxRequestBodySize,
+		MaxDecompressedBodySize:             cfg.Security.MaxDecompressedBodySize,
+		ValidateURL:                         cfg.Security.ValidateURL,
+		ValidateHeaders:                     cfg.Security.ValidateHeaders,
+		StrictContentLength:                 cfg.Security.StrictContentLength,
+		CertificatePinner:                   cfg.Security.CertificatePinner,
 
 		// Retry settings
 		MaxRetries:                calculateMaxRetries(cfg),
@@ -150,19 +134,85 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		ExtraRetryableStatusCodes: cfg.Connection.ProxyRotateOnStatus,
 		CustomRetryPolicy:         cfg.Retry.CustomPolicy,
 
-		// Request defaults (from Config.Defaults)
+		// Request defaults (User-Agent, headers from Config.Defaults; redirect
+		// policy from Config.Security).
 		UserAgent:       cfg.Defaults.UserAgent,
 		Headers:         cfg.Defaults.Headers,
-		FollowRedirects: cfg.Defaults.FollowRedirects,
-		MaxRedirects:    cfg.Defaults.MaxRedirects,
+		FollowRedirects: cfg.Security.FollowRedirects,
+		MaxRedirects:    cfg.Security.MaxRedirects,
 	}
 
 	if len(cfg.Security.RedirectWhitelist) > 0 {
 		engineConfig.RedirectWhitelist = security.NewDomainWhitelist(cfg.Security.RedirectWhitelist...)
 	}
 
-	// Use cached parsed CIDRs from parseSSRFExemptCIDRs (no re-parsing)
-	engineConfig.ExemptNets = cfg.parsedCIDRs
+	if len(cfg.Security.SensitiveHeaders) > 0 {
+		engineConfig.SensitiveHeaders = canonicalHeaderNames(cfg.Security.SensitiveHeaders)
+	}
 
 	return engineConfig, nil
+}
+
+// canonicalHeaderNames canonicalizes header names into the
+// http.CanonicalHeaderKey form the engine's strip list compares against, and
+// drops duplicates (including entries that canonicalize onto one another).
+func canonicalHeaderNames(names []string) []string {
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		c := http.CanonicalHeaderKey(n)
+		if !slices.Contains(out, c) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// buildConnectionSubConfig maps the public ConnectionConfig onto the engine's
+// embedded connection.Config, starting from connection defaults and overriding
+// every public field. It is the single hand-mapping left after the mirror
+// collapse; connection-only fields (MaxTotalConns, ExpectContinueTimeout,
+// DisableKeepAlives, ForceAttemptHTTP2) keep their connection defaults. The
+// certificate pinner is plumbed separately by the engine (buildConnectionConfig
+// assigns Config.Connection.CertPinner from Config.CertificatePinner).
+//
+// jar is the pre-built cookie jar (nil when EnableCookies is false), hoisted
+// out of this function so the infallible assignments here don't need an error
+// return for a jar-construction failure.
+func buildConnectionSubConfig(cfg *Config, jar http.CookieJar) connection.Config {
+	conn := *connection.DefaultConfig()
+
+	// Connection pool sizing. MaxIdleConnsPerHost is derived (public knob is
+	// MaxConnsPerHost only), matching the previous convertToEngineConfig
+	// behavior.
+	conn.MaxIdleConns = cfg.Connection.MaxIdleConns
+	conn.MaxIdleConnsPerHost = calculateIdleConnsPerHost(cfg.Connection.MaxConnsPerHost)
+	conn.MaxConnsPerHost = cfg.Connection.MaxConnsPerHost
+	conn.MaxResponseHeaderBytes = cfg.Connection.MaxResponseHeaderBytes
+
+	conn.DialTimeout = cfg.Timeouts.Dial
+	conn.KeepAlive = defaultKeepAlive
+	conn.TLSHandshakeTimeout = cfg.Timeouts.TLSHandshake
+	conn.ResponseHeaderTimeout = cfg.Timeouts.ResponseHeader
+	conn.IdleConnTimeout = cfg.Timeouts.IdleConn
+
+	conn.TLSConfig = cfg.Security.TLSConfig
+	conn.MinTLSVersion, conn.MaxTLSVersion = resolveTLSVersions(cfg)
+	conn.InsecureSkipVerify = cfg.Security.InsecureSkipVerify
+
+	conn.EnableHTTP2 = cfg.Connection.EnableHTTP2
+	conn.ProxyURL = cfg.Connection.ProxyURL
+	conn.EnableSystemProxy = cfg.Connection.EnableSystemProxy
+	conn.ProxyPool = cfg.Connection.ProxyPool
+	conn.ProxyPoolStrategy = cfg.Connection.ProxyPoolStrategy
+	conn.ProxyFailureThreshold = cfg.Connection.ProxyFailureThreshold
+	conn.ProxyCooldown = cfg.Connection.ProxyCooldown
+
+	conn.AllowPrivateIPs = cfg.Security.AllowPrivateIPs
+	conn.ExemptNets = cfg.parsedCIDRs
+
+	conn.CookieJar = jar
+	conn.EnableDoH = cfg.Connection.EnableDoH
+	conn.DoHCacheTTL = cfg.Connection.DoHCacheTTL
+
+	return conn
 }

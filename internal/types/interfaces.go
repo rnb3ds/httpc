@@ -9,10 +9,21 @@ import (
 	"time"
 )
 
-// requestReader provides read-only access to request data for middleware.
-// It is embedded in the exported RequestMutator, so middleware automatically
-// gains full read access to all request properties.
-type requestReader interface {
+// The request and response interfaces are split along the read/write boundary
+// so that consumers can declare the narrow contract they actually need rather
+// than the full mutator. The exemplar is RetryPolicy.ShouldRetry, which accepts
+// a ResponseReader (read-only) even though the engine hands around
+// ResponseMutator values — a policy that only inspects a response never needs
+// its setters, and expressing that in the signature makes the intent explicit.
+//
+// RequestMutator and ResponseMutator remain the aggregate interfaces used by
+// the middleware chain (Handler) and by RequestOption, where a value must be
+// both inspected and modified.
+
+// RequestReader provides read-only access to request data.
+// Use it when a consumer only inspects request properties without modifying
+// them (mirroring how ResponseReader is used by RetryPolicy).
+type RequestReader interface {
 	Method() string
 	URL() string
 	Headers() map[string]string
@@ -27,10 +38,9 @@ type requestReader interface {
 	StreamBody() bool
 }
 
-// requestWriter provides write-only access to request data for middleware.
-// It is embedded in the exported RequestMutator, so middleware automatically
-// gains full write access to all request properties.
-type requestWriter interface {
+// RequestWriter provides write-only access to request data.
+// Use it when a consumer only modifies request properties without reading them.
+type RequestWriter interface {
 	SetMethod(string)
 	SetURL(string)
 	SetHeaders(map[string]string)
@@ -46,9 +56,10 @@ type requestWriter interface {
 	SetStreamBody(bool)
 }
 
-// RequestMutator provides read-write access to request data for middleware.
-// It embeds requestReader and requestWriter for full access to request properties.
-// Middleware can inspect and modify request properties before the request is sent.
+// RequestMutator provides read-write access to request data for middleware and
+// request options. It embeds RequestReader and RequestWriter for full access to
+// request properties. Middleware can inspect and modify request properties
+// before the request is sent.
 //
 // LIFETIME CONTRACT: the maps returned by Headers() and QueryParams() are
 // pooled internal storage, valid only for the duration of the request. Do not
@@ -61,13 +72,13 @@ type requestWriter interface {
 // shared map is safe — the engine never retains the argument, and later
 // mutations to it do not affect the in-flight request.
 type RequestMutator interface {
-	requestReader
-	requestWriter
+	RequestReader
+	RequestWriter
 }
 
 // ResponseReader provides read-only access to response data for middleware.
 // Use this interface when middleware only needs to inspect response properties
-// without modifying them.
+// without modifying them. It is also the interface consumed by RetryPolicy.
 type ResponseReader interface {
 	StatusCode() int
 	Status() string
@@ -86,10 +97,15 @@ type ResponseReader interface {
 	RequestMethod() string
 }
 
-// responseWriter provides write-only access to response data for middleware.
-// It is embedded in the exported ResponseMutator, so middleware automatically
-// gains full write access to all response properties.
-type responseWriter interface {
+// ResponseWriter provides write-only access to response data.
+// Use it when a consumer only modifies response properties without reading them.
+//
+// Note on SetHeader: the key is stored exactly as given — it is NOT
+// canonicalized (unlike the request-side SetHeader). Writing "content-type"
+// alongside a server-sent canonical "Content-Type" yields two distinct
+// entries; pass http.CanonicalMIMEHeaderKey spelling to replace an
+// existing header.
+type ResponseWriter interface {
 	SetStatusCode(int)
 	SetStatus(string)
 	SetProto(string)
@@ -109,16 +125,16 @@ type responseWriter interface {
 }
 
 // ResponseMutator provides read-write access to response data for middleware.
-// It embeds ResponseReader and responseWriter for full access to response properties.
-// Middleware can inspect and modify response properties after the request completes.
-// This is useful for:
+// It embeds ResponseReader and ResponseWriter for full access to response
+// properties. Middleware can inspect and modify response properties after the
+// request completes. This is useful for:
 //   - Response caching middleware
 //   - Response transformation (e.g., JSON pretty-printing)
 //   - Content encoding/decoding
 //   - Response filtering
 type ResponseMutator interface {
 	ResponseReader
-	responseWriter
+	ResponseWriter
 }
 
 // Handler processes an HTTP request and returns a response.
@@ -167,4 +183,50 @@ type RetryPolicy interface {
 
 	// MaxRetries returns the maximum number of retry attempts.
 	MaxRetries() int
+}
+
+// The narrow capability interfaces below let the httpc facade reach request
+// fields that are intentionally NOT on the public RequestMutator surface:
+// per-request SSRF/retry/no-timeout overrides, the lazy query-param
+// initializer, and the engine's pre/post callbacks. They mirror the
+// sanitizedURLer pattern in package httpc: the facade asserts one of these
+// small contracts instead of downcasting to a concrete engine type, so a
+// third-party RequestMutator implementation degrades gracefully (no-op or a
+// clear error) rather than panicking. The engine's request type satisfies each
+// one by construction, so no engine change is required for these.
+//
+// These are separate interfaces rather than extra methods on RequestWriter:
+// RequestWriter is public and intended for external implementation, and adding
+// methods to it would be a breaking change for every external implementor.
+type PrivateIPSetter interface {
+	SetAllowPrivateIPs(v *bool)
+}
+
+// RetryNonIdempotentSetter sets the per-request non-idempotent retry override.
+type RetryNonIdempotentSetter interface {
+	SetRetryNonIdempotent(v *bool)
+}
+
+// NoTimeoutSetter suppresses the client-level request timeout for one request.
+type NoTimeoutSetter interface {
+	SetNoTimeout(v bool)
+}
+
+// QueryParamsEnsurer lazily initializes and returns the request's query-param
+// map. It backs WithQuery/WithQueryMap, which mutate the returned map in place.
+type QueryParamsEnsurer interface {
+	EnsureQueryParams() map[string]any
+}
+
+// RequestCallbackSetter reads and installs the engine's pre-request and
+// post-response callbacks. The callback signatures use the public mutator
+// interfaces (not concrete engine types) so this contract stays in the leaf
+// types package and never imports the engine. The *Mutator method names avoid
+// colliding with the engine's concrete OnRequest/SetOnRequest accessors, whose
+// signatures carry the concrete request type.
+type RequestCallbackSetter interface {
+	OnRequestMutator() func(RequestMutator) error
+	SetOnRequestMutator(cb func(RequestMutator) error)
+	OnResponseMutator() func(ResponseMutator) error
+	SetOnResponseMutator(cb func(ResponseMutator) error)
 }

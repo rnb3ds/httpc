@@ -8,31 +8,6 @@ import (
 	"testing"
 )
 
-// BenchmarkIsLocalhost benchmarks the isLocalhost function
-func BenchmarkIsLocalhost(b *testing.B) {
-	benchmarks := []struct {
-		name     string
-		hostname string
-	}{
-		{"localhost", "localhost"},
-		{"LOCALHOST", "LOCALHOST"},
-		{"LocalHost", "LocalHost"},
-		{"127.0.0.1", "127.0.0.1"},
-		{"127.1.1.1", "127.1.1.1"},
-		{"localhost.local", "localhost.local"},
-		{"example.com", "example.com"},
-		{"notlocalhost.com", "notlocalhost.com"},
-	}
-
-	for _, bm := range benchmarks {
-		b.Run(bm.name, func(b *testing.B) {
-			for i := 0; i < b.N; i++ {
-				_ = isLocalhost(bm.hostname)
-			}
-		})
-	}
-}
-
 func TestIsPrivateOrReservedIP(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -85,6 +60,11 @@ func TestIsPrivateOrReservedIP(t *testing.T) {
 		{"NAT64 mapped metadata", "64:ff9b::a9fe:a9fe", true},
 		{"NAT64 mapped private", "64:ff9b::a00:1", true},
 		{"NAT64 mapped public", "64:ff9b::808:808", false},
+
+		// Local-Use NAT64 prefix (RFC 8215): blocked wholesale — it may carry
+		// translations of RFC 1918 addresses at non-fixed offsets.
+		{"RFC 8215 local-use NAT64 private target", "64:ff9b:1::a00:1", true},
+		{"RFC 8215 local-use NAT64 public target", "64:ff9b:1::808:808", true},
 
 		// Remaining SSRF bypass literals (formerly TestSSRFBypassPrevention,
 		// retired as a strict subset of this table)
@@ -497,6 +477,8 @@ func TestValidateAndParseURL_BoundaryConditions(t *testing.T) {
 		{"invalid URL parse", "http://[::1:bad", true, "invalid URL"},
 		{"missing scheme", "example.com/path", true, "scheme is required"},
 		{"missing host", "http://", true, "host is required"},
+		// Host=":8080" is non-empty but Hostname() is "" — must fail closed.
+		{"empty hostname with port", "http://:8080/x", true, "host is required"},
 		{"unsupported scheme ftp", "ftp://example.com/file", true, "unsupported URL scheme"},
 		{"valid HTTP", "http://example.com/path", false, ""},
 		{"valid HTTPS", "https://example.com/path?q=1", false, ""},
@@ -517,6 +499,35 @@ func TestValidateAndParseURL_BoundaryConditions(t *testing.T) {
 				if u == nil {
 					t.Error("expected non-nil URL")
 				}
+			}
+		})
+	}
+}
+
+// TestValidateAndParseURL_RedactsCredentialsOnParseError pins the fix for a
+// credential leak: url.Parse errors embed the raw input verbatim, so a
+// malformed URL carrying userinfo (user:pass@…) must not surface the password
+// up the error chain into application logs.
+func TestValidateAndParseURL_RedactsCredentialsOnParseError(t *testing.T) {
+	t.Parallel()
+	// Both inputs parse-fail (malformed IPv6 host / invalid port) and carry a
+	// userinfo password that the pre-fix error echoed verbatim.
+	inputs := []string{
+		"http://user:secret@[::1",   // unterminated IPv6 literal
+		"http://user:secret@:bad80", // invalid port
+		"http://user:secret@%zz",    // invalid escape in host
+	}
+	for _, raw := range inputs {
+		t.Run(raw, func(t *testing.T) {
+			_, err := ValidateAndParseURL(raw)
+			if err == nil {
+				t.Fatal("expected parse error, got nil")
+			}
+			if strings.Contains(err.Error(), "secret") {
+				t.Fatalf("credentials leaked in parse error: %v", err)
+			}
+			if !strings.Contains(err.Error(), "invalid URL") {
+				t.Fatalf("error lost its classification: %v", err)
 			}
 		})
 	}
@@ -596,6 +607,43 @@ func TestValidateSSRFHost_BoundaryConditions(t *testing.T) {
 	})
 }
 
+// TestEqualFold directly exercises the ASCII case-insensitive equality helper
+// (netutil.go) beside ContainsFold's tests — it was previously covered only
+// indirectly, via isLocalhost and ContainsFold's internal calls.
+func TestEqualFold(t *testing.T) {
+	tests := []struct {
+		name string
+		s    string
+		t    string
+		want bool
+	}{
+		{"both empty", "", "", true},
+		{"equal strings", "localhost", "localhost", true},
+		{"case differs", "LOCALHOST", "localhost", true},
+		{"mixed case both sides", "LocalHost", "localHOst", true},
+		{"single char case differs", "A", "a", true},
+		{"digits and dots unaffected", "127.0.0.1", "127.0.0.1", true},
+		{"case around digits", "A1B2", "a1b2", true},
+		{"different lengths", "localhosts", "localhost", false},
+		{"empty vs non-empty", "", "a", false},
+		{"same length different letters", "abc", "abd", false},
+		{"case differs and letter differs", "ABC", "abd", false},
+		{"no match", "example", "sample", false},
+		// ASCII-only folding: bytes outside A-Z fold as themselves, so
+		// non-ASCII sequences with case pairs in Unicode do not match.
+		{"non-ASCII umlaut not folded", "Ä", "ä", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EqualFold(tt.s, tt.t)
+			if got != tt.want {
+				t.Errorf("EqualFold(%q, %q) = %v, want %v", tt.s, tt.t, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestContainsFold(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -638,6 +686,65 @@ func TestValidateSSRFHost_IPv6WithPort(t *testing.T) {
 		{"IPv6 localhost with port", "[::1]:8080", true},
 		{"IPv6 documentation with port", "[2001:db8::1]:443", true},
 		{"IPv6 public with port", "[2001:4860:4860::8888]:443", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateSSRFHost(tt.host, nil)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateSSRFHost(%q) err = %v, wantErr %v", tt.host, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidateSSRFHost_BareBracketedIPv6 pins the C1 regression: bracketed
+// IPv6 literals without a port — exactly as url.Parse preserves them in
+// URL.Host — must be blocked. SplitHostPort only strips the brackets together
+// with a port, so before the explicit bracket strip these sailed past every
+// check in ValidateSSRFHost. With a proxy configured, dialer-level SSRF
+// validation of the target is skipped entirely (pool.go dials the proxy
+// address instead), making this pre-check the only line of defense.
+func TestValidateSSRFHost_BareBracketedIPv6(t *testing.T) {
+	tests := []struct {
+		name    string
+		host    string
+		wantErr bool
+	}{
+		{"IPv6 loopback", "[::1]", true},
+		{"IPv4-mapped loopback", "[::ffff:127.0.0.1]", true},
+		{"IPv4-mapped link-local metadata endpoint", "[::ffff:169.254.169.254]", true},
+		{"unique-local", "[fd00::1]", true},
+		{"public IPv6 allowed", "[2606:4700::1111]", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateSSRFHost(tt.host, nil)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateSSRFHost(%q) err = %v, wantErr %v", tt.host, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidateSSRFHost_EmbeddedIPv4Notation pins the M9 regression: the
+// deprecated IPv4-compatible ::/96 (::a.b.c.d) and IPv4-translated
+// ::ffff:0:0/96 (::ffff:0:a.b.c.d) forms embed an IPv4 target that To4 does
+// not unwrap — the embedded address is now validated with the same policy
+// the NAT64/6to4 blocks already apply, instead of passing as global unicast.
+func TestValidateSSRFHost_EmbeddedIPv4Notation(t *testing.T) {
+	tests := []struct {
+		name    string
+		host    string
+		wantErr bool
+	}{
+		{"IPv4-compatible loopback blocked", "::127.0.0.1", true},
+		{"IPv4-compatible private blocked", "::10.0.0.1", true},
+		{"IPv4-compatible public allowed", "::8.8.8.8", false},
+		{"IPv4-translated loopback blocked", "::ffff:0:127.0.0.1", true},
+		{"IPv4-translated metadata endpoint blocked", "::ffff:0:169.254.169.254", true},
+		{"IPv4-translated public allowed", "::ffff:0:8.8.8.8", false},
 	}
 
 	for _, tt := range tests {
@@ -695,5 +802,37 @@ func TestLooksLikeLegacyIPLiteral(t *testing.T) {
 				t.Errorf("looksLikeLegacyIPLiteral(%q) = %v, want %v", tt.host, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestCanonicalProxyAddr_IDNA pins the IDNA alignment with net/http's dial
+// form: non-ASCII proxy hostnames are punycoded before the port is appended,
+// on both the explicit-port and default-port paths (previously documented as
+// a limitation — an IDN proxy never matched its own dial address).
+func TestCanonicalProxyAddr_IDNA(t *testing.T) {
+	u, err := url.Parse("http://münchen.example:8080")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := CanonicalProxyAddr(u); got != "xn--mnchen-3ya.example:8080" {
+		t.Errorf("explicit port: CanonicalProxyAddr = %q, want xn--mnchen-3ya.example:8080", got)
+	}
+
+	u2, err := url.Parse("socks5://münchen.example")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := CanonicalProxyAddr(u2); got != "xn--mnchen-3ya.example:1080" {
+		t.Errorf("default port: CanonicalProxyAddr = %q, want xn--mnchen-3ya.example:1080", got)
+	}
+
+	// ASCII hosts pass through unchanged (both port forms).
+	u3, _ := url.Parse("http://proxy.internal:3128")
+	if got := CanonicalProxyAddr(u3); got != "proxy.internal:3128" {
+		t.Errorf("ascii explicit port: got %q", got)
+	}
+	u4, _ := url.Parse("http://proxy.internal")
+	if got := CanonicalProxyAddr(u4); got != "proxy.internal:80" {
+		t.Errorf("ascii default port: got %q", got)
 	}
 }

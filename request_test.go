@@ -27,6 +27,9 @@ import (
 
 func TestRequest_Headers(t *testing.T) {
 	t.Run("SingleHeaders", func(t *testing.T) {
+		// (Former "AcceptJSON"/"AcceptXML" rows removed: they invoked the same
+		// WithHeader func value with a different key/value — no distinct code
+		// path; any single-header send covers the option.)
 		tests := []struct {
 			name       string
 			key        string
@@ -34,8 +37,6 @@ func TestRequest_Headers(t *testing.T) {
 			optionFunc func(string, string) RequestOption
 		}{
 			{"WithHeader", "X-Custom-Header", "custom-value", WithHeader},
-			{"AcceptJSON", "Accept", "application/json", WithHeader},
-			{"AcceptXML", "Accept", "application/xml", WithHeader},
 		}
 
 		for _, tt := range tests {
@@ -467,6 +468,14 @@ func TestRequest_WithBody(t *testing.T) {
 			body:        map[string]string(nil),
 			expectError: true,
 		},
+		// xml.Marshal cannot serialize a channel: the request must fail at
+		// body-build time instead of sending a partial body.
+		{
+			name:        "Error_XMLUnmarshalable",
+			body:        make(chan int),
+			kinds:       []BodyKind{BodyXML},
+			expectError: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -565,7 +574,7 @@ func TestWithFile(t *testing.T) {
 
 	t.Run("empty field name", func(t *testing.T) {
 		opt := WithFile("", "test.txt", []byte("data"))
-		err := opt(nil)
+		err := opt.apply(nil)
 		if err == nil {
 			t.Error("expected error for empty field name")
 		}
@@ -573,7 +582,7 @@ func TestWithFile(t *testing.T) {
 
 	t.Run("empty filename", func(t *testing.T) {
 		opt := WithFile("file", "", []byte("data"))
-		err := opt(nil)
+		err := opt.apply(nil)
 		if err == nil {
 			t.Error("expected error for empty filename")
 		}
@@ -607,6 +616,104 @@ func TestWithFile(t *testing.T) {
 			t.Fatalf("WithFile failed: %v", err)
 		}
 	})
+
+	t.Run("oversize filename rejected at the option layer", func(t *testing.T) {
+		// WithFile validates via ValidateFieldName, whose limit is
+		// validation.MaxFilenameLen.
+		long := strings.Repeat("f", validation.MaxFilenameLen+1)
+		client, _ := newTestClient()
+		defer func() { _ = client.Close() }()
+
+		_, err := client.Post("http://example.com", WithFile("file", long, []byte("data")))
+		if err == nil {
+			t.Errorf("expected error for %d-char filename (max %d)", len(long), validation.MaxFilenameLen)
+		}
+	})
+
+	t.Run("oversize filename rejected at the multipart encoding layer", func(t *testing.T) {
+		// A FormData built directly (not via WithFile) bypasses the option
+		// check; the encoder's own ValidateMultipartToken must reject it
+		// before any bytes hit the wire.
+		long := strings.Repeat("f", validation.MaxFilenameLen+1)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Error("server must not receive an oversize multipart filename")
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer func() { _ = client.Close() }()
+
+		_, err := client.Post(server.URL, WithFormData(&FormData{
+			Files: map[string]*FileData{
+				"file": {Filename: long, Content: []byte("data")},
+			},
+		}))
+		if err == nil {
+			t.Error("expected error for oversize filename in direct FormData")
+		}
+	})
+}
+
+// TestWithForm_Variants covers the form-body entry points beyond the nil
+// guard (TestOptions_ErrorPaths/WithForm nil data): an empty map is a valid
+// empty body, url.Values encode via WithBody(BodyForm), and control
+// characters in keys or values are rejected.
+func TestWithForm_Variants(t *testing.T) {
+	t.Run("empty map sends an empty form body", func(t *testing.T) {
+		var gotBody string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			gotBody = string(body)
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer func() { _ = client.Close() }()
+
+		if _, err := client.Post(server.URL, WithForm(map[string]string{})); err != nil {
+			t.Fatalf("Post with empty form map failed: %v", err)
+		}
+		if gotBody != "" {
+			t.Errorf("empty form map produced body %q, want empty", gotBody)
+		}
+	})
+
+	t.Run("url.Values accepted via WithBody(BodyForm)", func(t *testing.T) {
+		var gotBody string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if ct := r.Header.Get("Content-Type"); ct != "application/x-www-form-urlencoded" {
+				t.Errorf("Content-Type = %q, want form-urlencoded", ct)
+			}
+			body, _ := io.ReadAll(r.Body)
+			gotBody = string(body)
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := newTestClient()
+		defer func() { _ = client.Close() }()
+
+		values := url.Values{"multi": {"a", "b"}, "k": {"v"}}
+		if _, err := client.Post(server.URL, WithBody(values, BodyForm)); err != nil {
+			t.Fatalf("Post with url.Values form failed: %v", err)
+		}
+		// url.Values.Encode sorts keys: "k=v&multi=a&multi=b".
+		if want := values.Encode(); gotBody != want {
+			t.Errorf("form body = %q, want %q", gotBody, want)
+		}
+	})
+
+	t.Run("control character in value rejected", func(t *testing.T) {
+		client, _ := newTestClient()
+		defer func() { _ = client.Close() }()
+
+		_, err := client.Post("http://example.com", WithForm(map[string]string{"k": "bad\x00value"}))
+		if err == nil {
+			t.Error("expected error for control character in form value")
+		}
+	})
 }
 
 // ----------------------------------------------------------------------------
@@ -619,7 +726,7 @@ func TestWithContext(t *testing.T) {
 	t.Run("nil context error", func(t *testing.T) {
 		var nilCtx context.Context // intentionally nil: exercises the guard
 		opt := WithContext(nilCtx)
-		err := opt(nil)
+		err := opt.apply(nil)
 		if err == nil {
 			t.Error("expected error for nil context")
 		}
@@ -651,7 +758,7 @@ func TestWithSecureCookie(t *testing.T) {
 
 	t.Run("nil config", func(t *testing.T) {
 		opt := WithSecureCookie(nil)
-		err := opt(nil)
+		err := opt.apply(nil)
 		if err == nil {
 			t.Error("expected error for nil config")
 		}
@@ -684,15 +791,26 @@ func TestWithTimeout_Boundaries(t *testing.T) {
 
 	t.Run("negative timeout", func(t *testing.T) {
 		opt := WithTimeout(-1 * time.Second)
-		err := opt(nil)
+		err := opt.apply(nil)
 		if err == nil {
 			t.Error("expected error for negative timeout")
 		}
 	})
 
+	t.Run("zero timeout", func(t *testing.T) {
+		// Zero is rejected (M5): the engine reads it as "not set", so the
+		// request would silently fall back to the client default timeout.
+		// WithNoTimeout is the supported way to disable the timeout.
+		opt := WithTimeout(0)
+		err := opt.apply(nil)
+		if err == nil {
+			t.Error("expected error for zero timeout")
+		}
+	})
+
 	t.Run("exceeds max timeout", func(t *testing.T) {
 		opt := WithTimeout(31 * time.Minute)
-		err := opt(nil)
+		err := opt.apply(nil)
 		if err == nil {
 			t.Error("expected error for exceeding max timeout")
 		}
@@ -712,6 +830,23 @@ func TestWithTimeout_Boundaries(t *testing.T) {
 			t.Fatalf("valid timeout should work: %v", err)
 		}
 	})
+}
+
+// TestWithCookieConstructors_NeverReturnNil pins the no-op contract: empty
+// cookie inputs return a no-op option rather than nil, so callers storing or
+// forwarding the result never need nil defenses.
+func TestWithCookieConstructors_NeverReturnNil(t *testing.T) {
+	t.Parallel()
+
+	for name, opt := range map[string]RequestOption{
+		"WithCookies(nil)":       WithCookies(nil),
+		"WithCookieMap(nil)":     WithCookieMap(nil),
+		"WithCookieString(\"\")": WithCookieString(""),
+	} {
+		if opt == nil {
+			t.Errorf("%s returned nil; empty cookie input must return a no-op option", name)
+		}
+	}
 }
 
 // ----------------------------------------------------------------------------
@@ -914,7 +1049,7 @@ func TestOptions_ErrorPaths(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				req := engine.AcquireRequest()
-				err := WithBasicAuth(tt.username, tt.password)(req)
+				err := WithBasicAuth(tt.username, tt.password).apply(req)
 				if tt.wantErr && err == nil {
 					t.Error("expected error, got nil")
 				}
@@ -939,7 +1074,7 @@ func TestOptions_ErrorPaths(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				req := engine.AcquireRequest()
-				err := WithBearerToken(tt.token)(req)
+				err := WithBearerToken(tt.token).apply(req)
 				if tt.wantErr && err == nil {
 					t.Error("expected error, got nil")
 				}
@@ -970,7 +1105,7 @@ func TestOptions_ErrorPaths(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				req := engine.AcquireRequest()
-				err := WithQuery(tt.key, tt.value)(req)
+				err := WithQuery(tt.key, tt.value).apply(req)
 				if tt.wantErr && err == nil {
 					t.Error("expected error, got nil")
 				}
@@ -996,7 +1131,7 @@ func TestOptions_ErrorPaths(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				req := engine.AcquireRequest()
-				err := WithQueryMap(tt.params)(req)
+				err := WithQueryMap(tt.params).apply(req)
 				if tt.wantErr && err == nil {
 					t.Error("expected error, got nil")
 				}
@@ -1022,7 +1157,7 @@ func TestOptions_ErrorPaths(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				req := engine.AcquireRequest()
-				err := WithHeaderMap(tt.headers)(req)
+				err := WithHeaderMap(tt.headers).apply(req)
 				if tt.wantErr && err == nil {
 					t.Error("expected error, got nil")
 				}
@@ -1035,7 +1170,7 @@ func TestOptions_ErrorPaths(t *testing.T) {
 
 	t.Run("WithForm nil data", func(t *testing.T) {
 		req := engine.AcquireRequest()
-		err := WithForm(nil)(req)
+		err := WithForm(nil).apply(req)
 		if err == nil {
 			t.Error("expected error for nil form data")
 		}
@@ -1054,7 +1189,7 @@ func TestOptions_ErrorPaths(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				req := engine.AcquireRequest()
-				err := WithMaxRetries(tt.n)(req)
+				err := WithMaxRetries(tt.n).apply(req)
 				if tt.wantErr && err == nil {
 					t.Error("expected error, got nil")
 				}
@@ -1085,7 +1220,7 @@ func TestWithBinary_BoundaryConditions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := engine.AcquireRequest()
-			err := WithBinary(tt.data)(req)
+			err := WithBinary(tt.data).apply(req)
 			if tt.wantErr && err == nil {
 				t.Error("expected error, got nil")
 			}
@@ -1099,7 +1234,7 @@ func TestWithBinary_BoundaryConditions(t *testing.T) {
 func TestWithFormData_BoundaryConditions(t *testing.T) {
 	t.Run("nil form data", func(t *testing.T) {
 		req := engine.AcquireRequest()
-		err := WithFormData(nil)(req)
+		err := WithFormData(nil).apply(req)
 		if err == nil {
 			t.Error("expected error for nil form data")
 		}
@@ -1107,7 +1242,7 @@ func TestWithFormData_BoundaryConditions(t *testing.T) {
 
 	t.Run("empty form data", func(t *testing.T) {
 		req := engine.AcquireRequest()
-		err := WithFormData(&FormData{})(req)
+		err := WithFormData(&FormData{}).apply(req)
 		// empty form data should be valid (no fields, no files)
 		if err != nil {
 			t.Errorf("expected no error for empty form data, got: %v", err)

@@ -33,6 +33,13 @@ func NewSPKIHashPinner(hashes ...string) (CertificatePinner, error) {
 // NewPublicKeyPinner creates a CertificatePinner from one or more DER-encoded
 // PKIX public keys (as returned by x509.MarshalPKIXPublicKey). Exported for use
 // by the public httpc package.
+//
+// PIN BASIS CAVEAT: verification hashes the certificate's raw
+// SubjectPublicKeyInfo bytes (cert.RawSubjectPublicKeyInfo), and
+// re-serializing a parsed key with x509.MarshalPKIXPublicKey can produce
+// different DER (e.g. a non-canonical AlgorithmIdentifier), which would
+// falsely reject the pin. Derive pins from the certificate's
+// RawSubjectPublicKeyInfo bytes directly for maximum fidelity.
 func NewPublicKeyPinner(publicKeys ...[]byte) (CertificatePinner, error) {
 	return newPublicKeyPinner(publicKeys...)
 }
@@ -136,7 +143,12 @@ func newSPKIHashPinner(hashes ...string) (*spkiHashPinner, error) {
 			return nil, fmt.Errorf("invalid SPKI hash '%s': decoded %d bytes, want %d (SHA-256)", h, len(decoded), sha256.Size)
 		}
 
-		p.hashes[h] = true
+		// Store under the canonical re-encoding: a non-canonical final base64
+		// character decodes to the same 32 bytes but never equals the
+		// canonical string VerifyPeerCertificate compares against, so the pin
+		// would silently match nothing (permanent failures that look like a
+		// server-side pin change rather than a config typo).
+		p.hashes[base64.StdEncoding.EncodeToString(decoded)] = true
 	}
 
 	if len(p.hashes) == 0 {

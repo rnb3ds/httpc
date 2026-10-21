@@ -1399,3 +1399,154 @@ func TestLookupIPAddr_IPLiteralFastPath(t *testing.T) {
 		t.Error("LookupIPAddr(example.com) with cancelled ctx unexpectedly succeeded")
 	}
 }
+
+// TestFallbackLookup directly exercises fallbackLookup (doh.go), the
+// system-resolver fallback behind the DoH providers. It was previously covered
+// only indirectly via lookupViaProviders. The subtests pin: the success path
+// through the system resolver, the nil-context guard, the deadline-less
+// context branch (the 10s fallbackLookupTimeout cap is applied there — the
+// branch is driven, but actually waiting out the 10s cap is impractical in a
+// unit test, so the timeout firing itself is untested), and both error paths
+// joining the DoH lastErr via errors.Join.
+func TestFallbackLookup(t *testing.T) {
+	dohErr := errors.New("all DoH providers failed")
+
+	t.Run("system resolver success (no deadline branch)", func(t *testing.T) {
+		resolver := NewDoHResolver(nil, time.Minute)
+		t.Cleanup(func() { _ = resolver.Close() })
+
+		// Deadline-less context exercises the timeout-cap wrapping branch;
+		// the loopback lookup itself returns immediately.
+		ips, err := resolver.fallbackLookup(context.Background(), "localhost", nil)
+		if err != nil {
+			t.Fatalf("fallbackLookup(localhost): %v", err)
+		}
+		if len(ips) == 0 {
+			t.Fatal("fallbackLookup(localhost) returned no IPs")
+		}
+		sawLoopback := false
+		for _, ip := range ips {
+			if ip.IP.IsLoopback() {
+				sawLoopback = true
+			}
+		}
+		if !sawLoopback {
+			t.Errorf("localhost resolved to %v, want at least one loopback IP", ips)
+		}
+	})
+
+	t.Run("nil context does not panic", func(t *testing.T) {
+		resolver := NewDoHResolver(nil, time.Minute)
+		t.Cleanup(func() { _ = resolver.Close() })
+
+		// A nil ctx must fall back to context.Background(); use a host that
+		// resolves locally so the outcome is deterministic offline.
+		ips, err := resolver.fallbackLookup(nil, "localhost", nil) //nolint:staticcheck // nil ctx is the branch under test
+		if err != nil {
+			t.Fatalf("fallbackLookup(nil, localhost): %v", err)
+		}
+		if len(ips) == 0 {
+			t.Error("fallbackLookup(nil, localhost) returned no IPs")
+		}
+	})
+
+	t.Run("failure joins DoH and system errors", func(t *testing.T) {
+		resolver := NewDoHResolver(nil, time.Minute)
+		t.Cleanup(func() { _ = resolver.Close() })
+
+		// The .invalid TLD is reserved for guaranteed resolver failure
+		// (RFC 6761); a short deadline keeps the test snappy either way.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		_, err := resolver.fallbackLookup(ctx, "this-host-does-not-exist-xyz123.invalid", dohErr)
+		if err == nil {
+			t.Fatal("expected error for unresolvable host, got nil")
+		}
+		if !strings.Contains(err.Error(), "DoH and system lookup both failed") {
+			t.Errorf("error %q should mention the combined failure", err.Error())
+		}
+		if !errors.Is(err, dohErr) {
+			t.Errorf("error %q should wrap the DoH lastErr via errors.Join", err.Error())
+		}
+	})
+
+	t.Run("existing deadline honored without re-wrap", func(t *testing.T) {
+		resolver := NewDoHResolver(nil, time.Minute)
+		t.Cleanup(func() { _ = resolver.Close() })
+
+		// Pre-cancelled context WITH a deadline: skips the timeout re-wrap
+		// branch and fails fast inside the system resolver.
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		cancel()
+
+		_, err := resolver.fallbackLookup(ctx, "example.com", dohErr)
+		if err == nil {
+			t.Fatal("expected error with cancelled context, got nil")
+		}
+		if !errors.Is(err, dohErr) {
+			t.Errorf("error %q should wrap the DoH lastErr", err.Error())
+		}
+	})
+}
+
+// TestLookupDedup_WaiterRetriesAfterLeaderCancel pins the singleflight
+// cancellation-isolation fix: a leader cancelled mid-flight used to publish
+// context.Canceled to every waiter, failing lookups whose own contexts were
+// healthy (the connection pool does not retry DoH failures, so one cancelled
+// request cascaded into unrelated concurrent lookups of the same host).
+// Healthy waiters now re-enter once as a fresh leader.
+func TestLookupDedup_WaiterRetriesAfterLeaderCancel(t *testing.T) {
+	release := make(chan struct{})
+	var hits int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Leader round (A + AAAA = 2 requests): block until released. The
+		// leader's context is cancelled while these are in flight, so they
+		// fail with context.Canceled client-side regardless of the response.
+		if atomic.AddInt32(&hits, 1) <= 2 {
+			<-release
+		}
+		w.Header().Set("Content-Type", "application/dns-json")
+		_, _ = w.Write([]byte(`{"Status":0,"Answer":[{"name":"retry.test","type":1,"data":"9.9.9.9"}]}`))
+	}))
+	defer server.Close()
+
+	resolver := NewDoHResolver([]*dohProvider{
+		{Name: "local", Template: server.URL + "/dns-query?name={name}&type=A", Priority: 1},
+	}, time.Minute) // long TTL: nothing is cached from the failed leader round
+	defer func() { _ = resolver.Close() }()
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := resolver.LookupIPAddr(leaderCtx, "retry.test")
+		leaderDone <- err
+	}()
+
+	// Wait until the leader is mid-flight (its provider requests entered the
+	// handler), then attach waiters while the call is still inflight.
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt32(&hits) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	const waiters = 3
+	waiterDone := make(chan error, waiters)
+	for i := 0; i < waiters; i++ {
+		go func() {
+			_, err := resolver.LookupIPAddr(context.Background(), "retry.test")
+			waiterDone <- err
+		}()
+	}
+	time.Sleep(50 * time.Millisecond) // let the waiters attach to the inflight call
+	close(release)                    // unblock the server (too late for the cancelled leader)
+	cancelLeader()
+
+	if err := <-leaderDone; err == nil {
+		t.Fatal("leader lookup unexpectedly succeeded after cancellation")
+	}
+	for i := 0; i < waiters; i++ {
+		if err := <-waiterDone; err != nil {
+			t.Errorf("healthy waiter failed after leader cancellation: %v", err)
+		}
+	}
+}

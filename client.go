@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	"github.com/cybergodev/httpc/internal/engine"
+	"github.com/cybergodev/httpc/internal/types"
 )
 
 // backgroundCtx is a convenience alias for context.Background(), used as the
@@ -76,15 +77,18 @@ type DomainClienter interface {
 
 	// URL returns the base URL this client was constructed with.
 	URL() string
-	// Domain returns the host:port of the base URL, scoping sessions and
-	// credential reuse to that exact origin.
+	// Domain returns the hostname of the base URL (without port). Origin
+	// scoping (host:port comparison) is enforced internally by
+	// targetsBaseHost — compare against url.URL.Host, not Domain(), when
+	// matching origins.
 	Domain() string
 
 	// Session header management
 
 	// SetHeader sets a session header applied to every subsequent request.
 	SetHeader(key, value string) error
-	// SetHeaders replaces all session headers with the given map.
+	// SetHeaders adds or updates multiple session headers (matching keys
+	// are replaced; other session headers persist).
 	SetHeaders(headers map[string]string) error
 	// DeleteHeader removes one session header.
 	DeleteHeader(key string)
@@ -253,6 +257,11 @@ func copyConfig(src Config) Config {
 		copy(dst.Security.RedirectWhitelist, src.Security.RedirectWhitelist)
 	}
 
+	if len(dst.Security.SensitiveHeaders) > 0 {
+		dst.Security.SensitiveHeaders = make([]string, len(src.Security.SensitiveHeaders))
+		copy(dst.Security.SensitiveHeaders, src.Security.SensitiveHeaders)
+	}
+
 	if len(dst.Connection.ProxyPool) > 0 {
 		dst.Connection.ProxyPool = make([]string, len(src.Connection.ProxyPool))
 		copy(dst.Connection.ProxyPool, src.Connection.ProxyPool)
@@ -265,11 +274,6 @@ func copyConfig(src Config) Config {
 
 	if dst.Security.TLSConfig != nil {
 		dst.Security.TLSConfig = src.Security.TLSConfig.Clone()
-	}
-
-	if dst.Security.CookieSecurity != nil {
-		cookieSec := *src.Security.CookieSecurity
-		dst.Security.CookieSecurity = &cookieSec
 	}
 
 	if len(dst.Security.SSRFExemptCIDRs) > 0 {
@@ -319,13 +323,17 @@ func (c *clientImpl) buildMiddlewareChain(middlewares []MiddlewareFunc) Handler 
 
 		// Single option closure forwards all mutable fields from the middleware-modified request.
 		resp, err := c.engine.Request(reqCtx, req.Method(), req.URL(),
-			func(r *engine.Request) error {
+			engine.RequestOption(func(r types.RequestMutator) error {
+				engR, ok := r.(*engine.Request)
+				if !ok {
+					return fmt.Errorf("middleware terminal handler: engine passed %T, want *engine.Request", r)
+				}
 				// Fast path: src is the concrete *engine.Request (all built-in
 				// middleware mutates in place). Apply is owned by the engine, so
 				// new Request fields are forwarded here by construction — the
 				// facade no longer enumerates them.
 				if isEngineReq {
-					r.Apply(engReq)
+					engR.Apply(engReq)
 					return nil
 				}
 				// Fallback for a middleware that replaced req with a non-*engine.Request
@@ -341,24 +349,24 @@ func (c *clientImpl) buildMiddlewareChain(middlewares []MiddlewareFunc) Handler 
 				// writes across future requests). No facade-side copy required;
 				// the engine setter is the single copy point.
 				if headers := req.Headers(); headers != nil {
-					r.SetHeaders(headers)
+					engR.SetHeaders(headers)
 				}
 				if qp := req.QueryParams(); qp != nil {
-					r.SetQueryParams(qp)
+					engR.SetQueryParams(qp)
 				}
-				r.SetBody(req.Body())
-				r.SetTimeout(req.Timeout())
-				r.SetMaxRetries(req.MaxRetries())
-				r.SetCookies(req.Cookies())
+				engR.SetBody(req.Body())
+				engR.SetTimeout(req.Timeout())
+				engR.SetMaxRetries(req.MaxRetries())
+				engR.SetCookies(req.Cookies())
 				if fr := req.FollowRedirects(); fr != nil {
-					r.SetFollowRedirects(fr)
+					engR.SetFollowRedirects(fr)
 				}
 				if mr := req.MaxRedirects(); mr != nil {
-					r.SetMaxRedirects(mr)
+					engR.SetMaxRedirects(mr)
 				}
-				r.SetStreamBody(req.StreamBody())
+				engR.SetStreamBody(req.StreamBody())
 				return nil
-			})
+			}))
 		if err != nil {
 			return nil, err
 		}
@@ -481,7 +489,7 @@ func (c *clientImpl) executeRequest(ctx context.Context, method, url string, opt
 		return nil, ErrClientClosed
 	}
 	if !c.hasMiddlewares {
-		return c.engine.Request(ctx, method, url, options...)
+		return c.engine.Request(ctx, method, url, toEngineOptions(options)...)
 	}
 
 	engineReq := acquireMiddlewareRequest()
@@ -495,12 +503,8 @@ func (c *clientImpl) executeRequest(ctx context.Context, method, url string, opt
 	engineReq.SetURL(url)
 	engineReq.SetContext(ctx)
 
-	for _, opt := range options {
-		if opt != nil {
-			if err := opt(engineReq); err != nil {
-				return nil, fmt.Errorf("failed to apply request option: %w", err)
-			}
-		}
+	if err := engine.ApplyOptions(engineReq, toEngineOptions(options)); err != nil {
+		return nil, fmt.Errorf("failed to apply request option: %w", err)
 	}
 
 	resp, err := c.middlewareChain(ctx, engineReq)
@@ -654,7 +658,9 @@ func Request(ctx context.Context, method, url string, options ...RequestOption) 
 }
 
 // SetDefaultClient sets a custom client as the default for package-level functions.
-// The previous default client is closed automatically.
+// The previous default client is closed automatically. The new client is
+// installed even when closing the previous one fails; in that case the
+// returned error reports the close failure, not a failed swap.
 //
 // Concurrency: closing the previous default aborts any requests still in
 // flight on it — goroutines that already resolved the old client may observe
@@ -679,14 +685,17 @@ func SetDefaultClient(client Client) error {
 		return fmt.Errorf("cannot set a closed client as default")
 	}
 
-	// Swap the old client with the new one
-	var closeErr error
+	// Swap the old client with the new one. The new client is installed even
+	// when an error is returned: the error reports the previous default's
+	// close failure, not a failed swap.
 	oldClient := defaultClient.Load()
 	defaultClient.Store(impl)
 	if oldClient != nil && oldClient != impl {
-		closeErr = oldClient.Close()
+		if closeErr := oldClient.Close(); closeErr != nil {
+			return fmt.Errorf("default client replaced, but closing the previous default failed: %w", closeErr)
+		}
 	}
-	return closeErr
+	return nil
 }
 
 // resultBundle co-locates a Result and its three nested info structs in a single

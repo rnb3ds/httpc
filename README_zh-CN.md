@@ -1,13 +1,13 @@
 # HTTPC - 安全的 Go HTTP 客户端
 
-[![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://golang.org)
+[![Go Version](https://img.shields.io/badge/Go-1.27+-00ADD8?logo=go)](https://golang.org)
 [![Go Reference](https://pkg.go.dev/badge/github.com/cybergodev/httpc.svg)](https://pkg.go.dev/github.com/cybergodev/httpc)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Security](https://img.shields.io/badge/Security-Hardened-red.svg)](SECURITY.md)
 [![Dependencies](https://img.shields.io/badge/deps-minimal-brightgreen.svg)](go.mod)
 [![Thread Safe](https://img.shields.io/badge/thread%20safe-%E2%9C%93-brightgreen.svg)](docs/09_concurrency-safety.md)
 
-一个快速、安全的 Go HTTP 客户端库，具备合理的默认配置、极简依赖和内置弹性机制。
+一个快速、安全的 Go HTTP 客户端库，具备合理的默认配置、精简的依赖集和内置弹性机制。
 
 **[English Documentation](README.md)** | **[www.cybergo.dev/httpc](https://www.cybergo.dev/httpc)**
 
@@ -30,6 +30,7 @@
 - [中间件](#中间件)
 - [代理配置](#代理配置)
 - [安全特性](#安全特性)
+- [浏览器传输指纹](#浏览器传输指纹)
 - [错误处理](#错误处理)
 - [并发安全](#并发安全)
 - [接口](#接口)
@@ -47,7 +48,7 @@
 | **内置弹性** | 智能重试，支持指数退避和抖动 —— 非幂等请求（POST/PATCH）默认仅执行一次 |
 | **自动解压缩** | 透明的 gzip/deflate 处理，带 Zip 炸弹防护 |
 | **开发者友好** | 简洁的 API、直观的选项模式、完善的文档 |
-| **极简依赖** | 1 个直接依赖 (golang.org/x/sys)，纯 Go 实现 |
+| **依赖** | 7 个直接模块 —— 标准路径用 `golang.org/x/net` + `golang.org/x/sys`；brotli / compress / uTLS / tls-client 仅供 `Security.TLSFingerprint` 使用 |
 | **Cookie 管理** | 完整的 Cookie Jar 支持，带安全验证 |
 | **文件操作** | 安全的文件下载，支持进度跟踪和断点续传 |
 | **流式传输** | `io.Reader` 请求体、零拷贝 `io.Pipe` 上传、磁盘流式下载 |
@@ -60,7 +61,7 @@
 go get -u github.com/cybergodev/httpc
 ```
 
-**环境要求：** Go 1.25+
+**环境要求：** Go 1.27+
 
 ---
 
@@ -294,6 +295,12 @@ httpc.WithTimeout(30 * time.Second)
 // 重试配置
 httpc.WithMaxRetries(3)
 
+// 对某次慢请求解除客户端级超时
+httpc.WithNoTimeout()
+
+// 选择重试非幂等方法（仅限可安全重放的端点）
+httpc.WithRetryNonIdempotent(true)
+
 // 重定向控制
 httpc.WithFollowRedirects(false)
 httpc.WithMaxRedirects(5)
@@ -327,7 +334,7 @@ httpc.WithOnResponse(func(resp httpc.ResponseMutator) error {
 | **查询参数** | `WithQuery(key, value)`, `WithQueryMap(map)` |
 | **请求体** | `WithJSON(data)`, `WithXML(data)`, `WithForm(map)`, `WithFormData(*FormData)`, `WithFile(field, filename, content)`, `WithBody(data, ...BodyKind)`, `WithBinary([]byte, ...contentType)`, `WithStreamBody(bool)` |
 | **Cookie** | `WithCookies([]http.Cookie)`, `WithCookieMap(map)`, `WithCookieString("a=1; b=2")`, `WithSecureCookie(config)` |
-| **控制** | `WithTimeout(dur)`, `WithMaxRetries(n)`, `WithContext(ctx)`, `WithAllowPrivateIPs(bool)` |
+| **控制** | `WithTimeout(dur)`, `WithNoTimeout()`, `WithMaxRetries(n)`, `WithRetryNonIdempotent(bool)`, `WithContext(ctx)`, `WithAllowPrivateIPs(bool)` |
 | **重定向** | `WithFollowRedirects(bool)`, `WithMaxRedirects(n)` |
 | **回调** | `WithOnRequest(fn)`, `WithOnResponse(fn)` |
 
@@ -734,7 +741,7 @@ config := httpc.Config{
         Request:        30 * time.Second,
         Dial:           10 * time.Second,
         TLSHandshake:   10 * time.Second,
-        ResponseHeader: 30 * time.Second,
+        ResponseHeader: 0, // 禁用：依赖 Context 超时（仅当需要传输层硬上限时才设为正值）
         IdleConn:       90 * time.Second,
     },
 
@@ -752,6 +759,8 @@ config := httpc.Config{
         MaxTLSVersion:       tls.VersionTLS13,
         MaxResponseBodySize: 50 * 1024 * 1024, // 50 MB
         AllowPrivateIPs:     false,
+        FollowRedirects:     true,
+        MaxRedirects:        10,
     },
 
     // 重试设置
@@ -762,11 +771,9 @@ config := httpc.Config{
         EnableJitter:  true,
     },
 
-    // 默认设置 (每次请求的默认值：User-Agent、请求头、重定向策略)
+    // 默认设置 (每次请求的默认值：User-Agent、请求头)
     Defaults: httpc.RequestDefaults{
-        UserAgent:       "MyApp/1.0",
-        FollowRedirects: true,
-        MaxRedirects:    10,
+        UserAgent: "MyApp/1.0",
     },
 }
 
@@ -817,14 +824,17 @@ fmt.Println(config.String())
 | `Connection.EnableDoH` | `bool` | `false` | 启用 DNS-over-HTTPS |
 | `Connection.DoHCacheTTL` | `time.Duration` | `5m` | DoH 缓存时长 |
 | `Connection.MaxResponseHeaderBytes` | `int64` | `0` | 最大响应头大小 (0 = Go 标准库默认 1MB) |
+| `Connection.PublicSuffixList` | `cookiejar.PublicSuffixList` | `nil` | Cookie Jar 的公共后缀数据库（推荐：`golang.org/x/net/publicsuffix.List`） |
 | **安全设置** (`Security`) ||||
 | `Security.TLSConfig` | `*tls.Config` | `nil` | 自定义 TLS 配置 |
 | `Security.MinTLSVersion` | `uint16` | `TLS 1.2` | 最低 TLS 版本 |
 | `Security.MaxTLSVersion` | `uint16` | `TLS 1.3` | 最高 TLS 版本 |
 | `Security.InsecureSkipVerify` | `bool` | `false` | 跳过 TLS 验证 (仅限测试！) |
-| `Security.CertificatePinner` | `CertificatePinner` | `nil` | 证书固定 — 即使 CA 被攻破也拒绝 MITM |
+| `Security.TLSFingerprint` | `string` | `""` | 浏览器指纹预设 — 见 [浏览器传输指纹](#浏览器传输指纹) |
+| `Security.TLSFingerprintDisableSessionTickets` | `bool` | `false` | 强制每个指纹连接完整 TLS 握手（Chrome 档案默认恢复会话） |
+| `Security.CertificatePinner` | `CertificatePinner` | `nil` | 证书固定 — 即使 CA 被攻破也拒绝 MITM（指纹路径亦支持） |
 | `Security.MaxResponseBodySize` | `int64` | `10MB` | 最大响应体大小 |
-| `Security.MaxRequestBodySize` | `int64` | `0` | 最大请求体大小 (0 = 不限制；不会回退到 MaxResponseBodySize) |
+| `Security.MaxRequestBodySize` | `int64` | `0` | 最大请求体大小 (0 = 不限制；不会回退到 MaxResponseBodySize)。`io.Reader` 请求体在发送期强制 |
 | `Security.AllowPrivateIPs` | `bool` | `false` | 允许私有 IP (默认启用 SSRF 防护) |
 | `Security.ValidateURL` | `bool` | `true` | 启用 URL 验证 |
 | `Security.ValidateHeaders` | `bool` | `true` | 启用请求头验证 |
@@ -832,7 +842,9 @@ fmt.Println(config.String())
 | `Security.RedirectWhitelist` | `[]string` | `nil` | 允许的重定向域名 |
 | `Security.MaxDecompressedBodySize` | `int64` | `100MB` | 最大解压响应体大小 (Zip 炸弹防护) |
 | `Security.SSRFExemptCIDRs` | `[]string` | `nil` | 豁免 SSRF 阻断的 CIDR 范围 |
-| `Security.CookieSecurity` | `*CookieSecurityConfig` | `nil` | 当前未在请求处理中生效——请使用 `WithSecureCookie` 或 `SessionConfig.CookieSecurity` |
+| `Security.FollowRedirects` | `bool` | `true` | 跟随重定向 |
+| `Security.MaxRedirects` | `int` | `10` | 重定向上限;计入初始请求,即 10 最多跟随 9 次重定向 |
+| `Security.SensitiveHeaders` | `[]string` | `nil` | 跨域重定向时额外剥离的请求头名（Authorization/Cookie 始终剥离） |
 | **重试设置** (`Retry`) ||||
 | `Retry.MaxRetries` | `int` | `3` | 最大重试次数 |
 | `Retry.Delay` | `time.Duration` | `1s` | 初始重试延迟 |
@@ -840,13 +852,12 @@ fmt.Println(config.String())
 | `Retry.EnableJitter` | `bool` | `true` | 重试添加抖动 |
 | `Retry.MaxRetryDelay` | `time.Duration` | `30s` | 最大重试延迟上限 |
 | `Retry.CustomPolicy` | `RetryPolicy` | `nil` | 自定义重试逻辑 |
+| `Retry.RetryNonIdempotent` | `bool` | `false` | 重试非幂等方法（POST/PATCH）；默认关闭 —— 它们仅执行一次 |
 | **中间件设置** (`Middleware: httpc.MiddlewareConfig{...}`) ||||
 | `Middleware.Middlewares` | `[]MiddlewareFunc` | `nil` | 中间件链 |
 | **默认设置** (`Defaults: httpc.RequestDefaults{...}`) ||||
 | `Defaults.UserAgent` | `string` | `"httpc/1.0"` | 默认 User-Agent |
 | `Defaults.Headers` | `map[string]string` | `{}` | 默认请求头 |
-| `Defaults.FollowRedirects` | `bool` | `true` | 跟随重定向 |
-| `Defaults.MaxRedirects` | `int` | `10` | 重定向上限;计入初始请求,即 10 最多跟随 9 次重定向 |
 
 ---
 
@@ -889,11 +900,10 @@ auditCfg.OnAudit = func(a httpc.AuditEvent) {
 }
 httpc.AuditMiddleware(auditCfg)
 
-// 带自定义配置的审计（JSON 格式，包含请求头）
+// 带自定义配置的审计（在事件中包含请求/响应头）
 auditCfgJSON := httpc.DefaultAuditConfig()
 auditCfgJSON.OnAudit = func(a httpc.AuditEvent) { log.Printf("[AUDIT] %v", a) }
 auditCfgJSON.IncludeHeaders = true
-auditCfgJSON.Format = "json"
 httpc.AuditMiddleware(auditCfgJSON)
 ```
 
@@ -1087,6 +1097,10 @@ cfg.Security.CertificatePinner = pinner
 client, err := httpc.New(cfg)
 ```
 
+证书固定在指纹路径（`Security.TLSFingerprint`）上同样可用：pinner 作为伪装握手的
+`VerifyPeerCertificate` 钩子运行；当同时设置 `InsecureSkipVerify` 时，pinner 成为唯一
+校验门槛并仅固定叶子证书（跳过校验时无法获得已验证链）。
+
 从证书生成 SPKI 哈希：
 
 ```bash
@@ -1112,7 +1126,100 @@ httpc.SetSecurityWarnOutput(io.Discard)
 httpc.SetSecurityWarnOutput(os.Stderr)
 ```
 
+
 ---
+
+## 浏览器传输指纹
+
+现代 WAF（Cloudflare、Akamai、DataDome）检测的远不止 User-Agent：TLS ClientHello
+（JA3/JA4）、HTTP/2 帧（SETTINGS 值与顺序、WINDOW_UPDATE、伪头顺序、优先级、HPACK
+行为），以及 header 块本身（包括与 ClientHello 版本一致的 User-Agent）。设置
+`Security.TLSFingerprint` 后，httpc 的传输层被整体替换为浏览器仿真，走完全指纹化的
+HTTP/2（优先）与 HTTP/1.1（回退）：
+
+```go
+cfg := httpc.DefaultConfig()
+cfg.Security.TLSFingerprint = "chrome-latest" // 或 "chrome-windows"、"firefox-latest" 等
+client, err := httpc.New(cfg)
+```
+
+传输层之上的全部能力保持不变：重定向、重试、中间件、流式下载与 Cookie 处理仍是
+httpc 的语义。
+
+**能力边界**：指纹化让*传输层*（TLS、HTTP/2 帧、有序 header 块）与被仿真的浏览器
+不可区分，足以对抗被动指纹检测（JA3/JA4、Akamai H2 指纹、header 顺序）。它**不能**
+对抗 —— 任何纯 HTTP 客户端都不能 —— 需要执行 JavaScript 的防线（Cloudflare
+Managed Challenge / Turnstile、DataDome、Akamai sensor）、行为评分或 IP 信誉；这类
+目标需要真实浏览器或经授权的挑战求解环节。档案是单个浏览器构建的快照，会随浏览器
+发版老化：更新流程见 `internal/fingerprint/PROFILES.md`，另有一项每周 CI 任务监测
+漂移（`.github/workflows/fingerprint-drift.yml`）。
+
+**预设名**：`chrome` / `chrome-latest` / `chrome-155`（= Chrome 155）与
+`firefox` / `firefox-latest` / `firefox-158`（= Firefox 158），均可加 OS 后缀 ——
+桌面变体 `*-windows` / `*-macos` / `*-linux`，移动变体 `*-android` / `*-ios`
+（如 `chrome-windows`、`firefox-ios`），另保留旧版本固定别名 `chrome-152`、
+`firefox-148` 与旧复合别名 `android-chrome-latest`、`ios-chrome-latest`，以及
+`safari-ios`（= `ios-safari-latest`）—— Safari 使用与其他 iOS 预设相同的已验证
+WebKit 数据。没有桌面 Safari 档案：macOS Safari 的 ClientHello 有差异，且暂无
+已验证数据。
+
+行为说明：
+
+- **头部集权威**：预设以浏览器档案的值替换请求中的同名头（User-Agent、Accept、
+  Accept-Language 等），使线上形态与伪装的 ClientHello 保持一致；自定义头原样透传。
+  显式设置的 User-Agent 在该路径上**不会**覆盖预设。头部名按浏览器真实大小写输出——
+  `sec-ch-ua*` 小写、其余 Title-Case——HTTP/1.1 与 HTTP/2 都一样。
+- **协议**：由 ALPN 决定。服务器支持 HTTP/2 就走 HTTP/2，只支持 HTTP/1.1 就走
+  HTTP/1.1，且请求从不重放——两层之间没有手动回退。不尝试 HTTP/3：QUIC 连接使用独立的
+  TLS 栈，会绕过 `CertificatePinner`，静默丢失固定校验比不做协议竞速更糟。
+  `Connection.EnableHTTP2=false` 将该路径钉定在 HTTP/1.1，并同步改写 ClientHello 的 ALPN
+  列表。
+- **代理**：代理池、轮换与熔断语义保留（支持 HTTP、HTTPS 与 SOCKS5/5h）。HTTP 明文目标
+  经 HTTP 代理走 CONNECT 隧道；HTTPS 代理仅以 HTTP/1.1 CONNECT 隧道接入、代理自身证书
+  不做校验（仅目标侧握手被指纹化并校验）。代理固定绑定在连接池上——轮换是切换到另一个
+  连接池，而不是把在用的那个改指向。
+- **重定向一致性**：每个重定向跳转都会按浏览器行为修正档案的首跳取值：针对上一跳
+  URL 重算 `sec-fetch-site`（`same-origin` / `same-site` / `cross-site`）、丢弃
+  `sec-fetch-user`（仅首跳携带）；301/302/303 将 fetch 风格请求降级为 GET 时保留
+  fetch 风格头部，而不是切换成导航头部。
+- **证书固定可用**：`CertificatePinner` 在每次指纹化握手上运行（见上文证书固定一节）；
+  `Security.TLSConfig` 仍与指纹互斥（自定义 `tls.Config` 无法塑造伪装的 ClientHello）。
+- **解压**：档案广播 `gzip, deflate, br, zstd`，指纹栈全部解码（保持流式），以
+  identity 正文交给引擎 —— 引擎看不到原始 `Content-Encoding`，解码后的流因此按
+  `MaxResponseBodySize` 限流（`MaxDecompressedBodySize` 在该路径不生效）。未知
+  `Content-Encoding` 会显式报错，而不是把压缩字节当正文返回。
+- **SSRF 防护**：以"先解析再校验"的预检方式逐请求执行（含每个重定向跳转）；
+  相比标准路径的拨号层校验略弱（存在理论上的 DNS TOCTOU 窗口）。
+- **限制**：指纹连接不计入连接池指标、不走 `Connection.EnableDoH`。Android 预设
+  （`*-android`）目前输出桌面端指纹字节 —— 占位实现，待真实设备抓包后替换（见
+  `internal/fingerprint/PROFILES.md`）。iOS 预设（`*-ios`，含 `safari-ios`）使用真实
+  WebKit 数据（Safari 26.3 的 TLS 与 HTTP/2，已线上字节级实测），常规头部顺序仍为
+  桌面近似。
+- **会话恢复**：Chrome 档案按连接池缓存 TLS 会话票，重复连接以 PSK 恢复 —— 与
+  真实浏览器重访站点的行为一致（`session_resumption_test.go` 已实测）。ClientHello
+  不含 pre_shared_key 扩展的档案（Firefox、iOS WebKit 系列）始终完整握手。设置
+  `Security.TLSFingerprintDisableSessionTickets` 可强制每连接完整握手。
+- **已端到端实测**：`chrome-latest` 协商 h2，Akamai H2 指纹为
+  `1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p`
+  （哈希 `52d84b11737d980aef856699f885ca86`），UA 为 Chrome/155；`firefox-latest` 为
+  `1:65536;2:0;4:131072;5:16384|12517377|0|m,p,a,s`
+  （哈希 `6ea73faa8fc5aac76bded7bd238f6433`），UA 为 Firefox/158；`chrome-ios` 与
+  `safari-ios` 为 WebKit JA4 `t13d2013h2_a09f3c656075_7f0f34a4126d`，Akamai
+  `2:0;3:100;4:2097152;9:1|10420225|0|m,s,a,p`
+  （哈希 `c52879e43202aeb92740be6e8c86ea96`）—— 见
+  `internal/fingerprint/e2e_network_test.go`
+  （`go test -tags fingerprint_e2e ./internal/fingerprint/ -run PeetWSE2E`）。
+
+指纹数据存放在本仓库（`internal/fingerprint`）：ClientHello spec、HTTP/2 SETTINGS 序列
+与头部表都由 httpc 自己构建，再通过
+[`bogdanfinn/tls-client`](https://github.com/bogdanfinn/tls-client) 的 profile 接口交给
+传输层——因此档案可以领先于任何上游库的发布。传输层本身（uTLS 握手、HTTP/2 分帧、头部
+顺序与大小写）由该库提供，解压使用
+[`andybalholm/brotli`](https://github.com/andybalholm/brotli) 与
+[`klauspost/compress`](https://github.com/klauspost/compress)（zstd）。浏览器档案数据最初
+移植自 [`enetx/surf`](https://github.com/enetx/surf)（MIT）；httpc 不依赖该客户端库，也不
+再依赖 `enetx/http`、`enetx/http2` 或 `refraction-networking/utls`。`TLSFingerprint` 留空
+即保持标准协议栈，不引入额外依赖。
 
 ## 错误处理
 
@@ -1181,6 +1288,11 @@ var (
     ErrFileExists           // 文件已存在 (且 Overwrite 为 false)
     ErrResponseBodyEmpty    // 响应体为空
     ErrResponseBodyTooLarge // 响应体超过大小限制
+    ErrInvalidMaxRedirects  // 重定向上限为负数或超过 50
+    ErrInvalidCredentials   // Basic/Bearer 凭据校验失败
+    ErrStreamBodyRequiresDownload // 在缓冲方法上使用 WithStreamBody（请用 Download）
+    ErrDownloadInProgress   // 同一路径已有下载正在进行
+    ErrProxyConnectionFailed // 配置的代理无法拨号
 )
 ```
 
@@ -1327,7 +1439,7 @@ func (m *MockClient) Get(url string, options ...httpc.RequestOption) (*httpc.Res
 
 ### 示例代码
 
-22 个可运行的示例覆盖所有功能，按从基础到高级排序。
+23 个可运行的示例覆盖所有功能，按从基础到高级排序。
 每个示例都是独立的 `package main`，并带有 `//go:build examples` 构建标签（因此不会进入常规构建），需逐个运行：
 
 ```bash
@@ -1345,6 +1457,7 @@ go run -tags examples examples/01_basic_usage.go
 | **高级** | [15_middleware](examples/15_middleware.go), [16_concurrent_requests](examples/16_concurrent_requests.go), [17_file_operations](examples/17_file_operations.go), [18_rest_api_client](examples/18_rest_api_client.go), [19_advanced_patterns](examples/19_advanced_patterns.go) |
 | **安全** | [20_certificate_pinning](examples/20_certificate_pinning.go), [21_ssrf_protection](examples/21_ssrf_protection.go) |
 | **流式传输** | [22_streaming_bodies](examples/22_streaming_bodies.go) |
+| **指纹** | [23_tls_fingerprint](examples/23_tls_fingerprint.go) |
 
 ---
 

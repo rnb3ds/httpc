@@ -16,15 +16,14 @@ import (
 // base host, session headers and cookies are neither sent nor captured, so
 // base-domain credentials cannot leak to third-party origins.
 //
-// NOTE — request options run TWICE. Every request executes in two passes: a
-// capture pass that observes the request to update the session (cookies set
-// via WithCookies, headers via WithHeaderMap), followed by the real pass.
-// Per-request options are therefore invoked twice, with panics contained and
-// side-effecting callbacks disabled in the capture pass — but an option that
-// mutates shared state (counters, nonces, a *FormData reused across calls)
-// still fires twice or races. Keep per-request options pure; register shared
-// state on the session instead. *FormData in particular must not be shared
-// across concurrent requests (see WithFile).
+// Session capture is STATIC: before each request the session reads cookies and
+// headers from the built-in WithCookies/WithCookieMap/WithCookieString and
+// WithHeader/WithHeaderMap options without executing them, so per-request
+// options run exactly once. Cookies or headers set by a custom (unrecognized)
+// RequestOption are therefore not persisted into the session — register shared
+// session state via SetCookie/SetHeader/SessionManager rather than an inline
+// option. *FormData must still not be shared across concurrent requests (see
+// WithFile).
 //
 // For better flexibility, use the DomainClienter interface instead of the concrete type:
 //
@@ -39,9 +38,10 @@ type DomainClient struct {
 }
 
 // NewDomain creates a new DomainClient scoped to the specified base URL.
-// The client automatically manages cookies and headers across requests.
-// Pass DefaultConfig() for defaults, or use NewDomainDefault(baseURL) as a
-// zero-argument shortcut. Cookies are automatically enabled for DomainClient.
+// The client automatically manages cookies and headers across requests via
+// its SessionManager, which is the single cookie store — the engine-level
+// cookie jar is deliberately not enabled. Pass DefaultConfig() for defaults,
+// or use NewDomainDefault(baseURL) as a zero-argument shortcut.
 //
 // Returns an error if baseURL does not include a scheme and host, or if the
 // configuration fails validation. See New for configuration error conditions.
@@ -78,7 +78,14 @@ func NewDomain(baseURL string, cfg Config) (DomainClienter, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg.Connection.EnableCookies = true
+	// The SessionManager is the DomainClient's single cookie store. Deliberately
+	// NOT forcing cfg.Connection.EnableCookies here: enabling the engine's
+	// net/http jar created a second, independent store, and the engine's
+	// jar-vs-explicit dedup let jar cookies shadow session cookies — so
+	// SetCookie (add-or-update) and DeleteCookie/ClearCookies silently failed
+	// to change what was sent on the wire. Automatic management flows through
+	// the session capture/replay path instead (UpdateFromResult →
+	// storeCookies → prepareOptions → WithCookies).
 	client, err := newFromConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create domain client: %w", err)
@@ -112,55 +119,59 @@ func NewDomainDefault(baseURL string) (DomainClienter, error) {
 }
 
 // Get makes a GET request to the specified path relative to the base URL.
-// If path is a full URL (with scheme), it is used directly.
+// If path is a full http/https URL, it is used directly; other schemes
+// are not treated as absolute (see buildURL).
 func (dc *DomainClient) Get(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("GET", path, options...)
 }
 
 // Post makes a POST request to the specified path relative to the base URL.
-// If path is a full URL (with scheme), it is used directly.
+// If path is a full http/https URL, it is used directly; other schemes
+// are not treated as absolute (see buildURL).
 func (dc *DomainClient) Post(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("POST", path, options...)
 }
 
 // Put makes a PUT request to the specified path relative to the base URL.
-// If path is a full URL (with scheme), it is used directly.
+// If path is a full http/https URL, it is used directly; other schemes
+// are not treated as absolute (see buildURL).
 func (dc *DomainClient) Put(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("PUT", path, options...)
 }
 
 // Patch makes a PATCH request to the specified path relative to the base URL.
-// If path is a full URL (with scheme), it is used directly.
+// If path is a full http/https URL, it is used directly; other schemes
+// are not treated as absolute (see buildURL).
 func (dc *DomainClient) Patch(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("PATCH", path, options...)
 }
 
 // Delete makes a DELETE request to the specified path relative to the base URL.
-// If path is a full URL (with scheme), it is used directly.
+// If path is a full http/https URL, it is used directly; other schemes
+// are not treated as absolute (see buildURL).
 func (dc *DomainClient) Delete(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("DELETE", path, options...)
 }
 
 // Head makes a HEAD request to the specified path relative to the base URL.
-// If path is a full URL (with scheme), it is used directly.
+// If path is a full http/https URL, it is used directly; other schemes
+// are not treated as absolute (see buildURL).
 func (dc *DomainClient) Head(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("HEAD", path, options...)
 }
 
 // Options makes an OPTIONS request to the specified path relative to the base URL.
-// If path is a full URL (with scheme), it is used directly.
+// If path is a full http/https URL, it is used directly; other schemes
+// are not treated as absolute (see buildURL).
 func (dc *DomainClient) Options(path string, options ...RequestOption) (*Result, error) {
 	return dc.request("OPTIONS", path, options...)
 }
 
 // Request makes an HTTP request with the specified method and path relative to the base URL.
-// If path is a full URL (with scheme), it is used directly.
+// If path is a full http/https URL, it is used directly; other schemes
+// are not treated as absolute (see buildURL).
 // The context parameter allows for timeout and cancellation control.
 // This method makes DomainClient compatible with the Client interface.
-//
-// Note: RequestOptions are executed twice internally — once to capture session state
-// (cookies, headers) and once for the actual request. Avoid options with side effects
-// (e.g., counters, nonce generation) or use the underlying Client directly if needed.
 func (dc *DomainClient) Request(ctx context.Context, method, path string, options ...RequestOption) (*Result, error) {
 	if err := dc.checkInit(); err != nil {
 		return nil, err
@@ -172,23 +183,15 @@ func (dc *DomainClient) Request(ctx context.Context, method, path string, option
 	}
 
 	// Session state (Authorization headers, cookies) is scoped to the base
-	// host. When an absolute-URL path targets a different origin, neither send
-	// that state nor capture cookies from the response — otherwise a single
-	// absolute-URL request would leak credentials cross-origin.
-	sessionScoped := dc.targetsBaseHost(fullURL)
-	var allOptions []RequestOption
-	if sessionScoped {
-		allOptions = dc.prepareSessionOptions(options)
-	} else {
-		allOptions = options
-	}
+	// host — see scopedOptions for the credential-leak rationale.
+	allOptions, sessionScoped := dc.scopedOptions(fullURL, options)
 
 	result, err := dc.client.Request(ctx, method, fullURL, allOptions...)
 	if err != nil {
 		return nil, err
 	}
 
-	if result != nil && sessionScoped {
+	if result != nil && sessionScoped && dc.targetsFinalURL(result) {
 		dc.UpdateFromResult(result)
 	}
 
@@ -209,10 +212,41 @@ func (dc *DomainClient) targetsBaseHost(fullURL string) bool {
 	return strings.EqualFold(u.Host, dc.parsedURL.Host)
 }
 
+// targetsFinalURL reports whether the response landed on the base origin.
+// result.Request.URL is the FINAL request URL after redirects (the engine
+// records httpResp.Request.URL), so this closes the redirect hole in the
+// initial-URL gate: a base-origin request redirected to a third-party origin
+// must not have that origin's Set-Cookie captured into the session, from
+// where it would be replayed to the base origin on the next request (a
+// session-fixation vector). The request-header direction needs no equivalent
+// gate — net/http already strips Authorization/Cookie on cross-origin
+// redirects. A nil RequestInfo is treated as base-origin: capture is the
+// default and must not be withheld on a malformed Result.
+func (dc *DomainClient) targetsFinalURL(result *Result) bool {
+	if result == nil || result.Request == nil {
+		return true
+	}
+	return dc.targetsBaseHost(result.Request.URL)
+}
+
+// scopedOptions applies the cross-origin credential gate shared by Request
+// and Download: session state (Authorization headers, cookies) is sent only
+// when the fully built URL targets the base origin, and only then may
+// response cookies be captured — a single absolute-URL request must not leak
+// credentials cross-origin. Single implementation so the two call sites
+// cannot drift apart on exactly the guarantee that must not diverge.
+func (dc *DomainClient) scopedOptions(fullURL string, options []RequestOption) (allOptions []RequestOption, sessionScoped bool) {
+	if sessionScoped = dc.targetsBaseHost(fullURL); sessionScoped {
+		return dc.prepareSessionOptions(options), true
+	}
+	return options, false
+}
+
 // Download downloads a file from the specified path to cfg.FilePath.
-// Response cookies are captured into the session. Like Request, request options are
-// applied twice internally (once for session capture, once for the actual request) —
-// avoid options with side effects (e.g., counters, nonce generation).
+// Response cookies are captured into the session — only when the final
+// response landed on the base origin (result.RequestURL after redirects,
+// see targetsFinalURL). Like Request, session capture is static (see the
+// DomainClient type doc): request options run exactly once.
 //
 // cfg must be non-nil; cfg.FilePath must be set (ErrEmptyFilePath otherwise).
 // Use DefaultDownloadConfig() as the starting point, then set FilePath and any
@@ -230,22 +264,17 @@ func (dc *DomainClient) Download(ctx context.Context, path string, cfg *Download
 		return nil, err
 	}
 
-	// Same cross-origin gate as Request: session headers and cookie capture
-	// apply only when the download targets the base origin.
-	sessionScoped := dc.targetsBaseHost(fullURL)
-	var allOptions []RequestOption
-	if sessionScoped {
-		allOptions = dc.prepareSessionOptions(options)
-	} else {
-		allOptions = options
-	}
+	// Same cross-origin gate as Request (scopedOptions), plus the final-URL
+	// check: DownloadResult.RequestURL is the URL after redirects, so a
+	// third-party hop's Set-Cookie stays out of the session.
+	allOptions, sessionScoped := dc.scopedOptions(fullURL, options)
 
 	result, err := dc.client.Download(ctx, fullURL, cfg, allOptions...)
 	if err != nil {
 		return nil, err
 	}
 
-	if sessionScoped {
+	if sessionScoped && dc.targetsBaseHost(result.RequestURL) {
 		dc.captureDownloadCookies(result)
 	}
 	return result, nil
