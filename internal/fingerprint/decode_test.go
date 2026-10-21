@@ -38,8 +38,9 @@ func TestDecodeResponse_SingleEncodings(t *testing.T) {
 	t.Run("gzip", func(t *testing.T) {
 		var buf bytes.Buffer
 		zw := gzip.NewWriter(&buf)
-		zw.Write([]byte(payload))
-		zw.Close()
+		// Writer errors are impossible (bytes.Buffer backing); `_ =` is for errcheck.
+		_, _ = zw.Write([]byte(payload))
+		_ = zw.Close()
 		resp := encodedResponse(t, "gzip", buf.Bytes())
 
 		if err := decodeResponse(resp); err != nil {
@@ -51,8 +52,9 @@ func TestDecodeResponse_SingleEncodings(t *testing.T) {
 	t.Run("deflate zlib", func(t *testing.T) {
 		var buf bytes.Buffer
 		zw := zlib.NewWriter(&buf)
-		zw.Write([]byte(payload))
-		zw.Close()
+		// Writer errors are impossible (bytes.Buffer backing); `_ =` is for errcheck.
+		_, _ = zw.Write([]byte(payload))
+		_ = zw.Close()
 		resp := encodedResponse(t, "deflate", buf.Bytes())
 
 		if err := decodeResponse(resp); err != nil {
@@ -64,8 +66,8 @@ func TestDecodeResponse_SingleEncodings(t *testing.T) {
 	t.Run("deflate raw", func(t *testing.T) {
 		var buf bytes.Buffer
 		fw, _ := flate.NewWriter(&buf, 5)
-		fw.Write([]byte(payload))
-		fw.Close()
+		_, _ = fw.Write([]byte(payload))
+		_ = fw.Close()
 		resp := encodedResponse(t, "deflate", buf.Bytes())
 
 		if err := decodeResponse(resp); err != nil {
@@ -77,8 +79,8 @@ func TestDecodeResponse_SingleEncodings(t *testing.T) {
 	t.Run("brotli", func(t *testing.T) {
 		var buf bytes.Buffer
 		bw := brotli.NewWriter(&buf)
-		bw.Write([]byte(payload))
-		bw.Close()
+		_, _ = bw.Write([]byte(payload))
+		_ = bw.Close()
 		resp := encodedResponse(t, "br", buf.Bytes())
 
 		if err := decodeResponse(resp); err != nil {
@@ -90,8 +92,9 @@ func TestDecodeResponse_SingleEncodings(t *testing.T) {
 	t.Run("zstd", func(t *testing.T) {
 		var buf bytes.Buffer
 		zw, _ := zstd.NewWriter(&buf)
-		zw.Write([]byte(payload))
-		zw.Close()
+		// Writer errors are impossible (bytes.Buffer backing); `_ =` is for errcheck.
+		_, _ = zw.Write([]byte(payload))
+		_ = zw.Close()
 		resp := encodedResponse(t, "zstd", buf.Bytes())
 
 		if err := decodeResponse(resp); err != nil {
@@ -130,8 +133,8 @@ func TestDecodeResponse_IdentityTokenInChain(t *testing.T) {
 
 	var buf bytes.Buffer
 	gw := gzip.NewWriter(&buf)
-	gw.Write([]byte(payload))
-	gw.Close()
+	_, _ = gw.Write([]byte(payload))
+	_ = gw.Close()
 
 	resp := encodedResponse(t, "gzip, identity", buf.Bytes())
 	if err := decodeResponse(resp); err != nil {
@@ -149,13 +152,13 @@ func TestDecodeResponse_ChainReverseOrder(t *testing.T) {
 	// Apply encodings in wire order: gzip first, then brotli on top.
 	var gbuf bytes.Buffer
 	gw := gzip.NewWriter(&gbuf)
-	gw.Write([]byte(payload))
-	gw.Close()
+	_, _ = gw.Write([]byte(payload))
+	_ = gw.Close()
 
 	var bbuf bytes.Buffer
 	bw := brotli.NewWriter(&bbuf)
-	bw.Write(gbuf.Bytes())
-	bw.Close()
+	_, _ = bw.Write(gbuf.Bytes())
+	_ = bw.Close()
 
 	resp := encodedResponse(t, "gzip, br", bbuf.Bytes())
 	if err := decodeResponse(resp); err != nil {
@@ -230,8 +233,8 @@ func TestDecodeResponse_Streaming(t *testing.T) {
 
 	var buf bytes.Buffer
 	gw := gzip.NewWriter(&buf)
-	gw.Write([]byte(payload))
-	gw.Close()
+	_, _ = gw.Write([]byte(payload))
+	_ = gw.Close()
 	encoded := buf.Bytes()
 
 	resp := encodedResponse(t, "gzip", encoded)
@@ -273,22 +276,22 @@ func TestDecodedBody_CloseReturnsReadersToPool(t *testing.T) {
 		{"gzip", "gzip", func(p []byte) []byte {
 			var buf bytes.Buffer
 			zw := gzip.NewWriter(&buf)
-			zw.Write(p)
-			zw.Close()
+			_, _ = zw.Write(p)
+			_ = zw.Close()
 			return buf.Bytes()
 		}},
 		{"brotli", "br", func(p []byte) []byte {
 			var buf bytes.Buffer
 			bw := brotli.NewWriter(&buf)
-			bw.Write(p)
-			bw.Close()
+			_, _ = bw.Write(p)
+			_ = bw.Close()
 			return buf.Bytes()
 		}},
 		{"zstd", "zstd", func(p []byte) []byte {
 			var buf bytes.Buffer
 			zw, _ := zstd.NewWriter(&buf)
-			zw.Write(p)
-			zw.Close()
+			_, _ = zw.Write(p)
+			_ = zw.Close()
 			return buf.Bytes()
 		}},
 	} {
@@ -355,8 +358,8 @@ func acquireDecoded(token string, r io.Reader) (io.ReadCloser, error) {
 func TestDecodedBody_CloseAfterTruncatedGzipErrors(t *testing.T) {
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
-	zw.Write([]byte(strings.Repeat("truncated-body ", 200)))
-	zw.Close()
+	_, _ = zw.Write([]byte(strings.Repeat("truncated-body ", 200)))
+	_ = zw.Close()
 	encoded := buf.Bytes()[:buf.Len()-12] // cut into the deflate stream
 
 	resp := encodedResponse(t, "gzip", encoded)
@@ -386,8 +389,8 @@ func TestAcquireGzipReader_InvalidHeaderFails(t *testing.T) {
 		// The pool is not poisoned: a valid stream still acquires.
 		var buf bytes.Buffer
 		zw := gzip.NewWriter(&buf)
-		zw.Write([]byte("ok"))
-		zw.Close()
+		_, _ = zw.Write([]byte("ok"))
+		_ = zw.Close()
 		rc, err := acquireGzipReader(bytes.NewReader(buf.Bytes()))
 		if err != nil {
 			t.Fatalf("acquire after failure: %v", err)

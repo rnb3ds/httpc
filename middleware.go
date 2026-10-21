@@ -52,7 +52,8 @@ type AuditEvent struct {
 	// Duration covers all attempts, including retry delays; serialized as
 	// durationMs by MarshalJSON.
 	Duration time.Duration `json:"-"`
-	// Attempts is the number of requests sent (1 when no retry occurred).
+	// Attempts is the number of requests sent (1 when no retry occurred;
+	// 0 when the request errored before a response arrived).
 	Attempts int `json:"attempts"`
 	// Error is the request error, if any; marshaled as a string with
 	// sensitive details removed.
@@ -222,7 +223,10 @@ func LoggingMiddleware(config *LoggingConfig) MiddlewareFunc {
 			sanitizedURL := getOrComputeSanitizedURL(req)
 
 			if err != nil {
-				log("%s %s -> error: %v (%v)", req.Method(), sanitizedURL, err, duration)
+				// Sanitize like MetricsMiddleware does: non-ClientError types
+				// (e.g. *url.Error) embed the raw URL — credentials included.
+				sanitizedErr := sanitizeCallbackError(err, req.URL(), sanitizedURL)
+				log("%s %s -> error: %v (%v)", req.Method(), sanitizedURL, sanitizedErr, duration)
 			} else {
 				log("%s %s -> %d (%v)", req.Method(), sanitizedURL, status, duration)
 			}

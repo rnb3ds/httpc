@@ -114,14 +114,15 @@ func convertToEngineConfig(cfg *Config) (*engine.Config, error) {
 		EnableCookies:         cfg.Connection.EnableCookies,
 
 		// Security settings
-		TLSFingerprint:          cfg.Security.TLSFingerprint,
-		MaxResponseBodySize:     cfg.Security.MaxResponseBodySize,
-		MaxRequestBodySize:      cfg.Security.MaxRequestBodySize,
-		MaxDecompressedBodySize: cfg.Security.MaxDecompressedBodySize,
-		ValidateURL:             cfg.Security.ValidateURL,
-		ValidateHeaders:         cfg.Security.ValidateHeaders,
-		StrictContentLength:     cfg.Security.StrictContentLength,
-		CertificatePinner:       cfg.Security.CertificatePinner,
+		TLSFingerprint:                      cfg.Security.TLSFingerprint,
+		TLSFingerprintDisableSessionTickets: cfg.Security.TLSFingerprintDisableSessionTickets,
+		MaxResponseBodySize:                 cfg.Security.MaxResponseBodySize,
+		MaxRequestBodySize:                  cfg.Security.MaxRequestBodySize,
+		MaxDecompressedBodySize:             cfg.Security.MaxDecompressedBodySize,
+		ValidateURL:                         cfg.Security.ValidateURL,
+		ValidateHeaders:                     cfg.Security.ValidateHeaders,
+		StrictContentLength:                 cfg.Security.StrictContentLength,
+		CertificatePinner:                   cfg.Security.CertificatePinner,
 
 		// Retry settings
 		MaxRetries:                calculateMaxRetries(cfg),

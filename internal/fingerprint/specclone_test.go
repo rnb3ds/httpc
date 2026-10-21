@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	utls "github.com/refraction-networking/utls"
+	utls "github.com/bogdanfinn/utls"
 )
 
 // TestCloneSpec_Independence pins the deep-copy contract: mutating the clone
@@ -60,7 +60,7 @@ func TestCloneSpec_Independence(t *testing.T) {
 // runtime gives all zero-size allocations the same address (runtime.zerobase)
 // and there is no state to share.
 func TestCloneSpec_CoversProfileExtensions(t *testing.T) {
-	for _, src := range []*utls.ClientHelloSpec{&chrome152Spec, &chrome152SpecMobile} {
+	for _, src := range []*utls.ClientHelloSpec{&chrome152Spec, &chromeSpecMobile} {
 		clone := cloneSpec(src)
 		seen := make(map[utls.TLSExtension]bool, len(src.Extensions))
 		for _, ext := range src.Extensions {
@@ -200,7 +200,7 @@ func TestDeepCloneExtension_AllTypes(t *testing.T) {
 		{"session ticket empty", &utls.SessionTicketExtension{}},
 		{"session ticket with session and ticket", &utls.SessionTicketExtension{Session: sessionState, Ticket: []byte{9, 9}, Initialized: true}},
 		{"fake pre-shared key", &utls.FakePreSharedKeyExtension{
-			OmitEmptyPsk: true,
+			OmitEmptyPsk: true, //nolint:staticcheck // fixture pins the fork-required field
 			Identities:   []utls.PskIdentity{{Label: []byte{1, 2}, ObfuscatedTicketAge: 42}, {Label: nil}},
 			Binders:      [][]byte{{7}, nil},
 		}},
@@ -212,7 +212,7 @@ func TestDeepCloneExtension_AllTypes(t *testing.T) {
 				EarlySecret: []byte{0xBB},
 				Session:     sessionState,
 			},
-			OmitEmptyPsk: true,
+			OmitEmptyPsk: true, //nolint:staticcheck // fixture pins the fork-required field
 		}},
 		{"supported versions", &utls.SupportedVersionsExtension{Versions: []uint16{utls.VersionTLS13, utls.VersionTLS12}}},
 		{"cookie nil", &utls.CookieExtension{}},

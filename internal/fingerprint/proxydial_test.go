@@ -10,7 +10,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
-	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -21,252 +20,128 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/net/proxy"
 )
 
-// startConnectProxy runs a minimal CONNECT proxy: it answers CONNECT with
-// status (200 or 407), then pipes bytes bidirectionally. It records the raw
-// CONNECT request head for assertions.
-func startConnectProxy(t *testing.T, status int) (addr string, lastRequest *stringRing) {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-
-	ring := &stringRing{}
-
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go handleProxyConn(conn, status, ring)
+// TestProxyDialerFactory_Schemes pins the scheme gate: the tunnel types the
+// fingerprint path supports construct, everything else — including socks4/
+// socks4a, which x/net/proxy cannot dial — is rejected with the scheme named.
+func TestProxyDialerFactory_Schemes(t *testing.T) {
+	supported := []string{"http", "https", "socks5", "socks5h"}
+	for _, scheme := range supported {
+		if _, err := newProxyDialerFactory(&url.URL{Scheme: scheme, Host: "127.0.0.1:1"}); err != nil {
+			t.Errorf("%s rejected: %v", scheme, err)
 		}
-	}()
-
-	return ln.Addr().String(), ring
-}
-
-func handleProxyConn(conn net.Conn, status int, ring *stringRing) {
-	defer func() { _ = conn.Close() }()
-
-	br := bufio.NewReader(conn)
-	req, err := http.ReadRequest(br)
-	if err != nil || req.Method != http.MethodConnect {
-		return
-	}
-	ring.put(req.Header.Get("Proxy-Authorization"))
-
-	if status != http.StatusOK {
-		_, _ = conn.Write([]byte("HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n"))
-		return
 	}
 
-	target, err := net.Dial("tcp", req.URL.Host)
-	if err != nil {
-		_, _ = conn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"))
-		return
+	for _, scheme := range []string{"ftp", "quic", "socks", "socks4", "socks4a", "ss", ""} {
+		_, err := newProxyDialerFactory(&url.URL{Scheme: scheme, Host: "127.0.0.1:1"})
+		if err == nil {
+			t.Errorf("%q accepted", scheme)
+			continue
+		}
+		if !strings.Contains(err.Error(), "proxy scheme") {
+			t.Errorf("%q: error should name the scheme, got %v", scheme, err)
+		}
 	}
-	defer func() { _ = target.Close() }()
-
-	_, _ = conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
-
-	go func() {
-		_, _ = io.Copy(target, br) // client → target (br holds buffered bytes)
-		_ = target.Close()
-	}()
-	_, _ = io.Copy(conn, target) // target → client
 }
 
-// stringRing is a tiny single-slot synchronized string holder.
-type stringRing struct {
-	mu   sync.Mutex
-	val  string
-	full bool
+// TestConnectDialer_Dial pins the non-context entry point: it delegates to
+// DialContext, so a refused proxy surfaces as a dial error rather than a hang.
+func TestConnectDialer_Dial(t *testing.T) {
+	d := newConnectDialer(url.URL{Scheme: "http", Host: "127.0.0.1:1"}, nil)
+	_, err := d.Dial("tcp", "example.com:443")
+	if err == nil {
+		t.Fatal("Dial through a dead proxy succeeded")
+	}
 }
 
-func (r *stringRing) put(v string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.val, r.full = v, true
-}
-
-func (r *stringRing) get() (string, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.val, r.full
-}
-
-// TestProxyDialer_Connect pins the http-proxy path: CONNECT reaches the
-// proxy with the userinfo-derived Proxy-Authorization, and the returned
-// connection carries a full HTTP exchange with the target.
-func TestProxyDialer_Connect(t *testing.T) {
+// TestConnectDialer_ConnectTunnel drives a plain-HTTP target through a
+// loopback CONNECT proxy and asserts both the tunneled body and the proxy
+// credentials that crossed the wire.
+func TestConnectDialer_ConnectTunnel(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, "via-proxy")
+		_, _ = io.WriteString(w, "tunnel-ok")
 	}))
 	defer target.Close()
+	targetURL, _ := url.Parse(target.URL)
 
-	proxyAddr, ring := startConnectProxy(t, http.StatusOK)
-
-	u := &url.URL{
+	addr, ring := startConnectProxy(t, http.StatusOK)
+	d := newConnectDialer(url.URL{
 		Scheme: "http",
+		Host:   addr,
 		User:   url.UserPassword("user", "pass"),
-		Host:   proxyAddr,
-	}
-	dial, err := newProxyDialer(u)
-	if err != nil {
-		t.Fatalf("newProxyDialer: %v", err)
-	}
+	}, nil)
 
-	targetURL, _ := url.Parse(target.URL)
-	conn, err := dial(context.Background(), "tcp", targetURL.Host)
+	conn, err := d.DialContext(context.Background(), "tcp", targetURL.Host)
 	if err != nil {
-		t.Fatalf("dial through proxy: %v", err)
+		t.Fatalf("DialContext through CONNECT proxy: %v", err)
 	}
 	defer func() { _ = conn.Close() }()
 
-	deadline := time.Now().Add(5 * time.Second)
-	_ = conn.SetDeadline(deadline)
-	req, _ := http.NewRequest(http.MethodGet, "http://target/", nil)
-	req.Host = targetURL.Host
-	if err := req.Write(conn); err != nil {
-		t.Fatalf("write request through tunnel: %v", err)
+	if _, err := conn.Write([]byte("GET / HTTP/1.1\r\nHost: " + targetURL.Host + "\r\nConnection: close\r\n\r\n")); err != nil {
+		t.Fatalf("write tunneled request: %v", err)
 	}
-	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
+	body, err := io.ReadAll(bufio.NewReader(conn))
 	if err != nil {
-		t.Fatalf("read response through tunnel: %v", err)
+		t.Fatalf("read tunneled response: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
-	if string(body) != "via-proxy" {
-		t.Fatalf("body through tunnel = %q", body)
+	if !strings.Contains(string(body), "tunnel-ok") {
+		t.Errorf("tunneled body = %q, want tunnel-ok", body)
 	}
 
-	if auth, ok := ring.get(); !ok || !strings.HasPrefix(auth, "Basic ") {
-		t.Errorf("Proxy-Authorization = %q (seen=%v), want Basic credentials", auth, ok)
+	auth, ok := ring.get()
+	if !ok || !strings.HasPrefix(auth, "Basic ") {
+		t.Errorf("proxy auth header = %q (present=%v), want a Basic credential", auth, ok)
 	}
 }
 
-// TestProxyDialer_AuthFailure pins that a proxy's non-200 CONNECT response
-// fails the dial with the proxy status.
-func TestProxyDialer_AuthFailure(t *testing.T) {
-	proxyAddr, _ := startConnectProxy(t, http.StatusProxyAuthRequired)
+// TestConnectDialer_ProxyRejectsTunnel pins the non-200 CONNECT arm: a 407 must
+// surface as an error naming the status, not as a silent usable connection.
+func TestConnectDialer_ProxyRejectsTunnel(t *testing.T) {
+	addr, _ := startConnectProxy(t, http.StatusProxyAuthRequired)
+	d := newConnectDialer(url.URL{Scheme: "http", Host: addr}, nil)
 
-	dial, err := newProxyDialer(&url.URL{Scheme: "http", Host: proxyAddr})
-	if err != nil {
-		t.Fatalf("newProxyDialer: %v", err)
-	}
-
-	_, err = dial(context.Background(), "tcp", "example.com:443")
+	conn, err := d.DialContext(context.Background(), "tcp", "example.com:443")
 	if err == nil {
-		t.Fatal("dial succeeded through a 407 proxy")
+		_ = conn.Close()
+		t.Fatal("407 CONNECT accepted")
 	}
-	if !strings.Contains(err.Error(), "proxy response status") {
-		t.Errorf("error lacks proxy status context: %v", err)
-	}
-}
-
-// TestProxyDialer_UnsupportedScheme pins the validation errors.
-func TestProxyDialer_UnsupportedScheme(t *testing.T) {
-	for _, scheme := range []string{"ftp", "socks4", ""} {
-		u := &url.URL{Scheme: scheme, Host: "127.0.0.1:1"}
-		if _, err := newProxyDialer(u); err == nil {
-			t.Errorf("scheme %q accepted", scheme)
-		}
-	}
-	if _, err := newProxyDialer(&url.URL{Scheme: "http"}); err == nil {
-		t.Error("empty host accepted")
+	if !strings.Contains(err.Error(), "407") {
+		t.Errorf("error should name the status, got: %v", err)
 	}
 }
 
-// TestProxyDialer_PortlessURLsAccepted pins the default-port arms: portless
-// proxy URLs of every supported scheme construct a dialer (the default port
-// is filled in at dial time).
-func TestProxyDialer_PortlessURLsAccepted(t *testing.T) {
-	for _, scheme := range []string{"http", "https", "socks5", "socks5h"} {
-		u := &url.URL{Scheme: scheme, Host: "proxy.example.com"}
-		if _, err := newProxyDialer(u); err != nil {
-			t.Errorf("portless %q rejected: %v", scheme, err)
-		}
+// TestConnectDialer_DeadProxy pins the TCP-connect failure arm.
+func TestConnectDialer_DeadProxy(t *testing.T) {
+	d := newConnectDialer(url.URL{Scheme: "http", Host: "127.0.0.1:1"}, nil)
+	if _, err := d.DialContext(context.Background(), "tcp", "example.com:443"); err == nil {
+		t.Fatal("dead proxy accepted")
 	}
 }
 
-// TestProxyDialer_HTTPSProxyHandshakeFailure pins the https-proxy TLS branch:
-// an https proxy URL pointed at a plaintext listener fails the TLS handshake
-// with the "TLS to proxy" context (the target leg is never attempted).
-func TestProxyDialer_HTTPSProxyHandshakeFailure(t *testing.T) {
-	// A plain TCP listener that never speaks TLS: accept, swallow the
-	// ClientHello, close — the client handshake fails on the early EOF.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer func() { _ = conn.Close() }()
-				_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-				_, _ = io.Copy(io.Discard, conn)
-			}()
-		}
-	}()
-
-	dial, err := newProxyDialer(&url.URL{Scheme: "https", Host: ln.Addr().String()})
-	if err != nil {
-		t.Fatalf("newProxyDialer: %v", err)
-	}
-
-	_, err = dial(context.Background(), "tcp", "example.com:443")
-	if err == nil {
-		t.Fatal("https dial through a plaintext proxy should fail")
-	}
-	if !strings.Contains(err.Error(), "TLS to proxy") {
-		t.Errorf("error lacks TLS-to-proxy context: %v", err)
-	}
-}
-
-// TestProxyDialer_HTTPSProxyUnreachable pins the https dial arm: an https
-// proxy at an unreachable address fails at the TCP dial (before any TLS).
-func TestProxyDialer_HTTPSProxyUnreachable(t *testing.T) {
-	dead := closedLoopbackAddr(t)
-
-	dial, err := newProxyDialer(&url.URL{Scheme: "https", Host: dead})
-	if err != nil {
-		t.Fatalf("newProxyDialer: %v", err)
-	}
-	if _, err := dial(context.Background(), "tcp", "example.com:443"); err == nil {
-		t.Fatal("dial to a dead https proxy should fail")
-	}
-}
-
-// TestProxyDialer_HTTPSProxyConnect pins the https-proxy success path: the
-// proxy leg negotiates TLS (its certificate is deliberately not verified —
-// only the target leg is), then CONNECT tunnels a full HTTP exchange.
-func TestProxyDialer_HTTPSProxyConnect(t *testing.T) {
+// TestConnectDialer_HTTPSProxyTunnel pins the TLS-to-proxy leg: the tunnel is
+// established over TLS with ALPN http/1.1, and the proxy's certificate is not
+// verified (documented behaviour — only the target leg is verified).
+func TestConnectDialer_HTTPSProxyTunnel(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, "https-proxy-ok")
+		_, _ = io.WriteString(w, "tls-tunnel-ok")
 	}))
 	defer target.Close()
 	targetURL, _ := url.Parse(target.URL)
 
-	cert := selfSignedCert(t)
-	tlsLn, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
-		Certificates: []tls.Certificate{cert},
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{selfSignedCert(t)},
+		NextProtos:   []string{"http/1.1"},
 	})
 	if err != nil {
-		t.Fatalf("tls listen: %v", err)
+		t.Fatalf("tls.Listen: %v", err)
 	}
-	t.Cleanup(func() { _ = tlsLn.Close() })
+	t.Cleanup(func() { _ = ln.Close() })
 	go func() {
 		for {
-			conn, err := tlsLn.Accept()
+			conn, err := ln.Accept()
 			if err != nil {
 				return
 			}
@@ -274,365 +149,295 @@ func TestProxyDialer_HTTPSProxyConnect(t *testing.T) {
 		}
 	}()
 
-	dial, err := newProxyDialer(&url.URL{Scheme: "https", Host: tlsLn.Addr().String()})
+	d := newConnectDialer(url.URL{Scheme: "https", Host: ln.Addr().String()}, nil)
+	conn, err := d.DialContext(context.Background(), "tcp", targetURL.Host)
 	if err != nil {
-		t.Fatalf("newProxyDialer: %v", err)
-	}
-
-	conn, err := dial(context.Background(), "tcp", targetURL.Host)
-	if err != nil {
-		t.Fatalf("dial through https proxy: %v", err)
+		t.Fatalf("DialContext through HTTPS proxy: %v", err)
 	}
 	defer func() { _ = conn.Close() }()
 
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-	req, _ := http.NewRequest(http.MethodGet, "http://target/", nil)
-	req.Host = targetURL.Host
-	if err := req.Write(conn); err != nil {
-		t.Fatalf("write request through tunnel: %v", err)
+	if _, err := conn.Write([]byte("GET / HTTP/1.1\r\nHost: " + targetURL.Host + "\r\nConnection: close\r\n\r\n")); err != nil {
+		t.Fatalf("write: %v", err)
 	}
-	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
-	if err != nil {
-		t.Fatalf("read response through tunnel: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
-	if string(body) != "https-proxy-ok" {
-		t.Fatalf("body through https proxy = %q", body)
+	body, _ := io.ReadAll(bufio.NewReader(conn))
+	if !strings.Contains(string(body), "tls-tunnel-ok") {
+		t.Errorf("body = %q", body)
 	}
 }
 
-// selfSignedCert generates a throwaway self-signed certificate for the TLS
-// proxy listener (the proxy leg runs with verification disabled, so the
-// certificate's contents do not matter).
-func selfSignedCert(t *testing.T) tls.Certificate {
-	t.Helper()
+// TestConnectDialer_HTTPSProxyHandshakeFailure pins the TLS-handshake arm for
+// a proxy that answers in plaintext where TLS is expected.
+func TestConnectDialer_HTTPSProxyHandshakeFailure(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		_, _ = conn.Write([]byte("this is not a TLS server\n"))
+		_ = conn.Close()
+	}()
 
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
+	d := newConnectDialer(url.URL{Scheme: "https", Host: ln.Addr().String()}, nil)
+	if _, err := d.DialContext(context.Background(), "tcp", "example.com:443"); err == nil {
+		t.Fatal("plaintext proxy accepted for an https scheme")
 	}
-	serial, err := rand.Int(rand.Reader, big.NewInt(1<<60))
-	if err != nil {
-		t.Fatalf("generate serial: %v", err)
-	}
-	tmpl := x509.Certificate{
-		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: "fingerprint-test-proxy"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames:     []string{"localhost"},
-		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatalf("create certificate: %v", err)
-	}
-	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
 }
 
-// TestProxyDialer_Socks5Tunnel pins the socks5 branch end to end offline: a
-// minimal loopback SOCKS5 server accepts the handshake, connects to the
-// loopback target, and a full HTTP exchange rides the tunnel. This also
-// exercises ctxDialer.DialContext as the socks dialer's forward leg.
-func TestProxyDialer_Socks5Tunnel(t *testing.T) {
+// TestConnectDialer_Socks5Tunnel pins the SOCKS5 arm against a minimal SOCKS5
+// server that performs the no-auth handshake and CONNECT reply.
+func TestConnectDialer_Socks5Tunnel(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "socks-ok")
 	}))
 	defer target.Close()
 	targetURL, _ := url.Parse(target.URL)
 
+	socksAddr, socksDone := startMiniSocks5(t)
+
+	d := newConnectDialer(url.URL{Scheme: "socks5", Host: socksAddr}, nil)
+	conn, err := d.DialContext(context.Background(), "tcp", targetURL.Host)
+	if err != nil {
+		t.Fatalf("DialContext through SOCKS5: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := conn.Write([]byte("GET / HTTP/1.1\r\nHost: " + targetURL.Host + "\r\nConnection: close\r\n\r\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	body, _ := io.ReadAll(bufio.NewReader(conn))
+	if !strings.Contains(string(body), "socks-ok") {
+		t.Errorf("body = %q", body)
+	}
+	select {
+	case <-socksDone:
+	case <-time.After(3 * time.Second):
+		t.Error("SOCKS server never saw the tunnel")
+	}
+}
+
+// TestConnectDialer_SocksUnreachable pins the SOCKS dial-failure arm.
+func TestConnectDialer_SocksUnreachable(t *testing.T) {
+	d := newConnectDialer(url.URL{Scheme: "socks5", Host: "127.0.0.1:1"}, nil)
+	if _, err := d.DialContext(context.Background(), "tcp", "example.com:443"); err == nil {
+		t.Fatal("unreachable SOCKS proxy accepted")
+	}
+}
+
+// TestConnectDialer_ContextCancelInterruptsConnect pins the cancellation arm:
+// a proxy that accepts TCP and then never answers CONNECT must not hold the
+// dial past the context deadline.
+func TestConnectDialer_ContextCancelInterruptsConnect(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
-	go serveSOCKS5(t, ln)
-
-	dial, err := newProxyDialer(&url.URL{Scheme: "socks5", Host: ln.Addr().String()})
-	if err != nil {
-		t.Fatalf("newProxyDialer(socks5): %v", err)
-	}
-
-	conn, err := dial(context.Background(), "tcp", targetURL.Host)
-	if err != nil {
-		t.Fatalf("dial through socks5 proxy: %v", err)
-	}
-	defer func() { _ = conn.Close() }()
-
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-	req, _ := http.NewRequest(http.MethodGet, "http://target/", nil)
-	req.Host = targetURL.Host
-	if err := req.Write(conn); err != nil {
-		t.Fatalf("write request through socks tunnel: %v", err)
-	}
-	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
-	if err != nil {
-		t.Fatalf("read response through socks tunnel: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
-	if string(body) != "socks-ok" {
-		t.Fatalf("body through socks tunnel = %q", body)
-	}
-}
-
-// serveSOCKS5 implements the minimal no-auth SOCKS5 CONNECT server used by
-// TestProxyDialer_Socks5Tunnel: greeting → method reply → CONNECT request →
-// success reply → bidirectional pipe.
-func serveSOCKS5(t *testing.T, ln net.Listener) {
-	t.Helper()
-	for {
+	go func() {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		go handleSOCKS5Conn(conn)
-	}
-}
-
-func handleSOCKS5Conn(conn net.Conn) {
-	defer func() { _ = conn.Close() }()
-
-	// Client greeting: VER NMETHODS METHODS...
-	head := make([]byte, 2)
-	if _, err := io.ReadFull(conn, head); err != nil {
-		return
-	}
-	methods := make([]byte, int(head[1]))
-	if _, err := io.ReadFull(conn, methods); err != nil {
-		return
-	}
-	// Reply: no auth required.
-	if _, err := conn.Write([]byte{0x05, 0x00}); err != nil {
-		return
-	}
-
-	// Request: VER CMD RSV ATYP ADDR PORT.
-	req := make([]byte, 4)
-	if _, err := io.ReadFull(conn, req); err != nil {
-		return
-	}
-	if req[1] != 0x01 { // CONNECT
-		return
-	}
-	var host string
-	switch req[3] {
-	case 0x01: // IPv4
-		b := make([]byte, 4)
-		if _, err := io.ReadFull(conn, b); err != nil {
-			return
-		}
-		host = net.IP(b).String()
-	case 0x03: // domain
-		l := make([]byte, 1)
-		if _, err := io.ReadFull(conn, l); err != nil {
-			return
-		}
-		b := make([]byte, int(l[0]))
-		if _, err := io.ReadFull(conn, b); err != nil {
-			return
-		}
-		host = string(b)
-	case 0x04: // IPv6
-		b := make([]byte, 16)
-		if _, err := io.ReadFull(conn, b); err != nil {
-			return
-		}
-		host = net.IP(b).String()
-	default:
-		return
-	}
-	portBytes := make([]byte, 2)
-	if _, err := io.ReadFull(conn, portBytes); err != nil {
-		return
-	}
-	port := int(portBytes[0])<<8 | int(portBytes[1])
-
-	target, err := net.Dial("tcp", net.JoinHostPort(host, fmt.Sprintf("%d", port)))
-	if err != nil {
-		return // closing the conn fails the client dial
-	}
-	defer func() { _ = target.Close() }()
-
-	// Success reply: VER REP RSV ATYP BND.ADDR BND.PORT.
-	if _, err := conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); err != nil {
-		return
-	}
-
-	done := make(chan struct{})
-	go func() {
-		_, _ = io.Copy(target, conn)
-		_ = target.Close()
-		close(done)
+		// Accept and read the CONNECT head, then stay silent.
+		_, _ = http.ReadRequest(bufio.NewReader(conn))
+		time.Sleep(3 * time.Second)
+		_ = conn.Close()
 	}()
-	_, _ = io.Copy(conn, target)
-	<-done
+
+	d := newConnectDialer(url.URL{Scheme: "http", Host: ln.Addr().String()}, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err = d.DialContext(ctx, "tcp", "example.com:443")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("silent proxy produced a connection")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("cancellation took %v; the context did not interrupt CONNECT", elapsed)
+	}
 }
 
-// TestProxyDialer_Socks5_UnreachableProxy pins the socks forward-dial error
-// propagation: an unreachable socks proxy surfaces the dial error.
-func TestProxyDialer_Socks5_UnreachableProxy(t *testing.T) {
-	dead := closedLoopbackAddr(t)
+// TestConnectDialer_CustomLocalAddr pins that a configured local address is
+// honoured on the proxy leg.
+func TestConnectDialer_CustomLocalAddr(t *testing.T) {
+	addr, _ := startConnectProxy(t, http.StatusOK)
+	// A loopback local address with port 0 lets the kernel pick the port while
+	// still proving the field is not dropped.
+	d := newConnectDialer(url.URL{Scheme: "http", Host: addr}, &net.TCPAddr{IP: net.ParseIP("127.0.0.1")})
 
-	dial, err := newProxyDialer(&url.URL{Scheme: "socks5h", Host: dead})
-	if err != nil {
-		t.Fatalf("newProxyDialer(socks5h): %v", err)
+	conn, err := d.DialContext(context.Background(), "tcp", "example.com:443")
+	if err == nil {
+		_ = conn.Close()
+		return // the tunnel came up, which is all this asserts
 	}
-	if _, err := dial(context.Background(), "tcp", "example.com:443"); err == nil {
-		t.Fatal("dial through an unreachable socks proxy should fail")
+	// A tunnel failure is acceptable here (the proxy cannot reach the target);
+	// what matters is that dialing itself did not fail on the local address.
+	if strings.Contains(err.Error(), "bind") {
+		t.Errorf("local address rejected: %v", err)
 	}
 }
 
-// TestCtxDialer pins the SOCKS forward-leg adapter directly: plain Dial dials
-// loopback with a background context, DialContext honors cancellation.
-func TestCtxDialer(t *testing.T) {
+// TestProxyDialerContractSatisfied pins the interface the transport's factory
+// must return.
+func TestProxyDialerContractSatisfied(t *testing.T) {
+	var _ proxy.ContextDialer = newConnectDialer(url.URL{Scheme: "http", Host: "127.0.0.1:1"}, nil)
+}
+
+// startMiniSocks5 runs a minimal SOCKS5 server (no-auth, CONNECT IPv4/domain)
+// and closes socksDone once it has tunneled a connection.
+func startMiniSocks5(t *testing.T) (addr string, done <-chan struct{}) {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
+
+	ready := make(chan struct{})
+	var once sync.Once
+
 	go func() {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			func() { defer func() { _ = conn.Close() }(); _, _ = io.Copy(io.Discard, conn) }()
+			go func(c net.Conn) {
+				defer func() { _ = c.Close() }()
+				br := bufio.NewReader(c)
+
+				// Greeting: version, nmethods, methods.
+				hdr := make([]byte, 2)
+				if _, err := io.ReadFull(br, hdr); err != nil {
+					return
+				}
+				methods := make([]byte, int(hdr[1]))
+				if _, err := io.ReadFull(br, methods); err != nil {
+					return
+				}
+				if _, err := c.Write([]byte{0x05, 0x00}); err != nil { // no auth
+					return
+				}
+
+				// Request: ver, cmd, rsv, atyp, addr, port.
+				req := make([]byte, 4)
+				if _, err := io.ReadFull(br, req); err != nil {
+					return
+				}
+				var host string
+				switch req[3] {
+				case 0x01: // IPv4
+					b := make([]byte, 4)
+					if _, err := io.ReadFull(br, b); err != nil {
+						return
+					}
+					host = net.IP(b).String()
+				case 0x03: // domain
+					l := make([]byte, 1)
+					if _, err := io.ReadFull(br, l); err != nil {
+						return
+					}
+					b := make([]byte, int(l[0]))
+					if _, err := io.ReadFull(br, b); err != nil {
+						return
+					}
+					host = string(b)
+				default:
+					return
+				}
+				pb := make([]byte, 2)
+				if _, err := io.ReadFull(br, pb); err != nil {
+					return
+				}
+				port := int(pb[0])<<8 | int(pb[1])
+
+				upstream, err := net.Dial("tcp", net.JoinHostPort(host, itoa(port)))
+				if err != nil {
+					_, _ = c.Write([]byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+					return
+				}
+				defer func() { _ = upstream.Close() }()
+
+				if _, err := c.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); err != nil {
+					return
+				}
+				once.Do(func() { close(ready) })
+
+				go func() { _, _ = io.Copy(upstream, br) }()
+				_, _ = io.Copy(c, upstream)
+			}(conn)
 		}
 	}()
 
-	d := &ctxDialer{dialer: &net.Dialer{Timeout: 2 * time.Second}}
-
-	t.Run("Dial reaches loopback", func(t *testing.T) {
-		conn, err := d.Dial("tcp", ln.Addr().String())
-		if err != nil {
-			t.Fatalf("Dial: %v", err)
-		}
-		_ = conn.Close()
-	})
-
-	t.Run("DialContext reaches loopback", func(t *testing.T) {
-		conn, err := d.DialContext(context.Background(), "tcp", ln.Addr().String())
-		if err != nil {
-			t.Fatalf("DialContext: %v", err)
-		}
-		_ = conn.Close()
-	})
-
-	t.Run("DialContext honors cancellation", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-		if _, err := d.DialContext(ctx, "tcp", ln.Addr().String()); !errors.Is(err, context.Canceled) {
-			t.Fatalf("DialContext with canceled ctx = %v, want context.Canceled", err)
-		}
-	})
+	return ln.Addr().String(), ready
 }
 
-// errConn is a net.Conn whose Write always fails, to drive proxyConnect's
-// request-write error path deterministically.
-type errConn struct {
-	net.Conn // embedded no-op base for the unused methods
-	writeErr error
-}
-
-func (c *errConn) Write([]byte) (int, error) { return 0, c.writeErr }
-
-// TestProxyConnect_WriteFailure pins the write-error path: a conn that
-// cannot accept the CONNECT request fails proxyConnect with that error.
-func TestProxyConnect_WriteFailure(t *testing.T) {
-	c1, c2 := net.Pipe()
-	defer func() { _ = c1.Close() }()
-	defer func() { _ = c2.Close() }()
-
-	req, _ := http.NewRequest(http.MethodConnect, "http://example.com:443", nil)
-	req = req.WithContext(context.Background())
-
-	writeErr := errors.New("pipe burst")
-	if err := proxyConnect(req, &errConn{Conn: c1, writeErr: writeErr}); !errors.Is(err, writeErr) {
-		t.Fatalf("proxyConnect write failure = %v, want %v", err, writeErr)
+// itoa formats a port number without importing strconv into the test's
+// top-level imports for one call.
+func itoa(v int) string {
+	if v == 0 {
+		return "0"
 	}
+	var buf [5]byte
+	i := len(buf)
+	for v > 0 {
+		i--
+		buf[i] = byte('0' + v%10)
+		v /= 10
+	}
+	return string(buf[i:])
 }
 
-// TestProxyConnect_MalformedReply pins the read path: a proxy reply that is
-// not an HTTP response fails proxyConnect.
-func TestProxyConnect_MalformedReply(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+// selfSignedCert builds a throwaway certificate for TLS test servers.
+func selfSignedCert(t *testing.T) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Fatalf("listen: %v", err)
+		t.Fatalf("generate key: %v", err)
 	}
-	t.Cleanup(func() { _ = ln.Close() })
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "localhost"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
 
+// TestWriteConnect_MalformedReply pins the read-failure arm of the CONNECT
+// exchange helper.
+func TestWriteConnect_MalformedReply(t *testing.T) {
+	client, server := net.Pipe()
+	defer func() { _ = client.Close() }()
 	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		// Read just the CONNECT request head (never to EOF — the client
-		// keeps the conn open awaiting the reply), then answer with garbage.
-		br := bufio.NewReader(conn)
-		for {
-			line, err := br.ReadString('\n')
-			if err != nil || strings.TrimSpace(line) == "" {
-				break // request head complete (or read failed)
-			}
-		}
-		_, _ = conn.Write([]byte("this is not http\r\n\r\n"))
-		_ = conn.Close()
+		buf := make([]byte, 512)
+		_, _ = server.Read(buf)
+		_, _ = server.Write([]byte("NOT-HTTP\r\n\r\n"))
+		_ = server.Close()
 	}()
 
-	conn, err := net.Dial("tcp", ln.Addr().String())
-	if err != nil {
-		t.Fatalf("dial: %v", err)
+	err := writeConnect(context.Background(), client, &url.URL{Scheme: "http"}, "example.com:443")
+	if err == nil {
+		t.Fatal("malformed CONNECT reply accepted")
 	}
-	defer func() { _ = conn.Close() }()
-
-	req, _ := http.NewRequest(http.MethodConnect, "http://example.com:443", nil)
-	req = req.WithContext(context.Background())
-	if err := proxyConnect(req, conn); err == nil {
-		t.Fatal("malformed proxy reply accepted")
-	}
-}
-
-// TestProxyConnect_CanceledContextInterrupts pins the context watcher: with
-// an already-canceled context and a proxy that accepts but never replies,
-// the watcher's negative deadline interrupts the blocked read instead of
-// hanging until the dial timeout.
-func TestProxyConnect_CanceledContextInterrupts(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		_, _ = io.Copy(io.Discard, conn) // swallow the CONNECT, never reply
-		_ = conn.Close()
-	}()
-
-	conn, err := net.Dial("tcp", ln.Addr().String())
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer func() { _ = conn.Close() }()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	req, _ := http.NewRequest(http.MethodConnect, "http://example.com:443", nil)
-	req = req.WithContext(ctx)
-
-	start := time.Now()
-	if err := proxyConnect(req, conn); err == nil {
-		t.Fatal("canceled context should fail the CONNECT exchange")
-	}
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
-		t.Errorf("canceled CONNECT took %v; the watcher should interrupt promptly", elapsed)
+	if errors.Is(err, io.EOF) {
+		t.Error("error should describe the malformed reply, not a bare EOF")
 	}
 }

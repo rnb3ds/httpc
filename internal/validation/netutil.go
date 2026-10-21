@@ -447,18 +447,33 @@ func looksLikeLegacyIPLiteral(s string) bool {
 		return false
 	}
 
-	// Hex form (whole or per-octet): 0x7f000001, 0x7f.0.0.1
-	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
-		return true
-	}
-
 	if !strings.Contains(s, ".") {
 		// Pure decimal integer host (no dots): 2130706433. A bare all-numeric
-		// label is not a legitimate DNS hostname.
-		return isAllDigits(s)
+		// label is not a legitimate DNS hostname. The whole-string hex form
+		// 0x7f000001 belongs here too.
+		return isAllDigits(s) || strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X")
 	}
 
-	// Dotted form: flag leading-zero octets (octal) or hex octets.
+	// Dotted form: inet_aton-family resolvers reinterpret a dotted name as
+	// an address only when EVERY label is numeric (decimal/octal) or 0x-hex.
+	// A single alphabetic label ("0x.org", "007.com") makes it an ordinary
+	// hostname no resolver will re-read as an address — flagging those would
+	// block legal public sites on the default validation path.
+	inetCandidate := true
+	for part := range strings.SplitSeq(s, ".") {
+		if part == "" {
+			continue
+		}
+		if !isAllDigits(part) && !strings.HasPrefix(part, "0x") && !strings.HasPrefix(part, "0X") {
+			inetCandidate = false
+			break
+		}
+	}
+	if !inetCandidate {
+		return false
+	}
+
+	// Within a candidate: flag hex octets and leading-zero (octal) octets.
 	for part := range strings.SplitSeq(s, ".") {
 		if part == "" {
 			continue

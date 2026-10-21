@@ -823,6 +823,7 @@ fmt.Println(config.String())
 | `Security.MaxTLSVersion` | `uint16` | `TLS 1.3` | 最高 TLS 版本 |
 | `Security.InsecureSkipVerify` | `bool` | `false` | 跳过 TLS 验证 (仅限测试！) |
 | `Security.TLSFingerprint` | `string` | `""` | 浏览器指纹预设 — 见 [浏览器传输指纹](#浏览器传输指纹) |
+| `Security.TLSFingerprintDisableSessionTickets` | `bool` | `false` | 强制每个指纹连接完整 TLS 握手（Chrome 档案默认恢复会话） |
 | `Security.CertificatePinner` | `CertificatePinner` | `nil` | 证书固定 — 即使 CA 被攻破也拒绝 MITM（指纹路径亦支持） |
 | `Security.MaxResponseBodySize` | `int64` | `10MB` | 最大响应体大小 |
 | `Security.MaxRequestBodySize` | `int64` | `0` | 最大请求体大小 (0 = 不限制；不会回退到 MaxResponseBodySize)。`io.Reader` 请求体在发送期强制 |
@@ -1145,24 +1146,30 @@ Managed Challenge / Turnstile、DataDome、Akamai sensor）、行为评分或 IP
 发版老化：更新流程见 `internal/fingerprint/PROFILES.md`，另有一项每周 CI 任务监测
 漂移（`.github/workflows/fingerprint-drift.yml`）。
 
-**预设名**：`chrome` / `chrome-latest` / `chrome-152`（= Chrome 152）与
-`firefox` / `firefox-latest` / `firefox-148`（= Firefox 148），均可加 OS 后缀 ——
+**预设名**：`chrome` / `chrome-latest` / `chrome-155`（= Chrome 155）与
+`firefox` / `firefox-latest` / `firefox-158`（= Firefox 158），均可加 OS 后缀 ——
 桌面变体 `*-windows` / `*-macos` / `*-linux`，移动变体 `*-android` / `*-ios`
-（如 `chrome-windows`、`firefox-ios`），另保留旧复合别名 `android-chrome-latest`、
-`ios-chrome-latest`。没有 Safari 档案。
+（如 `chrome-windows`、`firefox-ios`），另保留旧版本固定别名 `chrome-152`、
+`firefox-148` 与旧复合别名 `android-chrome-latest`、`ios-chrome-latest`，以及
+`safari-ios`（= `ios-safari-latest`）—— Safari 使用与其他 iOS 预设相同的已验证
+WebKit 数据。没有桌面 Safari 档案：macOS Safari 的 ClientHello 有差异，且暂无
+已验证数据。
 
 行为说明：
 
 - **头部集权威**：预设以浏览器档案的值替换请求中的同名头（User-Agent、Accept、
   Accept-Language 等），使线上形态与伪装的 ClientHello 保持一致；自定义头原样透传。
-  显式设置的 User-Agent 在该路径上**不会**覆盖预设。
-- **协议**：优先 HTTP/2、回退 HTTP/1.1（经 `GetBody` 恢复请求体），两层均完全指纹化；
-  回退仅重放确定未送达服务器的请求（ALPN 协商失败）或幂等方法——POST 的 HTTP/2 腿在
-  响应中途失败时返回该错误而非重发；不尝试 HTTP/3（QUIC 到 TCP 的回退会在链路中途丢失
-  TLS 指纹）。`Connection.EnableHTTP2=false` 将该路径钉定在 HTTP/1.1。
-- **代理**：代理池、轮换与熔断语义保留（支持 HTTP 与 SOCKS5）。HTTP 明文目标经
-  HTTP 代理走 CONNECT 隧道；HTTPS 代理仅以 HTTP/1.1 CONNECT 隧道接入、代理自身证书
-  不做校验（仅目标侧握手被指纹化并校验）。
+  显式设置的 User-Agent 在该路径上**不会**覆盖预设。头部名按浏览器真实大小写输出——
+  `sec-ch-ua*` 小写、其余 Title-Case——HTTP/1.1 与 HTTP/2 都一样。
+- **协议**：由 ALPN 决定。服务器支持 HTTP/2 就走 HTTP/2，只支持 HTTP/1.1 就走
+  HTTP/1.1，且请求从不重放——两层之间没有手动回退。不尝试 HTTP/3：QUIC 连接使用独立的
+  TLS 栈，会绕过 `CertificatePinner`，静默丢失固定校验比不做协议竞速更糟。
+  `Connection.EnableHTTP2=false` 将该路径钉定在 HTTP/1.1，并同步改写 ClientHello 的 ALPN
+  列表。
+- **代理**：代理池、轮换与熔断语义保留（支持 HTTP、HTTPS 与 SOCKS5/5h）。HTTP 明文目标
+  经 HTTP 代理走 CONNECT 隧道；HTTPS 代理仅以 HTTP/1.1 CONNECT 隧道接入、代理自身证书
+  不做校验（仅目标侧握手被指纹化并校验）。代理固定绑定在连接池上——轮换是切换到另一个
+  连接池，而不是把在用的那个改指向。
 - **重定向一致性**：每个重定向跳转都会按浏览器行为修正档案的首跳取值：针对上一跳
   URL 重算 `sec-fetch-site`（`same-origin` / `same-site` / `cross-site`）、丢弃
   `sec-fetch-user`（仅首跳携带）；301/302/303 将 fetch 风格请求降级为 GET 时保留
@@ -1175,26 +1182,36 @@ Managed Challenge / Turnstile、DataDome、Akamai sensor）、行为评分或 IP
   `Content-Encoding` 会显式报错，而不是把压缩字节当正文返回。
 - **SSRF 防护**：以"先解析再校验"的预检方式逐请求执行（含每个重定向跳转）；
   相比标准路径的拨号层校验略弱（存在理论上的 DNS TOCTOU 窗口）。
-- **限制**：指纹连接不计入连接池指标、不走 `Connection.EnableDoH`；不做 TLS 会话
-  恢复（每连接完整握手，同时保证指纹稳定）。移动预设（`*-android`、`*-ios`）目前
-  输出桌面端指纹字节 —— 移动变体是占位实现，待真实设备抓包后替换（见
-  `internal/fingerprint/PROFILES.md`）。
+- **限制**：指纹连接不计入连接池指标、不走 `Connection.EnableDoH`。Android 预设
+  （`*-android`）目前输出桌面端指纹字节 —— 占位实现，待真实设备抓包后替换（见
+  `internal/fingerprint/PROFILES.md`）。iOS 预设（`*-ios`，含 `safari-ios`）使用真实
+  WebKit 数据（Safari 26.3 的 TLS 与 HTTP/2，已线上字节级实测），常规头部顺序仍为
+  桌面近似。
+- **会话恢复**：Chrome 档案按连接池缓存 TLS 会话票，重复连接以 PSK 恢复 —— 与
+  真实浏览器重访站点的行为一致（`session_resumption_test.go` 已实测）。ClientHello
+  不含 pre_shared_key 扩展的档案（Firefox、iOS WebKit 系列）始终完整握手。设置
+  `Security.TLSFingerprintDisableSessionTickets` 可强制每连接完整握手。
 - **已端到端实测**：`chrome-latest` 协商 h2，Akamai H2 指纹为
   `1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p`
-  （哈希 `52d84b11737d980aef856699f885ca86`），UA 为 Chrome/152；`firefox-latest` 为
+  （哈希 `52d84b11737d980aef856699f885ca86`），UA 为 Chrome/155；`firefox-latest` 为
   `1:65536;2:0;4:131072;5:16384|12517377|0|m,p,a,s`
-  （哈希 `6ea73faa8fc5aac76bded7bd238f6433`）—— 见
+  （哈希 `6ea73faa8fc5aac76bded7bd238f6433`），UA 为 Firefox/158；`chrome-ios` 与
+  `safari-ios` 为 WebKit JA4 `t13d2013h2_a09f3c656075_7f0f34a4126d`，Akamai
+  `2:0;3:100;4:2097152;9:1|10420225|0|m,s,a,p`
+  （哈希 `c52879e43202aeb92740be6e8c86ea96`）—— 见
   `internal/fingerprint/e2e_network_test.go`
   （`go test -tags fingerprint_e2e ./internal/fingerprint/ -run PeetWSE2E`）。
 
-指纹传输栈为 httpc 自有实现（`internal/fingerprint`）：TLS 层基于上游
-[`refraction-networking/utls`](https://github.com/refraction-networking/utls)，HTTP/1.1
-与 HTTP/2 层使用 [`enetx/http`](https://github.com/enetx/http)、
-[`enetx/http2`](https://github.com/enetx/http2) 两个 fork（net/http 与 x/net/http2
-的线上序控扩展），解压使用 [`andybalholm/brotli`](https://github.com/andybalholm/brotli)
-与 [`klauspost/compress`](https://github.com/klauspost/compress)（zstd）。浏览器档案
-数据移植自 [`enetx/surf`](https://github.com/enetx/surf)（MIT）；httpc 不依赖该客户端
-库。`TLSFingerprint` 留空即保持标准协议栈，不引入额外依赖。
+指纹数据存放在本仓库（`internal/fingerprint`）：ClientHello spec、HTTP/2 SETTINGS 序列
+与头部表都由 httpc 自己构建，再通过
+[`bogdanfinn/tls-client`](https://github.com/bogdanfinn/tls-client) 的 profile 接口交给
+传输层——因此档案可以领先于任何上游库的发布。传输层本身（uTLS 握手、HTTP/2 分帧、头部
+顺序与大小写）由该库提供，解压使用
+[`andybalholm/brotli`](https://github.com/andybalholm/brotli) 与
+[`klauspost/compress`](https://github.com/klauspost/compress)（zstd）。浏览器档案数据最初
+移植自 [`enetx/surf`](https://github.com/enetx/surf)（MIT）；httpc 不依赖该客户端库，也不
+再依赖 `enetx/http`、`enetx/http2` 或 `refraction-networking/utls`。`TLSFingerprint` 留空
+即保持标准协议栈，不引入额外依赖。
 
 ## 错误处理
 

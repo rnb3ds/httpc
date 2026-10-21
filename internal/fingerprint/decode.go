@@ -38,6 +38,7 @@ import (
 	"sync"
 
 	"github.com/andybalholm/brotli"
+	ehttp "github.com/bogdanfinn/fhttp"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -184,7 +185,10 @@ func newDeflateReader(r io.Reader) io.ReadCloser {
 // encodings pass through untouched. An unknown encoding token fails the
 // round trip rather than silently handing back compressed bytes.
 func decodeResponse(resp *http.Response) error {
-	if resp.Body == nil || resp.Body == http.NoBody {
+	// Compare both NoBody sentinels: this path only ever runs on bodies the
+	// fhttp fork produced, whose NoBody is a distinct pointer from stdlib
+	// http.NoBody — checking only the stdlib one never matched here.
+	if resp.Body == nil || resp.Body == http.NoBody || resp.Body == ehttp.NoBody {
 		return nil
 	}
 

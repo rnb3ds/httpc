@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/cybergodev/httpc/internal/validation"
 )
@@ -408,6 +409,14 @@ func (s *SessionManager) UpdateFromCookies(cookies []*http.Cookie) {
 func (s *SessionManager) storeCookies(cookies []*http.Cookie) {
 	for _, cookie := range cookies {
 		if cookie == nil {
+			continue
+		}
+		// RFC 6265 deletion cookies (net/http maps Max-Age=0 to MaxAge < 0;
+		// an Expires in the past deletes as well) remove the stored cookie
+		// instead of being stored by name — otherwise a logged-out session
+		// id is replayed on every subsequent request forever.
+		if cookie.MaxAge < 0 || (!cookie.Expires.IsZero() && cookie.Expires.Before(time.Now())) {
+			delete(s.cookies, cookie.Name)
 			continue
 		}
 		if err := validation.ValidateCookie(cookie); err != nil {

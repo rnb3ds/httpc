@@ -87,7 +87,8 @@ type DomainClienter interface {
 
 	// SetHeader sets a session header applied to every subsequent request.
 	SetHeader(key, value string) error
-	// SetHeaders replaces all session headers with the given map.
+	// SetHeaders adds or updates multiple session headers (matching keys
+	// are replaced; other session headers persist).
 	SetHeaders(headers map[string]string) error
 	// DeleteHeader removes one session header.
 	DeleteHeader(key string)
@@ -323,7 +324,10 @@ func (c *clientImpl) buildMiddlewareChain(middlewares []MiddlewareFunc) Handler 
 		// Single option closure forwards all mutable fields from the middleware-modified request.
 		resp, err := c.engine.Request(reqCtx, req.Method(), req.URL(),
 			engine.RequestOption(func(r types.RequestMutator) error {
-				engR := r.(*engine.Request)
+				engR, ok := r.(*engine.Request)
+				if !ok {
+					return fmt.Errorf("middleware terminal handler: engine passed %T, want *engine.Request", r)
+				}
 				// Fast path: src is the concrete *engine.Request (all built-in
 				// middleware mutates in place). Apply is owned by the engine, so
 				// new Request fields are forwarded here by construction — the
@@ -654,7 +658,9 @@ func Request(ctx context.Context, method, url string, options ...RequestOption) 
 }
 
 // SetDefaultClient sets a custom client as the default for package-level functions.
-// The previous default client is closed automatically.
+// The previous default client is closed automatically. The new client is
+// installed even when closing the previous one fails; in that case the
+// returned error reports the close failure, not a failed swap.
 //
 // Concurrency: closing the previous default aborts any requests still in
 // flight on it — goroutines that already resolved the old client may observe
@@ -679,14 +685,17 @@ func SetDefaultClient(client Client) error {
 		return fmt.Errorf("cannot set a closed client as default")
 	}
 
-	// Swap the old client with the new one
-	var closeErr error
+	// Swap the old client with the new one. The new client is installed even
+	// when an error is returned: the error reports the previous default's
+	// close failure, not a failed swap.
 	oldClient := defaultClient.Load()
 	defaultClient.Store(impl)
 	if oldClient != nil && oldClient != impl {
-		closeErr = oldClient.Close()
+		if closeErr := oldClient.Close(); closeErr != nil {
+			return fmt.Errorf("default client replaced, but closing the previous default failed: %w", closeErr)
+		}
 	}
-	return closeErr
+	return nil
 }
 
 // resultBundle co-locates a Result and its three nested info structs in a single

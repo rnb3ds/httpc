@@ -143,7 +143,12 @@ func newSPKIHashPinner(hashes ...string) (*spkiHashPinner, error) {
 			return nil, fmt.Errorf("invalid SPKI hash '%s': decoded %d bytes, want %d (SHA-256)", h, len(decoded), sha256.Size)
 		}
 
-		p.hashes[h] = true
+		// Store under the canonical re-encoding: a non-canonical final base64
+		// character decodes to the same 32 bytes but never equals the
+		// canonical string VerifyPeerCertificate compares against, so the pin
+		// would silently match nothing (permanent failures that look like a
+		// server-side pin change rather than a config typo).
+		p.hashes[base64.StdEncoding.EncodeToString(decoded)] = true
 	}
 
 	if len(p.hashes) == 0 {

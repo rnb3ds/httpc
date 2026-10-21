@@ -19,7 +19,7 @@ import (
 	"net/url"
 	"strings"
 
-	ehttp "github.com/enetx/http"
+	ehttp "github.com/bogdanfinn/fhttp"
 )
 
 // sec-fetch-site values a browser emits for one hop (Fetch Standard

@@ -93,7 +93,10 @@ func DefaultDownloadConfig() *DownloadConfig {
 type DownloadResult struct {
 	// FilePath is the path where the file was saved.
 	FilePath string
-	// BytesWritten is the total number of bytes written to disk.
+	// BytesWritten is the number of bytes written by this download. A resumed
+	// download counts only the bytes it appended; the file's total size is
+	// the resumed prefix plus BytesWritten (the final ProgressCallback
+	// invocation reports that total).
 	BytesWritten int64
 	// Duration is the total time taken for the download.
 	Duration time.Duration
@@ -477,10 +480,11 @@ type downloadWriteParams struct {
 //
 // SECURITY: non-resumed downloads write to a "<path>.httpc-tmp" sibling and are
 // atomically renamed into place only after the body completes and any checksum
-// verifies. This closes the symlink-swap TOCTOU window that prepareFilePath's
-// validation alone cannot (check-then-open), and guarantees an interrupted or
-// checksum-failing download never truncates the destination. Resumed downloads
-// must append to the destination itself and keep that pre-validated path.
+// verifies. Both the destination (prepareFilePath) and the predictable temp
+// sibling (Lstat'd before the O_TRUNC open) reject symlinks, and an
+// interrupted or checksum-failing download never truncates the destination.
+// Resumed downloads must append to the destination itself and keep that
+// pre-validated path.
 func writeDownloadBody(p downloadWriteParams) (*DownloadResult, error) {
 	bodyReader, filePath, opts := p.bodyReader, p.filePath, p.opts
 	resumed, resumeOffset, statusCode := p.resumed, p.resumeOffset, p.statusCode
@@ -525,6 +529,13 @@ func writeDownloadBody(p downloadWriteParams) (*DownloadResult, error) {
 	writePath := filePath
 	if !resumed {
 		writePath = filePath + downloadTmpSuffix
+		// SECURITY: mirror prepareFilePath's destination check on the temp
+		// sibling. The name is fully predictable and O_CREATE|O_TRUNC follows
+		// a symlink: a planted "<dest>.httpc-tmp -> elsewhere" would truncate
+		// whatever it points at, then rename the link onto the destination.
+		if fi, statErr := os.Lstat(writePath); statErr == nil && fi.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("symlink paths not allowed for security")
+		}
 	}
 
 	var file *os.File
@@ -537,6 +548,16 @@ func writeDownloadBody(p downloadWriteParams) (*DownloadResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %w", err)
 	}
+	// Panic safety net: io.Copy below drives the caller's ProgressCallback
+	// (user code that may panic); the explicit Close calls on the error paths
+	// must keep running before their os.Remove (an open handle keeps the file
+	// undeletable on Windows), so this defer only fires when a panic skips
+	// them — otherwise the fd is held until the GC finalizer runs.
+	defer func() {
+		if file != nil {
+			_ = file.Close() // best-effort: only reached when a panic skipped the explicit closes
+		}
+	}()
 	// Stream body directly from network to file — no full-body buffering.
 	// When checksum verification is requested, hash the data as it passes through.
 	var writer io.Writer = file
@@ -583,6 +604,7 @@ func writeDownloadBody(p downloadWriteParams) (*DownloadResult, error) {
 		}
 		return nil, fmt.Errorf("failed to close file: %w", closeErr)
 	}
+	file = nil // closed above; keeps the panic-safety defer a no-op
 
 	// Compute actual checksum if hashing was enabled
 	var actualChecksum string

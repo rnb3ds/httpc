@@ -16,13 +16,17 @@ import (
 //   - evictOldest: the entries LRU and keys-slice compaction
 // ============================================================================
 
-// TestURLCache_SanitizedKey validates that URLs differing only in sensitive
-// query params share a single cache entry (sanitized key deduplication), while
-// URLs with different non-sensitive params are cached separately.
-func TestURLCache_SanitizedKey(t *testing.T) {
+// TestURLCache_SensitiveNotShared validates that URLs carrying sensitive
+// query parameters are never shared through the cache: each lookup must
+// return a parse of its own URL, never another URL's credentials-bearing
+// entry, and no entry is retained for them. (The previous sanitized-key
+// design merged ?token=A and ?token=B onto one entry and returned request
+// A's token for request B — cross-request credential leakage.)
+func TestURLCache_SensitiveNotShared(t *testing.T) {
 	clearURLCache()
 
-	// These URLs differ only in the sensitive "token" param — should map to one cache entry
+	// These URLs differ only in the sensitive "token" param — each lookup
+	// must parse its own value.
 	url1 := "https://api.example.com/data?token=secretA&page=1"
 	url2 := "https://api.example.com/data?token=secretB&page=1"
 
@@ -35,29 +39,47 @@ func TestURLCache_SanitizedKey(t *testing.T) {
 		t.Fatalf("Failed to parse URL2: %v", err)
 	}
 
-	// Both URLs should share a single sanitized cache entry
-	if getURLCacheSize() != 1 {
-		t.Errorf("Expected 1 cache entry (sanitized key dedup), got %d", getURLCacheSize())
-	}
-
-	// Both lookups return the first cached entry's token value (dedup by sanitized key)
 	q1 := parsed1.Query()
 	q2 := parsed2.Query()
 	if q1.Get("token") != "secretA" {
 		t.Errorf("URL1 token = %q, want %q", q1.Get("token"), "secretA")
 	}
-	if q2.Get("token") != "secretA" {
-		t.Errorf("URL2 token = %q, want %q (dedup: shares first entry's value)", q2.Get("token"), "secretA")
+	if q2.Get("token") != "secretB" {
+		t.Errorf("URL2 token = %q, want %q (its own value, never URL1's)", q2.Get("token"), "secretB")
 	}
 
-	// URLs with different non-sensitive params should be cached separately
+	// Credential-bearing URLs are cached nowhere: neither the entries map
+	// nor the raw cache holds them.
+	if getURLCacheSize() != 0 {
+		t.Errorf("Expected 0 cache entries for sensitive URLs, got %d", getURLCacheSize())
+	}
+	globalURLCache.mu.RLock()
+	rawLen := len(globalURLCache.raw)
+	globalURLCache.mu.RUnlock()
+	if rawLen != 0 {
+		t.Errorf("Expected 0 raw cache entries for sensitive URLs, got %d", rawLen)
+	}
+
+	// Userinfo URLs are sensitive too, and credentials stay stripped.
+	u, err := globalURLCache.Get("https://user:pass@example.com/data")
+	if err != nil {
+		t.Fatalf("Failed to parse userinfo URL: %v", err)
+	}
+	if u.User != nil {
+		t.Errorf("userinfo not stripped: %v", u.User)
+	}
+	if getURLCacheSize() != 0 {
+		t.Errorf("userinfo URL must not be cached, got %d entries", getURLCacheSize())
+	}
+
+	// URLs with different non-sensitive params are cached separately
 	url3 := "https://api.example.com/data?page=2"
 	_, err = globalURLCache.Get(url3)
 	if err != nil {
 		t.Fatalf("Failed to parse URL3: %v", err)
 	}
-	if getURLCacheSize() != 2 {
-		t.Errorf("Expected 2 cache entries after adding non-sensitive variant, got %d", getURLCacheSize())
+	if getURLCacheSize() != 1 {
+		t.Errorf("Expected 1 cache entry after adding non-sensitive variant, got %d", getURLCacheSize())
 	}
 }
 

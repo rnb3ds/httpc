@@ -1133,7 +1133,9 @@ func TestClientError_CauseChainPlainURLUnchanged(t *testing.T) {
 // not validate escapes in the query string), so the parse error quotes the
 // full URL including the sensitive parameter.
 func TestRedactURLInError_ParseErrorsQuoteRawURL(t *testing.T) {
-	raw := "http://host.invalid/ap%zzi?token=SECRETVALUE" // %zz in the path forces a parse error
+	// Built via Sprintf so staticcheck (SA1007) cannot const-fold the
+	// value; the %zz in the path is deliberate — it forces a parse error.
+	raw := fmt.Sprintf("http://host.invalid/ap%%zzi?token=%s", "SECRETVALUE")
 	_, parseErr := url.Parse(raw)
 	if parseErr == nil {
 		t.Fatal("expected url.Parse to reject the URL")

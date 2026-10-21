@@ -85,6 +85,10 @@ type Config struct {
 	// fingerprint adapter replaces the transport, so this is engine-only.
 	TLSFingerprint string
 
+	// TLSFingerprintDisableSessionTickets forces a full TLS handshake on
+	// every fingerprinted connection (see the public SecurityConfig field).
+	TLSFingerprintDisableSessionTickets bool
+
 	MaxResponseBodySize     int64
 	MaxRequestBodySize      int64
 	MaxDecompressedBodySize int64
@@ -207,7 +211,11 @@ func NewClient(config *Config, opts ...clientOption) (*Client, error) {
 // exported Config.Connection.CertPinner field directly (no more SetCertPinner
 // side channel).
 func buildConnectionConfig(config *Config) *connection.Config {
-	connConfig := &config.Connection
+	// Copy, then write the pinner into the copy: Config is documented as
+	// immutable after creation, and writing through &config.Connection would
+	// race a concurrent New sharing the same Config value.
+	connConfig := new(connection.Config)
+	*connConfig = config.Connection
 	if config.CertificatePinner != nil {
 		connConfig.CertPinner = config.CertificatePinner
 	}
@@ -216,9 +224,11 @@ func buildConnectionConfig(config *Config) *connection.Config {
 
 // closeBodyReader closes r when it is an io.Closer (best-effort). Used by the
 // retry loop once a caller-supplied io.Reader body has been buffered (or the
-// request is aborting): on the non-retry path net/http owns and closes the
-// request body, so an *os.File passed via WithBody would otherwise leak one
-// handle per request until the GC finalizer runs.
+// request is aborting): on the non-retry path the transports own and close the
+// request body (the standard stack in net/http's send; the fingerprint
+// adapter's fail path closes it on its early errors), so an *os.File passed
+// via WithBody would otherwise leak one handle per request until the GC
+// finalizer runs.
 func closeBodyReader(r io.Reader) {
 	if rc, ok := r.(io.Closer); ok {
 		_ = rc.Close() // best-effort: fully buffered or the request is aborting

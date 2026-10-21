@@ -1,22 +1,20 @@
-// Proxy-aware raw dialing for the fingerprint transport.
+// Proxy dialing for the fingerprint transport.
 //
-// Proxying rides on DialContext replacement (transport.Proxy stays nil): the
-// uTLS handshake must wrap the already-tunneled connection, so the tunnel
-// has to exist at the raw-dial layer. HTTP targets therefore traverse an
-// HTTP proxy as a CONNECT tunnel rather than absolute-form forwarded
-// requests — the same behavior the previous surf-based backend had.
+// The transport accepts a custom dialer factory, which is what this package
+// uses instead of its built-in proxy support. Two reasons:
 //
-// Simplified port of github.com/enetx/surf (pkg/connectproxy), Copyright
-// enetx/surf authors, MIT License: http/https CONNECT and socks5/socks5h
-// are supported. Deliberate deltas from upstream, all documented in the
-// README's known-edges section:
-//   - HTTPS proxies are dialed with ALPN restricted to http/1.1 (upstream
-//     could tunnel CONNECT over h2), and the proxy leg's certificate is not
-//     verified (unchanged from upstream; only the target's handshake is
-//     fingerprinted and verified here).
-//   - The proxy leg uses a regular 10s-timeout dialer (upstream embedded a
-//     zero-value net.Dialer, leaving proxy dials without a timeout).
-//   - socks4/4a and custom DNS plumbing are not carried over.
+//   - The built-in CONNECT path derives its socket deadline from the client
+//     timeout, so a client created with WithTimeoutSeconds(0) (which is what
+//     this package asks for, because the engine owns the deadline budget) sets
+//     a deadline of "now" and every proxied request dies with an i/o timeout.
+//   - Deadlines here come from the request context, matching the rest of
+//     httpc: cancellation interrupts a stuck CONNECT, and a successful tunnel
+//     hands the connection over with no deadline left on it.
+//
+// Supported schemes: http and https (CONNECT; https negotiates http/1.1 for
+// the tunnel leg, and that leg's certificate is not verified — only the
+// target's handshake is fingerprinted and verified on this path), plus
+// socks4/4a and socks5/5h through golang.org/x/net/proxy.
 
 package fingerprint
 
@@ -32,171 +30,196 @@ import (
 	"strings"
 	"time"
 
+	ehttp "github.com/bogdanfinn/fhttp"
+	tls_client "github.com/bogdanfinn/tls-client"
 	"golang.org/x/net/proxy"
 )
 
-// newProxyDialer returns a raw dial function that tunnels through the given
-// proxy: CONNECT for http/https proxies, SOCKS5 for socks5/socks5h (via
-// golang.org/x/net/proxy, fresh per dial — no shared mutable state).
-func newProxyDialer(proxyURL *url.URL) (func(context.Context, string, string) (net.Conn, error), error) {
-	var defaultPort string
-	switch proxyURL.Scheme {
-	case "http":
-		defaultPort = "80"
-	case "https":
-		defaultPort = "443"
-	case "socks5", "socks5h":
-		defaultPort = "1080"
-	default:
-		return nil, fmt.Errorf("fingerprint: unsupported proxy scheme %q", proxyURL.Scheme)
+// proxyDialTimeout bounds the TCP connect to the proxy when the context
+// carries no deadline of its own.
+const proxyDialTimeout = 30 * time.Second
+
+// newProxyDialerFactory returns a factory that dials every target through
+// proxyURL. The URL is fixed per backend: the httpc proxy pool rotates by
+// selecting a different backend, never by re-pointing a live one.
+func newProxyDialerFactory(proxyURL *url.URL) (tls_client.ProxyDialerFactory, error) {
+	if err := validateProxyScheme(proxyURL.Scheme); err != nil {
+		return nil, err
 	}
-	if proxyURL.Host == "" {
-		return nil, fmt.Errorf("fingerprint: proxy URL has no host")
-	}
+	target := *proxyURL
 
-	host := proxyURL.Hostname()
-	port := proxyURL.Port()
-	if port == "" {
-		port = defaultPort
-	}
-	proxyAddr := net.JoinHostPort(host, port)
-
-	// Basic proxy authentication from the proxy URL's userinfo.
-	proxyAuth := ""
-	if user := proxyURL.User; user != nil && user.Username() != "" {
-		password, _ := user.Password()
-		creds := user.Username() + ":" + password
-		proxyAuth = "Basic " + base64.StdEncoding.EncodeToString([]byte(creds))
-	}
-
-	dialer := &net.Dialer{Timeout: fpDialTimeout, KeepAlive: fpTCPKeepAlive}
-	isSocks := strings.HasPrefix(proxyURL.Scheme, "socks")
-	scheme := proxyURL.Scheme
-
-	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		if isSocks {
-			socksURL := &url.URL{Scheme: scheme, Host: proxyAddr, User: proxyURL.User}
-			d, err := proxy.FromURL(socksURL, &ctxDialer{dialer: dialer})
-			if err != nil {
-				return nil, fmt.Errorf("fingerprint: socks proxy dialer: %w", err)
-			}
-			return d.(proxy.ContextDialer).DialContext(ctx, network, addr)
-		}
-
-		var conn net.Conn
-		if scheme == "https" {
-			tcpConn, err := dialer.DialContext(ctx, network, proxyAddr)
-			if err != nil {
-				return nil, err
-			}
-			tlsConn := tls.Client(tcpConn, &tls.Config{
-				NextProtos:         []string{"http/1.1"},
-				ServerName:         host,
-				InsecureSkipVerify: true, // proxy leg; the target leg is verified in tlsHandshake
-			})
-			if err := tlsConn.HandshakeContext(ctx); err != nil {
-				_ = tcpConn.Close()
-				return nil, fmt.Errorf("fingerprint: TLS to proxy: %w", err)
-			}
-			conn = tlsConn
-		} else {
-			var err error
-			conn, err = dialer.DialContext(ctx, network, proxyAddr)
-			if err != nil {
-				return nil, err
-			}
-		}
-
-		req := (&http.Request{
-			Method: http.MethodConnect,
-			URL:    &url.URL{Host: addr},
-			Host:   addr,
-			Header: make(http.Header),
-		}).WithContext(ctx)
-		if proxyAuth != "" {
-			req.Header.Set("Proxy-Authorization", proxyAuth)
-		}
-
-		if err := proxyConnect(req, conn); err != nil {
-			return nil, err
-		}
-		return conn, nil
+	return func(_ string, _ time.Duration, localAddr *net.TCPAddr, _ ehttp.Header, _ tls_client.Logger) (proxy.ContextDialer, error) {
+		// The proxy URL and the timeout are fixed per backend: the transport's
+		// arguments restate them, and the deadline actually honoured comes
+		// from the request context.
+		return newConnectDialer(target, localAddr), nil
 	}, nil
 }
 
-// proxyConnect writes the CONNECT request and requires a 200 response. The
+// validateProxyScheme rejects schemes the fingerprint path cannot tunnel.
+// socks4/socks4a are deliberately absent: the SOCKS branch dials through
+// x/net/proxy.FromURL, which implements socks5/socks5h only — accepting them
+// here would construct cleanly and then fail on every dial with
+// "proxy: unknown scheme".
+func validateProxyScheme(scheme string) error {
+	switch scheme {
+	case "http", "https", "socks5", "socks5h":
+		return nil
+	default:
+		return fmt.Errorf("fingerprint: unsupported proxy scheme %q", scheme)
+	}
+}
+
+// connectDialer dials every target through one fixed proxy.
+type connectDialer struct {
+	proxy     url.URL
+	localAddr *net.TCPAddr
+	tcp       *net.Dialer
+	socks     func() (proxy.Dialer, error) // lazily built; nil for CONNECT proxies
+}
+
+// newConnectDialer builds the dialer for one proxy URL.
+func newConnectDialer(proxyURL url.URL, localAddr *net.TCPAddr) *connectDialer {
+	d := &connectDialer{
+		proxy:     proxyURL,
+		localAddr: localAddr,
+		tcp:       &net.Dialer{Timeout: proxyDialTimeout, LocalAddr: localAddr},
+	}
+	if strings.HasPrefix(proxyURL.Scheme, "socks") {
+		d.socks = func() (proxy.Dialer, error) { return proxy.FromURL(&proxyURL, d.tcp) }
+	}
+	return d
+}
+
+// Dial implements the non-context half of the dialer contract.
+func (d *connectDialer) Dial(network, addr string) (net.Conn, error) {
+	return d.DialContext(context.Background(), network, addr)
+}
+
+// DialContext establishes the tunnel to addr: SOCKS handshake for socks
+// schemes, CONNECT for http/https.
+func (d *connectDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	if d.socks != nil {
+		return d.dialSOCKS(ctx, network, addr)
+	}
+	return d.dialConnect(ctx, network, addr)
+}
+
+// dialSOCKS tunnels through a SOCKS proxy. The dialer is built per dial (no
+// shared mutable state) and prefers the context-aware path so cancellation
+// interrupts a stalled forward dial.
+func (d *connectDialer) dialSOCKS(ctx context.Context, network, addr string) (net.Conn, error) {
+	base, err := d.socks()
+	if err != nil {
+		return nil, fmt.Errorf("fingerprint: socks proxy dialer: %w", err)
+	}
+	cd, ok := base.(proxy.ContextDialer)
+	if !ok {
+		return nil, fmt.Errorf("fingerprint: socks proxy dialer does not support contexts")
+	}
+	return cd.DialContext(ctx, network, addr)
+}
+
+// dialConnect opens a CONNECT tunnel: TCP (plus TLS for an https proxy) to the
+// proxy, the CONNECT exchange, then the raw tunnel with no deadline attached.
+func (d *connectDialer) dialConnect(ctx context.Context, network, addr string) (net.Conn, error) {
+	host := d.proxy.Hostname()
+	port := d.proxy.Port()
+	if port == "" {
+		if d.proxy.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	conn, err := d.tcp.DialContext(ctx, network, net.JoinHostPort(host, port))
+	if err != nil {
+		return nil, err
+	}
+
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	}
+
+	if d.proxy.Scheme == "https" {
+		tlsConn := tls.Client(conn, &tls.Config{
+			NextProtos: []string{"http/1.1"},
+			ServerName: host,
+			// The proxy leg is not the fingerprinting target: only the
+			// target's handshake is verified on this path. Documented in the
+			// README's proxy notes.
+			InsecureSkipVerify: true, //nolint:gosec // see comment above
+		})
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("fingerprint: TLS to proxy: %w", err)
+		}
+		conn = tlsConn
+	}
+
+	if err := writeConnect(ctx, conn, &d.proxy, addr); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+
+	// The tunnel is up; the engine's request context governs everything above
+	// this layer, so no deadline is left on the socket.
+	_ = conn.SetDeadline(time.Time{})
+	return conn, nil
+}
+
+// writeConnect performs the CONNECT exchange and requires a 200 response. The
 // buffered reader used for the proxy's reply may buffer past it, but a proxy
-// sends nothing after the 200 until the client speaks first, so discarding
-// it is safe.
-func proxyConnect(req *http.Request, conn net.Conn) error {
-	req.Proto = "HTTP/1.1"
-	req.ProtoMajor = 1
-	req.ProtoMinor = 1
+// sends nothing after the 200 until the client speaks first, so discarding it
+// is safe.
+func writeConnect(ctx context.Context, conn net.Conn, proxyURL *url.URL, addr string) error {
+	req := (&http.Request{
+		Method:     http.MethodConnect,
+		URL:        &url.URL{Host: addr},
+		Host:       addr,
+		Header:     make(http.Header),
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+	}).WithContext(ctx)
 
-	ctx := req.Context()
+	if user := proxyURL.User; user != nil && user.Username() != "" {
+		password, _ := user.Password()
+		creds := user.Username() + ":" + password
+		req.Header.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(creds)))
+	}
 
+	// A canceled context must interrupt a stuck CONNECT by expiring the
+	// socket deadline. RACE (accepted): if the exchange finishes between the
+	// watchdog's non-blocking done check and its SetDeadline, the expired
+	// deadline can land on a connection dialConnect has already cleared and
+	// returned; that window only opens when the caller's context is already
+	// canceled, so the request is being abandoned anyway.
 	done := make(chan struct{})
 	defer close(done)
-
 	go func() {
 		select {
 		case <-ctx.Done():
-			// A cancel racing completion must not poison the handed-back
-			// conn: if the exchange already finished, the caller (TLS
-			// handshake) owns the conn now — leave the deadline alone.
 			select {
 			case <-done:
-				return
+				return // the exchange finished; the caller owns the conn now
 			default:
 			}
-			// Interrupt a stuck CONNECT exchange. The negative deadline
-			// persists, but every path that observes it returns an error and
-			// closes the conn.
 			_ = conn.SetDeadline(time.Now().Add(-time.Second))
 		case <-done:
-			// Success: touch nothing. The conn now belongs to the caller
-			// (TLS handshake next); clearing the deadline from this goroutine
-			// could erase a deadline the handshake set at the instant ctx
-			// expires — the watcher may be scheduled only after proxyConnect
-			// has already returned.
 		}
 	}()
 
 	if err := req.Write(conn); err != nil {
-		_ = conn.Close()
 		return err
 	}
 
 	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
 	if err != nil {
-		_ = conn.Close()
 		return err
 	}
-
 	if resp.StatusCode != http.StatusOK {
-		_ = conn.Close()
 		return fmt.Errorf("fingerprint: proxy response status: %s", resp.Status)
 	}
-
 	return nil
-}
-
-// ctxDialer adapts *net.Dialer to proxy.Dialer for the SOCKS5 forward leg.
-// It implements proxy.ContextDialer: x/net/proxy's socks5 dialer prefers a
-// ContextDialer, so a plain Dial that forwarded context.Background (as here
-// previously) left request cancellation unable to interrupt the forward
-// dial — DialContext returned ctx.Err() immediately while the TCP dial ran
-// on in the background until its timeout.
-type ctxDialer struct {
-	dialer *net.Dialer
-}
-
-var _ proxy.ContextDialer = (*ctxDialer)(nil)
-
-func (d *ctxDialer) Dial(network, addr string) (net.Conn, error) {
-	return d.dialer.DialContext(context.Background(), network, addr)
-}
-
-func (d *ctxDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	return d.dialer.DialContext(ctx, network, addr)
 }

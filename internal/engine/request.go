@@ -651,29 +651,6 @@ var globalURLCache = &urlCache{
 	maxSize: 1024,
 }
 
-// sanitizeURLKey produces a cache-safe URL string by redacting sensitive
-// query parameter values (token, api_key, password, etc.).
-// This prevents sensitive data from persisting in cache keys.
-func sanitizeURLKey(u *url.URL) string {
-	if u.RawQuery == "" {
-		return u.String()
-	}
-	q := u.Query()
-	redacted := false
-	for key := range q {
-		if validation.IsSensitiveQueryParam(key) {
-			q.Set(key, "[REDACTED]")
-			redacted = true
-		}
-	}
-	clone := *u
-	clone.User = nil
-	if redacted {
-		clone.RawQuery = q.Encode()
-	}
-	return clone.String()
-}
-
 // hasSensitiveContent returns true if the raw URL string contains credentials
 // or sensitive query parameters that should not be stored in the raw string cache.
 func hasSensitiveContent(rawURL string) bool {
@@ -715,8 +692,8 @@ func (c *urlCache) evictRawIfNeeded() {
 }
 
 // Get retrieves a parsed URL from cache or parses and caches it.
-// SECURITY: Uses sanitized URL as cache key to prevent sensitive data persistence.
-// Raw string cache is skipped for URLs containing credentials.
+// SECURITY: URLs containing credentials or sensitive query parameters are
+// parsed fresh on every call and never cached or shared between lookups.
 // Returns a cloned URL to ensure cached entries remain immutable.
 func (c *urlCache) Get(rawURL string) (*url.URL, error) {
 	return c.getInternal(rawURL, true)
@@ -760,23 +737,22 @@ func (c *urlCache) getInternal(rawURL string, clone bool) (*url.URL, error) {
 	}
 	parsed.User = nil
 
-	// Only URLs that failed the sensitive-content scan need the expensive
-	// redacting key (u.Query + Encode, ~5 allocations). Non-sensitive URLs
-	// are keyed by the raw string itself — an injective key that identifies
-	// the entry exactly as well as the sanitized form.
-	sensitive := hasSensitiveContent(rawURL)
-	cacheKey := rawURL
-	if sensitive {
-		cacheKey = sanitizeURLKey(parsed)
+	// SECURITY: URLs carrying credentials or sensitive query parameters are
+	// never shared or stored. A redacted key would merge URLs that differ
+	// only in the value of a sensitive parameter (?token=A vs ?token=B), and
+	// returning one URL's parse for the other would send request B with
+	// request A's credentials. Parse fresh and cache nothing — url.Parse is
+	// cheap next to a round trip.
+	if hasSensitiveContent(rawURL) {
+		return parsed, nil
 	}
+	cacheKey := rawURL
 
-	// Second fast path: check sanitized cache
+	// Second fast path: check the entries cache
 	c.mu.RLock()
 	if cached, ok := c.entries[cacheKey]; ok {
 		c.mu.RUnlock()
-		if !sensitive {
-			c.populateRawCache(rawURL, cached)
-		}
+		c.populateRawCache(rawURL, cached)
 		if clone {
 			return cloneURL(cached), nil
 		}
@@ -790,9 +766,7 @@ func (c *urlCache) getInternal(rawURL string, clone bool) (*url.URL, error) {
 
 	// Double-check after acquiring write lock
 	if cached, ok := c.entries[cacheKey]; ok {
-		if !sensitive {
-			c.populateRawCacheLocked(rawURL, cached)
-		}
+		c.populateRawCacheLocked(rawURL, cached)
 		if clone {
 			return cloneURL(cached), nil
 		}
@@ -803,9 +777,7 @@ func (c *urlCache) getInternal(rawURL string, clone bool) (*url.URL, error) {
 	c.evictOldest()
 
 	c.entries[cacheKey] = parsed
-	if !sensitive {
-		c.populateRawCacheLocked(rawURL, parsed)
-	}
+	c.populateRawCacheLocked(rawURL, parsed)
 	c.keys = append(c.keys, cacheKey)
 
 	if clone {
@@ -923,7 +895,7 @@ func putMultipartBuffer(buf *bytes.Buffer) {
 	multipartBufferPool.Put(buf)
 }
 
-// pooledMultipartBuffer wraps a bytes.Buffer and returns it to the pool when fully read.
+// pooledMultipartBuffer wraps a bytes.Buffer and returns it to the pool on Close.
 // This enables buffer reuse for multipart form data without premature recycling.
 // Release happens ONLY in Close and is guarded by an atomic CAS — the same
 // double-Close race and rationale as pooledStringsReader (delayed writeLoop
@@ -1257,6 +1229,11 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 				contentType = "application/xml"
 				replaySrc = xmlData
 			} else if fd, ok := v.(*types.FormData); ok {
+				if fd == nil {
+					// A typed-nil (*FormData)(nil) passes the assertion above;
+					// the field accesses below would panic on it.
+					return nil, fmt.Errorf("multipart body is a nil *FormData")
+				}
 				// Use pooled buffer for multipart form data
 				buf := getMultipartBuffer()
 				boundary, err := newMultipartBoundary()
@@ -1466,7 +1443,8 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 	}
 
 	// URL userinfo → Basic auth, matching net/http behavior. The URL cache
-	// strips credentials when keying/parsing (request.go parseAndCacheURL),
+	// strips credentials when parsing (urlCache.getInternal sets
+	// parsed.User = nil),
 	// so without this the credentials would be silently dropped. An explicit
 	// Authorization header (WithHeader/WithBasicAuth) always wins. The "@"
 	// pre-filter keeps the common path at one string scan.
@@ -1502,10 +1480,30 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 	// This replaces per-cookie http.Request.AddCookie calls, which each
 	// allocate via fmt.Sprintf + Header.Get + Header.Set. For N cookies the
 	// old path allocated ~3N objects; this path allocates 1 (the header string).
-	// Note: If EnableCookies is true and a CookieJar is configured,
-	// the cookies will be managed by the jar automatically.
-	// We still add them here for immediate use in this request.
+	// When EnableCookies is true and a CookieJar is configured, net/http's
+	// send() appends the jar's cookies to this header after Build returns:
+	// drop explicit cookies whose names the jar already covers so each name
+	// is sent exactly once. Both stores derive from the same Set-Cookie, so
+	// the values agree — without this, a jar-backed client with per-request
+	// cookie replay (e.g. DomainClient) emitted "Cookie: sid=a; sid=a".
 	cookies := req.Cookies()
+	if len(cookies) > 0 && p.config.EnableCookies {
+		if jar := p.config.Connection.CookieJar; jar != nil {
+			if jarCookies := jar.Cookies(parsedURL); len(jarCookies) > 0 {
+				names := make(map[string]struct{}, len(jarCookies))
+				for _, jc := range jarCookies {
+					names[jc.Name] = struct{}{}
+				}
+				kept := make([]http.Cookie, 0, len(cookies))
+				for _, c := range cookies {
+					if _, dup := names[c.Name]; !dup {
+						kept = append(kept, c)
+					}
+				}
+				cookies = kept
+			}
+		}
+	}
 	if len(cookies) > 0 {
 		setHeader(hdrCookie, buildCookieHeader(cookies))
 	}

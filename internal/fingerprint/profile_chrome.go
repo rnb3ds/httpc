@@ -1,33 +1,40 @@
-// Chrome 152 profile data, ported verbatim from
+// Chrome profile data, ported verbatim from
 // github.com/enetx/surf (profiles/chrome), Copyright enetx/surf authors, MIT
-// License. The TLS spec is surf's own contribution — utls upstream has no
-// Chrome 152 hello — so it lives here and must track real Chrome releases.
+// License. The TLS spec is surf's own contribution —utls upstream has no
+// Chrome 152 hello —so it lives here and must track real Chrome releases.
+//
+// Chrome majors 152 through 156 ship an identical ClientHello (same JA4, see
+// PROFILES.md), so the one spec below serves both shipped profiles:
+// chrome-155 (the current label; 155 went stable 2026-10-06) and chrome-152
+// (the retired major, kept as an explicit version pin). Per-major data is
+// only the UA map and the sec-ch-ua brand list —the GREASE brand, its
+// version and its position in the list rotate with the major version.
 //
 // Mobile data is a verbatim copy of desktop (as upstream); each Mobile
-// variable is the single point of substitution when real Chrome Android 152
-// bytes are observed.
+// variable is the single point of substitution when real Chrome Android bytes
+// are observed.
 
 package fingerprint
 
 import (
-	utls "github.com/refraction-networking/utls"
+	utls "github.com/bogdanfinn/utls"
 )
 
 // ML-DSA (post-quantum) TLS 1.3 signature schemes that Chrome 152 advertises
-// at the head of its signature_algorithms list. utls does not yet name them,
-// so they are spelled as raw SignatureScheme code points (per the TLS ML-DSA
-// draft). Without them a Chrome-152 UA ships a pre-152 JA4, which some Akamai
-// deployments reject.
+// at the head of its signature_algorithms list. uTLS names them (utls.MLDSA44
+// and friends), so the profile spells them through the library rather than
+// raw code points; the constants are re-exported here for the profile data
+// below and pinned by TestChromeSpec_SignatureAlgorithms.
 const (
-	MLDSA44 utls.SignatureScheme = 0x0904
-	MLDSA65 utls.SignatureScheme = 0x0905
-	MLDSA87 utls.SignatureScheme = 0x0906
+	MLDSA44 = utls.MLDSA44
+	MLDSA65 = utls.MLDSA65
+	MLDSA87 = utls.MLDSA87
 )
 
 // extensionTrustAnchors is the TLS Trust Anchor Identifiers extension
 // (draft-ietf-tls-trust-anchor-ids, code point 0xca34). Chrome 152 sends it
 // on every ClientHello, so its presence is part of the Chrome 152 JA4
-// (t13d1517h2_…); a hello without it is a pre-152 fingerprint, which some
+// (t13d1517h2_—; a hello without it is a pre-152 fingerprint, which some
 // Akamai deployments reject when the UA claims Chrome 152.
 const extensionTrustAnchors uint16 = 0xca34
 
@@ -39,7 +46,7 @@ const extensionTrustAnchors uint16 = 0xca34
 // The order matters and is not randomised. Chromium walks the compiled-in
 // kChromeRootCertList in array order (net/cert/internal/trust_store_chrome.cc),
 // passes the bytes to SSL_set1_requested_trust_anchors untouched, and
-// BoringSSL writes them into the extension verbatim — nothing shuffles the
+// BoringSSL writes them into the extension verbatim —nothing shuffles the
 // list the way the extension order is shuffled. So the order is a
 // compile-time constant of one Chrome build: stable across connections and
 // hosts, but two builds carrying different root store snapshots emit
@@ -190,24 +197,48 @@ var chrome152Spec = utls.ClientHelloSpec{
 	},
 }
 
-// chrome152SpecMobile is a placeholder mobile variant. On the day real
-// Chrome Android 152 ClientHello bytes are observed, replace this value — it
-// is the single point of substitution for the mobile TLS fingerprint.
-var chrome152SpecMobile = chrome152Spec
+// chromeSpecMobile is the placeholder mobile TLS variant (desktop copy),
+// shared by every Chrome mobile profile —the retired 152 pin and the
+// current Android profile alike. On the day real Chrome Android ClientHello
+// bytes are observed, replace this value —it is the single point of
+// substitution for the mobile TLS fingerprint.
+var chromeSpecMobile = chrome152Spec
 
-// chromeSecCHUA is the static sec-ch-ua brand list for Chrome 152.
-const chromeSecCHUA = `"Chromium";v="152", "Not?A_Brand";v="24", "Google Chrome";v="152"`
+// ChromeMajor is the shipped Chrome major —the label the UA map and brand
+// list claim. The drift gates compare it against the current stable major.
+const ChromeMajor = 155
 
-// chromeUA maps every supported impersonated OS to its Chrome 152 User-Agent
-// string. UA strings are an OS property, not a form-factor property (Chrome
-// on Android always identifies as mobile, Chrome on Windows always as
-// desktop).
-var chromeUA = map[osKey]string{
+// chrome152SecCHUA is the static sec-ch-ua brand list for Chrome 152.
+const chrome152SecCHUA = `"Chromium";v="152", "Not?A_Brand";v="24", "Google Chrome";v="152"`
+
+// chrome155SecCHUA is the static sec-ch-ua brand list for Chrome 155
+// (real-capture value): the vendor brand leads, the GREASE brand
+// "Not(A:Brand";v="24" closes the list —both the spelling and the position
+// rotate with the major version, so this value does not carry forward.
+const chrome155SecCHUA = `"Google Chrome";v="155", "Chromium";v="155", "Not(A:Brand";v="24"`
+
+// chrome152UA maps every supported impersonated OS to its Chrome 152
+// User-Agent string. UA strings are an OS property, not a form-factor
+// property (Chrome on Android always identifies as mobile, Chrome on Windows
+// always as desktop).
+var chrome152UA = map[osKey]string{
 	osWindows: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
 	osMacOS:   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
 	osLinux:   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
 	osAndroid: "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Mobile Safari/537.36",
 	osIOS:     "Mozilla/5.0 (iPad; CPU OS 26_3_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/152.0.7977.53 Mobile/15E148 Safari/604.1",
+}
+
+// chrome155UA maps every supported impersonated OS to its Chrome 155
+// User-Agent string (155 stable since 2026-10-06). Desktop entries carry the
+// frozen major token (155.0.0.0); iOS carries the full CriOS build observed
+// in real captures.
+var chrome155UA = map[osKey]string{
+	osWindows: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+	osMacOS:   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+	osLinux:   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+	osAndroid: "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Mobile Safari/537.36",
+	osIOS:     "Mozilla/5.0 (iPad; CPU OS 26_3_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/155.0.8059.37 Mobile/15E148 Safari/604.1",
 }
 
 // chromePlatform maps every supported impersonated OS to its
@@ -226,6 +257,7 @@ var chromePlatform = map[osKey]string{
 var chromeOrderGet = []string{
 	":method",
 	":authority",
+	"host",
 	":scheme",
 	":path",
 	"sec-ch-ua",
@@ -250,6 +282,7 @@ var chromeOrderGet = []string{
 var chromeOrderPost = []string{
 	":method",
 	":authority",
+	"host",
 	":scheme",
 	":path",
 	"content-length",
@@ -282,48 +315,42 @@ func chromeBaseHeaders(p *browserProfile, os osKey) []headerField {
 	return []headerField{
 		{Name: ":authority", Value: ""},
 		{Name: ":method", Value: ""},
+		// Host is written by the transport, not read from this map; the
+		// empty placeholder exists so the name reaches the order list and
+		// the browser's first-header position is preserved on HTTP/1.1.
+		{Name: "Host", Value: ""},
 		{Name: ":path", Value: ""},
 		{Name: ":scheme", Value: ""},
-		{Name: "accept-encoding", Value: "gzip, deflate, br, zstd"},
-		{Name: "accept-language", Value: "en-US,en;q=0.9"},
-		{Name: "authorization", Value: ""},
-		{Name: "cookie", Value: ""},
-		{Name: "origin", Value: ""},
-		{Name: "referer", Value: ""},
+		{Name: "Accept-Encoding", Value: "gzip, deflate, br, zstd"},
+		{Name: "Accept-Language", Value: "en-US,en;q=0.9"},
+		{Name: "Authorization", Value: ""},
+		{Name: "Cookie", Value: ""},
+		{Name: "Origin", Value: ""},
+		{Name: "Referer", Value: ""},
 		{Name: "sec-ch-ua", Value: p.secCHUA},
 		{Name: "sec-ch-ua-mobile", Value: os.chUAMobile()},
 		{Name: "sec-ch-ua-platform", Value: p.platform[os]},
-		{Name: "user-agent", Value: p.ua[os]},
+		{Name: "User-Agent", Value: p.ua[os]},
 	}
 }
 
 // chromeInsertGet adds the navigation (GET) header values.
 var chromeInsertGet = []headerField{
-	{Name: "accept", Value: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"},
-	{Name: "priority", Value: "u=0, i"},
-	{Name: "sec-fetch-dest", Value: "document"},
-	{Name: "sec-fetch-mode", Value: "navigate"},
-	{Name: "sec-fetch-site", Value: "none"},
-	{Name: "sec-fetch-user", Value: "?1"},
-	{Name: "upgrade-insecure-requests", Value: "1"},
+	{Name: "Accept", Value: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"},
+	{Name: "Priority", Value: "u=0, i"},
+	{Name: "Sec-Fetch-Dest", Value: "document"},
+	{Name: "Sec-Fetch-Mode", Value: "navigate"},
+	{Name: "Sec-Fetch-Site", Value: "none"},
+	{Name: "Sec-Fetch-User", Value: "?1"},
+	{Name: "Upgrade-Insecure-Requests", Value: "1"},
 }
 
 // chromeInsertPost adds the XHR/fetch (POST) header values; content-type and
 // content-length stay empty placeholders filled by the actual request.
-var chromeInsertPost = []headerField{
-	{Name: "accept", Value: "*/*"},
-	{Name: "cache-control", Value: "no-cache"},
-	{Name: "content-type", Value: ""},
-	{Name: "content-length", Value: ""},
-	{Name: "pragma", Value: "no-cache"},
-	{Name: "priority", Value: "u=1, i"},
-	{Name: "sec-fetch-dest", Value: "empty"},
-	{Name: "sec-fetch-mode", Value: "cors"},
-	{Name: "sec-fetch-site", Value: "same-origin"},
-}
+var chromeInsertPost = fetchStyleInsertPost("u=1, i")
 
 // chrome152H2 is the desktop Chrome 152 HTTP/2 SETTINGS chain, in exact
-// emission order (SETTINGS_ENABLE_PUSH:0 is emitted — Chrome disables push
+// emission order (SETTINGS_ENABLE_PUSH:0 is emitted —Chrome disables push
 // explicitly). No initial stream id (default odd start), connection flow
 // 15663105, root stream priority {exclusive, weight 255}.
 var chrome152H2 = h2Config{
@@ -338,18 +365,20 @@ var chrome152H2 = h2Config{
 	hasPriority:    true,
 }
 
-// chrome152H2Mobile is a placeholder mobile SETTINGS chain (desktop copy);
-// replace on observation of real Chrome Android 152 H/2 settings.
-var chrome152H2Mobile = chrome152H2
+// chromeH2Mobile is a placeholder mobile SETTINGS chain (desktop copy),
+// shared by every Chrome mobile profile; replace on observation of real
+// Chrome Android H/2 settings.
+var chromeH2Mobile = chrome152H2
 
-// chrome152Desktop is the Chrome 152 desktop profile.
+// chrome152Desktop is the Chrome 152 desktop profile —the retired major,
+// served under the explicit "chrome-152" version pin.
 var chrome152Desktop = &browserProfile{
 	name:              "chrome-152",
-	helloSpec:         &chrome152Spec,
+	hello:             helloFromSpec(chrome152Spec),
 	shuffleExtensions: true,
-	ua:                chromeUA,
+	ua:                chrome152UA,
 	platform:          chromePlatform,
-	secCHUA:           chromeSecCHUA,
+	secCHUA:           chrome152SecCHUA,
 	orderGet:          chromeOrderGet,
 	orderPost:         chromeOrderPost,
 	baseHeaders:       chromeBaseHeaders,
@@ -362,15 +391,77 @@ var chrome152Desktop = &browserProfile{
 // data; each Mobile variable above is its single point of substitution).
 var chrome152Mobile = &browserProfile{
 	name:              "chrome-152-mobile",
-	helloSpec:         &chrome152SpecMobile,
+	hello:             helloFromSpec(chromeSpecMobile),
 	shuffleExtensions: true,
-	ua:                chromeUA,
+	ua:                chrome152UA,
 	platform:          chromePlatform,
-	secCHUA:           chromeSecCHUA,
+	secCHUA:           chrome152SecCHUA,
 	orderGet:          chromeOrderGet,
 	orderPost:         chromeOrderPost,
 	baseHeaders:       chromeBaseHeaders,
 	insertGet:         chromeInsertGet,
 	insertPost:        chromeInsertPost,
-	h2:                chrome152H2Mobile,
+	h2:                chromeH2Mobile,
+}
+
+// chrome155Desktop is the Chrome 155 desktop profile —the current "chrome"
+// / "chrome-latest" label. Chrome 152—56 share the ClientHello and the H2
+// chain, so it rides the same spec data as chrome-152; only the UA map and
+// the brand list are 155's own.
+var chrome155Desktop = &browserProfile{
+	name:              "chrome-155",
+	hello:             helloFromSpec(chrome152Spec),
+	shuffleExtensions: true,
+	ua:                chrome155UA,
+	platform:          chromePlatform,
+	secCHUA:           chrome155SecCHUA,
+	orderGet:          chromeOrderGet,
+	orderPost:         chromeOrderPost,
+	baseHeaders:       chromeBaseHeaders,
+	insertGet:         chromeInsertGet,
+	insertPost:        chromeInsertPost,
+	h2:                chrome152H2,
+}
+
+// chrome155Android is the placeholder Chrome 155 Android profile: desktop
+// TLS and H2 bytes with mobile UA/Client Hints values. KNOWN to be wrong at
+// the TLS layer —live traffic shows Android Chrome as a 16-extension hello
+// (t13d1516h2_8daaf6152771_02713d6af862, see PROFILES.md), and the exact
+// 16-extension set is not yet identified —pending a real device capture.
+var chrome155Android = &browserProfile{
+	name:              "chrome-155-android",
+	hello:             helloFromSpec(chromeSpecMobile),
+	shuffleExtensions: true,
+	ua:                chrome155UA,
+	platform:          chromePlatform,
+	secCHUA:           chrome155SecCHUA,
+	orderGet:          chromeOrderGet,
+	orderPost:         chromeOrderPost,
+	baseHeaders:       chromeBaseHeaders,
+	insertGet:         chromeInsertGet,
+	insertPost:        chromeInsertPost,
+	h2:                chromeH2Mobile,
+}
+
+// chrome155IOS is the Chrome 155 iOS profile. Chrome on iOS is WebKit
+// underneath (Apple mandate), so the TLS and HTTP/2 layers are Safari's, not
+// desktop Chrome's: the hello is utls's HelloSafari_26_3, whose offline JA4
+// (t13d2013h2_a09f3c656075_7f0f34a4126d) matches the dominant live iOS
+// observation, and the H2 chain is safariIOSH2. The UA is a real CriOS
+// capture on iOS 26.3, matching the 26.3 WebKit the hello claims. The
+// regular-header order remains the desktop approximation (see PROFILES.md).
+var chrome155IOS = &browserProfile{
+	name:     "chrome-155-ios",
+	hello:    helloFromID(utls.HelloSafari_26_3),
+	ua:       chrome155UA,
+	platform: chromePlatform,
+	secCHUA:  chrome155SecCHUA,
+	// iOS WebKit keeps a fixed extension order: no Chromium shuffle.
+	shuffleExtensions: false,
+	orderGet:          safariOrderGet,
+	orderPost:         safariOrderPost,
+	baseHeaders:       chromeBaseHeaders,
+	insertGet:         chromeInsertGet,
+	insertPost:        chromeInsertPost,
+	h2:                safariIOSH2,
 }

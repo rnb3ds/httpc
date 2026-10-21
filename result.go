@@ -355,7 +355,9 @@ func (r *Result) String() string {
 	return result
 }
 
-// SaveToFile saves the response body to a file at the specified path.
+// SaveToFile saves the response body to a file at the specified path,
+// overwriting any existing destination unconditionally (unlike Download,
+// which returns ErrFileExists unless Overwrite is set).
 // Returns ErrResponseBodyEmpty if the response body is nil or empty, or
 // ErrDownloadInProgress when a Download (or another SaveToFile) targeting
 // the same path is already running in this process.
@@ -390,6 +392,12 @@ func (r *Result) SaveToFile(filePath string) error {
 	defer release()
 
 	tmpPath := validatedPath + downloadTmpSuffix
+	// SECURITY: mirror prepareFilePath's destination check on the temp
+	// sibling — os.WriteFile's O_CREATE|O_TRUNC follows a symlink planted at
+	// this predictable name.
+	if fi, statErr := os.Lstat(tmpPath); statErr == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("symlink paths not allowed for security")
+	}
 	if err := os.WriteFile(tmpPath, r.Response.RawBody, filePermissions); err != nil {
 		_ = os.Remove(tmpPath) // best-effort cleanup of a partial write
 		return fmt.Errorf("failed to write file: %w", err)

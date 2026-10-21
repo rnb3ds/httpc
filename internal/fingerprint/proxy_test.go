@@ -172,7 +172,7 @@ func TestAdapterRoundTrip_ThroughProxy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RoundTrip through loopback proxy: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := io.ReadAll(resp.Body)
 	if string(body) != "proxied-ok" {

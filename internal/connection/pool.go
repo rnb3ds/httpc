@@ -427,10 +427,7 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 				if pm.proxyPool != nil {
 					pm.proxyPool.ReportFailure(address)
 				}
-				pm.rejectedConns.Add(1)
-				if pm.config.MaxTotalConns > 0 {
-					pm.totalConns.Add(-1)
-				}
+				pm.releaseConnSlot()
 				return nil, fmt.Errorf("%w: %w", ErrProxyConnectionFailed, err)
 			}
 

@@ -174,13 +174,14 @@ func newTransport(config *Config, pool *connection.PoolManager) (*transport, err
 			preset = config.TLSFingerprint // validated upstream; pass through
 		}
 		t.fingerprintAdapter = fingerprint.NewAdapter(fingerprint.Config{
-			PresetName:         preset,
-			InsecureSkipVerify: config.Connection.InsecureSkipVerify,
-			AllowPrivateIPs:    config.Connection.AllowPrivateIPs,
-			EnableHTTP2:        config.Connection.EnableHTTP2,
-			ExemptNets:         config.Connection.ExemptNets,
-			CertPinner:         config.CertificatePinner,
-			Pool:               pool,
+			PresetName:            preset,
+			InsecureSkipVerify:    config.Connection.InsecureSkipVerify,
+			AllowPrivateIPs:       config.Connection.AllowPrivateIPs,
+			EnableHTTP2:           config.Connection.EnableHTTP2,
+			ExemptNets:            config.Connection.ExemptNets,
+			CertPinner:            config.CertificatePinner,
+			DisableSessionTickets: config.TLSFingerprintDisableSessionTickets,
+			Pool:                  pool,
 		})
 		httpClient.Transport = t.fingerprintAdapter
 	}

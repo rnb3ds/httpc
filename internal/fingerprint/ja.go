@@ -1,11 +1,15 @@
-// TLS ClientHello (JA3/JA4) fingerprint mechanics: spec selection,
-// per-connection mutation, and ALPN rewriting.
+// TLS ClientHello (JA3/JA4) fingerprint mechanics: per-connection spec
+// construction and its mutations.
 //
-// The per-connection mutations run on a private deep copy of the profile's
-// spec (cloneSpec): Chromium's extension-order shuffle is in-place, and the
-// GREASE signature-algorithm substitution writes into the
-// SignatureAlgorithmsExtension, so dialing from the shared spec without
-// copying would race concurrent dials and corrupt the package-level profile.
+// Every handshake asks the profile for a fresh ClientHelloSpec (browserProfile
+// .hello). Chrome profiles build theirs from the local spec data in
+// profile_chrome.go — utls upstream ships no hello for Chrome 152 — and the
+// mutations run on that fresh value: the extension-order shuffle and the
+// GREASE signature-algorithm substitution. Firefox profiles delegate to the
+// utls built-in hello, which UTLSIdToSpec constructs fresh on every call.
+//
+// Neither mutation touches package-level state: no connection can observe
+// another's spec, so concurrent dials need no lock and no deep-clone step.
 //
 // Reference: https://lwthiker.com/networks/2022/06/17/tls-fingerprinting.html
 // Shuffle/GREASE mechanics ported from github.com/enetx/surf (ja.go), MIT.
@@ -15,33 +19,24 @@ package fingerprint
 import (
 	"crypto/rand"
 	"fmt"
+	"io"
 	"math/big"
 
-	utls "github.com/refraction-networking/utls"
+	utls "github.com/bogdanfinn/utls"
 )
 
-// specForDial returns the ClientHelloSpec to use for one connection: a deep
-// copy of the profile's spec (or the utls built-in spec for HelloID-based
-// profiles, which UTLSIdToSpec constructs fresh on every call), with the
-// per-connection mutations applied.
-func specForDial(p *browserProfile) (*utls.ClientHelloSpec, error) {
-	var spec *utls.ClientHelloSpec
-
-	if p.helloSpec != nil {
-		spec = cloneSpec(p.helloSpec)
-	} else {
-		built, err := utls.UTLSIdToSpec(p.helloID)
-		if err != nil {
-			return nil, fmt.Errorf("fingerprint: build spec from %s: %w", p.helloID.Str(), err)
-		}
-		spec = &built
+// specForDial returns the ClientHelloSpec to use for one connection: a fresh
+// value from the profile, with the per-connection mutations applied.
+func specForDial(p *browserProfile) (utls.ClientHelloSpec, error) {
+	spec, err := p.hello()
+	if err != nil {
+		return utls.ClientHelloSpec{}, fmt.Errorf("fingerprint: build ClientHello spec for %s: %w", p.name, err)
 	}
 
 	if p.shuffleExtensions {
 		spec.Extensions = utls.ShuffleChromeTLSExtensions(spec.Extensions)
 	}
-
-	greaseSignatureAlgorithms(spec)
+	greaseSignatureAlgorithms(&spec)
 
 	return spec, nil
 }
@@ -67,89 +62,53 @@ func greaseSignatureAlgorithms(spec *utls.ClientHelloSpec) {
 }
 
 // randomGREASE returns one of the 16 GREASE code points (0x0a0a, 0x1a1a, …
-// 0xfafa). A crypto/rand failure falls back to the placeholder, which uTLS
-// substitutes with its own GREASE value.
+// 0xfafa).
 func randomGREASE() uint16 {
-	n, err := rand.Int(rand.Reader, big.NewInt(16))
+	return randomGREASEFrom(rand.Reader)
+}
+
+// randomGREASEFrom is randomGREASE with an injectable entropy source, so the
+// crypto/rand failure arm is testable without swapping the process-wide
+// rand.Reader — a global write that races against every other goroutine using
+// it (the test suite dials concurrently).
+//
+// A failure falls back to the placeholder, which uTLS substitutes with its own
+// GREASE value at write time.
+func randomGREASEFrom(source io.Reader) uint16 {
+	n, err := rand.Int(source, big.NewInt(16))
 	if err != nil {
 		return utls.GREASE_PLACEHOLDER
 	}
 	return uint16(0x0a0a + 0x1010*n.Int64())
 }
 
-// setAlpnProtocolToHTTP1 rewrites the spec's ALPN extension to drop "h2" and
-// keep (or add) "http/1.1", for connections that must not negotiate HTTP/2.
-func setAlpnProtocolToHTTP1(spec *utls.ClientHelloSpec) {
-	for _, ext := range spec.Extensions {
-		alpns, ok := ext.(*utls.ALPNExtension)
-		if !ok {
-			continue
-		}
-
-		filtered := alpns.AlpnProtocols[:0]
-		hasHTTP1 := false
-
-		for _, proto := range alpns.AlpnProtocols {
-			if proto == "h2" {
-				continue
-			}
-
-			if proto == "http/1.1" {
-				hasHTTP1 = true
-			}
-
-			filtered = append(filtered, proto)
-		}
-
-		alpns.AlpnProtocols = filtered
-
-		if !hasHTTP1 {
-			alpns.AlpnProtocols = append(alpns.AlpnProtocols, "http/1.1")
-		}
-
-		return
+// helloFromSpec returns a per-handshake factory over a fixed spec value.
+//
+// It hands out a DEEP copy, not a shallow one, and that is load-bearing: the
+// transport library rewrites fields inside extension structs it was given —
+// the forced-HTTP/1.1 path replaces ALPNExtension.AlpnProtocols in place, and
+// the h3-removal path edits ApplicationSettingsExtensionNew — so a shallow
+// copy would let one EnableHTTP2=false request permanently pin the shared
+// profile's ALPN list to http/1.1 and silently downgrade every later
+// connection. TestTransport_NegotiationModes is the regression guard.
+func helloFromSpec(spec utls.ClientHelloSpec) func() (utls.ClientHelloSpec, error) {
+	return func() (utls.ClientHelloSpec, error) {
+		return *cloneSpec(&spec), nil
 	}
-
-	spec.Extensions = append(spec.Extensions, &utls.ALPNExtension{
-		AlpnProtocols: []string{"http/1.1"},
-	})
 }
 
-// supportsResumption reports whether a ClientHelloSpec carries the extensions
-// TLS session resumption requires. Kept for the future session-resumption
-// knob; the transport currently disables resumption (matching the historical
-// behavior of this path), so it is not wired into the handshake config.
-//
-//nolint:unused // reserved for the session-resumption knob; see above
-func supportsResumption(spec utls.ClientHelloSpec) bool {
-	var (
-		hasSessionTicket bool
-		hasPskModes      bool
-		hasPreSharedKey  bool
-	)
-
-	for _, ext := range spec.Extensions {
-		switch ext.(type) {
-		case *utls.SessionTicketExtension:
-			hasSessionTicket = true
-		case *utls.PSKKeyExchangeModesExtension:
-			hasPskModes = true
-		case *utls.UtlsPreSharedKeyExtension, *utls.FakePreSharedKeyExtension:
-			hasPreSharedKey = true
+// helloFromID returns a per-handshake factory over a utls built-in hello.
+// UTLSIdToSpec constructs a fresh spec on every call, so the factory's value
+// is already private to the handshake; the clone is kept anyway so both
+// factories share one invariant (nothing a handshake mutates can outlive it)
+// and so a future change to UTLSIdToSpec's allocation strategy cannot
+// reintroduce the shared-state hazard above.
+func helloFromID(id utls.ClientHelloID) func() (utls.ClientHelloSpec, error) {
+	return func() (utls.ClientHelloSpec, error) {
+		spec, err := utls.UTLSIdToSpec(id)
+		if err != nil {
+			return utls.ClientHelloSpec{}, err
 		}
-
-		if hasSessionTicket && hasPskModes && hasPreSharedKey {
-			return true
-		}
+		return *cloneSpec(&spec), nil
 	}
-
-	// If any TLS 1.3 PSK-related extensions are present, resumption is valid
-	// only when all TLS 1.3 resumption indicators are present simultaneously.
-	if hasPskModes || hasPreSharedKey {
-		return false
-	}
-
-	// Otherwise fall back to TLS 1.2 semantics where the session ticket
-	// extension alone indicates resumption support.
-	return hasSessionTicket
 }

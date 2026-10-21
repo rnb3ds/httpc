@@ -6,42 +6,60 @@ import "strings"
 // an optional operating-system flavour. An empty OS means the desktop
 // default; "android" and "ios" select the mobile form factor.
 type profileSpec struct {
-	browser string // "chrome" (v152) or "firefox" (v148)
+	browser string // "chrome" (v155), "chrome152" / "firefox148" (retired pins), "firefox" (v158)
 	os      string // "", "windows", "macos", "linux", "android", "ios"
 }
 
-// presets is the local registry of canonical preset names. The surf backend
-// ships two browser families at fixed versions (Chrome 152, Firefox 148)
-// with per-OS variants; names are kept browser-first, matching the vocabulary
-// the previous httpcloak backend used. Safari has no surf profile and is
-// deliberately absent — validation rejects it with the supported list.
+// presets is the local registry of canonical preset names. The backend ships
+// two browser families — Chrome 155 and Firefox 158 (the current labels) —
+// plus the retired Chrome 152 / Firefox 148 as explicit version pins (Chrome
+// 152–156 share one ClientHello; only UA and brand strings differ); names
+// are kept browser-first, matching the vocabulary the previous httpcloak
+// backend used. The Safari family is iOS-only ("safari-ios" /
+// "ios-safari-latest", built on the same WebKit data as the iOS
+// Chrome/Firefox profiles); there is deliberately no desktop-safari preset —
+// see profile_safari.go.
 var presets = map[string]profileSpec{
-	// Chrome 152 desktop.
+	// Chrome 155 desktop (current label).
 	"chrome":         {browser: "chrome"},
 	"chrome-latest":  {browser: "chrome"},
-	"chrome-152":     {browser: "chrome"},
+	"chrome-155":     {browser: "chrome"},
 	"chrome-windows": {browser: "chrome", os: "windows"},
 	"chrome-macos":   {browser: "chrome", os: "macos"},
 	"chrome-linux":   {browser: "chrome", os: "linux"},
 
-	// Chrome 152 mobile (legacy compound aliases kept from the httpcloak
+	// Chrome 155 mobile (legacy compound aliases kept from the httpcloak
 	// vocabulary, where they named per-OS mobile presets).
 	"chrome-android":        {browser: "chrome", os: "android"},
 	"chrome-ios":            {browser: "chrome", os: "ios"},
 	"android-chrome-latest": {browser: "chrome", os: "android"},
 	"ios-chrome-latest":     {browser: "chrome", os: "ios"},
 
-	// Firefox 148 desktop.
+	// Chrome 152 desktop (the retired major, pinned; served only by its
+	// exact name).
+	"chrome-152": {browser: "chrome152"},
+
+	// Firefox 158 desktop (current label).
 	"firefox":         {browser: "firefox"},
 	"firefox-latest":  {browser: "firefox"},
-	"firefox-148":     {browser: "firefox"},
+	"firefox-158":     {browser: "firefox"},
 	"firefox-windows": {browser: "firefox", os: "windows"},
 	"firefox-macos":   {browser: "firefox", os: "macos"},
 	"firefox-linux":   {browser: "firefox", os: "linux"},
 
-	// Firefox 148 mobile.
+	// Firefox 158 mobile (iOS resolves to the WebKit profile).
 	"firefox-android": {browser: "firefox", os: "android"},
 	"firefox-ios":     {browser: "firefox", os: "ios"},
+
+	// Firefox 148 desktop (the retired major, pinned; served only by its
+	// exact name).
+	"firefox-148": {browser: "firefox148"},
+
+	// Safari (iOS only): the third family, on the same verified WebKit data
+	// as the iOS Chrome/Firefox profiles. There is deliberately no
+	// desktop-safari preset — see profile_safari.go.
+	"safari-ios":        {browser: "safari", os: "ios"},
+	"ios-safari-latest": {browser: "safari", os: "ios"},
 }
 
 // ResolvePresetName normalizes a configured fingerprint value (short alias,

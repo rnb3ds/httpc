@@ -323,15 +323,20 @@ func (r *DoHResolver) lookupDedup(ctx context.Context, host string) ([]net.IPAdd
 // lookupViaProviders queries each configured DoH provider in priority order
 // until one returns addresses, falling back to the system resolver on failure.
 func (r *DoHResolver) lookupViaProviders(ctx context.Context, host string) ([]net.IPAddr, error) {
-	var lastErr error
+	var errs error
 	for _, provider := range r.providers {
 		ips, err := r.lookupWithProvider(ctx, provider, host)
 		if err == nil && len(ips) > 0 {
 			return ips, nil
 		}
-		lastErr = err
+		if err != nil {
+			// Keep every provider's error: the first failure often carries
+			// the actionable diagnosis (TLS policy, RCODE) that the last
+			// provider's generic timeout would bury.
+			errs = errors.Join(errs, err)
+		}
 	}
-	return r.fallbackLookup(ctx, host, lastErr)
+	return r.fallbackLookup(ctx, host, errs)
 }
 
 // CacheSize returns the current number of entries in the cache (O(1) via atomic counter).
@@ -343,7 +348,10 @@ func (r *DoHResolver) CacheSize() int64 {
 // lookupWithProvider performs DNS lookup using a specific DoH provider.
 // It queries both A (IPv4) and AAAA (IPv6) records concurrently.
 func (r *DoHResolver) lookupWithProvider(ctx context.Context, provider *dohProvider, host string) ([]net.IPAddr, error) {
-	escapedHost := url.PathEscape(host)
+	// QueryEscape, not PathEscape: the host lands in a query parameter, and
+	// PathEscape deliberately leaves '&', '=' and '+' unescaped — a hostname
+	// containing them would inject or corrupt the name= parameter.
+	escapedHost := url.QueryEscape(host)
 
 	type lookupResult struct {
 		ips []net.IPAddr

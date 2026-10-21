@@ -53,6 +53,11 @@ func SecureConfig() Config {
 // If you need to disable these for maximum performance in a trusted environment,
 // manually set cfg.Security.ValidateURL = false and cfg.Security.ValidateHeaders = false, but be
 // aware of the security implications (injection attacks, SSRF).
+//
+// NOTE: EnableCookies is set to true with no PublicSuffixList. For sites
+// where cookie leakage across subdomains matters, set
+// cfg.Connection.PublicSuffixList = publicsuffix.List
+// (golang.org/x/net/publicsuffix) before calling New.
 func PerformanceConfig() Config {
 	cfg := DefaultConfig()
 

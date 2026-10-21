@@ -829,6 +829,7 @@ fmt.Println(config.String())
 | `Security.MaxTLSVersion` | `uint16` | `TLS 1.3` | Maximum TLS version |
 | `Security.InsecureSkipVerify` | `bool` | `false` | Skip TLS verification (testing only!) |
 | `Security.TLSFingerprint` | `string` | `""` | Browser fingerprint preset — see [Browser Transport Fingerprinting](#browser-transport-fingerprinting) |
+| `Security.TLSFingerprintDisableSessionTickets` | `bool` | `false` | Force a full TLS handshake on every fingerprinted connection (Chrome profiles resume sessions by default) |
 | `Security.CertificatePinner` | `CertificatePinner` | `nil` | Certificate pinning — reject MITM even if CA compromised (works with `TLSFingerprint`) |
 | `Security.MaxResponseBodySize` | `int64` | `10MB` | Max response body size |
 | `Security.MaxRequestBodySize` | `int64` | `0` | Max request body size (0 = no limit; does not fall back to MaxResponseBodySize). `io.Reader` bodies are enforced at send time |
@@ -1162,28 +1163,34 @@ build and age as browsers ship: `internal/fingerprint/PROFILES.md` documents the
 runbook, and a weekly CI job watches for drift (`.github/workflows/fingerprint-drift.yml`).
 
 **Preset names** are browser profiles with optional OS suffixes: `chrome` / `chrome-latest`
-/ `chrome-152` (= Chrome 152) and `firefox` / `firefox-latest` / `firefox-148`
-(= Firefox 148), each as `*-windows` / `*-macos` / `*-linux` desktop variants and
+/ `chrome-155` (= Chrome 155) and `firefox` / `firefox-latest` / `firefox-158`
+(= Firefox 158), each as `*-windows` / `*-macos` / `*-linux` desktop variants and
 `*-android` / `*-ios` mobile variants (e.g. `chrome-windows`, `firefox-ios`), plus the
-legacy compound aliases `android-chrome-latest` and `ios-chrome-latest`. There is no
-Safari profile.
+retired-major pins `chrome-152` and `firefox-148`, the legacy compound aliases
+`android-chrome-latest` and `ios-chrome-latest`, and `safari-ios` (=
+`ios-safari-latest`) — Safari on the same verified WebKit data as the other iOS
+presets. There is no desktop-Safari profile: macOS Safari's ClientHello differs and
+no verified data for it exists yet.
 
 Behavior notes:
 
 - **Header set is authoritative**: the preset replaces same-named request headers
   (User-Agent, Accept, Accept-Language, ...) with the browser profile's values so the wire
   stays coherent with the spoofed ClientHello; custom headers pass through untouched. An
-  explicitly set User-Agent does **not** override the preset on this path.
-- **Protocols**: HTTP/2 is preferred with HTTP/1.1 fallback (request body restored via
-  `GetBody`), both fully fingerprinted. The fallback only replays requests that cannot have
-  reached the server (ALPN mismatch) or that use idempotent methods — a POST whose HTTP/2 leg
-  fails mid-response returns the HTTP/2 error instead of being re-sent. HTTP/3 is not attempted
-  (a QUIC-to-TCP fallback would lose the TLS fingerprint mid-chain). `Connection.EnableHTTP2=false`
-  pins the path to HTTP/1.1.
-- **Proxies**: proxy pools, rotation, and circuit breaking keep working (HTTP and SOCKS5).
-  Plain-HTTP targets through an HTTP proxy traverse a CONNECT tunnel; HTTPS proxies speak
-  HTTP/1.1 CONNECT only and their own certificate is not verified (only the target's
-  handshake is fingerprinted and verified).
+  explicitly set User-Agent does **not** override the preset on this path. Names are written
+  with the browser's own casing — lower-case `sec-ch-ua*`, Title-Case everything else — on
+  HTTP/1.1 as well as HTTP/2.
+- **Protocols**: ALPN decides. A server that speaks HTTP/2 gets HTTP/2, one that only speaks
+  HTTP/1.1 gets HTTP/1.1, and no request is ever replayed: there is no manual fallback between
+  the two. HTTP/3 is never attempted — a QUIC connection uses a separate TLS stack that
+  bypasses `CertificatePinner`, and losing the pin silently is worse than not racing protocols.
+  `Connection.EnableHTTP2=false` pins the path to HTTP/1.1 and rewrites the ClientHello's ALPN
+  list to match.
+- **Proxies**: proxy pools, rotation, and circuit breaking keep working (HTTP, HTTPS and
+  SOCKS5/5h). Plain-HTTP targets through an HTTP proxy traverse a CONNECT tunnel; HTTPS proxies
+  speak HTTP/1.1 CONNECT only and their own certificate is not verified (only the target's
+  handshake is fingerprinted and verified). The proxy is fixed per connection pool — rotation
+  selects a different pool rather than re-pointing a live one.
 - **Redirect coherence**: on every redirect hop the profile's first-hop values are corrected
   the way a browser does: `sec-fetch-site` is recomputed against the previous hop's URL
   (`same-origin` / `same-site` / `cross-site`), `sec-fetch-user` is dropped (first hop
@@ -1202,26 +1209,37 @@ Behavior notes:
   redirect hop); it is marginally weaker than the standard path's dial-layer validation
   (theoretical DNS TOCTOU window).
 - **Limitations**: fingerprinted connections are not counted in pool metrics and skip
-  `Connection.EnableDoH`; TLS session resumption is not attempted (full handshakes every
-  connection, which also keeps fingerprints stable). Mobile presets (`*-android`,
-  `*-ios`) currently emit the desktop fingerprint bytes — the mobile variants are
-  placeholders pending real device captures (see `internal/fingerprint/PROFILES.md`).
+  `Connection.EnableDoH`. Android presets (`*-android`)
+  currently emit the desktop fingerprint bytes — placeholders pending real device
+  captures (see `internal/fingerprint/PROFILES.md`). iOS presets (`*-ios`, including
+  `safari-ios`) use real WebKit data (Safari 26.3 TLS + HTTP/2, byte-verified live),
+  with the regular-header order still a desktop approximation.
+- **Session resumption**: the Chrome profiles cache TLS session tickets per connection
+  pool and resume repeat connections with a PSK, exactly like a real browser revisiting
+  a host (verified live in `session_resumption_test.go`). Profiles whose ClientHello
+  carries no pre_shared_key extension (Firefox, the iOS WebKit profiles) always
+  full-handshake. Set `Security.TLSFingerprintDisableSessionTickets` to force a full
+  handshake on every connection.
 - **Verified end-to-end**: `chrome-latest` negotiates h2 with the Chrome Akamai fingerprint
   `1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p` (hash `52d84b11737d980aef856699f885ca86`)
-  and a Chrome 152 UA; `firefox-latest` yields
-  `1:65536;2:0;4:131072;5:16384|12517377|0|m,p,a,s` (hash `6ea73faa8fc5aac76bded7bd238f6433`) —
+  and a Chrome 155 UA; `firefox-latest` yields
+  `1:65536;2:0;4:131072;5:16384|12517377|0|m,p,a,s` (hash `6ea73faa8fc5aac76bded7bd238f6433`)
+  with a Firefox 158 UA; `chrome-ios` and `safari-ios` yield the WebKit JA4
+  `t13d2013h2_a09f3c656075_7f0f34a4126d` with Akamai
+  `2:0;3:100;4:2097152;9:1|10420225|0|m,s,a,p` (hash `c52879e43202aeb92740be6e8c86ea96`) —
   see `internal/fingerprint/e2e_network_test.go`
   (`go test -tags fingerprint_e2e ./internal/fingerprint/ -run PeetWSE2E`).
 
-The transport stack is implemented in-house (`internal/fingerprint`) on upstream
-[`refraction-networking/utls`](https://github.com/refraction-networking/utls) (TLS layer)
-plus the [`enetx/http`](https://github.com/enetx/http) and
-[`enetx/http2`](https://github.com/enetx/http2) forks — `net/http` / `x/net/http2` extended
-with the wire-level ordering knobs fingerprinting requires — and
+The fingerprint data lives in this repository (`internal/fingerprint`): httpc builds the
+ClientHello spec, the HTTP/2 SETTINGS sequence and the header tables, and hands them to
+[`bogdanfinn/tls-client`](https://github.com/bogdanfinn/tls-client) through its profile API —
+so a profile can target a browser build ahead of any upstream release. The transport itself
+(uTLS handshake, HTTP/2 framing, header order and casing) comes from that library, and
 [`andybalholm/brotli`](https://github.com/andybalholm/brotli) +
-[`klauspost/compress`](https://github.com/klauspost/compress) (zstd) for decoding. Profile
-data was ported from [`enetx/surf`](https://github.com/enetx/surf) (MIT); httpc does not
-depend on that client library. Leave `TLSFingerprint` empty to keep the standard stack with
+[`klauspost/compress`](https://github.com/klauspost/compress) (zstd) handle decoding.
+Profile data was originally ported from [`enetx/surf`](https://github.com/enetx/surf) (MIT);
+httpc does not depend on that client library, nor on `enetx/http`, `enetx/http2` or
+`refraction-networking/utls`. Leave `TLSFingerprint` empty to keep the standard stack with
 no extra dependencies.
 
 ---

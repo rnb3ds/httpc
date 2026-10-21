@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"crypto/tls"
+	"io"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -222,6 +223,15 @@ func TestTransport_ConnectionReuse(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Request %d failed: %v", i, err)
 		}
+		// Drain to EOF before Close: on the early-Close path net/http
+		// returns the connection to the idle pool ASYNCHRONOUSLY (the
+		// readLoop drains remaining bytes within a 50ms budget, after
+		// Close has already returned), so an immediately following
+		// request races the readLoop for the pool slot and intermittently
+		// dials a second connection — the flake this test used to show.
+		// Reading to EOF takes the synchronous put-idle-first path and
+		// makes reuse deterministic.
+		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 
 		if resp.StatusCode != 200 {

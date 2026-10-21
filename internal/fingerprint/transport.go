@@ -1,30 +1,37 @@
-// The fingerprint transport stack: three fork transports per backend —
-// HTTP/1.1 (t1), an HTTP/1.1-ALPN fallback twin (t1fb), and the
-// fingerprinted HTTP/2 transport (t2) — under one RoundTripper that prefers
-// h2 for https and falls back to HTTP/1.1, restoring the request body via
-// GetBody.
+// The fingerprint transport: one tls-client backend per (profile, proxy)
+// combination, wrapped to look like a plain http.RoundTripper.
 //
-// Ported from github.com/enetx/surf (ja_roundtripper.go), Copyright enetx/surf
-// authors, MIT License, with the pinner hook added: the utls.Config is owned
-// here, so VerifyPeerCertificate can carry httpc's certificate pinner on the
-// fingerprint path.
+// The transport is github.com/bogdanfinn/tls-client, which owns the whole
+// wire stack — the uTLS handshake, the HTTP/2 (and optionally HTTP/3) frame
+// layer, and the HTTP/1.1 writer that preserves header casing. httpc supplies
+// its own ClientHello spec and HTTP/2 SETTINGS through a ClientProfile, so the
+// fingerprint data stays in this package while the transport machinery does
+// not.
+//
+// Deviations from tls-client's defaults, all deliberate:
+//   - HTTP/3 is disabled. A QUIC connection uses a separate TLS stack that
+//     bypasses the certificate pinner, and losing the pinner silently is worse
+//     than not racing protocols.
+//   - Response decompression is disabled so decode.go keeps full ownership of
+//     the body (tls-client decodes gzip/br/zstd itself and would leave the
+//     engine holding already-decoded bytes with no Content-Encoding).
+//   - Proxies are baked in per backend and never swapped. tls-client's
+//     SetProxy rebuilds the transport in place without a lock, which races
+//     against in-flight requests; the httpc proxy pool rotates by selecting a
+//     different backend instead.
+//   - Redirects are not followed (the engine's CheckRedirect owns the chain).
 
 package fingerprint
 
 import (
-	"context"
-	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"fmt"
-	"net"
 	"net/url"
-	"strings"
 	"time"
 
-	ehttp "github.com/enetx/http"
-	"github.com/enetx/http2"
-	utls "github.com/refraction-networking/utls"
+	ehttp "github.com/bogdanfinn/fhttp"
+	tls_client "github.com/bogdanfinn/tls-client"
+	utls "github.com/bogdanfinn/utls"
 )
 
 // certPinner is the consumer-side certificate-pinning contract (satisfied by
@@ -39,323 +46,145 @@ type certPinner interface {
 // Connection.MaxIdleConns / MaxConnsPerHost settings, which apply to the
 // standard transport only — see the TLSFingerprint docs.
 const (
-	fpDialTimeout           = 10 * time.Second
-	fpTLSHandshakeTimeout   = 10 * time.Second
-	fpResponseHeaderTimeout = 10 * time.Second
-	fpTCPKeepAlive          = 15 * time.Second
-	fpIdleConnTimeout       = 20 * time.Second
-	fpMaxIdleConns          = 512
-	fpMaxConnsPerHost       = 128
-	fpMaxIdleConnsPerHost   = 128
-	fpExpectContinueTimeout = 1 * time.Second
-	fpH2PingTimeout         = 10 * time.Second
-	fpH2ReadIdleTimeout     = 10 * time.Second
-	fpH2WriteByteTimeout    = 10 * time.Second
+	fpIdleConnTimeout     = 20 * time.Second
+	fpMaxIdleConns        = 512
+	fpMaxIdleConnsPerHost = 128
+	fpMaxConnsPerHost     = 128
+	fpReadIdleTimeout     = 10 * time.Second
+	fpH2PingTimeout       = 10 * time.Second
 )
 
-// ErrHTTP2Fallback indicates that an HTTPS request attempted HTTP/2 first,
-// then tried to fall back to HTTP/1.1, and both attempts failed. Both
-// underlying errors are accessible via Unwrap, so errors.Is/errors.As match
-// against either leg.
-type ErrHTTP2Fallback struct {
-	HTTP2 error
-	HTTP1 error
+// backend is one fingerprint transport stack: the tls-client instance, the
+// profile it serves, and the OS its headers are built for.
+type backend struct {
+	client  tls_client.HttpClient
+	profile *browserProfile
+	os      osKey
 }
 
-func (e *ErrHTTP2Fallback) Error() string {
-	return fmt.Sprintf("fingerprint: HTTP/2 request failed: %v; HTTP/1.1 fallback failed: %v", e.HTTP2, e.HTTP1)
-}
+// newTransportBackend builds the transport for one profile and proxy
+// selection. A nil proxyURL means direct connections; tls-client never
+// consults the environment for proxies.
+func newTransportBackend(cfg Config, proxyURL *url.URL, p *browserProfile, os osKey) (*backend, error) {
+	idle := fpIdleConnTimeout
+	transportOpts := &tls_client.TransportOptions{
+		IdleConnTimeout:        &idle,
+		ReadIdleTimeout:        fpReadIdleTimeout,
+		PingTimeout:            fpH2PingTimeout,
+		MaxResponseHeaderBytes: 0, // tls-client default
+		MaxIdleConns:           fpMaxIdleConns,
+		MaxIdleConnsPerHost:    fpMaxIdleConnsPerHost,
+		MaxConnsPerHost:        fpMaxConnsPerHost,
+		// decode.go owns response decoding; see the package comment.
+		DisableCompression: true,
+	}
 
-func (e *ErrHTTP2Fallback) Unwrap() []error { return []error{e.HTTP2, e.HTTP1} }
+	opts := make([]tls_client.HttpClientOption, 0, 9)
+	opts = append(opts,
+		tls_client.WithTimeoutSeconds(0), // the engine owns the deadline budget
+		tls_client.WithClientProfile(p.clientProfile()),
+		tls_client.WithNotFollowRedirects(),
+		tls_client.WithTransportOptions(transportOpts),
+		// A QUIC connection bypasses the certificate pinner, so it is never
+		// attempted on this path.
+		tls_client.WithDisableHttp3(),
+	)
 
-// fpTransport implements ehttp.RoundTripper for one backend (one profile and
-// proxy combination).
-type fpTransport struct {
-	t1                 *ehttp.Transport // HTTP/1.1; also carries the raw dialer (proxy-aware)
-	t1fb               *ehttp.Transport // HTTP/1.1 twin with http/1.1-only ALPN, for h2 fallback
-	t2                 *http2.Transport // fingerprinted HTTP/2; nil when HTTP/2 is disabled
-	profile            *browserProfile
-	os                 osKey
-	insecureSkipVerify bool
-	certPinner         certPinner
-	forceHTTP1         bool
-}
+	// Session resumption is on whenever the profile's ClientHello can carry a
+	// pre_shared_key extension (the Chrome profiles): the transport keeps an
+	// LRU ticket cache per backend, so repeat connections resume with a PSK
+	// the way a real browser does. Profiles without the extension (Firefox,
+	// iOS WebKit) full-handshake regardless; the flag forces the full
+	// handshake everywhere.
+	if cfg.DisableSessionTickets {
+		opts = append(opts, tls_client.WithDisableSessionTickets())
+	}
 
-// newFingerprintTransport builds the transport stack for one backend. A nil
-// proxyURL means direct connections; the transports never consult the
-// environment for proxies.
-func newFingerprintTransport(cfg Config, proxyURL *url.URL, p *browserProfile, os osKey) (*fpTransport, error) {
-	dial := (&net.Dialer{Timeout: fpDialTimeout, KeepAlive: fpTCPKeepAlive}).DialContext
+	if cfg.InsecureSkipVerify {
+		opts = append(opts, tls_client.WithInsecureSkipVerify())
+	}
+
+	if !cfg.EnableHTTP2 {
+		// Pin the stack to HTTP/1.1, mirroring Connection.EnableHTTP2=false on
+		// the standard transport. The ALPN list is rewritten to http/1.1 only,
+		// so the ClientHello stays coherent with the protocol actually used.
+		opts = append(opts, tls_client.WithForceHttp1())
+	}
+
+	if cfg.CertPinner != nil {
+		opts = append(opts, tls_client.WithCertificatePinner(&pinnerShim{pinner: cfg.CertPinner}))
+	}
+
 	if proxyURL != nil {
-		proxyDial, err := newProxyDialer(proxyURL)
+		factory, err := newProxyDialerFactory(proxyURL)
 		if err != nil {
 			return nil, err
 		}
-		dial = proxyDial
+		// A custom dialer factory, not WithProxyUrl: the built-in CONNECT path
+		// takes its socket deadline from the client timeout, and this package
+		// deliberately runs with no client timeout (the engine owns the
+		// deadline budget), so the built-in path would set a deadline of "now".
+		opts = append(opts, tls_client.WithProxyDialerFactory(factory))
 	}
 
-	ft := &fpTransport{
-		profile:            p,
-		os:                 os,
-		insecureSkipVerify: cfg.InsecureSkipVerify,
-		certPinner:         cfg.CertPinner,
-		forceHTTP1:         !cfg.EnableHTTP2,
+	client, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(), opts...)
+	if err != nil {
+		return nil, fmt.Errorf("fingerprint: build transport for %s: %w", p.name, err)
 	}
 
-	ft.t1 = &ehttp.Transport{
-		DialContext:           dial,
-		DialTLSContext:        ft.dialTLS,
-		DisableCompression:    true,
-		ExpectContinueTimeout: fpExpectContinueTimeout,
-		ForceAttemptHTTP2:     false, // h2 is t2's job; t1 serves plain http and forced-h1 https
-		IdleConnTimeout:       fpIdleConnTimeout,
-		MaxConnsPerHost:       fpMaxConnsPerHost,
-		MaxIdleConns:          fpMaxIdleConns,
-		MaxIdleConnsPerHost:   fpMaxIdleConnsPerHost,
-		Proxy:                 nil, // proxying rides on DialContext
-		ResponseHeaderTimeout: fpResponseHeaderTimeout,
-		TLSHandshakeTimeout:   fpTLSHandshakeTimeout,
-	}
-	ft.t1fb = ft.t1.Clone()
-	ft.t1fb.DialTLSContext = ft.dialTLSHTTP1
-
-	if !ft.forceHTTP1 {
-		ft.t2 = ft.buildH2Transport()
-	}
-
-	return ft, nil
+	return &backend{client: client, profile: p, os: os}, nil
 }
 
-// RoundTrip executes a single request (enetx fork types; the adapter owns
-// the stdlib boundary).
-func (ft *fpTransport) RoundTrip(req *ehttp.Request) (*ehttp.Response, error) {
-	switch strings.ToLower(req.URL.Scheme) {
-	case "http":
-		// Plain HTTP always uses HTTP/1.1 (HTTP/2 requires TLS).
-		return ft.t1.RoundTrip(req)
-	case "https":
-		return ft.handleHTTPS(req)
+// RoundTrip executes one HTTP round trip through the fingerprinted backend.
+// The request is a fork (*ehttp.Request); the adapter owns the stdlib
+// boundary.
+func (b *backend) RoundTrip(req *ehttp.Request) (*ehttp.Response, error) {
+	if req.URL == nil {
+		return nil, fmt.Errorf("fingerprint: request has no URL")
+	}
+
+	switch scheme := req.URL.Scheme; scheme {
+	case "http", "https":
 	default:
-		return nil, fmt.Errorf("fingerprint: invalid URL scheme %q", req.URL.Scheme)
+		return nil, fmt.Errorf("fingerprint: invalid URL scheme %q", scheme)
+	}
+
+	return b.client.Do(req)
+}
+
+// CloseIdleConnections releases the backend's idle connections.
+func (b *backend) CloseIdleConnections() {
+	if b.client != nil {
+		b.client.CloseIdleConnections()
 	}
 }
 
-// errALPNMismatch marks an h2 dial that failed ALPN negotiation before any
-// HTTP bytes were written. handleHTTPS allows the HTTP/1.1 fallback for it
-// even on non-idempotent requests: the server never received the request, so
-// replaying it cannot duplicate side effects.
-var errALPNMismatch = errors.New("fingerprint: negotiated ALPN is not h2")
-
-// isIdempotentMethod mirrors the engine's retry.go definition (RFC 9110
-// §9.2.2: safe methods plus PUT and DELETE). fingerprint must not import the
-// engine package, so the list is duplicated here on purpose.
-func isIdempotentMethod(method string) bool {
-	switch method {
-	case "GET", "HEAD", "OPTIONS", "TRACE", "PUT", "DELETE":
-		return true
-	default:
-		return false
-	}
-}
-
-// handleHTTPS prefers the fingerprinted HTTP/2 transport and falls back to
-// HTTP/1.1 when it fails, restoring the request body for the retry.
+// pinnerShim adapts httpc's VerifyPeerCertificate-shaped pinner to
+// tls-client's Pin(*utls.UConn, host) hook.
 //
-// The fallback replays the request, so it is only attempted when the failed
-// h2 leg provably never delivered request bytes (ALPN mismatch happens
-// before any HTTP bytes are written) or the method is idempotent. Any other
-// h2 failure — GOAWAY or RST_STREAM after the server already processed the
-// request, a read-idle timeout mid-response — may have committed the
-// request's side effects, and re-sending a non-idempotent request would
-// duplicate them (e.g. a payment booked twice).
-func (ft *fpTransport) handleHTTPS(req *ehttp.Request) (*ehttp.Response, error) {
-	if ft.t2 == nil {
-		return ft.t1.RoundTrip(req)
-	}
-
-	resp, err := ft.t2.RoundTrip(req)
-	if err == nil {
-		return resp, nil
-	}
-
-	h2Err := err
-
-	if err := req.Context().Err(); err != nil {
-		return nil, err
-	}
-
-	if !errors.Is(h2Err, errALPNMismatch) && !isIdempotentMethod(req.Method) {
-		// The h2 attempt may have delivered the request to the server.
-		// Surface the h2 failure instead of replaying a non-idempotent
-		// request over HTTP/1.1.
-		return nil, h2Err
-	}
-
-	// Restore the request body for the HTTP/1.1 retry.
-	if req.Body != nil && req.Body != ehttp.NoBody {
-		if req.GetBody == nil {
-			return nil, fmt.Errorf("fingerprint: HTTP/2 failed and cannot retry because req.GetBody is nil: %w", err)
-		}
-
-		body, bodyErr := req.GetBody()
-		if bodyErr != nil {
-			return nil, fmt.Errorf("fingerprint: failed to restore body for fallback: %w", bodyErr)
-		}
-		req.Body = body
-	}
-
-	resp, err = ft.t1fb.RoundTrip(req)
-	if err != nil {
-		return nil, &ErrHTTP2Fallback{HTTP2: h2Err, HTTP1: err}
-	}
-
-	return resp, nil
+// The chain passed through mirrors crypto/tls: real chains when the handshake
+// verified the peer, nil when InsecureSkipVerify skipped verification (leaf
+// pinning then becomes the only gate — the same trust model as the pooled
+// transport path).
+type pinnerShim struct {
+	pinner certPinner
 }
 
-// CloseIdleConnections closes idle connections on all three transports.
-func (ft *fpTransport) CloseIdleConnections() {
-	if ft.t1 != nil {
-		ft.t1.CloseIdleConnections()
-	}
-	if ft.t1fb != nil {
-		ft.t1fb.CloseIdleConnections()
-	}
-	if ft.t2 != nil {
-		ft.t2.CloseIdleConnections()
-	}
-}
-
-// buildH2Transport builds the fingerprinted HTTP/2 transport from the
-// profile's SETTINGS data.
-func (ft *fpTransport) buildH2Transport() *http2.Transport {
-	t := &http2.Transport{
-		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-			return ft.dialTLSHTTP2(ctx, network, addr)
-		},
-		DisableCompression: true,
-		IdleConnTimeout:    fpIdleConnTimeout,
-		PingTimeout:        fpH2PingTimeout,
-		ReadIdleTimeout:    fpH2ReadIdleTimeout,
-		WriteByteTimeout:   fpH2WriteByteTimeout,
+// Pin runs the wrapped pinner against the handshake's certificate chain.
+func (s *pinnerShim) Pin(conn *utls.UConn, host string) error {
+	if s.pinner == nil {
+		return nil
 	}
 
-	h2 := ft.profile.h2
-	t.Settings = make([]http2.Setting, 0, len(h2.settings))
-	for _, s := range h2.settings {
-		t.Settings = append(t.Settings, http2.Setting{ID: http2.SettingID(s.id), Val: s.val})
+	state := conn.ConnectionState()
+
+	rawCerts := make([][]byte, len(state.PeerCertificates))
+	for i, cert := range state.PeerCertificates {
+		rawCerts[i] = cert.Raw
 	}
 
-	if h2.streamID != 0 {
-		t.StreamID = h2.streamID
+	if err := s.pinner.VerifyPeerCertificate(rawCerts, state.VerifiedChains); err != nil {
+		return fmt.Errorf("certificate pinning failed for %s: %w", host, err)
 	}
-	if h2.connectionFlow != 0 {
-		t.ConnectionFlow = h2.connectionFlow
-	}
-	if h2.hasPriority {
-		t.PriorityParam = http2.PriorityParam{
-			StreamDep: h2.priority.streamDep,
-			Exclusive: h2.priority.exclusive,
-			Weight:    h2.priority.weight,
-		}
-	}
-
-	return t
-}
-
-// dialTLS performs the uTLS handshake with the profile's ALPN (h2, http/1.1).
-func (ft *fpTransport) dialTLS(ctx context.Context, network, addr string) (net.Conn, error) {
-	return ft.tlsHandshake(ctx, network, addr, false)
-}
-
-// dialTLSHTTP1 performs the uTLS handshake restricted to HTTP/1.1 ALPN, for
-// the fallback transport.
-func (ft *fpTransport) dialTLSHTTP1(ctx context.Context, network, addr string) (net.Conn, error) {
-	return ft.tlsHandshake(ctx, network, addr, true)
-}
-
-// dialTLSHTTP2 performs the uTLS handshake and requires ALPN to have
-// selected HTTP/2; anything else fails before HTTP/2 bytes are written.
-func (ft *fpTransport) dialTLSHTTP2(ctx context.Context, network, addr string) (net.Conn, error) {
-	uconn, err := ft.tlsHandshake(ctx, network, addr, false)
-	if err != nil {
-		return nil, err
-	}
-
-	if negotiated := uconn.ConnectionState().NegotiatedProtocol; negotiated != "h2" {
-		uconn.Close()
-		return nil, fmt.Errorf("%w: %q, expected h2", errALPNMismatch, negotiated)
-	}
-
-	return uconn, nil
-}
-
-// tlsHandshake dials (through t1's proxy-aware DialContext), then performs
-// the fingerprinted uTLS handshake on the raw connection.
-func (ft *fpTransport) tlsHandshake(ctx context.Context, network, addr string, forceHTTP1 bool) (*utls.UConn, error) {
-	timeout := ft.t1.TLSHandshakeTimeout
-	if timeout > 0 {
-		if deadline, ok := ctx.Deadline(); ok {
-			if remaining := time.Until(deadline); remaining < timeout {
-				timeout = remaining
-			}
-		}
-
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
-
-	rawConn, err := ft.t1.DialContext(ctx, network, addr)
-	if err != nil {
-		return nil, err
-	}
-
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		host = addr
-	}
-
-	spec, err := specForDial(ft.profile)
-	if err != nil {
-		rawConn.Close()
-		return nil, err
-	}
-
-	if forceHTTP1 || ft.forceHTTP1 {
-		setAlpnProtocolToHTTP1(spec)
-	}
-
-	config := &utls.Config{
-		ServerName:             host,
-		InsecureSkipVerify:     ft.insecureSkipVerify,
-		SessionTicketsDisabled: true,
-		OmitEmptyPsk:           true,
-	}
-
-	// The pinner runs as crypto/tls's VerifyPeerCertificate does: after
-	// normal verification with populated chains when verification is on,
-	// and with nil chains under InsecureSkipVerify (leaf-only pinning —
-	// the same trust model as the pooled transport path).
-	if ft.certPinner != nil {
-		pinner := ft.certPinner
-		config.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-			if err := pinner.VerifyPeerCertificate(rawCerts, verifiedChains); err != nil {
-				return fmt.Errorf("certificate pinning failed: %w", err)
-			}
-			return nil
-		}
-	}
-
-	uconn := utls.UClient(rawConn, config, utls.HelloCustom)
-	if err = uconn.ApplyPreset(spec); err != nil {
-		uconn.Close()
-		return nil, fmt.Errorf("fingerprint: apply ClientHello preset: %w", err)
-	}
-
-	if err = uconn.HandshakeContext(ctx); err != nil {
-		uconn.Close()
-		return nil, fmt.Errorf("fingerprint: uTLS handshake: %+v", err)
-	}
-
-	return uconn, nil
+	return nil
 }

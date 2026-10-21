@@ -1,20 +1,19 @@
 package fingerprint
 
 import (
-	"crypto/rand"
 	"fmt"
 	"io"
 	"strings"
 	"testing"
 
-	utls "github.com/refraction-networking/utls"
+	utls "github.com/bogdanfinn/utls"
 )
 
 // TestGreaseSignatureAlgorithms pins the GREASE substitution: every
 // placeholder becomes one of the 16 GREASE code points (0x0a0a + 0x1010*n),
 // and non-placeholder schemes are untouched.
 func TestGreaseSignatureAlgorithms(t *testing.T) {
-	spec := cloneSpec(&chrome152Spec)
+	spec := &chrome152Spec
 	sigs := findSigAlgs(spec)
 	if sigs == nil {
 		t.Fatal("chrome spec has no signature_algorithms extension")
@@ -76,43 +75,6 @@ func TestRandomGREASE_Domain(t *testing.T) {
 	}
 }
 
-// TestSetAlpnProtocolToHTTP1 pins the forced-HTTP/1 rewrite: h2 dropped,
-// remaining order preserved, http/1.1 guaranteed present, and the
-// add-if-missing path for specs without an ALPN extension.
-func TestSetAlpnProtocolToHTTP1(t *testing.T) {
-	t.Run("filters h2 and keeps order", func(t *testing.T) {
-		spec := &utls.ClientHelloSpec{Extensions: []utls.TLSExtension{
-			&utls.ALPNExtension{AlpnProtocols: []string{"h2", "http/1.1"}},
-		}}
-		setAlpnProtocolToHTTP1(spec)
-		alpn := findALPN(spec)
-		if alpn == nil || len(alpn.AlpnProtocols) != 1 || alpn.AlpnProtocols[0] != "http/1.1" {
-			t.Fatalf("got %v", alpn.AlpnProtocols)
-		}
-	})
-
-	t.Run("keeps non-h2 protocols ahead of http/1.1", func(t *testing.T) {
-		spec := &utls.ClientHelloSpec{Extensions: []utls.TLSExtension{
-			&utls.ALPNExtension{AlpnProtocols: []string{"h2", "spdy/3.1"}},
-		}}
-		setAlpnProtocolToHTTP1(spec)
-		alpn := findALPN(spec)
-		want := []string{"spdy/3.1", "http/1.1"}
-		if len(alpn.AlpnProtocols) != 2 || alpn.AlpnProtocols[0] != want[0] || alpn.AlpnProtocols[1] != want[1] {
-			t.Fatalf("got %v, want %v", alpn.AlpnProtocols, want)
-		}
-	})
-
-	t.Run("adds ALPN when missing", func(t *testing.T) {
-		spec := &utls.ClientHelloSpec{}
-		setAlpnProtocolToHTTP1(spec)
-		alpn := findALPN(spec)
-		if alpn == nil || len(alpn.AlpnProtocols) != 1 || alpn.AlpnProtocols[0] != "http/1.1" {
-			t.Fatalf("got %+v", alpn)
-		}
-	})
-}
-
 // TestSpecForDial_ShuffleCompleteness pins that the per-connection shuffle
 // reorders but never drops or duplicates extensions, and that the returned
 // spec never aliases the shared profile value.
@@ -126,8 +88,8 @@ func TestSpecForDial_ShuffleCompleteness(t *testing.T) {
 		if err != nil {
 			t.Fatalf("specForDial: %v", err)
 		}
-		if spec == &chrome152Spec {
-			t.Fatal("specForDial returned the shared spec pointer")
+		if &spec.CipherSuites[0] == &chrome152Spec.CipherSuites[0] {
+			t.Fatal("specForDial aliased the shared spec's cipher slice")
 		}
 		if len(spec.Extensions) != len(chrome152Spec.Extensions) {
 			t.Fatalf("extension count changed: %d != %d", len(spec.Extensions), len(chrome152Spec.Extensions))
@@ -148,52 +110,12 @@ func TestSpecForDial_ShuffleCompleteness(t *testing.T) {
 	}
 }
 
-// TestSupportsResumption pins the reserved session-resumption classifier:
-// TLS 1.2 semantics (ticket alone) vs TLS 1.3 semantics (ticket + PSK modes
-// + a PSK extension, all simultaneously — a partial PSK set is NOT resumable).
-func TestSupportsResumption(t *testing.T) {
-	ticket := func() utls.TLSExtension { return &utls.SessionTicketExtension{} }
-	pskModes := func() utls.TLSExtension {
-		return &utls.PSKKeyExchangeModesExtension{Modes: []uint8{1}}
-	}
-	utlsPSK := func() utls.TLSExtension { return &utls.UtlsPreSharedKeyExtension{} }
-	fakePSK := func() utls.TLSExtension { return &utls.FakePreSharedKeyExtension{} }
-
-	tests := []struct {
-		name string
-		spec utls.ClientHelloSpec
-		want bool
-	}{
-		{"empty spec", utls.ClientHelloSpec{}, false},
-		{"unrelated extensions only", utls.ClientHelloSpec{Extensions: []utls.TLSExtension{
-			&utls.ALPNExtension{AlpnProtocols: []string{"h2"}},
-		}}, false},
-		{"session ticket only (TLS 1.2 resumption)", utls.ClientHelloSpec{Extensions: []utls.TLSExtension{ticket()}}, true},
-		{"PSK key exchange modes only", utls.ClientHelloSpec{Extensions: []utls.TLSExtension{pskModes()}}, false},
-		{"ticket + PSK modes without a PSK extension", utls.ClientHelloSpec{Extensions: []utls.TLSExtension{ticket(), pskModes()}}, false},
-		{"ticket + PSK modes + utls PSK extension", utls.ClientHelloSpec{Extensions: []utls.TLSExtension{ticket(), pskModes(), utlsPSK()}}, true},
-		{"ticket + PSK modes + fake PSK extension", utls.ClientHelloSpec{Extensions: []utls.TLSExtension{ticket(), pskModes(), fakePSK()}}, true},
-		{"realistic full spec (chrome 152)", chrome152Spec, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := supportsResumption(tt.spec); got != tt.want {
-				t.Errorf("supportsResumption(%s) = %v, want %v", tt.name, got, tt.want)
-			}
-		})
-	}
-}
-
 // TestSpecForDial_HelloIDProfile pins the UTLSIdToSpec branch: Firefox
 // profiles carry a helloID instead of a hand-built spec, so every dial
 // constructs a fresh spec (never aliased) and the fixed (unshuffled) order
 // is preserved between the built spec and the dial copy.
 func TestSpecForDial_HelloIDProfile(t *testing.T) {
 	p := firefox148Desktop
-	if p.helloSpec != nil {
-		t.Fatal("test setup: firefox desktop profile should be helloID-based")
-	}
 	if p.shuffleExtensions {
 		t.Fatal("test setup: firefox profile should not shuffle extensions")
 	}
@@ -211,7 +133,7 @@ func TestSpecForDial_HelloIDProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("specForDial(firefox) second: %v", err)
 	}
-	if s1 == s2 {
+	if &s1.CipherSuites[0] == &s2.CipherSuites[0] {
 		t.Error("helloID dials must construct a fresh spec per connection")
 	}
 
@@ -225,28 +147,36 @@ func TestSpecForDial_HelloIDProfile(t *testing.T) {
 // TestSpecForDial_UnknownHelloID pins the error branch: an unresolvable
 // helloID surfaces a wrapped error naming the id.
 func TestSpecForDial_UnknownHelloID(t *testing.T) {
-	p := &browserProfile{helloID: utls.ClientHelloID{Client: "bogus", Version: "999"}}
+	p := &browserProfile{name: "bogus-999", hello: func() (utls.ClientHelloSpec, error) {
+		return utls.ClientHelloSpec{}, fmt.Errorf("unknown hello")
+	}}
 	_, err := specForDial(p)
 	if err == nil {
 		t.Fatal("unknown helloID accepted")
 	}
-	if !containsAll(err.Error(), "bogus", "build spec") {
+	if !containsAll(err.Error(), "bogus", "build ClientHello spec") {
 		t.Errorf("error should name the id and the failure, got: %v", err)
 	}
 }
 
 // TestRandomGREASE_FallbackOnRandFailure pins the crypto/rand failure branch:
-// a failing reader yields the placeholder, which uTLS re-substitutes with its
-// own GREASE value at write time. rand.Reader is swapped for the duration of
-// this test only (tests in this package do not run in parallel).
+// a failing source yields the placeholder, which uTLS re-substitutes with its
+// own GREASE value at write time.
+//
+// The entropy source is injected rather than swapping the process-wide
+// rand.Reader: several tests in this package dial concurrently, and a global
+// write races with them (it produced an intermittent failure under -race).
 func TestRandomGREASE_FallbackOnRandFailure(t *testing.T) {
-	orig := rand.Reader
-	t.Cleanup(func() { rand.Reader = orig })
-	rand.Reader = failingReader{}
-
-	if got := randomGREASE(); got != utls.GREASE_PLACEHOLDER {
-		t.Errorf("randomGREASE() under a failing reader = %#x, want the placeholder %#x",
+	if got := randomGREASEFrom(failingReader{}); got != utls.GREASE_PLACEHOLDER {
+		t.Errorf("randomGREASEFrom under a failing reader = %#x, want the placeholder %#x",
 			got, utls.GREASE_PLACEHOLDER)
+	}
+
+	// The real path still draws from crypto/rand and stays inside the domain.
+	if got := randomGREASE(); got != utls.GREASE_PLACEHOLDER {
+		if (got-0x0a0a)%0x1010 != 0 || got < 0x0a0a || got > 0xfafa {
+			t.Errorf("randomGREASE() = %#x, outside the GREASE domain", got)
+		}
 	}
 }
 

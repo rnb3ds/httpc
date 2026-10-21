@@ -344,8 +344,10 @@ func WithBody(data any, kind ...BodyKind) RequestOption {
 			r.SetHeader("Content-Type", "application/octet-stream")
 		case BodyMultipart:
 			formData, ok := data.(*FormData)
-			if !ok {
-				return fmt.Errorf("multipart body requires *FormData, got %T", data)
+			if !ok || formData == nil {
+				// A typed-nil passes the assertion but would panic the
+				// encoder at Build time (fd.Fields on a nil pointer).
+				return fmt.Errorf("multipart body requires non-nil *FormData, got %T", data)
 			}
 			r.SetBody(formData)
 		case BodyAuto:
@@ -740,7 +742,7 @@ func WithContext(ctx context.Context) RequestOption {
 // Note: retrying follows the client's idempotency policy — non-idempotent
 // methods (POST, PATCH, custom) are not retried unless the client sets
 // Retry.RetryNonIdempotent or this request passes WithRetryNonIdempotent(true);
-// in that case MaxRetries only bounds idempotent requests.
+// without either of those, MaxRetries only bounds idempotent requests.
 func WithMaxRetries(maxRetries int) RequestOption {
 	return RequestOptionFunc(func(r RequestMutator) error {
 		if maxRetries < 0 || maxRetries > maxRetryAttempts {

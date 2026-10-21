@@ -164,16 +164,16 @@ func TestParseWindowsProxyString(t *testing.T) {
 
 // TestGetWindowsProxySettings exercises the registry-reading path (moved here
 // from proxy_test.go so that file builds on non-Windows platforms). On most
-// dev machines ProxyEnable is 0, so this returns ("", false, nil); on machines
-// with a proxy configured it returns the proxy details. Either way it must
-// not panic or error.
+// dev machines ProxyEnable is 0, so this returns ("", "", false, nil); on
+// machines with a proxy configured it returns the proxy details. Either way
+// it must not panic or error.
 func TestGetWindowsProxySettings(t *testing.T) {
-	server, enabled, err := getWindowsProxySettings()
+	server, override, enabled, err := getWindowsProxySettings()
 	if err != nil {
 		t.Logf("getWindowsProxySettings returned error (acceptable in CI): %v", err)
 		return
 	}
-	t.Logf("registry proxy: server=%q enabled=%v", server, enabled)
+	t.Logf("registry proxy: server=%q override=%q enabled=%v", server, override, enabled)
 	if !enabled && server != "" {
 		t.Logf("note: server=%q but enabled=false", server)
 	}

@@ -3,6 +3,9 @@ package security
 import (
 	"strings"
 	"sync"
+	"unicode/utf8"
+
+	"golang.org/x/net/idna"
 
 	"github.com/cybergodev/httpc/internal/validation"
 )
@@ -67,6 +70,39 @@ func normalizeDomain(domain string) string {
 	return result
 }
 
+// normalizeDomainForCompare maps a configured or observed domain to its
+// ASCII comparison form: normalizeDomain (trim, lowercase, trailing-dot
+// strip) plus IDNA mapping, so a Unicode entry ("münchen.de") matches the
+// xn-- punycode form servers emit in Location headers. A wildcard prefix is
+// preserved. Conversion failure falls back to the trimmed form — an
+// unconvertible name simply never matches (fail-closed).
+func normalizeDomainForCompare(domain string) string {
+	prefix := ""
+	if rest, ok := strings.CutPrefix(domain, "*."); ok {
+		prefix, domain = "*.", rest
+	}
+	domain = normalizeDomain(domain)
+	if domain == "" {
+		return ""
+	}
+	if !isASCII(domain) {
+		if ascii, err := idna.Lookup.ToASCII(domain); err == nil {
+			domain = ascii
+		}
+	}
+	return prefix + domain
+}
+
+// isASCII reports whether s consists entirely of ASCII bytes.
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
+}
+
 // NewDomainWhitelist creates a new DomainWhitelist from a list of domains.
 // Domains can be:
 //   - Exact matches: "example.com", "api.example.com"
@@ -108,7 +144,7 @@ func NewDomainWhitelist(domains ...string) *DomainWhitelist {
 	}
 
 	for _, domain := range domains {
-		domain = normalizeDomain(domain)
+		domain = normalizeDomainForCompare(domain)
 		if domain == "" {
 			continue
 		}
@@ -136,7 +172,7 @@ func (w *DomainWhitelist) IsAllowed(hostname string) bool {
 		return true // No whitelist means all domains are allowed
 	}
 
-	hostname = normalizeDomain(hostname)
+	hostname = normalizeDomainForCompare(hostname)
 	if hostname == "" {
 		return false
 	}
@@ -178,7 +214,7 @@ func (w *DomainWhitelist) Add(domain string) {
 		return
 	}
 
-	domain = normalizeDomain(domain)
+	domain = normalizeDomainForCompare(domain)
 	if domain == "" {
 		return
 	}
@@ -209,7 +245,7 @@ func (w *DomainWhitelist) Remove(domain string) {
 		return
 	}
 
-	domain = normalizeDomain(domain)
+	domain = normalizeDomainForCompare(domain)
 	if domain == "" {
 		return
 	}

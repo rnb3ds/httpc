@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"testing"
 
-	ehttp "github.com/enetx/http"
+	ehttp "github.com/bogdanfinn/fhttp"
 )
 
 // TestRegistrableDomain pins the eTLD+1 approximation: two-label hosts are

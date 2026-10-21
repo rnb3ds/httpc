@@ -148,6 +148,8 @@ type ConnectionConfig struct {
 	// connection failures, status-based rotation does NOT circuit-break the
 	// proxy — blocks are often target-specific (a proxy blocked on one site may
 	// work fine on another). Requires Retry.MaxRetries > 0 to take effect.
+	// Note: the codes become retryable regardless of whether a proxy is
+	// configured — with no proxy pool each retry re-hits the same server.
 	// Default: nil.
 	ProxyRotateOnStatus []int
 
@@ -197,60 +199,86 @@ type SecurityConfig struct {
 	InsecureSkipVerify bool
 
 	// TLSFingerprint enables browser transport fingerprinting: TLS
-	// ClientHello (JA3/JA4), HTTP/2 frames (SETTINGS/window updates/
-	// pseudo-header order/priorities), and a browser-coherent ordered header
-	// block including a version-matched User-Agent. Implemented in-house on
-	// upstream uTLS (TLS layer) and the enetx/http(-2) fork transports (the
-	// net/http and x/net/http2 extensions that expose wire-level ordering
-	// knobs); httpc does not depend on any third-party HTTP client for this.
+	// ClientHello (JA3/JA4), HTTP/2 frames (SETTINGS order and values,
+	// connection window, initial stream id, pseudo-header order), and a
+	// browser-coherent ordered header block with the browser's exact wire
+	// casing and a version-matched User-Agent.
+	//
+	// The transport is github.com/bogdanfinn/tls-client; httpc supplies the
+	// ClientHello spec, the HTTP/2 SETTINGS and the header tables itself, so
+	// profile data lives in this library and can target a browser build ahead
+	// of any upstream release.
 	//
 	// Values are preset names for the two shipped browser profiles —
-	// "chrome" (Chrome 152) and "firefox" (Firefox 148) — optionally with an
+	// "chrome" (Chrome 155) and "firefox" (Firefox 158) — optionally with an
 	// OS suffix: "chrome-windows", "chrome-macos", "chrome-linux",
 	// "chrome-android", "chrome-ios" (and the firefox-* equivalents), plus
-	// the aliases "chrome-latest", "chrome-152", "firefox-latest",
-	// "firefox-148", "android-chrome-latest", "ios-chrome-latest". Empty
-	// string (default) uses the standard Go stack with no spoofing.
+	// the aliases "chrome-latest", "chrome-155", "chrome-152" and
+	// "firefox-148" (retired majors, pinned), "firefox-latest",
+	// "firefox-158", "android-chrome-latest", "ios-chrome-latest". Empty
+	// string (default) uses the standard Go stack with no spoofing. The iOS
+	// presets speak WebKit (as every iOS browser must): Safari's TLS and
+	// HTTP/2 shapes with CriOS/FxiOS User-Agents, and "safari-ios" is Safari
+	// itself on that same data. There is no desktop-Safari profile.
 	//
 	// Behavior notes when set:
 	//   - The httpc engine (redirects, retries, middleware, streaming) stays
 	//     in control; only the transport layer is replaced.
-	//   - Proxy pools, rotation, and circuit breaking keep working; HTTP and
-	//     SOCKS5 proxies are supported on the fingerprint path.
+	//   - Proxy pools, rotation, and circuit breaking keep working; HTTP,
+	//     HTTPS and SOCKS4/5 proxies are supported on the fingerprint path.
+	//     The proxy is fixed per connection pool: rotation selects a different
+	//     pool and never re-points a live one.
 	//   - The preset's header set is authoritative: same-named request
 	//     headers (User-Agent, Accept, Accept-Language, ...) are replaced by
 	//     the browser profile's values so the wire stays coherent with the
 	//     spoofed ClientHello. Custom headers pass through untouched — in
 	//     particular, an explicitly set User-Agent does NOT override the
 	//     preset on this path.
+	//   - Header names are written with the browser's own casing (lower-case
+	//     sec-ch-ua, Title-Case everything else), including on HTTP/1.1.
 	//   - Redirect hops stay browser-coherent: sec-fetch-site is recomputed
 	//     against the previous hop's URL, sec-fetch-user is dropped after
 	//     the first hop, and a 301/302/303-downgraded fetch request keeps
 	//     fetch-style headers after turning into GET.
-	//   - Only HTTP/1.1 and HTTP/2 are used (h2 preferred, h1 fallback),
-	//     both fully fingerprinted. The fallback replays the request, so it
-	//     only runs for failures that provably never wrote request bytes
-	//     (ALPN mismatch) or for idempotent methods — a POST whose h2 leg
-	//     failed mid-response is NOT replayed; the h2 error is returned
-	//     instead. HTTP/3 is not attempted: a QUIC-to-TCP
-	//     fallback would emit a non-browser TLS shape mid-chain.
-	//   - Certificate pinning works on this path: CertificatePinner runs as
-	//     the handshake's VerifyPeerCertificate hook (under
-	//     InsecureSkipVerify it becomes the only gate, pinning the leaf
-	//     certificate — the same trust model as the standard path).
-	//   - Connection.EnableHTTP2=false pins the fingerprint path to HTTP/1.1,
-	//     mirroring the standard stack's protocol choice.
+	//   - Protocol selection follows the transport's ALPN negotiation, so a
+	//     server that only speaks HTTP/1.1 simply gets HTTP/1.1 — no manual
+	//     fallback, and no request is ever replayed behind the engine's back.
+	//     HTTP/3 is never attempted: a QUIC connection uses a separate TLS
+	//     stack that bypasses CertificatePinner, and losing the pin silently
+	//     is worse than not racing protocols.
+	//   - Certificate pinning works on this path: CertificatePinner runs on
+	//     every fingerprinted handshake (under InsecureSkipVerify it becomes
+	//     the only gate, pinning the leaf certificate — the same trust model
+	//     as the standard path).
+	//   - Connection.EnableHTTP2=false pins the fingerprint path to HTTP/1.1
+	//     and rewrites the ClientHello's ALPN list to match, mirroring the
+	//     standard stack's protocol choice.
 	//   - The fingerprint path uses its own connection-pool sizing
 	//     (MaxIdleConns 512 / MaxConnsPerHost 128): Connection.MaxIdleConns
 	//     and Connection.MaxConnsPerHost apply to the standard transport only.
-	//   - TLSConfig and MinTLSVersion/MaxTLSVersion are mutually exclusive
-	//     with this field (validation rejects the combination).
+	//   - TLSConfig is mutually exclusive with this field (validation
+	//     rejects the combination). MinTLSVersion/MaxTLSVersion are silently
+	//     ignored when TLSFingerprint is set — the preset's ClientHello
+	//     dictates the version range.
 	//   - SSRF protection uses a resolve-then-validate pre-flight instead of
 	//     the standard path's dial-layer validation; redirects are re-checked
 	//     per hop by the engine.
+	//   - Response bodies are decoded by httpc itself (gzip/deflate/br/zstd)
+	//     and handed to the engine as identity bodies.
 	//   - Fingerprinted connections are not counted in pool metrics and do
 	//     not use Connection.EnableDoH (the backend resolves DNS itself).
 	TLSFingerprint string
+
+	// TLSFingerprintDisableSessionTickets turns off TLS session ticket
+	// caching and resumption on the fingerprint path. By default (false) the
+	// Chrome profiles cache session tickets per connection pool (like real
+	// browsers, a repeat connection to a host resumes with a PSK instead of a
+	// full handshake); profiles whose ClientHello carries no pre_shared_key
+	// extension (Firefox, the iOS WebKit profiles) always full-handshake
+	// regardless. Set true to force a full handshake on every connection —
+	// for fingerprint-rotation pipelines that want each connection fully
+	// independent, or to rule resumption out while debugging a target.
+	TLSFingerprintDisableSessionTickets bool
 
 	// MaxResponseBodySize limits response body size in bytes. Default: 10MB.
 	MaxResponseBodySize int64
@@ -747,7 +775,7 @@ func ValidateConfig(cfg *Config) error {
 	}
 	if cfg.Security.MinTLSVersion != 0 && cfg.Security.MaxTLSVersion != 0 {
 		if cfg.Security.MinTLSVersion > cfg.Security.MaxTLSVersion {
-			return fmt.Errorf("Security.MinTLSVersion (%d) must not exceed MaxTLSVersion (%d)", cfg.Security.MinTLSVersion, cfg.Security.MaxTLSVersion)
+			return fmt.Errorf("%w: Security.MinTLSVersion (%d) must not exceed MaxTLSVersion (%d)", ErrInvalidSecurity, cfg.Security.MinTLSVersion, cfg.Security.MaxTLSVersion)
 		}
 	}
 	// Reject values outside the tls.VersionTLS* constant range; crypto/tls
@@ -770,7 +798,7 @@ func ValidateConfig(cfg *Config) error {
 	// only once per client construction.
 	for _, cidr := range cfg.Security.SSRFExemptCIDRs {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
-			return fmt.Errorf("Security.SSRFExemptCIDRs: invalid CIDR %q: %w", cidr, err)
+			return fmt.Errorf("%w: Security.SSRFExemptCIDRs: invalid CIDR %q: %w", ErrInvalidSecurity, cidr, err)
 		}
 	}
 
@@ -841,7 +869,7 @@ func (c *Config) parseSSRFExemptCIDRs() error {
 	for _, cidr := range c.Security.SSRFExemptCIDRs {
 		_, network, err := net.ParseCIDR(cidr)
 		if err != nil {
-			return fmt.Errorf("Security.SSRFExemptCIDRs: invalid CIDR %q: %w", cidr, err)
+			return fmt.Errorf("%w: Security.SSRFExemptCIDRs: invalid CIDR %q: %w", ErrInvalidSecurity, cidr, err)
 		}
 		c.parsedCIDRs = append(c.parsedCIDRs, network)
 	}

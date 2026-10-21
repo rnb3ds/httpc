@@ -696,7 +696,7 @@ func TestValidateConfig_AdditionalBoundaries(t *testing.T) {
 		{"invalid TLS fingerprint", func(c *Config) { c.Security.TLSFingerprint = "opera" }, true},
 		{"invalid TLS fingerprint safari (no profile)", func(c *Config) { c.Security.TLSFingerprint = "safari" }, true},
 		{"invalid TLS fingerprint unknown version", func(c *Config) { c.Security.TLSFingerprint = "chrome-999" }, true},
-		{"invalid TLS fingerprint stale version pin", func(c *Config) { c.Security.TLSFingerprint = "chrome-155" }, true},
+		{"invalid TLS fingerprint stale version pin", func(c *Config) { c.Security.TLSFingerprint = "chrome-153" }, true},
 		{"TLS fingerprint with custom TLSConfig rejected", func(c *Config) {
 			c.Security.TLSFingerprint = "chrome"
 			c.Security.TLSConfig = &tls.Config{}

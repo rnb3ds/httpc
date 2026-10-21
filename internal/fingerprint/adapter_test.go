@@ -13,7 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	ehttp "github.com/enetx/http"
+	ehttp "github.com/bogdanfinn/fhttp"
+	utls "github.com/bogdanfinn/utls"
 
 	"github.com/cybergodev/httpc/internal/connection"
 )
@@ -111,7 +112,11 @@ func TestIsConnectionFailure(t *testing.T) {
 			&url.Error{Op: "Get", URL: "https://example.com/", Err: context.DeadlineExceeded},
 			true,
 		},
-		{"tls verification error", &tls.CertificateVerificationError{Err: errors.New("x509: unknown authority")}, true},
+		// The handshake runs on uTLS, so this is uTLS's type — crypto/tls's
+		// CertificateVerificationError is a distinct type that never appears on
+		// this path (it is not net.Error and would classify as false).
+		{"utls verification error", &utls.CertificateVerificationError{Err: errors.New("x509: unknown authority")}, true},
+		{"url-wrapped utls verification error", &url.Error{Op: "Get", URL: "https://example.com/", Err: &utls.CertificateVerificationError{Err: errors.New("x509: unknown authority")}}, true},
 		{"context canceled by caller", context.Canceled, false},
 		{"arbitrary request error", errors.New("bad request"), false},
 	}
@@ -235,15 +240,21 @@ func TestToForkRequest_FullFieldParity(t *testing.T) {
 		RemoteAddr:       "10.0.0.1:1234",
 		RequestURI:       "/original?uri=1",
 		TLS:              &tls.ConnectionState{NegotiatedProtocol: "h2"},
-		Cancel:           cancelCh,
+		Cancel:           cancelCh, //nolint:staticcheck // parity of the deprecated field is the point; the engine never sets it
 		Pattern:          "/submit",
 	}
 	req = req.WithContext(ctx)
 
 	fork := toForkRequest(req)
 
-	if fork.Method != req.Method || fork.URL != req.URL {
-		t.Errorf("Method/URL not carried: %v %v", fork.Method, fork.URL)
+	if fork.Method != req.Method {
+		t.Errorf("Method not carried: %q != %q", fork.Method, req.Method)
+	}
+	// URL is deliberately not pointer-compared: the fork's WithContext clones
+	// it (legacy net/http behaviour, Issue 23544), so identity is expected to
+	// differ while the value must not.
+	if fork.URL == nil || fork.URL.String() != req.URL.String() {
+		t.Errorf("URL not carried: %v != %v", fork.URL, req.URL)
 	}
 	if fork.Proto != "HTTP/1.1" || fork.ProtoMajor != 1 || fork.ProtoMinor != 1 {
 		t.Errorf("proto fields = %q %d.%d", fork.Proto, fork.ProtoMajor, fork.ProtoMinor)
@@ -281,17 +292,14 @@ func TestToForkRequest_FullFieldParity(t *testing.T) {
 	if fork.RemoteAddr != "10.0.0.1:1234" || fork.RequestURI != "/original?uri=1" {
 		t.Errorf("RemoteAddr/RequestURI = %q %q", fork.RemoteAddr, fork.RequestURI)
 	}
-	if fork.TLS == nil || fork.TLS.NegotiatedProtocol != "h2" {
-		t.Errorf("TLS state not carried: %v", fork.TLS)
+	if fork.TLS != nil {
+		t.Error("outgoing fork requests must carry no TLS state")
 	}
 	if fork.Response != nil {
 		t.Error("fork Response back-reference must be nil on outgoing requests")
 	}
 	if fork.Cancel != cancelCh { //nolint:staticcheck // parity of the deprecated field is the point
 		t.Error("Cancel channel not carried for parity")
-	}
-	if fork.Pattern != "/submit" {
-		t.Errorf("Pattern = %q", fork.Pattern)
 	}
 	if fork.Context() != ctx {
 		t.Error("WithContext must preserve the engine's context (deadlines ride on it)")
@@ -341,7 +349,7 @@ func TestToStdResponse_FullFieldParity(t *testing.T) {
 		Close:            true,
 		Uncompressed:     true,
 		Trailer:          ehttp.Header{"X-Trailer": {"done"}},
-		TLS:              &tls.ConnectionState{NegotiatedProtocol: "h2"},
+		TLS:              &utls.ConnectionState{NegotiatedProtocol: "h2"},
 	}
 
 	resp := toStdResponse(forkResp, origReq)
@@ -405,21 +413,37 @@ func TestAdapterRoundTrip_NilURL(t *testing.T) {
 }
 
 // TestBackendFor_UnsupportedProxyScheme pins the per-proxy construction
-// error chain: backendFor → newBackend → newFingerprintTransport →
-// newProxyDialer rejects an unsupported scheme and the error surfaces to the
-// caller (not a panic, no cache entry).
+// error chain: backendFor → newBackend → newTransportBackend →
+// newProxyDialerFactory rejects an unsupported scheme and the error surfaces to
+// the caller (not a panic, no cache entry). http, https, socks4/4a and
+// socks5/5h are all supported, so the probe uses a scheme no dialer knows.
 func TestBackendFor_UnsupportedProxyScheme(t *testing.T) {
 	a := NewAdapter(Config{PresetName: "chrome"})
 	if a.baseErr != nil {
 		t.Fatalf("base backend build: %v", a.baseErr)
 	}
 
-	_, err := a.backendFor(&url.URL{Scheme: "socks4", Host: "127.0.0.1:1"})
-	if err == nil {
-		t.Fatal("socks4 proxy scheme accepted")
+	for _, scheme := range []string{"ftp", "quic", ""} {
+		_, err := a.backendFor(&url.URL{Scheme: scheme, Host: "127.0.0.1:1"})
+		if err == nil {
+			t.Fatalf("proxy scheme %q accepted", scheme)
+		}
+		if !strings.Contains(err.Error(), "proxy scheme") {
+			t.Errorf("error should name the proxy scheme, got: %v", err)
+		}
 	}
 	if len(a.perProxy) != 0 {
 		t.Errorf("failed backend must not be cached, got %d entries", len(a.perProxy))
+	}
+
+	// The supported schemes must construct cleanly (no dial happens here).
+	// socks4/socks4a are absent on purpose: x/net/proxy.FromURL implements
+	// socks5/socks5h only, so accepting them would defer a guaranteed
+	// "proxy: unknown scheme" failure to every dial.
+	for _, scheme := range []string{"http", "https", "socks5", "socks5h"} {
+		if _, err := a.backendFor(&url.URL{Scheme: scheme, Host: "127.0.0.1:1"}); err != nil {
+			t.Errorf("proxy scheme %q rejected: %v", scheme, err)
+		}
 	}
 }
 
@@ -445,7 +469,7 @@ func TestAdapterRoundTrip_SSRFBlocksLoopback(t *testing.T) {
 // declared encoding is unsupported fails the round trip instead of reaching
 // the engine as compressed bytes with the headers stripped.
 //
-// (A gzip-branded garbage body cannot be used here: the enetx/http fork does
+// (A gzip-branded garbage body cannot be used here: the fhttp fork does
 // NOT auto-decompress on this path — its addedGzip gate only fires when the
 // fork itself injected Accept-Encoding (i.e. the request carried no
 // Accept-Encoding header), and DisableCompression is set on every fingerprint
@@ -463,7 +487,7 @@ func TestAdapterRoundTrip_UndecodableBodyFailsRoundTrip(t *testing.T) {
 
 	resp, err := a.RoundTrip(httptestReq(t, ts.URL+"/"))
 	if err == nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		t.Fatal("unsupported Content-Encoding accepted")
 	}
 	if !strings.Contains(err.Error(), "unsupported Content-Encoding") {

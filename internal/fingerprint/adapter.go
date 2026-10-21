@@ -1,45 +1,50 @@
 // Package fingerprint implements browser transport fingerprinting (TLS
-// ClientHello + HTTP/2 frames + ordered header block) as a standard
-// net/http RoundTripper, so the httpc engine (redirects, retries, middleware,
-// streaming) stays authoritative.
+// ClientHello + HTTP/2 frames + ordered, case-exact header block) as a
+// standard net/http RoundTripper, so the httpc engine (redirects, retries,
+// middleware, streaming) stays authoritative.
 //
-// The transport stack is owned by this package: the TLS layer is upstream
-// refraction-networking/utls, the HTTP/1.1 and HTTP/2 layers are the
-// enetx/http and enetx/http2 forks (net/http and x/net/http2 extended with
-// the wire-level knobs fingerprinting requires — ordered header blocks,
-// custom SETTINGS/priority frames, initial stream ids). The orchestration
-// (JA assembly, browser profiles, header pipeline, proxy dialing, response
-// decoding) was ported from github.com/enetx/surf (MIT) into this package;
-// httpc does not depend on that client library.
+// The transport is github.com/bogdanfinn/tls-client (BSD-3): it owns the uTLS
+// handshake, the HTTP/2 frame layer and the HTTP/1.1 writer that preserves
+// header casing. What this package keeps is everything the fingerprint data
+// and the httpc contract depend on — the browser profiles and their
+// ClientHello specs, the per-method header pipeline, redirect-hop coherence,
+// proxy-pool integration, SSRF pre-flight, response decoding, and the
+// certificate-pinning adapter. httpc depends on none of enetx/http,
+// enetx/http2 or refraction-networking/utls for this path any more.
 //
 // Design notes:
-//   - One transport stack per proxy selection is cached; the httpc proxy
-//     pool (rotation, circuit breaking, ProxyRecorder attribution) continues
-//     to govern selection via PoolManager.SelectProxy.
+//   - One backend (one tls-client instance) per proxy selection is cached; the
+//     httpc proxy pool (rotation, circuit breaking, ProxyRecorder attribution)
+//     continues to govern selection via PoolManager.SelectProxy. Proxies are
+//     baked in at construction and never swapped at runtime: tls-client's
+//     SetProxy rebuilds its transport in place without a lock, which races
+//     with in-flight requests, so rotation happens by picking a different
+//     cached backend instead.
 //   - Redirects are NOT followed by the backend: the adapter is a plain
 //     http.RoundTripper, so the engine's http.Client CheckRedirect policy
 //     drives the chain. Redirect hops stay browser-coherent (redirect.go):
 //     sec-fetch-site is recomputed against the previous hop's URL,
 //     sec-fetch-user is dropped after the first hop, and a 301/302/303
 //     downgraded fetch chain keeps fetch-style header tables.
-//   - Only HTTP/1.1 and HTTP/2 are used, both fully fingerprinted (h2
-//     preferred, h1 fallback with body restore via GetBody). The fallback
-//     is replay-safe only: it runs for pre-send failures (ALPN mismatch)
-//     or idempotent methods, never for a non-idempotent request whose h2
-//     leg may have already reached the server. HTTP/3 is
-//     deliberately not attempted: a QUIC fallback to TCP would emit a
-//     Go-shaped ClientHello mid-chain.
+//   - Protocol negotiation is the transport's own (ALPN over the profile's
+//     ClientHello). Connection.EnableHTTP2=false rewrites the ALPN list to
+//     http/1.1 and pins the stack to HTTP/1.1, mirroring the standard
+//     transport's protocol choice. HTTP/3 is deliberately never attempted: a
+//     QUIC connection uses a separate TLS stack that bypasses the certificate
+//     pinner, and it would also break the single-fingerprint invariant across
+//     a connection's lifetime.
 //   - The browser profile's header set is authoritative: the per-request
 //     pipeline replaces same-named request headers (User-Agent, Accept,
 //     Accept-Language, ...) so the wire stays coherent with the spoofed
 //     ClientHello. Custom headers pass through untouched.
-//   - Certificate pinning IS supported on this path: the adapter owns the
-//     utls.Config, so the public CertificatePinner runs as
-//     VerifyPeerCertificate on every fingerprinted handshake (under
-//     InsecureSkipVerify it becomes the only gate, pinning the leaf — the
-//     same trust model as the pooled transport path).
+//   - Certificate pinning IS supported on this path: the public
+//     CertificatePinner runs as the transport's Pin hook on every
+//     fingerprinted handshake (under InsecureSkipVerify it becomes the only
+//     gate, pinning the leaf — the same trust model as the pooled transport
+//     path).
 //   - Response bodies arrive decoded (gzip/deflate/br/zstd, see decode.go);
-//     the engine sees identity bodies with Content-Length already reset.
+//     the engine sees identity bodies with Content-Length already reset. The
+//     transport's own decompression is switched off so decoding happens once.
 //   - SSRF protection uses a pre-flight resolve+validate (the backend dials
 //     on its own, so the connection-layer validator cannot apply). This
 //     leaves a theoretical TOCTOU window between validation and the
@@ -49,7 +54,6 @@ package fingerprint
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -57,7 +61,9 @@ import (
 	"net/url"
 	"sync"
 
-	ehttp "github.com/enetx/http"
+	ehttp "github.com/bogdanfinn/fhttp"
+
+	utls "github.com/bogdanfinn/utls"
 
 	"github.com/cybergodev/httpc/internal/connection"
 )
@@ -84,8 +90,16 @@ type Config struct {
 	// ExemptNets mirrors Security.SSRFExemptCIDRs (pre-parsed).
 	ExemptNets []*net.IPNet
 
-	// CertPinner, when set, runs as VerifyPeerCertificate on every
-	// fingerprinted TLS handshake (nil disables pinning).
+	// DisableSessionTickets mirrors Security.TLSFingerprintDisableSessionTickets:
+	// true forces a full TLS handshake on every connection by turning the
+	// transport's session-ticket cache off. Without it the transport resumes
+	// sessions on profiles whose ClientHello carries a pre_shared_key
+	// extension (the Chrome profiles) — per backend, so proxy pools never
+	// share ticket state — exactly like a real browser revisiting a host.
+	DisableSessionTickets bool
+
+	// CertPinner, when set, runs as the transport's certificate-pin hook on
+	// every fingerprinted TLS handshake (nil disables pinning).
 	CertPinner certPinner
 
 	// Pool is the owning connection PoolManager (may be nil in tests); it
@@ -93,15 +107,7 @@ type Config struct {
 	Pool *connection.PoolManager
 }
 
-// backend holds one fingerprint transport stack and the profile it serves.
-type backend struct {
-	ft      *fpTransport
-	profile *browserProfile
-	os      osKey
-}
-
-// Adapter implements http.RoundTripper over the in-house fingerprint
-// transport stack.
+// Adapter implements http.RoundTripper over the fingerprinted backend.
 type Adapter struct {
 	cfg Config
 
@@ -130,10 +136,10 @@ func NewAdapter(cfg Config) *Adapter {
 	return a
 }
 
-// newBackend builds one fingerprint transport stack. proxyURL nil means a
-// direct connection. Timeouts beyond the transport's dial/handshake defaults
-// are deliberately not set: the engine owns the deadline budget via the
-// request context.
+// newBackend resolves the configured preset and builds one transport stack.
+// proxyURL nil means a direct connection. Timeouts beyond the transport's
+// dial/handshake defaults are deliberately not set: the engine owns the
+// deadline budget via the request context.
 func (a *Adapter) newBackend(proxyURL *url.URL) (*backend, error) {
 	spec, ok := presets[a.cfg.PresetName]
 	if !ok {
@@ -141,32 +147,44 @@ func (a *Adapter) newBackend(proxyURL *url.URL) (*backend, error) {
 	}
 
 	p, os := profileFor(spec)
-	ft, err := newFingerprintTransport(a.cfg, proxyURL, p, os)
+	b, err := newTransportBackend(a.cfg, proxyURL, p, os)
 	if err != nil {
 		return nil, err
 	}
-	return &backend{ft: ft, profile: p, os: os}, nil
+	return b, nil
 }
 
 // RoundTrip executes one HTTP round trip through the fingerprinted backend.
 func (a *Adapter) RoundTrip(req *http.Request) (*http.Response, error) {
+	// fail closes req.Body before returning: the RoundTripper contract makes
+	// the transport own the body, and net/http does not close it when a
+	// custom RoundTripper errors — a caller-supplied io.ReadCloser (an
+	// *os.File via WithBody) would otherwise leak its handle until the GC
+	// finalizer runs.
+	fail := func(err error) (*http.Response, error) {
+		if req.Body != nil {
+			_ = req.Body.Close() // best-effort: the request is aborted anyway
+		}
+		return nil, err
+	}
+
 	if req.URL == nil {
-		return nil, errors.New("fingerprint: request has no URL")
+		return fail(errors.New("fingerprint: request has no URL"))
 	}
 	if a.baseErr != nil {
-		return nil, a.baseErr
+		return fail(a.baseErr)
 	}
 
 	// Pre-flight SSRF validation (see package doc for the residual TOCTOU).
 	if err := a.preflightSSRF(req); err != nil {
-		return nil, err
+		return fail(err)
 	}
 
 	// Proxy selection: same logic, recorder, and per-attempt rotation as the
 	// standard path. Errors from selection abort the request.
 	proxy, err := a.selectProxy(req)
 	if err != nil {
-		return nil, err
+		return fail(err)
 	}
 
 	b, err := a.backendFor(proxy)
@@ -177,7 +195,7 @@ func (a *Adapter) RoundTrip(req *http.Request) (*http.Response, error) {
 		if proxy != nil {
 			a.reportProxy(proxy, false)
 		}
-		return nil, err
+		return fail(err)
 	}
 
 	// Per-trip clone first (profile headers and order keys are written to
@@ -192,7 +210,7 @@ func (a *Adapter) RoundTrip(req *http.Request) (*http.Response, error) {
 	applyProfileHeaders(&forkReq.Header, tableMethodFor(wire, facts), b.profile, b.os)
 	applyRedirectOverrides(&forkReq.Header, facts)
 
-	forkResp, err := b.ft.RoundTrip(forkReq)
+	forkResp, err := b.RoundTrip(forkReq)
 
 	// Circuit-breaker reporting for the selected proxy: connection-class
 	// failures count against the proxy; completed exchanges count for it.
@@ -213,6 +231,9 @@ func (a *Adapter) RoundTrip(req *http.Request) (*http.Response, error) {
 	// stale encoded-length hazard cannot exist: ContentEncoding/ContentLength
 	// headers are stripped and ContentLength reset together with the wrap.
 	if err := decodeResponse(resp); err != nil {
+		if resp.Body != nil {
+			_ = resp.Body.Close() // best-effort: the round trip failed
+		}
 		return nil, err
 	}
 	return resp, nil
@@ -234,8 +255,9 @@ var engineAcceptEncodings = map[string]bool{
 
 // prepareWireRequest clones the engine request for one round trip. The clone
 // matters: the profile header pipeline and the fork's ordering magic keys
-// mutate the header map in place, and that must not leak back into the
-// engine's request across retries and redirect hops (net/http's redirect
+// mutate the header map in place — and the transport itself rewrites the
+// order key's casing on the map it is handed — so nothing may leak back into
+// the engine's request across retries and redirect hops (net/http's redirect
 // copier propagates every header verbatim). Dropping httpc's own default UA
 // and auto-injected Accept-Encoding here is DEFENSE-IN-DEPTH only:
 // applyProfileHeaders overwrites both on the wire regardless (headers.go),
@@ -253,10 +275,10 @@ func prepareWireRequest(req *http.Request) *http.Request {
 	return out
 }
 
-// toForkRequest converts a stdlib *http.Request to the enetx/http fork type.
-// Headers, body, GetBody and context are preserved; the fork's Response
-// back-reference is dropped (unused on outgoing requests). Ported from surf's
-// adapter conversions.
+// toForkRequest converts a stdlib *http.Request to the fork type the
+// transport consumes. Headers, body, GetBody, trailers and context are
+// preserved; the magic order keys travel with the header map because both
+// libraries spell them identically.
 func toForkRequest(req *http.Request) *ehttp.Request {
 	out := &ehttp.Request{
 		Method:           req.Method,
@@ -276,18 +298,20 @@ func toForkRequest(req *http.Request) *ehttp.Request {
 		Trailer:          ehttp.Header(req.Trailer),
 		RemoteAddr:       req.RemoteAddr,
 		RequestURI:       req.RequestURI,
-		TLS:              req.TLS,
-		Response:         nil,
+		TLS:              nil, // outbound requests carry no TLS state
+		Response:         nil, // unused on outgoing requests
 		GetBody:          req.GetBody,
-		Pattern:          req.Pattern,
-		Cancel:           req.Cancel, //nolint:staticcheck // deprecated but carried for parity
+		// Pattern has no fork counterpart: it is a server-mux routing key
+		// (Go 1.23+) that never reaches the wire, so it is not carried.
+		Cancel: req.Cancel, //nolint:staticcheck // deprecated but carried for parity (pinned by TestToForkRequest_FullFieldParity; the engine never sets it)
 	}
 	return out.WithContext(req.Context())
 }
 
 // toStdResponse converts a fork *http.Response back to the stdlib type. The
 // engine reads httpResp.Request for request metadata, so the original
-// stdlib request is restored into the back-reference field.
+// stdlib request is restored into the back-reference field. The TLS state is
+// translated, not dropped (see state.go).
 func toStdResponse(resp *ehttp.Response, req *http.Request) *http.Response {
 	return &http.Response{
 		Status:           resp.Status,
@@ -303,7 +327,7 @@ func toStdResponse(resp *ehttp.Response, req *http.Request) *http.Response {
 		Uncompressed:     resp.Uncompressed,
 		Trailer:          http.Header(resp.Trailer),
 		Request:          req,
-		TLS:              resp.TLS,
+		TLS:              toStdConnState(resp.TLS),
 	}
 }
 
@@ -333,11 +357,17 @@ func (a *Adapter) backendFor(proxy *url.URL) (*backend, error) {
 }
 
 // isConnectionFailure reports whether err is a transport-level failure worth
-// counting against the proxy circuit breaker. The stack exposes no typed
+// counting against the proxy circuit breaker. The transport exposes no typed
 // sentinels, so classification is structural: net.Error (which url.Error and
-// timeouts satisfy), net.OpError, and TLS verification failures count;
-// caller cancellations and request-level errors do not. ErrHTTP2Fallback
-// traverses via Unwrap, so failures from either of its legs classify.
+// timeouts satisfy) and net.OpError count; caller cancellations and
+// request-level errors do not.
+//
+// TLS verification failures need their own arm for a second reason: the
+// handshake runs on uTLS, so the error is uTLS's CertificateVerificationError,
+// NOT crypto/tls's (the types are distinct even though both print alike). On
+// the transport path such an error arrives wrapped in a *url.Error, which
+// satisfies net.Error and would already classify — the explicit arm keeps the
+// classification correct if it ever surfaces unwrapped.
 func isConnectionFailure(err error) bool {
 	if err == nil {
 		return false
@@ -353,11 +383,24 @@ func isConnectionFailure(err error) bool {
 	if errors.As(err, &opErr) {
 		return true
 	}
-	var certErr *tls.CertificateVerificationError
-	if errors.As(err, &certErr) {
-		return true
+	var certErr *utls.CertificateVerificationError
+	return errors.As(err, &certErr)
+}
+
+// CloseIdleConnections closes every backend's idle connections (base and
+// per-proxy) while keeping the backends themselves usable — the next request
+// dials fresh. Satisfies http.RoundTripper's optional CloseIdleConnections
+// contract, and lets callers force fresh connections (for example to
+// exercise session resumption rather than idle reuse).
+func (a *Adapter) CloseIdleConnections() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, b := range a.perProxy {
+		b.CloseIdleConnections()
 	}
-	return false
+	if a.base != nil {
+		a.base.CloseIdleConnections()
+	}
 }
 
 // Close releases backend transports. Safe to call multiple times.
@@ -366,11 +409,11 @@ func (a *Adapter) Close() error {
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		for _, b := range a.perProxy {
-			b.ft.CloseIdleConnections()
+			b.CloseIdleConnections()
 		}
 		a.perProxy = nil
 		if a.base != nil {
-			a.base.ft.CloseIdleConnections()
+			a.base.CloseIdleConnections()
 		}
 	})
 	return nil
