@@ -269,6 +269,25 @@ func effectiveRequestTimeout(c *Client, req *Request) time.Duration {
 	return c.config.Timeout
 }
 
+// wrapCtxIfFarther returns a context carrying a timeout deadline when timeout
+// is positive AND the parent either has no deadline or a farther one; any
+// nearer parent deadline wins untouched. Otherwise the parent is returned
+// unchanged with a nil CancelFunc, and callers must defer the cancel only
+// when non-nil. Both timeout application sites — the shared retry budget in
+// executeWithRetry and the per-attempt budget in executeRequest — previously
+// carried byte-identical copies of this judgment; keeping it in one place
+// prevents the two paths from drifting apart on exactly the invariant
+// timeout semantics depend on (a nearer caller deadline always wins).
+func wrapCtxIfFarther(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return ctx, nil
+	}
+	if deadline, hasDeadline := ctx.Deadline(); hasDeadline && time.Until(deadline) <= timeout {
+		return ctx, nil
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
 // ErrClientClosed is returned when attempting to use a closed client.
 var ErrClientClosed = errors.New("client is closed")
 
@@ -510,13 +529,7 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 	}
 	retryTimeout := effectiveRequestTimeout(c, req)
 	var overallCancel context.CancelFunc
-	if retryTimeout > 0 {
-		if existingDeadline, hasDeadline := retryCtx.Deadline(); !hasDeadline {
-			retryCtx, overallCancel = context.WithTimeout(retryCtx, retryTimeout)
-		} else if timeUntil := time.Until(existingDeadline); timeUntil > retryTimeout {
-			retryCtx, overallCancel = context.WithTimeout(retryCtx, retryTimeout)
-		}
-	}
+	retryCtx, overallCancel = wrapCtxIfFarther(retryCtx, retryTimeout)
 	req.SetContext(retryCtx)
 	// Ensure overallCancel is called on all non-success exit paths.
 	// For streaming success, overallCancel is transferred to the response
@@ -601,8 +614,12 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 		retryBaseCtx = connection.WithProxyRecorder(retryBaseCtx, proxyRec)
 	}
 	baseProxyIdx := 0
-	useProxyRotation := len(c.config.ExtraRetryableStatusCodes) > 0 || c.config.ProxyRotatePerRequest
-	if useProxyRotation && c.connectionPool != nil {
+	// Rotation requires an actual proxy pool: with a custom transport
+	// (connectionPool == nil) the flag must zero out, or every retry would
+	// attach a WithProxyAttempt value no consumer reads while debug logs
+	// printed phantom proxy indexes.
+	useProxyRotation := (len(c.config.ExtraRetryableStatusCodes) > 0 || c.config.ProxyRotatePerRequest) && c.connectionPool != nil
+	if useProxyRotation {
 		var ok bool
 		baseProxyIdx, ok = c.connectionPool.NextProxyIndex()
 		useProxyRotation = ok // false if pool wasn't actually created
@@ -818,15 +835,13 @@ func captureRequestHeaders(httpReq *http.Request) http.Header {
 	if h == nil {
 		h = make(http.Header, 4)
 	}
-	// Batch the header value slices into one backing allocation. Each entry is a
-	// cap-1 window so the two values never alias each other, matching Set's
-	// single-value semantics.
-	headerVals := make([]string, 0, 2)
+	// Synthesize Content-Length as a single-value entry built directly with
+	// http.Header.Set's semantics (a one-element slice). It needs no batch
+	// backing array: on the common GET path ContentLength is 0 and the
+	// previous make([]string, 0, 2) was a pure per-request allocation.
 	if httpReq.ContentLength > 0 && headerValueIsEmpty(h, hdrContentLength) {
 		var numBuf [20]byte
-		idx := len(headerVals)
-		headerVals = append(headerVals, string(strconv.AppendInt(numBuf[:0], httpReq.ContentLength, 10)))
-		h[hdrContentLength] = headerVals[idx : idx+1 : idx+1]
+		h[hdrContentLength] = []string{string(strconv.AppendInt(numBuf[:0], httpReq.ContentLength, 10))}
 	}
 	return h
 }
@@ -867,13 +882,7 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 
 	// Optimized: only create new context if absolutely necessary
 	var streamCancel context.CancelFunc
-	if timeout > 0 {
-		if existingDeadline, hasDeadline := execCtx.Deadline(); !hasDeadline {
-			execCtx, streamCancel = context.WithTimeout(execCtx, timeout)
-		} else if timeUntil := time.Until(existingDeadline); timeUntil > timeout {
-			execCtx, streamCancel = context.WithTimeout(execCtx, timeout)
-		}
-	}
+	execCtx, streamCancel = wrapCtxIfFarther(execCtx, timeout)
 	// Always defer cancel to prevent timer leaks on early error returns.
 	// For streaming requests, cancelFunc is stored in the Response and the
 	// defer becomes a no-op after setCancelFuncToNil is called.

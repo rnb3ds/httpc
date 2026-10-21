@@ -147,9 +147,12 @@ type ConnectionConfig struct {
 	// Typical use: []int{403} for CF/WAF IP-based blocking. Unlike
 	// connection failures, status-based rotation does NOT circuit-break the
 	// proxy — blocks are often target-specific (a proxy blocked on one site may
-	// work fine on another). Requires Retry.MaxRetries > 0 to take effect.
-	// Note: the codes become retryable regardless of whether a proxy is
-	// configured — with no proxy pool each retry re-hits the same server.
+	// work fine on another). Requires Retry.MaxRetries > 0 to take effect,
+	// except that a ProxyPool larger than 1 raises the budget to
+	// len(ProxyPool)-1 even from an explicit 0 (see calculateMaxRetries in
+	// config_convert.go). Note: the codes become retryable regardless of
+	// whether a proxy is configured — with no proxy pool each retry re-hits
+	// the same server.
 	// Default: nil.
 	ProxyRotateOnStatus []int
 
@@ -173,7 +176,10 @@ type ConnectionConfig struct {
 	EnableDoH bool
 
 	// DoHCacheTTL is the cache duration for DoH DNS responses.
-	// Default: 5 minutes.
+	// Default: 5 minutes. The TTL is applied to every record uniformly and
+	// overrides the authoritative record TTL from the DNS answer (a record
+	// with a 30s server TTL is cached for the full DoHCacheTTL, and a record
+	// with a 24h TTL is re-queried after DoHCacheTTL).
 	DoHCacheTTL time.Duration
 
 	// MaxResponseHeaderBytes limits the maximum size of the server's response headers.
@@ -225,8 +231,10 @@ type SecurityConfig struct {
 	//   - The httpc engine (redirects, retries, middleware, streaming) stays
 	//     in control; only the transport layer is replaced.
 	//   - Proxy pools, rotation, and circuit breaking keep working; HTTP,
-	//     HTTPS and SOCKS4/5 proxies are supported on the fingerprint path.
-	//     The proxy is fixed per connection pool: rotation selects a different
+	//     HTTPS and SOCKS5 (socks5/socks5h) proxies are supported on the
+	//     fingerprint path — socks4/socks4a are rejected at validation
+	//     (x/net/proxy implements SOCKS5 only). The proxy is fixed per
+	//     connection pool: rotation selects a different
 	//     pool and never re-points a live one.
 	//   - The preset's header set is authoritative: same-named request
 	//     headers (User-Agent, Accept, Accept-Language, ...) are replaced by
@@ -262,7 +270,13 @@ type SecurityConfig struct {
 	//     dictates the version range.
 	//   - SSRF protection uses a resolve-then-validate pre-flight instead of
 	//     the standard path's dial-layer validation; redirects are re-checked
-	//     per hop by the engine.
+	//     per hop by the engine. The pre-flight is weaker than the standard
+	//     path in two ways: a TOCTOU window remains between validation and
+	//     the backend's own DNS resolution, and a host resolving to a MIX of
+	//     public and private addresses passes ("at least one allowed IP") —
+	//     the backend's second resolution may then land on the private
+	//     record, deterministically and without DNS rebinding. The standard
+	//     path dials only validated IP literals and has neither gap.
 	//   - Response bodies are decoded by httpc itself (gzip/deflate/br/zstd)
 	//     and handed to the engine as identity bodies.
 	//   - Fingerprinted connections are not counted in pool metrics and do
@@ -356,12 +370,18 @@ type SecurityConfig struct {
 	FollowRedirects bool
 
 	// MaxRedirects limits automatic redirects. Default: 10.
+	// 0 is the unset sentinel — it falls back to the default of 10, matching
+	// WithMaxRedirects; to disable redirects entirely set FollowRedirects=false.
 	MaxRedirects int
 }
 
 // RetryConfig configures retry behavior for transient failures.
 type RetryConfig struct {
-	// MaxRetries is the maximum retry attempts. Default: 3. Set to 0 to disable.
+	// MaxRetries is the maximum retry attempts. Default: 3. Set to 0 to
+	// disable — except when ProxyRotateOnStatus or ProxyRotatePerRequest is
+	// configured with a ProxyPool larger than 1: the budget is then raised to
+	// len(ProxyPool)-1 so every proxy is tried at least once, even from an
+	// explicit 0 (see calculateMaxRetries in config_convert.go).
 	MaxRetries int
 
 	// Delay is the initial retry delay. Default: 1s.
@@ -374,7 +394,9 @@ type RetryConfig struct {
 	EnableJitter bool
 
 	// MaxRetryDelay caps the maximum delay between retry attempts.
-	// Default: 30s. Set to 0 for no cap (not recommended).
+	// Default: 30s. A value of 0 selects the 30s default — the cap cannot be
+	// disabled through this field (the config conversion replaces 0 with the
+	// default before the engine sees it).
 	MaxRetryDelay time.Duration
 
 	// RetryNonIdempotent allows retrying non-idempotent methods (POST, PATCH,
@@ -395,8 +417,9 @@ type RetryConfig struct {
 }
 
 // MiddlewareConfig configures the middleware chain applied to every outgoing
-// request. Request defaults (User-Agent, headers, redirect policy) live on
-// Config.Defaults (RequestDefaults).
+// request. Request defaults (User-Agent, headers) live on Config.Defaults
+// (RequestDefaults); the redirect policy lives on Config.Security
+// (FollowRedirects, MaxRedirects).
 type MiddlewareConfig struct {
 	// Middlewares contains middleware functions for request/response interception.
 	// Default: nil.
@@ -404,7 +427,9 @@ type MiddlewareConfig struct {
 }
 
 // RequestDefaults configures per-request defaults applied to every outgoing
-// request: the User-Agent header, default headers, and the redirect policy.
+// request: the User-Agent header and default headers. The redirect policy is
+// NOT part of this struct — it lives on Config.Security (FollowRedirects,
+// MaxRedirects).
 //
 // This is the canonical location for request defaults. Use DefaultConfig() to
 // obtain sensible values for all fields, then modify as needed.
@@ -442,8 +467,9 @@ type Config struct {
 	Retry RetryConfig
 	// Middleware configures the per-client middleware chain.
 	Middleware MiddlewareConfig
-	// Defaults holds per-request defaults (User-Agent, default headers,
-	// redirect policy) applied to every outgoing request.
+	// Defaults holds per-request defaults (User-Agent, default headers)
+	// applied to every outgoing request. The redirect policy lives on
+	// Security, not here.
 	Defaults RequestDefaults
 
 	// parsedCIDRs caches parsed SSRFExemptCIDRs to avoid double parsing.
@@ -493,16 +519,29 @@ func (f RequestOptionFunc) apply(r RequestMutator) error {
 // func(types.RequestMutator) error type, so each public option is re-expressed
 // as a function that calls its apply method. nil options are dropped, matching
 // the engine ApplyOptions nil-skip.
+//
+// All options are folded into ONE engine option rather than one per public
+// option: a closure that captures a loop variable forces a heap allocation per
+// option on every call (measured: 10 allocations for a 10-option request), and
+// this boundary sits on the hot path of every request. Folding preserves the
+// engine's contract exactly — engine.ApplyOptions applies the slice in order
+// and stops at the first error, so the loop below runs the same options in the
+// same order with the same short-circuit.
 func toEngineOptions(options []RequestOption) []engine.RequestOption {
 	if len(options) == 0 {
 		return nil
 	}
-	out := make([]engine.RequestOption, 0, len(options))
-	for _, opt := range options {
-		if opt == nil {
-			continue
+	out := make([]engine.RequestOption, 1, 1)
+	out[0] = func(r RequestMutator) error {
+		for _, opt := range options {
+			if opt == nil {
+				continue
+			}
+			if err := opt.apply(r); err != nil {
+				return err
+			}
 		}
-		out = append(out, func(r RequestMutator) error { return opt.apply(r) })
+		return nil
 	}
 	return out
 }

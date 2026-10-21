@@ -88,6 +88,10 @@ func isSensitiveQueryParamDecoded(name string) bool {
 
 // IsSensitiveQueryParam reports whether the given query parameter name is
 // considered sensitive and should be redacted from logs and cache keys.
+//
+// Currently exercised only by tests; the redaction paths use the
+// case-insensitive and percent-decoding variants directly. Retained as the
+// package's simple exported probe.
 func IsSensitiveQueryParam(name string) bool {
 	return isSensitiveQueryParamCI(name)
 }
@@ -242,19 +246,49 @@ func SanitizeURL(urlStr string) string {
 // redactUnparseableURL best-effort redacts credentials in a URL string that
 // url.Parse rejected (or that parsed into an opaque form). Without a parsed
 // structure the only reliable signal is the '@' separating userinfo from the
-// host, so everything from the scheme separator up to the LAST '@' is
-// replaced with "***@". Sensitive query parameters are redacted when a query
+// host. The delimiter is the FIRST '@' inside the pre-path region — after any
+// scheme separator, before the first '/' or '?' — because userinfo cannot
+// contain '/', '?' or '@'. Everything from the scheme separator up to that '@'
+// is replaced with "***@". Sensitive query parameters are redacted when a query
 // string is present. The result is safe for logging even though it may not be
 // a parseable URL — diagnostics beat a verbatim credential leak.
+//
+// SEC-001 M-2: an earlier version scanned for the LAST '@' in the string.
+// When an '@' sat after the first '/' — a path byte (".../p%zz@th") or a
+// query value ("...?email=a@b.com") — a path guard concluded "no userinfo"
+// and returned the string verbatim, leaking real credentials
+// ("http://u:p@h/p%zz@th?token=x" kept both "u:p" and "token=x") and
+// defeating the fail-closed contract this function exists to enforce.
 func redactUnparseableURL(s string) string {
-	at := strings.LastIndexByte(s, '@')
-	if at < 0 {
-		// No userinfo separator, but a query string may still carry sensitive
-		// parameters. SEC-001 M-1: url.Parse errors quote the raw URL verbatim
-		// (`parse "…?token=…": …`), so this is the last redaction chance for a
-		// URL that never parsed — returning it intact would leak the values the
-		// parseable path redacts. Same treatment the userinfo branch below
-		// already applies to its query string.
+	// The pre-path region starts after the scheme separator: "scheme://" for
+	// hierarchical URLs ("//" itself contains the '/' that would otherwise
+	// end the region at once), "//" for protocol-relative URLs, and
+	// "scheme:" for opaque forms. A separator candidate is rejected when the
+	// text before it already contains '/', '?', or '@' — that text is
+	// userinfo or path material, not a scheme.
+	start := 0
+	if strings.HasPrefix(s, "//") {
+		start = 2
+	} else if i := strings.Index(s, "://"); i >= 0 && !strings.ContainsAny(s[:i], "/?@") {
+		start = i + 3
+	} else if i := strings.IndexByte(s, ':'); i >= 0 && !strings.ContainsAny(s[:i], "/?@") {
+		start = i + 1
+	}
+
+	// Delimiter candidate: first '@' before the first path or query byte.
+	region := s[start:]
+	regionEnd := len(region)
+	if cut := strings.IndexAny(region, "/?"); cut >= 0 {
+		regionEnd = cut
+	}
+	relAt := strings.IndexByte(region[:regionEnd], '@')
+	if relAt < 0 {
+		// No userinfo-shaped credential, but a query string may still carry
+		// sensitive parameters. SEC-001 M-1: url.Parse errors quote the raw
+		// URL verbatim (`parse "…?token=…": …`), so this is the last redaction
+		// chance for a URL that never parsed — returning it intact would leak
+		// the values the parseable path redacts. Same treatment the userinfo
+		// branch below applies to its query string.
 		if idx := strings.IndexByte(s, '?'); idx >= 0 {
 			if q := s[idx+1:]; HasSensitiveQueryParams(q) {
 				return s[:idx+1] + redactSensitiveParams(q)
@@ -264,27 +298,7 @@ func redactUnparseableURL(s string) string {
 		return s
 	}
 
-	// Preserve the scheme ("https://") if it precedes the credentials.
-	prefix := ""
-	if i := strings.Index(s, "://"); i >= 0 && i+3 <= at {
-		prefix = s[:i+3]
-		s = s[i+3:]
-		at -= i + 3
-	} else if i := strings.Index(s, ":"); i >= 0 && i+1 <= at && !strings.Contains(s[:i], "/") {
-		// Opaque-style "scheme:userinfo@rest" (no "//"): keep "scheme:".
-		prefix = s[:i+1]
-		s = s[i+1:]
-		at -= i + 1
-	}
-
-	// An '@' lying after the first path separator is an ordinary path byte,
-	// not the userinfo delimiter — userinfo cannot contain '/'. Truncating
-	// there would mangle "http://host/p@th\x01" into "http://***@th\x01";
-	// with no userinfo-shaped credential, return the string intact.
-	if slash := strings.IndexByte(s, '/'); slash >= 0 && slash < at {
-		return prefix + s
-	}
-
+	prefix, at := s[:start], start+relAt
 	redacted := prefix + "***@" + s[at+1:]
 	if idx := strings.IndexByte(redacted, '?'); idx >= 0 {
 		if q := redacted[idx+1:]; HasSensitiveQueryParams(q) {

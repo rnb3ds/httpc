@@ -169,6 +169,23 @@ func TestDetectFromEnvironment(t *testing.T) {
 			reqHost:   "example.com",
 			wantProxy: "socks5://proxy.example.com:1080",
 		},
+		{
+			// The request URL carries no explicit port; net/http's httpproxy
+			// fills in the scheme default (443) before matching NO_PROXY, so
+			// the ported entry must exempt the request.
+			name:       "NO_PROXY ported entry matches implicit https default port",
+			env:        map[string]string{"HTTPS_PROXY": "http://proxy.example.com:8080", "NO_PROXY": "example.com:443"},
+			reqScheme:  "https",
+			reqHost:    "example.com",
+			wantDirect: true,
+		},
+		{
+			name:      "NO_PROXY ported entry with wrong port still proxies",
+			env:       map[string]string{"HTTPS_PROXY": "http://proxy.example.com:8080", "NO_PROXY": "example.com:8080"},
+			reqScheme: "https",
+			reqHost:   "example.com",
+			wantProxy: "http://proxy.example.com:8080",
+		},
 	}
 
 	for _, tt := range tests {
@@ -279,6 +296,10 @@ func TestDetectFromEnvironment_NoCrossSchemeFallback(t *testing.T) {
 // GetProxyFunc caching
 // ---------------------------------------------------------------------------
 
+// TestGetProxyFunc_Caching pins repeated-detection determinism (the former
+// per-Detector cache was removed: the only production caller detects once,
+// and the cache froze the first result for the Detector's lifetime). Each
+// call must return a working function that resolves the same proxy.
 func TestGetProxyFunc_Caching(t *testing.T) {
 	originalEnv := saveAndClearProxyEnv()
 	defer restoreProxyEnv(originalEnv)
@@ -310,7 +331,7 @@ func TestGetProxyFunc_Caching(t *testing.T) {
 	}
 
 	if u1.String() != u2.String() {
-		t.Errorf("cached functions returned different URLs: %s vs %s", u1, u2)
+		t.Errorf("repeated detections returned different URLs: %s vs %s", u1, u2)
 	}
 }
 
@@ -677,3 +698,35 @@ func TestDetect_EnvProxyTakesPriority(t *testing.T) {
 
 // (The former standalone TestDetect_NoEnvFallsToPlatform lived here; it is
 // merged into the combined platform-chain smoke above.)
+
+// TestMatchProxyBypassEntry pins the shared system-proxy bypass grammar used
+// by the Windows ProxyOverride path and the macOS bypass-domains path.
+func TestMatchProxyBypassEntry(t *testing.T) {
+	tests := []struct {
+		name  string
+		host  string
+		entry string
+		want  bool
+	}{
+		{"exact match", "intranet.corp", "intranet.corp", true},
+		{"exact case-insensitive", "Intranet.CORP", "intranet.corp", true},
+		{"no exact match", "other.example", "intranet.corp", false},
+		{"wildcard matches subdomain", "app.corp.example", "*.corp.example", true},
+		{"wildcard case-insensitive", "APP.Corp.Example", "*.CORP.example", true},
+		// The apex itself is NOT covered by "*.suffix" — list it separately,
+		// mirroring the redirect-whitelist wildcard semantics.
+		{"wildcard excludes apex", "corp.example", "*.corp.example", false},
+		{"wildcard no partial-label match", "notcorp.example", "*.corp.example", false},
+		{"local matches dotless host", "intranethost", "<local>", true},
+		{"local rejects dotted host", "intranet.corp", "<local>", false},
+		{"empty host", "", "*.corp.example", false},
+		{"empty entry", "host.corp", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matchProxyBypassEntry(tt.host, tt.entry); got != tt.want {
+				t.Errorf("matchProxyBypassEntry(%q, %q) = %v, want %v", tt.host, tt.entry, got, tt.want)
+			}
+		})
+	}
+}

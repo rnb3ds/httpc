@@ -352,8 +352,11 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 
 	// Assign the resolved proxy function to the transport. Transports dialing
 	// outside this package (the fingerprint adapter) obtain the same selection
-	// through SelectProxy.
-	transport.Proxy = pm.proxyFunc
+	// through SelectProxy — and the raw (unguarded) proxyFunc, since the
+	// fingerprint path performs its own equivalent SSRF pre-flight
+	// (adapter.preflightSSRF). Only the standard transport's Proxy hook gets the
+	// proxied-target SSRF guard below.
+	transport.Proxy = pm.ssrfGuardProxyFunc(pm.proxyFunc)
 
 	pm.transport = transport
 	return pm, nil
@@ -375,6 +378,64 @@ func (pm *PoolManager) SelectProxy(ctx context.Context, targetURL *url.URL) (*ur
 		URL:    targetURL,
 	}).WithContext(ctx)
 	return pm.proxyFunc(req)
+}
+
+// ssrfGuardProxyFunc wraps the transport's Proxy callback with the
+// proxied-target SSRF check that the dialer cannot provide: when a proxy is
+// configured, net/http dials the PROXY address (which isProxyAddr exempts from
+// SSRF), and the target hostname is sent to the proxy inside a CONNECT tunnel
+// for the proxy to resolve remotely — so the dialer-level
+// resolveAndValidateAddress never runs for it. Without this guard, a request
+// to a hostname that resolves to a private/link-local address (e.g.
+// metadata.google.internal, or any name pointing at 169.254.169.254) would
+// pass the pre-flight check (ValidateSSRFHost does not resolve hostnames) and
+// be forwarded by the proxy, completing a full SSRF.
+//
+// net/http invokes Proxy on every request, so this hook is the right place to
+// enforce the policy for proxied targets only: it runs exactly when a proxy is
+// about to carry the request, and it short-circuits to a direct connection
+// (nil proxy) when SSRF would allow it, leaving the direct path's
+// dialer-level validation to enforce the same policy as before.
+//
+// Returns the proxy unchanged (and does no DNS work) when AllowPrivateIPs is
+// true or a per-request override is present: private-IP blocking is disabled,
+// so there is nothing to enforce.
+//
+// TRADEOFFS (both deliberate, both favor security):
+//   - FAIL CLOSED on resolution: a target hostname the LOCAL resolver cannot
+//     resolve is rejected, even though the proxy might resolve it. When SSRF
+//     protection is on we cannot verify what the proxy would dial, so the only
+//     safe answer is to refuse. Intranet-only hostnames must be reachable via
+//     Security.SSRFExemptCIDRs, or the caller opts out with AllowPrivateIPs.
+//   - COST: one DNS resolution per proxied request (only when
+//     AllowPrivateIPs=false). Negligible next to the proxy round trip it
+//     precedes, and it is the cost of restoring the hostname→private-IP check
+//     the dialer cannot perform on this path.
+func (pm *PoolManager) ssrfGuardProxyFunc(proxyFunc func(*http.Request) (*url.URL, error)) func(*http.Request) (*url.URL, error) {
+	if proxyFunc == nil {
+		return nil
+	}
+	return func(req *http.Request) (*url.URL, error) {
+		u, err := proxyFunc(req)
+		if err != nil || u == nil || req == nil || req.URL == nil {
+			return u, err
+		}
+
+		// Resolve the effective policy for this request: a per-request
+		// AllowPrivateIPs override wins over the client-level config.
+		allowPrivate := pm.config.AllowPrivateIPs
+		if override, ok := AllowPrivateIPsOverrideFromContext(req.Context()); ok {
+			allowPrivate = override
+		}
+		if allowPrivate {
+			return u, nil
+		}
+
+		if err := validateProxiedTarget(req.Context(), req.URL, pm.config.ExemptNets, pm.config.DialTimeout); err != nil {
+			return nil, err
+		}
+		return u, nil
+	}
 }
 
 // ReportProxyFailure records a connection-level failure against the proxy at
@@ -612,6 +673,58 @@ func (pm *PoolManager) resolveAndValidateAddress(ctx context.Context, address st
 
 func (pm *PoolManager) isProxyAddr(address string) bool {
 	return slices.Contains(pm.proxyAddrs, address)
+}
+
+// validateProxiedTarget enforces SSRF policy for a request that will be
+// carried by a proxy. It resolves the target hostname and rejects it when
+// every resolved address is blocked (private/reserved/link-local and not
+// exempted) — the same FilterAllowedIPs rule the direct dial path applies in
+// resolveAndValidateAddress. IP-literal targets are validated directly without
+// DNS, mirroring the standard path's fast path.
+//
+// SECURITY: this closes the proxied-target SSRF gap — see
+// ssrfGuardProxyFunc. It does NOT restore the direct path's DNS-rebinding
+// guarantee (the proxy still performs its own second resolution for the actual
+// dial), but it re-closes the deterministic hostname→private-IP bypass: a
+// hostname whose only resolved addresses are blocked is now rejected before
+// the proxy ever sees it.
+func validateProxiedTarget(ctx context.Context, u *url.URL, exemptNets []*net.IPNet, dialTimeout time.Duration) error {
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("SSRF protection: empty request host")
+	}
+
+	// IP-literal targets validate without DNS, exactly like the direct path.
+	if ip := net.ParseIP(host); ip != nil {
+		if err := validation.ValidateIPWithExemptions(ip, exemptNets); err != nil {
+			return fmt.Errorf("SSRF protection: %w", err)
+		}
+		return nil
+	}
+
+	// Mirror the direct path's DNS timeout: derive from the caller's context,
+	// capped at 10s, tightened to DialTimeout when smaller.
+	dnsTimeout := 10 * time.Second
+	if dialTimeout > 0 && dialTimeout < dnsTimeout {
+		dnsTimeout = dialTimeout
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	dnsCtx, dnsCancel := context.WithTimeout(ctx, dnsTimeout)
+	defer dnsCancel()
+	ipAddrs, err := net.DefaultResolver.LookupIPAddr(dnsCtx, host)
+	if err != nil {
+		return fmt.Errorf("SSRF protection: DNS resolution failed for %s: %w", host, err)
+	}
+	ips := make([]net.IP, len(ipAddrs))
+	for i, addr := range ipAddrs {
+		ips[i] = addr.IP
+	}
+	if len(validation.FilterAllowedIPs(ips, exemptNets)) == 0 {
+		return fmt.Errorf("SSRF protection: domain %s resolves only to blocked addresses", host)
+	}
+	return nil
 }
 
 func (pm *PoolManager) createTLSConfig() *tls.Config {

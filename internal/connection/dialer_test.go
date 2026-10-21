@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -1280,6 +1281,141 @@ func TestCreateVerifyPeerCertificate(t *testing.T) {
 				t.Errorf("expected no error, got: %v", err)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Proxied-target SSRF guard
+// ---------------------------------------------------------------------------
+
+// TestSSRFGuardProxyFunc_DirectWhenNoProxy verifies that a nil proxyFunc
+// yields a nil guard (no wrapping for the direct-connection path).
+func TestSSRFGuardProxyFunc_DirectWhenNoProxy(t *testing.T) {
+	pm := &PoolManager{config: &Config{}}
+	if got := pm.ssrfGuardProxyFunc(nil); got != nil {
+		t.Fatal("ssrfGuardProxyFunc(nil) = non-nil, want nil")
+	}
+}
+
+// TestSSRFGuardProxyFunc_BlockedHostname verifies that a proxied request whose
+// target hostname resolves to a private/link-local address is rejected before
+// the proxy carries it — the deterministic SSRF bypass this guard exists to
+// close. "localhost" resolves to 127.0.0.1 (loopback) on every platform, so the
+// test is deterministic and needs no network.
+func TestSSRFGuardProxyFunc_BlockedHostname(t *testing.T) {
+	pm := &PoolManager{config: &Config{AllowPrivateIPs: false}}
+
+	proxy := &url.URL{Scheme: "http", Host: "proxy.example:8080"}
+	guard := pm.ssrfGuardProxyFunc(func(*http.Request) (*url.URL, error) {
+		return proxy, nil
+	})
+
+	req := &http.Request{
+		URL:    &url.URL{Scheme: "http", Host: "localhost"},
+		Header: make(http.Header),
+	}
+	req = req.WithContext(context.Background())
+
+	got, err := guard(req)
+	if err == nil {
+		t.Fatalf("expected SSRF rejection for hostname resolving to loopback, got proxy %v", got)
+	}
+	if got != nil {
+		t.Errorf("guard returned a proxy on rejection: %v", got)
+	}
+	if !strings.Contains(err.Error(), "SSRF protection") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestSSRFGuardProxyFunc_BlockedIPLiteral verifies that a proxied request to a
+// literal private IP is rejected without DNS.
+func TestSSRFGuardProxyFunc_BlockedIPLiteral(t *testing.T) {
+	pm := &PoolManager{config: &Config{AllowPrivateIPs: false}}
+	proxy := &url.URL{Scheme: "http", Host: "proxy.example:8080"}
+	guard := pm.ssrfGuardProxyFunc(func(*http.Request) (*url.URL, error) {
+		return proxy, nil
+	})
+
+	req := &http.Request{
+		URL:    &url.URL{Scheme: "http", Host: "10.0.0.1"},
+		Header: make(http.Header),
+	}
+	req = req.WithContext(context.Background())
+
+	if _, err := guard(req); err == nil {
+		t.Fatal("expected SSRF rejection for literal private IP, got nil")
+	}
+}
+
+// TestSSRFGuardProxyFunc_AllowPrivateIPs verifies the guard is a pass-through
+// when private-IP blocking is disabled (client-level AllowPrivateIPs=true).
+func TestSSRFGuardProxyFunc_AllowPrivateIPs(t *testing.T) {
+	pm := &PoolManager{config: &Config{AllowPrivateIPs: true}}
+	proxy := &url.URL{Scheme: "http", Host: "proxy.example:8080"}
+	guard := pm.ssrfGuardProxyFunc(func(*http.Request) (*url.URL, error) {
+		return proxy, nil
+	})
+
+	req := &http.Request{
+		URL:    &url.URL{Scheme: "http", Host: "localhost"},
+		Header: make(http.Header),
+	}
+	req = req.WithContext(context.Background())
+
+	got, err := guard(req)
+	if err != nil {
+		t.Fatalf("AllowPrivateIPs=true must skip the guard, got error: %v", err)
+	}
+	if got != proxy {
+		t.Errorf("got %v, want the configured proxy", got)
+	}
+}
+
+// TestSSRFGuardProxyFunc_PerRequestOverride verifies a per-request
+// AllowPrivateIPs override (WithAllowPrivateIPs) takes precedence over the
+// client-level policy, allowing a proxied request to a blocked host.
+func TestSSRFGuardProxyFunc_PerRequestOverride(t *testing.T) {
+	pm := &PoolManager{config: &Config{AllowPrivateIPs: false}}
+	proxy := &url.URL{Scheme: "http", Host: "proxy.example:8080"}
+	guard := pm.ssrfGuardProxyFunc(func(*http.Request) (*url.URL, error) {
+		return proxy, nil
+	})
+
+	ctx := WithAllowPrivateIPsOverride(context.Background(), true)
+	req := &http.Request{
+		URL:    &url.URL{Scheme: "http", Host: "localhost"},
+		Header: make(http.Header),
+	}
+	req = req.WithContext(ctx)
+
+	got, err := guard(req)
+	if err != nil {
+		t.Fatalf("per-request override=true must allow the request, got error: %v", err)
+	}
+	if got != proxy {
+		t.Errorf("got %v, want the configured proxy", got)
+	}
+}
+
+// TestSSRFGuardProxyFunc_PropagatesProxyError verifies that an error from the
+// underlying proxy selector is returned unchanged (no SSRF check on the failure
+// path).
+func TestSSRFGuardProxyFunc_PropagatesProxyError(t *testing.T) {
+	pm := &PoolManager{config: &Config{AllowPrivateIPs: false}}
+	wantErr := errors.New("no proxy available")
+	guard := pm.ssrfGuardProxyFunc(func(*http.Request) (*url.URL, error) {
+		return nil, wantErr
+	})
+
+	req := &http.Request{
+		URL:    &url.URL{Scheme: "http", Host: "example.com"},
+		Header: make(http.Header),
+	}
+	req = req.WithContext(context.Background())
+
+	if _, err := guard(req); !errors.Is(err, wantErr) {
+		t.Errorf("got %v, want the underlying proxy error", err)
 	}
 }
 

@@ -138,7 +138,7 @@ func demonstrateTimeoutErrors() {
 
 	// Very short timeout to demonstrate timeout handling
 	resp, err := client.Get("https://echo.hoppscotch.io",
-		httpc.WithTimeout(1*time.Nanosecond), // Intentionally too short
+		httpc.WithTimeout(1*time.Millisecond), // Intentionally too short
 	)
 	if err != nil {
 		// Check if it's a timeout error
@@ -315,7 +315,7 @@ func demonstrateStructuredErrors() {
 
 	// Trigger a timeout to get a structured error
 	resp, err := client.Get("https://echo.hoppscotch.io",
-		httpc.WithTimeout(1*time.Nanosecond),
+		httpc.WithTimeout(1*time.Millisecond),
 	)
 	if err != nil {
 		// Type-assert to ClientError for structured inspection

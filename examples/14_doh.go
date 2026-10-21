@@ -83,6 +83,7 @@ func demonstrateDoHWithCacheTTL() {
 		log.Printf("First request failed: %v\n", err)
 		return
 	}
+	status1 := resp.StatusCode()
 	dur1 := time.Since(start1)
 
 	// Second request uses cached DNS result (faster)
@@ -94,10 +95,11 @@ func demonstrateDoHWithCacheTTL() {
 		log.Printf("Second request failed: %v\n", err)
 		return
 	}
+	status2 := resp.StatusCode()
 	dur2 := time.Since(start2)
 
-	fmt.Printf("First request:  %d in %v (DoH lookup + request)\n", resp.StatusCode(), dur1)
-	fmt.Printf("Second request: %d in %v (cached DNS)\n\n", resp.StatusCode(), dur2)
+	fmt.Printf("First request:  %d in %v (DoH lookup + request)\n", status1, dur1)
+	fmt.Printf("Second request: %d in %v (cached DNS)\n\n", status2, dur2)
 
 	fmt.Println("DoH benefits:")
 	fmt.Println("  - Encrypted DNS queries (privacy from ISPs)")

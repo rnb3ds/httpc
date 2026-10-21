@@ -79,6 +79,11 @@ func (r *retryEngine) GetDelayWithResponse(attempt int, resp *Response) time.Dur
 // parseRetryAfterHeader parses the Retry-After header and returns the delay duration.
 // Returns 0 if the header is not present or cannot be parsed.
 // Supports both delta-seconds and HTTP-date formats per RFC 7231.
+// Note: "Retry-After: 0" (retry immediately, legal per RFC 7231) is treated
+// as absent — a 0 return falls back to the exponential backoff, so the
+// effective delay is the configured initial Delay rather than zero. Changing
+// this would alter retry pacing for servers that send the header; treated as
+// a deliberate contract here.
 // SECURITY: The delay is capped at maxRetryAfterDelay (60s) to prevent a malicious
 // server from causing indefinite waits via unreasonably large Retry-After values.
 func parseRetryAfterHeader(headers http.Header) time.Duration {

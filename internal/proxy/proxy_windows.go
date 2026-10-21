@@ -275,30 +275,17 @@ func parseProxyOverride(override string) []string {
 	return entries
 }
 
-// windowsProxyBypass reports whether host matches a ProxyOverride entry:
-// "<local>" matches dotless hostnames (the Windows default intranet rule),
-// "*.suffix" matches strict subdomains (list the apex separately, mirroring
-// the whitelist wildcard semantics), and any other entry matches exactly.
-// Comparison is case-insensitive.
+// windowsProxyBypass reports whether host matches a ProxyOverride entry.
+// Entry semantics live in the shared matchProxyBypassEntry ("<local>" matches
+// dotless hostnames, "*.suffix" matches strict subdomains, exact otherwise);
+// this wrapper keeps the ProxyOverride-specific name for the registry path.
 func windowsProxyBypass(host string, entries []string) bool {
 	host = strings.ToLower(strings.TrimSpace(host))
 	if host == "" {
 		return false
 	}
 	for _, entry := range entries {
-		entry = strings.ToLower(strings.TrimSpace(entry))
-		switch {
-		case entry == "":
-			continue
-		case entry == "<local>":
-			if !strings.Contains(host, ".") {
-				return true
-			}
-		case strings.HasPrefix(entry, "*."):
-			if strings.HasSuffix(host, entry[1:]) {
-				return true
-			}
-		case host == entry:
+		if matchProxyBypassEntry(host, entry) {
 			return true
 		}
 	}

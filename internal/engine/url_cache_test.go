@@ -9,11 +9,10 @@ import (
 // ============================================================================
 // URL CACHE TESTS
 //
-// Consolidates every urlCache test into one file. The type is split across
-// three layers, each with its own section:
-//   - Get/SanitizedKey: the high-level cache API and sanitized-key dedup
-//   - populateRawCache/evictRawIfNeeded: the raw-URL side cache (bounded memory)
-//   - evictOldest: the entries LRU and keys-slice compaction
+// Consolidates every urlCache test into one file, in two sections:
+//   - Get/SENSITIVE: the high-level cache API and the sensitive-URL
+//     never-cached contract
+//   - evictOldest: the entries FIFO and keys-slice compaction
 // ============================================================================
 
 // TestURLCache_SensitiveNotShared validates that URLs carrying sensitive
@@ -48,16 +47,9 @@ func TestURLCache_SensitiveNotShared(t *testing.T) {
 		t.Errorf("URL2 token = %q, want %q (its own value, never URL1's)", q2.Get("token"), "secretB")
 	}
 
-	// Credential-bearing URLs are cached nowhere: neither the entries map
-	// nor the raw cache holds them.
+	// Credential-bearing URLs are cached nowhere.
 	if getURLCacheSize() != 0 {
 		t.Errorf("Expected 0 cache entries for sensitive URLs, got %d", getURLCacheSize())
-	}
-	globalURLCache.mu.RLock()
-	rawLen := len(globalURLCache.raw)
-	globalURLCache.mu.RUnlock()
-	if rawLen != 0 {
-		t.Errorf("Expected 0 raw cache entries for sensitive URLs, got %d", rawLen)
 	}
 
 	// Userinfo URLs are sensitive too, and credentials stay stripped.
@@ -114,11 +106,12 @@ func TestURLCache_Get(t *testing.T) {
 	clearURLCache()
 }
 
-// TestURLCacheRawEviction verifies that the raw URL cache is evicted when it
-// exceeds rawCacheMaxSize, preventing unbounded memory growth.
-func TestURLCacheRawEviction(t *testing.T) {
+// TestURLCache_BoundedGrowth verifies that a burst of unique URL variants
+// cannot grow the cache beyond maxSize: FIFO eviction keeps entries bounded,
+// and evicted URLs still resolve correctly afterwards (a post-eviction
+// lookup simply re-parses — equivalent to a cache miss).
+func TestURLCache_BoundedGrowth(t *testing.T) {
 	cache := &urlCache{
-		raw:     make(map[string]*url.URL, 16),
 		entries: make(map[string]*url.URL, 16),
 		keys:    make([]string, 0, 16),
 		maxSize: 64,
@@ -127,50 +120,29 @@ func TestURLCacheRawEviction(t *testing.T) {
 	// Fill the cache with unique entries
 	for i := 0; i < 64; i++ {
 		urlStr := fmt.Sprintf("https://host%d.example.com/path", i)
-		_, err := cache.Get(urlStr)
-		if err != nil {
+		if _, err := cache.Get(urlStr); err != nil {
 			t.Fatalf("Get(%q) failed: %v", urlStr, err)
 		}
 	}
 
-	// Verify entries map is at maxSize
-	cache.mu.RLock()
-	entriesLen := len(cache.entries)
-	rawLen := len(cache.raw)
-	cache.mu.RUnlock()
-
-	if entriesLen != 64 {
-		t.Errorf("expected 64 entries, got %d", entriesLen)
-	}
-	if rawLen != 64 {
-		t.Errorf("expected 64 raw entries, got %d", rawLen)
-	}
-
-	// Now add many URL variants for the same host to grow the raw map beyond entries
+	// Add many URL variants to stress eviction
 	for i := 0; i < 2500; i++ {
 		urlStr := fmt.Sprintf("https://host0.example.com/path?v=%d", i)
-		_, err := cache.Get(urlStr)
-		if err != nil {
+		if _, err := cache.Get(urlStr); err != nil {
 			t.Fatalf("Get(%q) failed: %v", urlStr, err)
 		}
 	}
 
 	cache.mu.RLock()
-	rawLen = len(cache.raw)
-	entriesLen = len(cache.entries)
+	entriesLen := len(cache.entries)
 	cache.mu.RUnlock()
 
-	// The raw map should not grow unboundedly — it must be capped
-	if rawLen > rawCacheMaxSize*2 {
-		t.Errorf("raw cache grew to %d entries, expected cap near %d", rawLen, rawCacheMaxSize)
-	}
-
-	// Entries should still be bounded at maxSize
 	if entriesLen > 64 {
 		t.Errorf("entries grew to %d, expected max 64", entriesLen)
 	}
 
-	// Verify cache still works correctly after eviction
+	// Verify the cache still works correctly after heavy eviction: an evicted
+	// URL re-parses and is re-cached.
 	u, err := cache.Get("https://host0.example.com/path?v=42")
 	if err != nil {
 		t.Fatalf("Get after eviction failed: %v", err)
@@ -180,124 +152,38 @@ func TestURLCacheRawEviction(t *testing.T) {
 	}
 }
 
-// TestURLCacheRawDuplicateCheck verifies that re-looking up the same raw URL
-// does not create duplicate entries in the raw map.
-func TestURLCacheRawDuplicateCheck(t *testing.T) {
+// TestURLCache_DuplicateLookupNoGrowth verifies that re-looking up the same
+// URL never creates duplicate entries.
+func TestURLCache_DuplicateLookupNoGrowth(t *testing.T) {
 	cache := &urlCache{
-		raw:     make(map[string]*url.URL, 16),
 		entries: make(map[string]*url.URL, 16),
 		keys:    make([]string, 0, 16),
 		maxSize: 64,
 	}
 
 	urlStr := "https://example.com/api/v1"
-
-	// Look up the same URL many times
 	for i := 0; i < 100; i++ {
-		_, err := cache.Get(urlStr)
-		if err != nil {
+		if _, err := cache.Get(urlStr); err != nil {
 			t.Fatalf("Get failed on iteration %d: %v", i, err)
 		}
 	}
 
 	cache.mu.RLock()
-	rawLen := len(cache.raw)
 	entriesLen := len(cache.entries)
 	cache.mu.RUnlock()
 
-	if rawLen != 1 {
-		t.Errorf("expected 1 raw entry, got %d", rawLen)
-	}
 	if entriesLen != 1 {
-		t.Errorf("expected 1 entry, got %d", entriesLen)
+		t.Errorf("expected 1 entry after 100 identical lookups, got %d", entriesLen)
 	}
 }
 
-// TestURLCache_EvictRawIfNeeded covers the raw-cache eviction branch: entries
-// still referenced from the entries map are retained, and eviction reduces the
-// raw map below the threshold.
-func TestURLCache_EvictRawIfNeeded(t *testing.T) {
-	c := &urlCache{
-		raw:     make(map[string]*url.URL, rawCacheMaxSize+1),
-		entries: make(map[string]*url.URL, 1),
-		maxSize: 1024,
-	}
-
-	// One "live" entry: present in both raw and entries (same pointer).
-	liveURL := &url.URL{Path: "/live"}
-	c.entries["sanitized-live"] = liveURL
-	c.raw["http://example.com/0"] = liveURL
-
-	// Fill the rest with "stale" entries whose pointers are NOT in entries,
-	// pushing len(raw) past rawCacheMaxSize so eviction triggers.
-	for i := 1; i <= rawCacheMaxSize; i++ {
-		key := fmt.Sprintf("http://example.com/%d", i)
-		c.raw[key] = &url.URL{Path: fmt.Sprintf("/stale-%d", i)}
-	}
-	if len(c.raw) < rawCacheMaxSize {
-		t.Fatalf("setup error: raw cache not over threshold, len=%d", len(c.raw))
-	}
-
-	c.evictRawIfNeeded()
-
-	// The live entry is always retained (its pointer is found in entries).
-	if _, ok := c.raw["http://example.com/0"]; !ok {
-		t.Error("live entry should be retained after eviction")
-	}
-	// Eviction must have reduced the raw cache below the threshold.
-	if len(c.raw) >= rawCacheMaxSize {
-		t.Errorf("eviction did not reduce raw cache: len=%d (threshold %d)",
-			len(c.raw), rawCacheMaxSize)
-	}
-}
-
-// TestURLCache_EvictRaw_NoopBelowThreshold confirms eviction is a no-op when
-// the raw cache is under rawCacheMaxSize.
-func TestURLCache_EvictRaw_NoopBelowThreshold(t *testing.T) {
-	c := &urlCache{
-		raw:     map[string]*url.URL{"http://example.com/a": {Path: "/a"}},
-		entries: map[string]*url.URL{},
-		maxSize: 1024,
-	}
-	c.evictRawIfNeeded()
-	if len(c.raw) != 1 {
-		t.Errorf("eviction should be a no-op below threshold, got len=%d", len(c.raw))
-	}
-}
-
-// TestURLCache_PopulateRawCache covers the lazy-init (nil raw) branch and the
-// existing-key no-op of populateRawCache.
-func TestURLCache_PopulateRawCache(t *testing.T) {
-	c := &urlCache{
-		entries: make(map[string]*url.URL),
-		keys:    []string{},
-		maxSize: 1024,
-		// raw intentionally nil → exercises the lazy-init branch.
-	}
-	parsed := &url.URL{Path: "/x"}
-	c.populateRawCache("http://example.com/x", parsed)
-	if c.raw == nil || c.raw["http://example.com/x"] != parsed {
-		t.Error("populateRawCache did not lazily init raw and store the entry")
-	}
-	// Re-populating an existing key is a no-op (no duplicate, no eviction).
-	c.populateRawCache("http://example.com/x", parsed)
-	if len(c.raw) != 1 {
-		t.Errorf("duplicate populate should be a no-op, got len=%d", len(c.raw))
-	}
-}
-
-// TestURLCache_EvictOldest covers the entries-LRU eviction: when entries exceed
-// maxSize the oldest key is dropped, its raw entry is cleaned up, and the keys
-// slice is advanced.
+// TestURLCache_EvictOldest covers the entries FIFO eviction: when entries
+// exceed maxSize the oldest key is dropped and the keys slice is advanced.
 func TestURLCache_EvictOldest(t *testing.T) {
 	oldest := &url.URL{Path: "/oldest"}
 	newest := &url.URL{Path: "/newest"}
 	c := &urlCache{
 		entries: map[string]*url.URL{"k1": oldest, "k2": newest},
-		raw: map[string]*url.URL{
-			"http://example.com/oldest": oldest,
-			"http://example.com/newest": newest,
-		},
 		keys:    []string{"k1", "k2"},
 		maxSize: 1, // tiny so eviction triggers with two entries
 	}
@@ -310,36 +196,8 @@ func TestURLCache_EvictOldest(t *testing.T) {
 	if _, ok := c.entries["k2"]; !ok {
 		t.Error("newest entry (k2) should be retained")
 	}
-	// evictOldest no longer scans the raw map: an orphaned raw entry is a
-	// still-correct parse of its key and is reclaimed by evictRawIfNeeded
-	// once the raw map exceeds its cap. Verify both raw entries survive here.
-	if _, ok := c.raw["http://example.com/oldest"]; !ok {
-		t.Error("orphaned raw entry for the evicted URL may remain until evictRawIfNeeded runs")
-	}
-	if _, ok := c.raw["http://example.com/newest"]; !ok {
-		t.Error("raw entry for the retained URL should remain")
-	}
 	if len(c.keys) != 1 || c.keys[0] != "k2" {
 		t.Errorf("keys slice should advance to [k2], got %v", c.keys)
-	}
-
-	// populateRawCacheLocked must lazily initialize a nil raw map, and an
-	// existing key must be a no-op (no overwrite). Covers the branches that
-	// formerly relied on the removed TestURLCache_Eviction.
-	u := &url.URL{Path: "/x"}
-	c2 := &urlCache{
-		entries: map[string]*url.URL{"k": u},
-		keys:    []string{"k"},
-		maxSize: 4,
-		// raw intentionally nil
-	}
-	c2.populateRawCacheLocked("http://example.com/x", u)
-	if c2.raw == nil || c2.raw["http://example.com/x"] != u {
-		t.Error("populateRawCacheLocked should lazily create the raw map and insert")
-	}
-	c2.populateRawCacheLocked("http://example.com/x", &url.URL{Path: "/other"})
-	if c2.raw["http://example.com/x"] != u {
-		t.Error("populateRawCacheLocked must not overwrite an existing raw entry")
 	}
 
 	// The keys-slice compaction branch: after eviction leaves a slice whose

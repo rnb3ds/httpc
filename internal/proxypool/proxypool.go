@@ -188,12 +188,17 @@ func (p *Pool) selectFrom(start, n int, now int64) *url.URL {
 // selectRoundRobin advances the global cursor and scans forward, returning the
 // first healthy entry. The cursor advances on every call, so a retry that
 // re-invokes Select naturally lands on a different proxy.
+//
+// The counter is reduced modulo n BEFORE the int conversion: on 32-bit
+// platforms int(uint64) truncates and can sign-extend negative, and a single
+// "if start < 0 { start += n }" cannot recover from values far below -n —
+// index-out-of-range after 2^31 selections on a long-lived process.
 func (p *Pool) selectRoundRobin(now int64) *url.URL {
 	n := len(p.entries)
-	start := int(p.counter.Add(1)-1) % n
-	if start < 0 {
-		start += n
-	}
+	// Add(1)-1 = the pre-increment value: the first call returns index 0,
+	// preserving the historical sequence. The modulo happens BEFORE the int
+	// conversion (32-bit truncation safety — see the comment above).
+	start := int((p.counter.Add(1) - 1) % uint64(n))
 	return p.selectFrom(start, n, now)
 }
 
@@ -221,11 +226,9 @@ func (p *Pool) selectRandom(now int64) *url.URL {
 // base + attempt as the SelectIndex argument for intra-request rotation.
 func (p *Pool) NextIndex() int {
 	n := len(p.entries)
-	idx := int(p.counter.Add(1)-1) % n
-	if idx < 0 {
-		idx += n
-	}
-	return idx
+	// Pre-increment value, modulo before the int conversion — see
+	// selectRoundRobin for both rationales.
+	return int((p.counter.Add(1) - 1) % uint64(n))
 }
 
 // SelectIndex returns a proxy URL deterministically indexed by attempt,

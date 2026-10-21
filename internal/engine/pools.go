@@ -29,9 +29,7 @@ func getHTTPHeader() http.Header {
 	if !ok || h == nil {
 		return make(http.Header, 8)
 	}
-	for k := range h {
-		delete(h, k)
-	}
+	clear(h)
 	return h
 }
 
@@ -41,9 +39,7 @@ func putHTTPHeader(h http.Header) {
 	if h == nil || len(h) > 64 {
 		return
 	}
-	for k := range h {
-		delete(h, k)
-	}
+	clear(h)
 	httpHeaderPool.Put(h)
 }
 

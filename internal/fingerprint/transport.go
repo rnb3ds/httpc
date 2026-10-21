@@ -116,7 +116,7 @@ func newTransportBackend(cfg Config, proxyURL *url.URL, p *browserProfile, os os
 	}
 
 	if proxyURL != nil {
-		factory, err := newProxyDialerFactory(proxyURL)
+		factory, err := newProxyDialerFactory(proxyURL, cfg.InsecureSkipVerify)
 		if err != nil {
 			return nil, err
 		}
@@ -139,13 +139,23 @@ func newTransportBackend(cfg Config, proxyURL *url.URL, p *browserProfile, os os
 // The request is a fork (*ehttp.Request); the adapter owns the stdlib
 // boundary.
 func (b *backend) RoundTrip(req *ehttp.Request) (*ehttp.Response, error) {
+	// RoundTripper contract: on error the request body must be closed. The
+	// two early returns below fire before client.Do (which owns body closing
+	// on its own error paths), so close it here — a body backed by an
+	// *os.File would otherwise leak its descriptor for the request's lifetime.
 	if req.URL == nil {
+		if req.Body != nil {
+			_ = req.Body.Close() // best-effort: request is being abandoned
+		}
 		return nil, fmt.Errorf("fingerprint: request has no URL")
 	}
 
 	switch scheme := req.URL.Scheme; scheme {
 	case "http", "https":
 	default:
+		if req.Body != nil {
+			_ = req.Body.Close() // best-effort: request is being abandoned
+		}
 		return nil, fmt.Errorf("fingerprint: invalid URL scheme %q", scheme)
 	}
 

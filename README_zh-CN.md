@@ -1,13 +1,13 @@
 # HTTPC - 安全的 Go HTTP 客户端
 
-[![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://golang.org)
+[![Go Version](https://img.shields.io/badge/Go-1.27+-00ADD8?logo=go)](https://golang.org)
 [![Go Reference](https://pkg.go.dev/badge/github.com/cybergodev/httpc.svg)](https://pkg.go.dev/github.com/cybergodev/httpc)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Security](https://img.shields.io/badge/Security-Hardened-red.svg)](SECURITY.md)
 [![Dependencies](https://img.shields.io/badge/deps-minimal-brightgreen.svg)](go.mod)
 [![Thread Safe](https://img.shields.io/badge/thread%20safe-%E2%9C%93-brightgreen.svg)](docs/09_concurrency-safety.md)
 
-一个快速、安全的 Go HTTP 客户端库，具备合理的默认配置、极简依赖和内置弹性机制。
+一个快速、安全的 Go HTTP 客户端库，具备合理的默认配置、精简的依赖集和内置弹性机制。
 
 **[English Documentation](README.md)** | **[www.cybergo.dev/httpc](https://www.cybergo.dev/httpc)**
 
@@ -30,6 +30,7 @@
 - [中间件](#中间件)
 - [代理配置](#代理配置)
 - [安全特性](#安全特性)
+- [浏览器传输指纹](#浏览器传输指纹)
 - [错误处理](#错误处理)
 - [并发安全](#并发安全)
 - [接口](#接口)
@@ -47,7 +48,7 @@
 | **内置弹性** | 智能重试，支持指数退避和抖动 —— 非幂等请求（POST/PATCH）默认仅执行一次 |
 | **自动解压缩** | 透明的 gzip/deflate 处理，带 Zip 炸弹防护 |
 | **开发者友好** | 简洁的 API、直观的选项模式、完善的文档 |
-| **极简依赖** | 1 个直接依赖 (golang.org/x/sys)，纯 Go 实现 |
+| **依赖** | 7 个直接模块 —— 标准路径用 `golang.org/x/net` + `golang.org/x/sys`；brotli / compress / uTLS / tls-client 仅供 `Security.TLSFingerprint` 使用 |
 | **Cookie 管理** | 完整的 Cookie Jar 支持，带安全验证 |
 | **文件操作** | 安全的文件下载，支持进度跟踪和断点续传 |
 | **流式传输** | `io.Reader` 请求体、零拷贝 `io.Pipe` 上传、磁盘流式下载 |
@@ -60,7 +61,7 @@
 go get -u github.com/cybergodev/httpc
 ```
 
-**环境要求：** Go 1.25+
+**环境要求：** Go 1.27+
 
 ---
 
@@ -294,6 +295,12 @@ httpc.WithTimeout(30 * time.Second)
 // 重试配置
 httpc.WithMaxRetries(3)
 
+// 对某次慢请求解除客户端级超时
+httpc.WithNoTimeout()
+
+// 选择重试非幂等方法（仅限可安全重放的端点）
+httpc.WithRetryNonIdempotent(true)
+
 // 重定向控制
 httpc.WithFollowRedirects(false)
 httpc.WithMaxRedirects(5)
@@ -327,7 +334,7 @@ httpc.WithOnResponse(func(resp httpc.ResponseMutator) error {
 | **查询参数** | `WithQuery(key, value)`, `WithQueryMap(map)` |
 | **请求体** | `WithJSON(data)`, `WithXML(data)`, `WithForm(map)`, `WithFormData(*FormData)`, `WithFile(field, filename, content)`, `WithBody(data, ...BodyKind)`, `WithBinary([]byte, ...contentType)`, `WithStreamBody(bool)` |
 | **Cookie** | `WithCookies([]http.Cookie)`, `WithCookieMap(map)`, `WithCookieString("a=1; b=2")`, `WithSecureCookie(config)` |
-| **控制** | `WithTimeout(dur)`, `WithMaxRetries(n)`, `WithContext(ctx)`, `WithAllowPrivateIPs(bool)` |
+| **控制** | `WithTimeout(dur)`, `WithNoTimeout()`, `WithMaxRetries(n)`, `WithRetryNonIdempotent(bool)`, `WithContext(ctx)`, `WithAllowPrivateIPs(bool)` |
 | **重定向** | `WithFollowRedirects(bool)`, `WithMaxRedirects(n)` |
 | **回调** | `WithOnRequest(fn)`, `WithOnResponse(fn)` |
 
@@ -734,7 +741,7 @@ config := httpc.Config{
         Request:        30 * time.Second,
         Dial:           10 * time.Second,
         TLSHandshake:   10 * time.Second,
-        ResponseHeader: 30 * time.Second,
+        ResponseHeader: 0, // 禁用：依赖 Context 超时（仅当需要传输层硬上限时才设为正值）
         IdleConn:       90 * time.Second,
     },
 
@@ -752,6 +759,8 @@ config := httpc.Config{
         MaxTLSVersion:       tls.VersionTLS13,
         MaxResponseBodySize: 50 * 1024 * 1024, // 50 MB
         AllowPrivateIPs:     false,
+        FollowRedirects:     true,
+        MaxRedirects:        10,
     },
 
     // 重试设置
@@ -762,11 +771,9 @@ config := httpc.Config{
         EnableJitter:  true,
     },
 
-    // 默认设置 (每次请求的默认值：User-Agent、请求头、重定向策略)
+    // 默认设置 (每次请求的默认值：User-Agent、请求头)
     Defaults: httpc.RequestDefaults{
-        UserAgent:       "MyApp/1.0",
-        FollowRedirects: true,
-        MaxRedirects:    10,
+        UserAgent: "MyApp/1.0",
     },
 }
 
@@ -817,6 +824,7 @@ fmt.Println(config.String())
 | `Connection.EnableDoH` | `bool` | `false` | 启用 DNS-over-HTTPS |
 | `Connection.DoHCacheTTL` | `time.Duration` | `5m` | DoH 缓存时长 |
 | `Connection.MaxResponseHeaderBytes` | `int64` | `0` | 最大响应头大小 (0 = Go 标准库默认 1MB) |
+| `Connection.PublicSuffixList` | `cookiejar.PublicSuffixList` | `nil` | Cookie Jar 的公共后缀数据库（推荐：`golang.org/x/net/publicsuffix.List`） |
 | **安全设置** (`Security`) ||||
 | `Security.TLSConfig` | `*tls.Config` | `nil` | 自定义 TLS 配置 |
 | `Security.MinTLSVersion` | `uint16` | `TLS 1.2` | 最低 TLS 版本 |
@@ -834,6 +842,9 @@ fmt.Println(config.String())
 | `Security.RedirectWhitelist` | `[]string` | `nil` | 允许的重定向域名 |
 | `Security.MaxDecompressedBodySize` | `int64` | `100MB` | 最大解压响应体大小 (Zip 炸弹防护) |
 | `Security.SSRFExemptCIDRs` | `[]string` | `nil` | 豁免 SSRF 阻断的 CIDR 范围 |
+| `Security.FollowRedirects` | `bool` | `true` | 跟随重定向 |
+| `Security.MaxRedirects` | `int` | `10` | 重定向上限;计入初始请求,即 10 最多跟随 9 次重定向 |
+| `Security.SensitiveHeaders` | `[]string` | `nil` | 跨域重定向时额外剥离的请求头名（Authorization/Cookie 始终剥离） |
 | **重试设置** (`Retry`) ||||
 | `Retry.MaxRetries` | `int` | `3` | 最大重试次数 |
 | `Retry.Delay` | `time.Duration` | `1s` | 初始重试延迟 |
@@ -841,14 +852,12 @@ fmt.Println(config.String())
 | `Retry.EnableJitter` | `bool` | `true` | 重试添加抖动 |
 | `Retry.MaxRetryDelay` | `time.Duration` | `30s` | 最大重试延迟上限 |
 | `Retry.CustomPolicy` | `RetryPolicy` | `nil` | 自定义重试逻辑 |
+| `Retry.RetryNonIdempotent` | `bool` | `false` | 重试非幂等方法（POST/PATCH）；默认关闭 —— 它们仅执行一次 |
 | **中间件设置** (`Middleware: httpc.MiddlewareConfig{...}`) ||||
 | `Middleware.Middlewares` | `[]MiddlewareFunc` | `nil` | 中间件链 |
 | **默认设置** (`Defaults: httpc.RequestDefaults{...}`) ||||
 | `Defaults.UserAgent` | `string` | `"httpc/1.0"` | 默认 User-Agent |
 | `Defaults.Headers` | `map[string]string` | `{}` | 默认请求头 |
-| **安全设置** (`Security: httpc.SecurityConfig{...}`) ||||
-| `Security.FollowRedirects` | `bool` | `true` | 跟随重定向 |
-| `Security.MaxRedirects` | `int` | `10` | 重定向上限;计入初始请求,即 10 最多跟随 9 次重定向 |
 
 ---
 
@@ -891,11 +900,10 @@ auditCfg.OnAudit = func(a httpc.AuditEvent) {
 }
 httpc.AuditMiddleware(auditCfg)
 
-// 带自定义配置的审计（JSON 格式，包含请求头）
+// 带自定义配置的审计（在事件中包含请求/响应头）
 auditCfgJSON := httpc.DefaultAuditConfig()
 auditCfgJSON.OnAudit = func(a httpc.AuditEvent) { log.Printf("[AUDIT] %v", a) }
 auditCfgJSON.IncludeHeaders = true
-auditCfgJSON.Format = "json"
 httpc.AuditMiddleware(auditCfgJSON)
 ```
 
@@ -1280,6 +1288,11 @@ var (
     ErrFileExists           // 文件已存在 (且 Overwrite 为 false)
     ErrResponseBodyEmpty    // 响应体为空
     ErrResponseBodyTooLarge // 响应体超过大小限制
+    ErrInvalidMaxRedirects  // 重定向上限为负数或超过 50
+    ErrInvalidCredentials   // Basic/Bearer 凭据校验失败
+    ErrStreamBodyRequiresDownload // 在缓冲方法上使用 WithStreamBody（请用 Download）
+    ErrDownloadInProgress   // 同一路径已有下载正在进行
+    ErrProxyConnectionFailed // 配置的代理无法拨号
 )
 ```
 
@@ -1426,7 +1439,7 @@ func (m *MockClient) Get(url string, options ...httpc.RequestOption) (*httpc.Res
 
 ### 示例代码
 
-22 个可运行的示例覆盖所有功能，按从基础到高级排序。
+23 个可运行的示例覆盖所有功能，按从基础到高级排序。
 每个示例都是独立的 `package main`，并带有 `//go:build examples` 构建标签（因此不会进入常规构建），需逐个运行：
 
 ```bash
@@ -1444,6 +1457,7 @@ go run -tags examples examples/01_basic_usage.go
 | **高级** | [15_middleware](examples/15_middleware.go), [16_concurrent_requests](examples/16_concurrent_requests.go), [17_file_operations](examples/17_file_operations.go), [18_rest_api_client](examples/18_rest_api_client.go), [19_advanced_patterns](examples/19_advanced_patterns.go) |
 | **安全** | [20_certificate_pinning](examples/20_certificate_pinning.go), [21_ssrf_protection](examples/21_ssrf_protection.go) |
 | **流式传输** | [22_streaming_bodies](examples/22_streaming_bodies.go) |
+| **指纹** | [23_tls_fingerprint](examples/23_tls_fingerprint.go) |
 
 ---
 

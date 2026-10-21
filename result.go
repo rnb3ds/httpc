@@ -321,7 +321,11 @@ func (r *Result) String() string {
 				b.WriteString(", ")
 			}
 			first = false
-			if sensitiveHeaders[key] {
+			// Canonicalize before the lookup: hand-built Results (docs
+			// bless constructing Result directly) may carry non-canonical
+			// keys ("authorization"), which a raw-key check would miss —
+			// printing the credential name unmasked.
+			if sensitiveHeaders[http.CanonicalHeaderKey(key)] {
 				b.WriteString(key)
 				b.WriteString(": ***")
 			} else {
@@ -395,12 +399,30 @@ func (r *Result) SaveToFile(filePath string) error {
 	// SECURITY: mirror prepareFilePath's destination check on the temp
 	// sibling — os.WriteFile's O_CREATE|O_TRUNC follows a symlink planted at
 	// this predictable name.
-	if fi, statErr := os.Lstat(tmpPath); statErr == nil && fi.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("symlink paths not allowed for security")
+	if err := rejectSymlink(tmpPath); err != nil {
+		return err
 	}
-	if err := os.WriteFile(tmpPath, r.Response.RawBody, filePermissions); err != nil {
-		_ = os.Remove(tmpPath) // best-effort cleanup of a partial write
+	// Write via an explicit handle + Sync rather than os.WriteFile: matching
+	// writeDownloadBody's crash-consistency posture, the rename below must
+	// not publish content that a power loss could still lose. os.WriteFile
+	// never fsyncs.
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, filePermissions)
+	if err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
+	}
+	if _, err := f.Write(r.Response.RawBody); err != nil {
+		_ = f.Close() // best-effort cleanup of a partial write
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close() // best-effort cleanup
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to sync file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to close file: %w", err)
 	}
 	if err := os.Rename(tmpPath, validatedPath); err != nil {
 		_ = os.Remove(tmpPath) // best-effort cleanup

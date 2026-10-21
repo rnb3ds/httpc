@@ -185,15 +185,44 @@ func (s *SessionManager) GetHeaders() map[string]string {
 	return headers
 }
 
+// isDeletionCookie reports whether cookie carries RFC 6265 deletion
+// semantics: net/http maps a Set-Cookie with Max-Age=0 (or an Expires in the
+// past) to MaxAge < 0 / a past Expires, meaning "remove the cookie by name".
+// Such a cookie must delete the stored entry, never be stored by name —
+// otherwise a logged-out session id is replayed on every subsequent request
+// forever. Shared by storeCookies (capture path) and SetCookie/SetCookies
+// (public API path), which previously disagreed: SetCookie stored deletion
+// cookies verbatim.
+func isDeletionCookie(cookie *http.Cookie) bool {
+	return cookie.MaxAge < 0 || (!cookie.Expires.IsZero() && cookie.Expires.Before(time.Now()))
+}
+
+// isExpiredCookie reports whether a stored cookie's Expires moment has
+// passed. Sessions have no background sweeper — expiry is enforced on read
+// (prepareOptions, GetCookies, GetCookie) so an expired cookie stops being
+// sent and stops appearing in the session view at the same instant.
+func isExpiredCookie(cookie *http.Cookie) bool {
+	return !cookie.Expires.IsZero() && cookie.Expires.Before(time.Now())
+}
+
 // SetCookie adds or updates a cookie in the session.
 // Returns an error if the cookie is nil or invalid.
 // If cookie security is configured, validates against security requirements.
+// A cookie with RFC 6265 deletion semantics (MaxAge < 0 or an Expires in the
+// past) removes the stored cookie instead of being stored — same rule the
+// capture path applies (see isDeletionCookie).
 func (s *SessionManager) SetCookie(cookie *http.Cookie) error {
 	if s == nil {
 		return fmt.Errorf("session manager is nil")
 	}
 	if cookie == nil {
 		return fmt.Errorf("cookie cannot be nil")
+	}
+	if isDeletionCookie(cookie) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		delete(s.cookies, cookie.Name)
+		return nil
 	}
 	if err := validation.ValidateCookie(cookie); err != nil {
 		return fmt.Errorf("invalid cookie: %w", err)
@@ -245,7 +274,13 @@ func (s *SessionManager) SetCookies(cookies []*http.Cookie) error {
 	}
 
 	// All passed, store cookies — defensively copied (see SetCookie).
+	// Deletion-semantic cookies remove their stored entry instead, matching
+	// SetCookie and storeCookies (see isDeletionCookie).
 	for _, cookie := range cookies {
+		if isDeletionCookie(cookie) {
+			delete(s.cookies, cookie.Name)
+			continue
+		}
 		cp := *cookie
 		s.cookies[cp.Name] = &cp
 	}
@@ -274,8 +309,9 @@ func (s *SessionManager) ClearCookies() {
 	s.cookies = make(map[string]*http.Cookie)
 }
 
-// GetCookies returns a copy of all session cookies.
-// Optimized to reduce allocations by pre-allocating slice with exact capacity.
+// GetCookies returns a copy of all session cookies. Cookies whose Expires
+// moment has passed are omitted (see isExpiredCookie) — the returned view
+// matches what a request would actually send.
 func (s *SessionManager) GetCookies() []*http.Cookie {
 	if s == nil {
 		return nil
@@ -283,19 +319,25 @@ func (s *SessionManager) GetCookies() []*http.Cookie {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	n := len(s.cookies)
+	n := 0
+	for _, cookie := range s.cookies {
+		if !isExpiredCookie(cookie) {
+			n++
+		}
+	}
 	if n == 0 {
 		return nil
 	}
 	// Allocate all cookie structs in one contiguous backing array
 	// to reduce N individual heap allocations to 2 (backing + pointer slice).
 	backing := make([]http.Cookie, n)
-	cookies := make([]*http.Cookie, n)
-	i := 0
+	cookies := make([]*http.Cookie, 0, n)
 	for _, cookie := range s.cookies {
-		backing[i] = *cookie
-		cookies[i] = &backing[i]
-		i++
+		if isExpiredCookie(cookie) {
+			continue
+		}
+		backing[len(cookies)] = *cookie
+		cookies = append(cookies, &backing[len(cookies)])
 	}
 	return cookies
 }
@@ -308,7 +350,7 @@ func (s *SessionManager) GetCookie(name string) *http.Cookie {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if cookie, ok := s.cookies[name]; ok {
+	if cookie, ok := s.cookies[name]; ok && !isExpiredCookie(cookie) {
 		cookieCopy := *cookie
 		return &cookieCopy
 	}
@@ -335,6 +377,9 @@ func (s *SessionManager) prepareOptions() []RequestOption {
 		// Sorted by name so the Cookie header order is deterministic regardless
 		// of map iteration order — matching WithCookieMap's determinism
 		// contract (gateways that sign or replay-check headers care).
+		// Expired entries are skipped (isExpiredCookie): without this filter a
+		// cookie whose Expires passed kept being sent forever, since sessions
+		// only remove entries on explicit deletion.
 		names := make([]string, 0, cookieCount)
 		for name := range s.cookies {
 			names = append(names, name)
@@ -342,13 +387,17 @@ func (s *SessionManager) prepareOptions() []RequestOption {
 		slices.Sort(names)
 		cookies := make([]http.Cookie, 0, cookieCount)
 		for _, name := range names {
-			cookies = append(cookies, *s.cookies[name])
+			if c := s.cookies[name]; !isExpiredCookie(c) {
+				cookies = append(cookies, *c)
+			}
 		}
-		options = append(options, RequestOptionFunc(func(r RequestMutator) error {
-			existing := r.Cookies()
-			r.SetCookies(append(existing, cookies...))
-			return nil
-		}))
+		if len(cookies) > 0 {
+			options = append(options, RequestOptionFunc(func(r RequestMutator) error {
+				existing := r.Cookies()
+				r.SetCookies(append(existing, cookies...))
+				return nil
+			}))
+		}
 	}
 
 	if headerCount > 0 {
@@ -415,7 +464,7 @@ func (s *SessionManager) storeCookies(cookies []*http.Cookie) {
 		// an Expires in the past deletes as well) remove the stored cookie
 		// instead of being stored by name — otherwise a logged-out session
 		// id is replayed on every subsequent request forever.
-		if cookie.MaxAge < 0 || (!cookie.Expires.IsZero() && cookie.Expires.Before(time.Now())) {
+		if isDeletionCookie(cookie) {
 			delete(s.cookies, cookie.Name)
 			continue
 		}

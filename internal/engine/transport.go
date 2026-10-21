@@ -99,16 +99,14 @@ func putRedirectSettings(s *redirectSettings) {
 	s.followRedirects = false
 	s.maxRedirects = 0
 	s.chainLen = 0
-	// Clear inline chain to allow GC of strings
-	for i := range s.inlineChain {
-		s.inlineChain[i] = ""
-	}
+	// Clear inline chain to allow GC of strings. clear() zeroes the backing
+	// array in one memclr, cheaper than a per-element loop on the hot path
+	// (a redirectSettings is acquired per request).
+	clear(s.inlineChain[:])
 	// SECURITY: Clear overflow chain data to prevent memory leaks
 	// Each URL string reference must be cleared to allow GC
 	if s.overflowChain != nil {
-		for i := range s.overflowChain {
-			s.overflowChain[i] = ""
-		}
+		clear(s.overflowChain[:])
 		s.overflowChain = nil
 	}
 	redirectSettingsPool.Put(s)
@@ -460,7 +458,6 @@ type cookieOverlayJar struct {
 	origin string // hostname the manual cookies were set for
 }
 
-// newCookieOverlayJar builds an overlay from the request's Cookie header.
 // newCookieOverlayJar builds the overlay from an already-parsed cookie list
 // (callers parse the Cookie header once and pass the result in).
 func newCookieOverlayJar(base http.CookieJar, req *http.Request, requestCookies []*http.Cookie) *cookieOverlayJar {

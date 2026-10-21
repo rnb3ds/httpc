@@ -39,7 +39,7 @@ func SecureConfig() Config {
 	cfg.Retry.Delay = 2 * time.Second
 	cfg.Retry.EnableJitter = true
 
-	// Middleware - no redirects for security
+	// Security - no redirects for security
 	cfg.Security.FollowRedirects = false
 
 	return cfg
@@ -155,7 +155,7 @@ func MinimalConfig() Config {
 	cfg.Retry.BackoffFactor = 1.0
 	cfg.Retry.EnableJitter = false
 
-	// Defaults - no redirects
+	// Security - no redirects
 	cfg.Security.FollowRedirects = false
 
 	return cfg

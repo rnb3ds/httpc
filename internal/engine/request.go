@@ -58,9 +58,7 @@ func putHeadersMap(m map[string]string) {
 	if m == nil || len(m) > 32 {
 		return
 	}
-	for k := range m {
-		delete(m, k)
-	}
+	clear(m)
 	headersMapPool.Put(m)
 }
 
@@ -76,9 +74,7 @@ func putQueryParamsMap(m map[string]any) {
 	if m == nil || len(m) > 32 {
 		return
 	}
-	for k := range m {
-		delete(m, k)
-	}
+	clear(m)
 	queryParamsPool.Put(m)
 }
 
@@ -363,6 +359,9 @@ func (r *Request) Apply(src *Request) {
 	if src.onResponse != nil {
 		r.SetOnResponse(src.onResponse)
 	}
+	if src.sanitizedURL != "" {
+		r.SetSanitizedURL(src.sanitizedURL)
+	}
 	// Ownership transfer of pooled maps (see doc comment).
 	src.headers = nil
 	src.queryParams = nil
@@ -504,7 +503,8 @@ var jsonBufferPool = sync.Pool{
 	},
 }
 
-// pooledStringsReader wraps a strings.Reader and returns it to the pool on
+// pooledBody wraps a pooled reader or buffer (strings.Reader, bytes.Reader,
+// or a bytes.Buffer for multipart/JSON bodies) and returns it to its pool on
 // Close. Release happens ONLY in Close — never on EOF in Read: net/http reads
 // the body to EOF and closes it later (on HTTP/2, from the writeLoop
 // goroutine). Releasing at EOF would return the wrapper to the pool while a
@@ -516,75 +516,89 @@ var jsonBufferPool = sync.Pool{
 // transport owns one close, the request lifecycle may issue another). A
 // plain check-then-act bool would let two closers both pass the guard and
 // double-Put the wrapper, handing one live object to two requests.
-type pooledStringsReader struct {
-	reader   *strings.Reader
+//
+// The wrapper ITSELF is never pooled — only the inner reader/buffer is.
+// Pooling the wrapper opened a real race (caught by the race detector under
+// parallel redirect tests): a stale second Close arriving after the wrapper
+// was recycled and re-acquired found released==false again, passed the CAS,
+// and returned the NEW request's live inner buffer to the pool mid-use. With
+// per-request wrapper allocation the CAS is permanent: after the first
+// Close, every later Close no-ops forever, so the inner object is returned
+// to its pool exactly once. The wrapper is three words; the pooling win
+// lives in the buffers it guards.
+//
+// This single type carries the invariant for every pooled body kind; the
+// per-kind differences live only in the putInner functions below. The former
+// four per-type copies (pooledStringsReader/pooledBytesReader/
+// pooledMultipartBuffer/pooledJSONBuffer) each maintained the identical
+// release discipline separately — a miss in any one of them would corrupt
+// its pool.
+type pooledBody struct {
+	inner    io.Reader
+	putInner func(io.Reader) // resets inner and returns it to its pool
 	released atomic.Bool
 }
 
-func (r *pooledStringsReader) Read(p []byte) (n int, err error) {
-	if r.reader == nil {
-		return 0, io.EOF
+// acquirePooledBody wraps inner with a fresh (deliberately unpooled — see
+// the type comment) wrapper that returns it via putInner on Close. inner and
+// putInner must be non-nil on the real acquire paths (the put funcs below
+// type-assert); a zero-value &pooledBody{} is the nil-inner form used by
+// tests.
+func acquirePooledBody(inner io.Reader, putInner func(io.Reader)) *pooledBody {
+	return &pooledBody{
+		inner:    inner,
+		putInner: putInner,
 	}
-	return r.reader.Read(p)
 }
 
-func (r *pooledStringsReader) Close() error {
+func (r *pooledBody) Read(p []byte) (n int, err error) {
+	if r.inner == nil {
+		return 0, io.EOF
+	}
+	return r.inner.Read(p)
+}
+
+func (r *pooledBody) Close() error {
 	r.release()
 	return nil
 }
 
-func (r *pooledStringsReader) release() {
+func (r *pooledBody) release() {
 	if !r.released.CompareAndSwap(false, true) {
 		return
 	}
-	if r.reader != nil {
-		r.reader.Reset("")
-		stringsReaderPool.Put(r.reader)
-		r.reader = nil
+	if r.inner != nil && r.putInner != nil {
+		r.putInner(r.inner)
+		r.inner = nil
 	}
-	stringsReaderWrapperPool.Put(r)
 }
 
-// pooledBytesReader wraps a bytes.Reader and returns it to the pool on Close
-// only — see pooledStringsReader for why release-on-EOF is unsafe and why the
-// released flag must be an atomic CAS guard.
-type pooledBytesReader struct {
-	reader   *bytes.Reader
-	released atomic.Bool
-}
-
-func (r *pooledBytesReader) Read(p []byte) (n int, err error) {
-	if r.reader == nil {
-		return 0, io.EOF
+// Len reports the wrapped reader's length, probing the same Len() int method
+// all four pooled inner types implement (used by setContentLength).
+func (r *pooledBody) Len() int {
+	if r.inner == nil {
+		return 0
 	}
-	return r.reader.Read(p)
-}
-
-func (r *pooledBytesReader) Close() error {
-	r.release()
-	return nil
-}
-
-func (r *pooledBytesReader) release() {
-	if !r.released.CompareAndSwap(false, true) {
-		return
+	if l, ok := r.inner.(interface{ Len() int }); ok {
+		return l.Len()
 	}
-	if r.reader != nil {
-		r.reader.Reset(nil)
-		bytesReaderPool.Put(r.reader)
-		r.reader = nil
-	}
-	bytesReaderWrapperPool.Put(r)
+	return 0
 }
 
-// stringsReaderWrapperPool reduces allocations for pooledStringsReader wrapper structs.
-var stringsReaderWrapperPool = sync.Pool{
-	New: func() any { return &pooledStringsReader{} },
+// putPooledStringsReader resets a strings.Reader and returns it to its pool.
+// SECURITY: the reset drops the request body string before pooling.
+func putPooledStringsReader(r io.Reader) {
+	sr := r.(*strings.Reader)
+	sr.Reset("")
+	stringsReaderPool.Put(sr)
 }
 
-// bytesReaderWrapperPool reduces allocations for pooledBytesReader wrapper structs.
-var bytesReaderWrapperPool = sync.Pool{
-	New: func() any { return &pooledBytesReader{} },
+// putPooledBytesReader resets a bytes.Reader and returns it to its pool.
+// SECURITY: the reset drops the request body bytes before pooling.
+func putPooledBytesReader(r io.Reader) {
+	br := r.(*bytes.Reader)
+	br.Reset(nil)
+	bytesReaderPool.Put(br)
 }
 
 // getPooledStringsReader gets a strings.Reader from the pool and wraps it
@@ -594,13 +608,7 @@ func getPooledStringsReader(s string) io.Reader {
 		reader = &strings.Reader{}
 	}
 	reader.Reset(s)
-	wrapper, _ := stringsReaderWrapperPool.Get().(*pooledStringsReader)
-	if wrapper == nil {
-		wrapper = &pooledStringsReader{}
-	}
-	wrapper.reader = reader
-	wrapper.released.Store(false)
-	return wrapper
+	return acquirePooledBody(reader, putPooledStringsReader)
 }
 
 // getPooledBytesReader gets a bytes.Reader from the pool and wraps it
@@ -610,18 +618,8 @@ func getPooledBytesReader(b []byte) io.Reader {
 		reader = &bytes.Reader{}
 	}
 	reader.Reset(b)
-	wrapper, _ := bytesReaderWrapperPool.Get().(*pooledBytesReader)
-	if wrapper == nil {
-		wrapper = &pooledBytesReader{}
-	}
-	wrapper.reader = reader
-	wrapper.released.Store(false)
-	return wrapper
+	return acquirePooledBody(reader, putPooledBytesReader)
 }
-
-// rawCacheMaxSize limits the raw-string URL cache to prevent unbounded growth
-// from URL variants (e.g., different query parameter orderings for the same endpoint).
-const rawCacheMaxSize = 2048
 
 // urlCache provides a thread-safe cache for parsed URLs to avoid expensive
 // url.Parse() calls for repeated URLs. Eviction is insertion-order (FIFO):
@@ -629,13 +627,18 @@ const rawCacheMaxSize = 2048
 // (see evictOldest). This is simpler than true LRU and sufficient here —
 // hot URLs are typically re-inserted soon after eviction anyway.
 //
-// SECURITY: The cache uses a sanitized URL as the key (sensitive query parameter
-// values redacted) to prevent credentials from persisting in memory.
-// Callers always receive a clone of the cached entry to prevent mutation.
+// SECURITY: the cache key is the RAW URL string. URLs containing credentials
+// or sensitive query parameter values are detected before insertion and never
+// cached at all (parsed fresh per call — see getInternal), so credentials
+// cannot persist in memory and two URLs differing only in a sensitive value
+// (?token=A vs ?token=B) can never share an entry. An earlier design used a
+// sanitized key with sensitive values redacted; it was removed precisely
+// because redacted keys merged such URLs, sending request B with request A's
+// credentials. Callers always receive a clone of the cached entry to prevent
+// mutation.
 type urlCache struct {
 	mu      sync.RWMutex
-	raw     map[string]*url.URL // Fast path: raw URL string -> parsed URL
-	entries map[string]*url.URL // Sanitized key -> parsed URL (for sensitive URLs)
+	entries map[string]*url.URL // Raw URL string -> parsed URL (sensitive URLs are never inserted)
 	keys    []string            // Insertion order for FIFO eviction (hits do not refresh position)
 	maxSize int
 }
@@ -645,14 +648,13 @@ type urlCache struct {
 // URLs may evict another's. This is an intentional trade-off: URL parsing
 // is expensive and most workloads benefit from cross-client reuse.
 var globalURLCache = &urlCache{
-	raw:     make(map[string]*url.URL, 256),
 	entries: make(map[string]*url.URL, 256),
 	keys:    make([]string, 0, 256),
 	maxSize: 1024,
 }
 
 // hasSensitiveContent returns true if the raw URL string contains credentials
-// or sensitive query parameters that should not be stored in the raw string cache.
+// or sensitive query parameters that must not be cached.
 func hasSensitiveContent(rawURL string) bool {
 	// '@' in the URL indicates user:pass credentials before the host
 	if strings.IndexByte(rawURL, '@') >= 0 {
@@ -663,32 +665,6 @@ func hasSensitiveContent(rawURL string) bool {
 		return validation.HasSensitiveQueryParams(query)
 	}
 	return false
-}
-
-// evictRawIfNeeded removes stale raw cache entries when the map exceeds
-// rawCacheMaxSize. Must be called with c.mu held for writing.
-//
-// A "live" raw entry is one whose *url.URL pointer also appears in the entries
-// map — keeping it avoids a re-parse on the next access. Stale entries (pointer
-// no longer in entries) are discarded. The previous implementation scanned the
-// entries map for each raw entry — O(N×M), up to ~2M pointer comparisons under
-// a write lock. Building a pointer set once reduces this to O(N+M).
-func (c *urlCache) evictRawIfNeeded() {
-	if len(c.raw) < rawCacheMaxSize {
-		return
-	}
-	live := make(map[*url.URL]bool, len(c.entries))
-	for _, u := range c.entries {
-		live[u] = true
-	}
-	for k, v := range c.raw {
-		if !live[v] {
-			delete(c.raw, k)
-		}
-		if len(c.raw) < rawCacheMaxSize/2 {
-			return
-		}
-	}
 }
 
 // Get retrieves a parsed URL from cache or parses and caches it.
@@ -713,21 +689,23 @@ func (c *urlCache) GetReadOnly(rawURL string) (*url.URL, error) {
 // of cached entries. When false, the cached pointer is returned directly
 // (read-only contract enforced at call site).
 //
-// The raw cache is consulted before the sensitive-content scan: raw entries
-// are only inserted after passing hasSensitiveContent, so a hit implies a
-// non-sensitive URL and the scan (an 8–80ns per-request cost) is skipped
-// entirely on the hot repeated-URL path.
+// The entries map is consulted under RLock BEFORE url.Parse: a hit costs one
+// map lookup and skips both the parse and the sensitive-content scan (only
+// non-sensitive URLs are ever inserted, so a hit implies non-sensitive). A
+// URL evicted between two lookups simply misses and re-parses — equivalent
+// to a cache miss. An earlier version kept a second, parallel "raw" map over
+// the same keys to serve post-eviction lookups; it was removed as a
+// key-for-key mirror of entries whose only effect was an extra write-lock
+// acquisition on every hit.
 func (c *urlCache) getInternal(rawURL string, clone bool) (*url.URL, error) {
-	// Fast path: check raw string cache first (avoids url.Parse for repeated URLs)
+	// Fast path: check the cache before paying for url.Parse.
 	c.mu.RLock()
-	if c.raw != nil {
-		if cached, ok := c.raw[rawURL]; ok {
-			c.mu.RUnlock()
-			if clone {
-				return cloneURL(cached), nil
-			}
-			return cached, nil
+	if cached, ok := c.entries[rawURL]; ok {
+		c.mu.RUnlock()
+		if clone {
+			return cloneURL(cached), nil
 		}
+		return cached, nil
 	}
 	c.mu.RUnlock()
 
@@ -746,27 +724,13 @@ func (c *urlCache) getInternal(rawURL string, clone bool) (*url.URL, error) {
 	if hasSensitiveContent(rawURL) {
 		return parsed, nil
 	}
-	cacheKey := rawURL
-
-	// Second fast path: check the entries cache
-	c.mu.RLock()
-	if cached, ok := c.entries[cacheKey]; ok {
-		c.mu.RUnlock()
-		c.populateRawCache(rawURL, cached)
-		if clone {
-			return cloneURL(cached), nil
-		}
-		return cached, nil
-	}
-	c.mu.RUnlock()
 
 	// Slow path: cache the parsed URL
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	// Double-check after acquiring write lock
-	if cached, ok := c.entries[cacheKey]; ok {
-		c.populateRawCacheLocked(rawURL, cached)
+	if cached, ok := c.entries[rawURL]; ok {
 		if clone {
 			return cloneURL(cached), nil
 		}
@@ -776,9 +740,8 @@ func (c *urlCache) getInternal(rawURL string, clone bool) (*url.URL, error) {
 	// SECURITY: Evict oldest entry if cache is full
 	c.evictOldest()
 
-	c.entries[cacheKey] = parsed
-	c.populateRawCacheLocked(rawURL, parsed)
-	c.keys = append(c.keys, cacheKey)
+	c.entries[rawURL] = parsed
+	c.keys = append(c.keys, rawURL)
 
 	if clone {
 		return cloneURL(parsed), nil
@@ -786,41 +749,8 @@ func (c *urlCache) getInternal(rawURL string, clone bool) (*url.URL, error) {
 	return parsed, nil
 }
 
-// populateRawCache adds a raw→parsed mapping under a separate write lock.
-// Used when the caller only holds a read lock on c.mu.
-func (c *urlCache) populateRawCache(rawURL string, cached *url.URL) {
-	c.mu.Lock()
-	if c.raw == nil {
-		c.raw = make(map[string]*url.URL, 16)
-	}
-	if _, exists := c.raw[rawURL]; !exists {
-		c.evictRawIfNeeded()
-		c.raw[rawURL] = cached
-	}
-	c.mu.Unlock()
-}
-
-// populateRawCacheLocked adds a raw→parsed mapping when the caller already
-// holds c.mu for writing. Must be called with c.mu held.
-func (c *urlCache) populateRawCacheLocked(rawURL string, cached *url.URL) {
-	if c.raw == nil {
-		c.raw = make(map[string]*url.URL, 16)
-	}
-	if _, exists := c.raw[rawURL]; !exists {
-		c.evictRawIfNeeded()
-		c.raw[rawURL] = cached
-	}
-}
-
 // evictOldest removes the oldest entry when the cache is full.
 // Must be called with c.mu held for writing.
-//
-// It deliberately does NOT scan the raw map for entries pointing at the
-// evicted *url.URL: an orphaned raw entry is still a correct parse of its
-// own key, so serving it is harmless, and evictRawIfNeeded reclaims raw
-// entries once the raw map exceeds its own cap. The previous per-eviction
-// O(|raw|) scan under the write lock was a contention hotspot once the
-// entries map reached maxSize.
 func (c *urlCache) evictOldest() {
 	if len(c.entries) < c.maxSize || len(c.keys) == 0 {
 		return
@@ -861,7 +791,6 @@ func cloneURL(u *url.URL) *url.URL {
 func (c *urlCache) clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.raw = make(map[string]*url.URL, 256)
 	c.entries = make(map[string]*url.URL, 256)
 	c.keys = make([]string, 0, 256)
 }
@@ -895,54 +824,16 @@ func putMultipartBuffer(buf *bytes.Buffer) {
 	multipartBufferPool.Put(buf)
 }
 
-// pooledMultipartBuffer wraps a bytes.Buffer and returns it to the pool on Close.
-// This enables buffer reuse for multipart form data without premature recycling.
-// Release happens ONLY in Close and is guarded by an atomic CAS — the same
-// double-Close race and rationale as pooledStringsReader (delayed writeLoop
-// Close racing the request lifecycle's Close would double-Put the wrapper and
-// hand one live buffer to two requests).
-type pooledMultipartBuffer struct {
-	buf      *bytes.Buffer
-	released atomic.Bool
+// putPooledMultipartBuffer returns a multipart bytes.Buffer to its pool via
+// putMultipartBuffer (which resets it and enforces the size cap).
+func putPooledMultipartBuffer(r io.Reader) {
+	putMultipartBuffer(r.(*bytes.Buffer))
 }
 
-// multipartBufferWrapperPool reduces allocations for pooledMultipartBuffer wrapper structs.
-var multipartBufferWrapperPool = sync.Pool{
-	New: func() any { return &pooledMultipartBuffer{} },
-}
-
-// getPooledMultipartBufferWrapper creates a pooledMultipartBuffer from the pool.
-func getPooledMultipartBufferWrapper(buf *bytes.Buffer) *pooledMultipartBuffer {
-	wrapper, _ := multipartBufferWrapperPool.Get().(*pooledMultipartBuffer)
-	if wrapper == nil {
-		wrapper = &pooledMultipartBuffer{}
-	}
-	wrapper.buf = buf
-	wrapper.released.Store(false)
-	return wrapper
-}
-
-func (r *pooledMultipartBuffer) Read(p []byte) (n int, err error) {
-	if r.buf == nil {
-		return 0, io.EOF
-	}
-	return r.buf.Read(p)
-}
-
-func (r *pooledMultipartBuffer) Close() error {
-	r.release()
-	return nil
-}
-
-func (r *pooledMultipartBuffer) release() {
-	if !r.released.CompareAndSwap(false, true) {
-		return
-	}
-	if r.buf != nil {
-		putMultipartBuffer(r.buf)
-		r.buf = nil
-	}
-	multipartBufferWrapperPool.Put(r)
+// getPooledMultipartBufferWrapper wraps a multipart bytes.Buffer in a pooled
+// pooledBody; see pooledBody for the release discipline.
+func getPooledMultipartBufferWrapper(buf *bytes.Buffer) *pooledBody {
+	return acquirePooledBody(buf, putPooledMultipartBuffer)
 }
 
 // getJSONBuffer retrieves a bytes.Buffer from the pool for JSON encoding.
@@ -966,53 +857,16 @@ func putJSONBuffer(buf *bytes.Buffer) {
 	jsonBufferPool.Put(buf)
 }
 
-// pooledJSONBuffer wraps a bytes.Buffer for JSON data and returns it to the pool when fully read.
-// Release happens ONLY in Close and is guarded by an atomic CAS — the same
-// double-Close race and rationale as pooledStringsReader (a plain
-// check-then-act bool would let two racing closers double-Put the wrapper,
-// handing one live buffer to two requests).
-type pooledJSONBuffer struct {
-	buf      *bytes.Buffer
-	released atomic.Bool
+// putPooledJSONBuffer returns a JSON bytes.Buffer to its pool via
+// putJSONBuffer (which resets it and enforces the size cap).
+func putPooledJSONBuffer(r io.Reader) {
+	putJSONBuffer(r.(*bytes.Buffer))
 }
 
-// jsonBufferWrapperPool reduces allocations for pooledJSONBuffer wrapper structs.
-var jsonBufferWrapperPool = sync.Pool{
-	New: func() any { return &pooledJSONBuffer{} },
-}
-
-// getPooledJSONBufferWrapper creates a pooledJSONBuffer from the pool.
-func getPooledJSONBufferWrapper(buf *bytes.Buffer) *pooledJSONBuffer {
-	wrapper, _ := jsonBufferWrapperPool.Get().(*pooledJSONBuffer)
-	if wrapper == nil {
-		wrapper = &pooledJSONBuffer{}
-	}
-	wrapper.buf = buf
-	wrapper.released.Store(false)
-	return wrapper
-}
-
-func (r *pooledJSONBuffer) Read(p []byte) (n int, err error) {
-	if r.buf == nil {
-		return 0, io.EOF
-	}
-	return r.buf.Read(p)
-}
-
-func (r *pooledJSONBuffer) Close() error {
-	r.release()
-	return nil
-}
-
-func (r *pooledJSONBuffer) release() {
-	if !r.released.CompareAndSwap(false, true) {
-		return
-	}
-	if r.buf != nil {
-		putJSONBuffer(r.buf)
-		r.buf = nil
-	}
-	jsonBufferWrapperPool.Put(r)
+// getPooledJSONBufferWrapper wraps a JSON bytes.Buffer in a pooled pooledBody;
+// see pooledBody for the release discipline.
+func getPooledJSONBufferWrapper(buf *bytes.Buffer) *pooledBody {
+	return acquirePooledBody(buf, putPooledJSONBuffer)
 }
 
 // bodyLimitReader enforces Security.MaxRequestBodySize on body types whose
@@ -1413,6 +1267,9 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 	// so entries never alias each other, matching Set's single-value semantics.
 	// The backing array is retained with the header map (transferred to the
 	// Result via captureRequestHeaders), exactly as individual slices would be.
+	// It therefore cannot be pooled: the Result outlives this request and keeps
+	// the array alive, so a recycled array would overwrite the previous
+	// request's headers.
 	headerVals := make([]string, 0, 8)
 	// setHeader stores a single-value header. canonKey must already be in
 	// http.CanonicalHeaderKey form. The fixed keys set on every request
@@ -1588,23 +1445,8 @@ func validCookieValueByte(b byte) bool {
 // setContentLength sets Content-Length on the http.Request for known body types.
 // This avoids the stdlib's reflection-based detection when constructing requests directly.
 func (p *requestProcessor) setContentLength(req *http.Request, body io.Reader) {
-	switch v := body.(type) {
-	case *pooledStringsReader:
-		if v.reader != nil {
-			req.ContentLength = int64(v.reader.Len())
-		}
-	case *pooledBytesReader:
-		if v.reader != nil {
-			req.ContentLength = int64(v.reader.Len())
-		}
-	case *pooledJSONBuffer:
-		if v.buf != nil {
-			req.ContentLength = int64(v.buf.Len())
-		}
-	case *pooledMultipartBuffer:
-		if v.buf != nil {
-			req.ContentLength = int64(v.buf.Len())
-		}
+	if v, ok := body.(*pooledBody); ok {
+		req.ContentLength = int64(v.Len())
 	}
 }
 

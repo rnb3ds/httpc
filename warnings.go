@@ -59,9 +59,10 @@ func isTestEnvironment() bool {
 // New() -> isTestEnvironment() under -race. Testing the pure function removes
 // that race at zero production cost.
 func isTestEnvironmentFrom(executable, goTest, gotest string) bool {
-	// Check for common test executable patterns
+	// Check for common test executable patterns. "foo.test.exe" is covered
+	// by the Contains(".test.") clause; the former separate HasSuffix arm
+	// was fully shadowed by it.
 	if strings.HasSuffix(executable, ".test") ||
-		strings.HasSuffix(executable, ".test.exe") ||
 		strings.Contains(executable, ".test.") {
 		return true
 	}

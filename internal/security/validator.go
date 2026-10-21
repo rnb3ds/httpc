@@ -203,8 +203,15 @@ func (v *Validator) validateHeader(key, value string) error {
 // validateHeaderValueTokens validates that all comma-separated tokens in a header
 // value are within the allowed set. Supports RFC 9110 multi-token header values
 // (e.g., "Connection: keep-alive, Upgrade").
+//
+// SplitSeq (not Split) iterates without materializing the token slice: this
+// runs for every Connection/Transfer-Encoding header on every validated
+// request, and the slice was pure allocation overhead. SplitSeq yields
+// exactly the same tokens as Split, including the empty token for "" and the
+// empty element between two adjacent separators, so the empty-token rejection
+// below is unchanged.
 func validateHeaderValueTokens(value string, allowed []string, headerName string) error {
-	for _, token := range strings.Split(value, ",") {
+	for token := range strings.SplitSeq(value, ",") {
 		token = strings.TrimSpace(token)
 		if token == "" {
 			return fmt.Errorf("invalid %s header value: %q", headerName, value)

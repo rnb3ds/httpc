@@ -264,6 +264,20 @@ func TestSanitizeURL_FailClosed(t *testing.T) {
 			mustNotContain: []string{"a:b", "SK123"},
 			mustContain:    []string{"***@", "api-key=[REDACTED]"},
 		},
+		// SEC-001 M-2 regressions: an '@' after the first '/' used to make the
+		// old LastIndex-based scan return the string verbatim.
+		{
+			name:           "path '@' must not mask real credentials",
+			input:          "http://user:pass@host/p%zz@th?token=SK123",
+			mustNotContain: []string{"user", "pass", "SK123"},
+			mustContain:    []string{"***@", "token=[REDACTED]"},
+		},
+		{
+			name:           "query '@' must not disable query redaction",
+			input:          "http://host/ap%zzi?token=SK123&email=a@b.com",
+			mustNotContain: []string{"SK123"},
+			mustContain:    []string{"token=[REDACTED]", "email=a@b.com"},
+		},
 	}
 
 	for _, tt := range tests {

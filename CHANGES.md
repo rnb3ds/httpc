@@ -4,6 +4,46 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ---
 
+## v1.7.0 - Proxied-Target SSRF Fix, Full Code Audit & Performance (2026-10-22)
+
+### Breaking
+- None — all changes are additive, internal, or fix existing behavior; the public API surface is unchanged.
+
+### Added
+- `examples/23_tls_fingerprint.go` — covers `Security.TLSFingerprint` (standard-stack baseline, chrome-windows, "firefox" alias, session-ticket opt-out)
+
+### Security
+- HTTPS proxy TLS certificates on the fingerprint path are now verified by default (opt out via `Security.InsecureSkipVerify`) — previously always skipped
+- Closed a full SSRF bypass: requests a proxy was about to carry are now validated against private/link-local addresses before the proxy forwards them
+- `SanitizeURL` no longer leaks userinfo credentials or sensitive query values from unparseable URLs (an `@` in the path/query previously disabled redaction)
+- SSRF validation now rejects empty-hostname URLs (`http://:8080/x`) and the RFC 8215 NAT64 prefix `64:ff9b:1::/48`
+- `NewDomain` no longer force-enables `EnableCookies` — SessionManager is the single cookie store, so deletion (RFC 6265) and expiry semantics now hold end-to-end
+- Cross-origin redirect response cookies are no longer captured into the session (session-fixation vector closed)
+
+### Fixed
+- `NO_PROXY` now matches URLs using the scheme default port (`https://example.com` vs `example.com:443`)
+- macOS system proxy detection routes per-scheme and honors the system bypass list
+- DoH singleflight waiters retry after a leader cancellation; DoH provider errors now name the provider
+- Non-ASCII proxy hostnames are punycoded to match net/http's dial form (`CanonicalProxyAddr`)
+- Resumed downloads delivering fewer bytes than the declared `Content-Range` now fail (file truncated back to the resume offset)
+- Expected checksums are trimmed of surrounding whitespace before comparison
+- The final `ProgressCallback` fires before the atomic rename (a panicking callback can no longer flip a verified download into an error)
+- `Result.String()` masks sensitive headers by canonical key; `SaveToFile` writes via an explicit handle + fsync
+- Proxy round-robin counter no longer overflows after 2^31 selections (index-out-of-range panic)
+- Pooled body wrappers are no longer pooled — a close-after-reacquire race could return the next request's buffer to its pool mid-use
+
+### Changed
+- Extracted shared helpers (`wrapCtxIfFarther`, `rejectSymlink`, `downloadTotalSize`) to remove duplicated fast-path judgment and symlink/checksum logic
+- Moved the ~250-line path-security subsystem out of `download.go` into `file_security.go`, now shared by `SaveToFile`
+- Unified the four pooled-body wrapper types into a single `pooledBody` with a single pool
+- Removed the URL cache's redundant "raw" side map — post-eviction lookups re-parse instead
+
+### Performance
+- Pooled map/header/redirect teardown now uses the built-in `clear()` instead of per-key delete loops
+- `HeaderMiddleware` computes its deterministic key order once at construction instead of sorting per request
+
+---
+
 ## v1.6.3 - Security Hardening, Retry & Streaming Semantics, Performance (2026-10-08)
 
 ### Breaking

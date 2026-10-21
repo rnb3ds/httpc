@@ -46,10 +46,15 @@
 //     the engine sees identity bodies with Content-Length already reset. The
 //     transport's own decompression is switched off so decoding happens once.
 //   - SSRF protection uses a pre-flight resolve+validate (the backend dials
-//     on its own, so the connection-layer validator cannot apply). This
-//     leaves a theoretical TOCTOU window between validation and the
-//     backend's own DNS resolution — documented in the public
-//     SecurityConfig.TLSFingerprint docs.
+//     on its own, so the connection-layer validator cannot apply). Two gaps
+//     remain versus the standard path, documented in the public
+//     SecurityConfig.TLSFingerprint docs: (a) a theoretical TOCTOU window
+//     between validation and the backend's own DNS resolution, and (b) a
+//     host that resolves to a MIX of public and private addresses passes
+//     the "at least one allowed IP" pre-flight, and the backend's second
+//     resolution may land on the private record — deterministically, with
+//     no DNS rebinding required (the standard path dials only validated IP
+//     literals and has neither gap).
 package fingerprint
 
 import (
@@ -377,10 +382,8 @@ func isConnectionFailure(err error) bool {
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) {
-		return true
-	}
-	var opErr *net.OpError
-	if errors.As(err, &opErr) {
+		// Covers *net.OpError and *url.Error: both implement net.Error, so
+		// separate errors.As arms for them were unreachable.
 		return true
 	}
 	var certErr *utls.CertificateVerificationError
@@ -403,7 +406,11 @@ func (a *Adapter) CloseIdleConnections() {
 	}
 }
 
-// Close releases backend transports. Safe to call multiple times.
+// Close closes idle connections on every backend (base and per-proxy) and
+// drops the per-proxy backends; the adapter itself remains usable — per-proxy
+// backends are rebuilt lazily on the next proxied request, and the base
+// backend keeps serving direct connections. Safe to call multiple times
+// (subsequent calls are no-ops).
 func (a *Adapter) Close() error {
 	a.closeOnce.Do(func() {
 		a.mu.Lock()

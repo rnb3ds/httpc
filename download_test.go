@@ -1697,3 +1697,60 @@ func TestDownload_ResumeLocalAtLeastRemote(t *testing.T) {
 		})
 	}
 }
+
+// TestDownload_ResumeShortBodyDetected pins the Content-Range total check:
+// a 206 response that declares "bytes 8-19/20" but delivers fewer than the
+// remaining 12 bytes must fail — io.Copy sees a clean EOF on a short body,
+// so without this check a truncated file reported success (absent a
+// checksum), and the pre-existing resume prefix must be preserved.
+func TestDownload_ResumeShortBodyDetected(t *testing.T) {
+	fullContent := []byte("0123456789abcdefghij") // 20 bytes
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") != "" {
+			// Declares the full remaining range but delivers only 5 of the
+			// 12 remaining bytes.
+			w.Header().Set("Content-Range", "bytes 8-19/20")
+			w.Header().Set("Content-Length", "5")
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(fullContent[8:13])
+			return
+		}
+		w.Header().Set("Content-Length", "20")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(fullContent)
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.Security.AllowPrivateIPs = true
+	client, err := New(config)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	filePath := filepath.Join(t.TempDir(), "short.bin")
+	if err := os.WriteFile(filePath, fullContent[:8], 0o644); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	_, err = client.Download(context.Background(), server.URL, &DownloadConfig{
+		FilePath:       filePath,
+		ResumeDownload: true,
+	})
+	if err == nil {
+		t.Fatal("expected short-body error, got nil")
+	}
+	if !strings.Contains(err.Error(), "declared 20 total") {
+		t.Errorf("error should name the declared total, got: %v", err)
+	}
+
+	// The pre-existing prefix must be preserved for the next resume attempt.
+	got, readErr := os.ReadFile(filePath)
+	if readErr != nil {
+		t.Fatalf("ReadFile() error: %v", readErr)
+	}
+	if len(got) != 8 {
+		t.Errorf("file = %d bytes after failed resume, want 8 (prefix preserved)", len(got))
+	}
+}

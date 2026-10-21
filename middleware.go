@@ -97,7 +97,10 @@ type AuditConfig struct {
 	// If nil, the middleware is a no-op.
 	OnAudit func(event AuditEvent)
 
-	// Format specifies the output format: "text" (default) or "json"
+	// Format is a reserved field with no current effect: audit events are
+	// delivered as the structured AuditEvent value via OnAudit, and the
+	// rendering (text, JSON, ...) is entirely the callback's choice. Setting
+	// "text" or "json" here does nothing.
 	Format string
 
 	// IncludeHeaders includes request/response headers in the audit log
@@ -425,12 +428,20 @@ func HeaderMiddleware(config *HeaderConfig) MiddlewareFunc {
 		}
 	}
 
+	// OPTIMIZATION: sort the keys ONCE at construction and capture the ordered
+	// slice — the config map is immutable from this point on (copied is never
+	// mutated), so the deterministic apply loop below must not re-sort (and
+	// re-allocate the key slice) on every request. The old per-request
+	// sortedKeys call was O(n log n) with a heap allocation per request on the
+	// middleware hot path.
+	orderedKeys := sortedKeys(copied)
+
 	return func(next Handler) Handler {
 		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
 			// Sorted order keeps the apply loop deterministic when the config
 			// map holds one header under multiple casings: the later key in
 			// sort order wins, instead of Go's random map iteration order.
-			for _, key := range sortedKeys(copied) {
+			for _, key := range orderedKeys {
 				req.SetHeader(key, copied[key])
 			}
 

@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/url"
 	"strings"
+
+	"golang.org/x/net/idna"
 )
 
 // isPrivateOrReservedIP checks if an IP address is private, reserved, or
@@ -72,6 +74,15 @@ func isPrivateOrReservedIP(ip net.IP) bool {
 			ip[8] == 0 && ip[9] == 0 && ip[10] == 0 && ip[11] == 0 {
 			embeddedIP := net.IPv4(ip[12], ip[13], ip[14], ip[15])
 			return isPrivateOrReservedIP(embeddedIP)
+		}
+		// Local-Use NAT64 prefix 64:ff9b:1::/48 (RFC 8215): unlike the
+		// well-known /96 above, this prefix is explicitly allowed to carry
+		// translations of RFC 1918 and other non-global addresses, and its
+		// embedded IPv4 does not sit at a fixed offset — block the whole
+		// prefix, the same treatment fec0::/10 gets.
+		if ip[0] == 0x00 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b &&
+			ip[4] == 0x00 && ip[5] == 0x01 {
+			return true
 		}
 		// 6to4 2002::/16 (RFC 7526, deprecated): bytes 2-5 embed the public
 		// IPv4 target of the relay, so a private target (e.g. 2002:7f00:1::
@@ -277,7 +288,12 @@ func ValidateAndParseURL(urlStr string) (*url.URL, error) {
 	if parsedURL.Scheme == "" {
 		return nil, fmt.Errorf("URL scheme is required")
 	}
-	if parsedURL.Host == "" {
+	// Hostname(), not Host: "http://:8080/x" parses with Host=":8080" but an
+	// empty hostname, and an empty host sails through every check in
+	// ValidateSSRFHost — the request then surfaces as a confusing dial error,
+	// or (with AllowPrivateIPs) dials localhost, because net.Dial("tcp",
+	// ":8080") connects to 127.0.0.1:8080.
+	if parsedURL.Hostname() == "" {
 		return nil, fmt.Errorf("URL host is required")
 	}
 	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
@@ -361,23 +377,41 @@ var schemeDefaultPorts = map[string]string{
 // proxy SSRF exemption silently never applied and circuit-breaking failure
 // counts never incremented.
 //
-// LIMITATION: internationalized (non-ASCII) hostnames are not punycoded here
-// (net/http applies IDNA at dial time); an IDN proxy URL without an explicit
-// port still will not match. Explicit-port IDN proxies match — the port is
-// never rewritten.
+// Non-ASCII (IDN) hostnames are punycoded exactly as net/http does at dial
+// time (idna.Lookup.ToASCII, left unchanged on conversion failure), so an
+// IDN proxy URL matches the dialed form with or without an explicit port.
 func CanonicalProxyAddr(u *url.URL) string {
 	if u == nil {
 		return ""
 	}
-	// Mirror stdlib exactly: canonicalAddr uses url.Port() — which returns ""
-	// both for a missing port AND for a syntactically present but EMPTY port
-	// ("http://proxy:" → Host "proxy:", Port() "") — and then appends the
-	// scheme default. Testing SplitHostPort instead would keep the literal
-	// "proxy:" and never match the dialed "proxy:80".
-	if u.Port() != "" {
-		return u.Host // already carries a real port
+	// Mirror stdlib exactly: canonicalAddr applies idnaASCIIFromURL to the
+	// hostname (ASCII passes through; non-ASCII is punycoded, kept verbatim
+	// when conversion fails) and url.Port() — which returns "" both for a
+	// missing port AND for a syntactically present but EMPTY port
+	// ("http://proxy:" → Host "proxy:", Port() "") — then appends the scheme
+	// default. Testing SplitHostPort instead would keep the literal "proxy:"
+	// and never match the dialed "proxy:80".
+	host := u.Hostname()
+	if !isASCIIString(host) {
+		if ascii, err := idna.Lookup.ToASCII(host); err == nil {
+			host = ascii
+		}
 	}
-	return net.JoinHostPort(u.Hostname(), schemeDefaultPorts[u.Scheme])
+	port := u.Port()
+	if port == "" {
+		port = schemeDefaultPorts[u.Scheme]
+	}
+	return net.JoinHostPort(host, port)
+}
+
+// isASCIIString reports whether s consists solely of ASCII bytes.
+func isASCIIString(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 // ValidateSSRFHost checks whether a hostname (which may include a port) should be
@@ -410,6 +444,14 @@ func ValidateSSRFHost(host string, exemptNets []*net.IPNet) error {
 	// Normalize the fully-qualified trailing dot ("localhost." is a legal FQDN
 	// spelling of "localhost") so hostname checks cannot be bypassed by it.
 	hostname = strings.TrimSuffix(hostname, ".")
+
+	// Fail closed on an empty hostname ("http://:8080/x"): every check below
+	// treats "" as nothing-to-block, letting the request slip past host
+	// validation entirely. Defense-in-depth — ValidateAndParseURL already
+	// rejects empty hostnames earlier in the request path.
+	if hostname == "" {
+		return fmt.Errorf("empty host")
+	}
 
 	if isLocalhost(hostname) {
 		return fmt.Errorf("localhost access blocked for security")

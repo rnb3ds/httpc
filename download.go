@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -292,11 +293,14 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	// A 206 response must start exactly at the local file length. Without
 	// this check a server (or tampered response) starting at byte 0 would be
 	// appended after the existing prefix, silently corrupting the file.
+	var contentRangeTotal int64 = -1
 	if resumed {
-		if err := validateResumeContentRange(df.responseHeaders, resumeOffset); err != nil {
+		total, err := validateResumeContentRange(df.responseHeaders, resumeOffset)
+		if err != nil {
 			drainBody(df.bodyReader)
 			return nil, err
 		}
+		contentRangeTotal = total
 	}
 
 	// Validate response status
@@ -310,15 +314,16 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 
 	downloadStart := time.Now()
 	result, writeErr := writeDownloadBody(downloadWriteParams{
-		bodyReader:      df.bodyReader,
-		filePath:        filePath,
-		opts:            opts,
-		resumed:         resumed,
-		resumeOffset:    resumeOffset,
-		statusCode:      df.statusCode,
-		contentLength:   df.contentLength,
-		downloadStart:   downloadStart,
-		responseCookies: df.responseCookies,
+		bodyReader:        df.bodyReader,
+		filePath:          filePath,
+		opts:              opts,
+		resumed:           resumed,
+		resumeOffset:      resumeOffset,
+		statusCode:        df.statusCode,
+		contentLength:     df.contentLength,
+		downloadStart:     downloadStart,
+		responseCookies:   df.responseCookies,
+		contentRangeTotal: contentRangeTotal,
 	})
 	if writeErr != nil {
 		return nil, writeErr
@@ -446,20 +451,29 @@ func handleDownloadStatus(statusCode int, bodyReader io.Reader, resumeOffset int
 // RFC 9110 requires Content-Range on 206 responses; a start different from the
 // local file length means the body begins at another byte, and appending it
 // would silently corrupt the file.
-func validateResumeContentRange(headers http.Header, resumeOffset int64) error {
+//
+// It also returns the declared total size when the server provides one
+// ("bytes <start>-<end>/<total>"; total may be "*" or absent, in which case
+// -1 is returned) so the copy loop can detect a short body.
+func validateResumeContentRange(headers http.Header, resumeOffset int64) (int64, error) {
 	cr := headers.Get("Content-Range")
 	if cr == "" {
-		return fmt.Errorf("resume failed: 206 response is missing Content-Range header")
+		return 0, fmt.Errorf("resume failed: 206 response is missing Content-Range header")
 	}
 	// Format: "bytes <start>-<end>/<total>" (total may be "*").
 	var start int64
 	if n, err := fmt.Sscanf(cr, "bytes %d-", &start); err != nil || n != 1 {
-		return fmt.Errorf("resume failed: malformed Content-Range %q", cr)
+		return 0, fmt.Errorf("resume failed: malformed Content-Range %q", cr)
 	}
 	if start != resumeOffset {
-		return fmt.Errorf("resume failed: server returned range starting at byte %d, local file has %d bytes", start, resumeOffset)
+		return 0, fmt.Errorf("resume failed: server returned range starting at byte %d, local file has %d bytes", start, resumeOffset)
 	}
-	return nil
+	if _, totalStr, ok := strings.Cut(cr, "/"); ok {
+		if total, err := strconv.ParseInt(strings.TrimSpace(totalStr), 10, 64); err == nil {
+			return total, nil
+		}
+	}
+	return -1, nil
 }
 
 // downloadWriteParams groups writeDownloadBody's inputs; nine positional
@@ -474,6 +488,9 @@ type downloadWriteParams struct {
 	contentLength   int64
 	downloadStart   time.Time
 	responseCookies []*http.Cookie
+	// contentRangeTotal is the total size declared by a 206 response's
+	// Content-Range (-1 when unknown); a short body is detected against it.
+	contentRangeTotal int64
 }
 
 // writeDownloadBody streams the response body to a file and returns download statistics.
@@ -489,6 +506,7 @@ func writeDownloadBody(p downloadWriteParams) (*DownloadResult, error) {
 	bodyReader, filePath, opts := p.bodyReader, p.filePath, p.opts
 	resumed, resumeOffset, statusCode := p.resumed, p.resumeOffset, p.statusCode
 	contentLength, downloadStart, responseCookies := p.contentLength, p.downloadStart, p.responseCookies
+	contentRangeTotal := p.contentRangeTotal
 	// Validate checksum algorithm BEFORE touching the destination file.
 	// A configuration error must not truncate (O_TRUNC) an existing file.
 	// Unconditional in Checksum: a typo'd algorithm with no Checksum set
@@ -533,8 +551,8 @@ func writeDownloadBody(p downloadWriteParams) (*DownloadResult, error) {
 		// sibling. The name is fully predictable and O_CREATE|O_TRUNC follows
 		// a symlink: a planted "<dest>.httpc-tmp -> elsewhere" would truncate
 		// whatever it points at, then rename the link onto the destination.
-		if fi, statErr := os.Lstat(writePath); statErr == nil && fi.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("symlink paths not allowed for security")
+		if err := rejectSymlink(writePath); err != nil {
+			return nil, err
 		}
 	}
 
@@ -565,10 +583,7 @@ func writeDownloadBody(p downloadWriteParams) (*DownloadResult, error) {
 		writer = io.MultiWriter(file, hasher)
 	}
 	if opts.ProgressCallback != nil {
-		totalSize := contentLength
-		if resumed && totalSize > 0 {
-			totalSize += resumeOffset
-		}
+		totalSize := downloadTotalSize(contentLength, resumeOffset, resumed)
 		writer = &progressWriter{
 			w:            writer,
 			callback:     opts.ProgressCallback,
@@ -606,14 +621,37 @@ func writeDownloadBody(p downloadWriteParams) (*DownloadResult, error) {
 	}
 	file = nil // closed above; keeps the panic-safety defer a no-op
 
+	// A 206 response that declared a total must deliver the full remaining
+	// range: io.Copy treats a short body as a normal EOF, and without this
+	// check a truncated file would report success (unless a checksum
+	// happens to catch it).
+	if contentRangeTotal > 0 && resumeOffset+bytesWritten != contentRangeTotal {
+		if resumed {
+			// Mirror the checksum-mismatch posture: restore the file to its
+			// pre-attempt state so a later resume can retry.
+			if truncErr := os.Truncate(filePath, resumeOffset); truncErr != nil {
+				return nil, fmt.Errorf("server sent %d bytes, Content-Range declared %d total; failed to restore file to offset %d: %w",
+					resumeOffset+bytesWritten, contentRangeTotal, resumeOffset, truncErr)
+			}
+		} else {
+			_ = os.Remove(writePath)
+		}
+		return nil, fmt.Errorf("server sent %d bytes; Content-Range declared %d total — download truncated",
+			resumeOffset+bytesWritten, contentRangeTotal)
+	}
+
 	// Compute actual checksum if hashing was enabled
 	var actualChecksum string
 	if hasher != nil {
 		actualChecksum = hex.EncodeToString(hasher.Sum(nil))
 	}
 
-	// Verify checksum if expected value is provided
-	if opts.Checksum != "" && actualChecksum != strings.ToLower(opts.Checksum) {
+	// Verify checksum if expected value is provided. TrimSpace on the
+	// expected value: checksums pasted from config files/CLIs routinely
+	// carry a trailing newline, and failing on whitespace — with an error
+	// that shows the "wrong" hash — misleads more than it helps.
+	expectedChecksum := strings.ToLower(strings.TrimSpace(opts.Checksum))
+	if expectedChecksum != "" && actualChecksum != expectedChecksum {
 		if resumed {
 			// Preserve the pre-existing prefix: truncate back to the offset
 			// this session started at, restoring the file to exactly its
@@ -625,13 +663,26 @@ func writeDownloadBody(p downloadWriteParams) (*DownloadResult, error) {
 			// caused solely by the bytes appended in this attempt.
 			if truncErr := os.Truncate(filePath, resumeOffset); truncErr != nil {
 				return nil, fmt.Errorf("checksum mismatch (expected %s, got %s) and failed to restore file to offset %d: %w",
-					strings.ToLower(opts.Checksum), actualChecksum, resumeOffset, truncErr)
+					expectedChecksum, actualChecksum, resumeOffset, truncErr)
 			}
 			return nil, fmt.Errorf("checksum mismatch: expected %s, got %s; file truncated to previous offset %d for a fresh resume",
-				strings.ToLower(opts.Checksum), actualChecksum, resumeOffset)
+				expectedChecksum, actualChecksum, resumeOffset)
 		}
 		_ = os.Remove(writePath) // remove corrupted download (fresh downloads write to the temp sibling)
-		return nil, fmt.Errorf("checksum mismatch: expected %s, got %s", strings.ToLower(opts.Checksum), actualChecksum)
+		return nil, fmt.Errorf("checksum mismatch: expected %s, got %s", expectedChecksum, actualChecksum)
+	}
+
+	duration := time.Since(downloadStart)
+	avgSpeed := calculateSpeed(bytesWritten, duration)
+
+	// Final callback with complete stats, BEFORE the rename: every stat
+	// (bytes, total, speed) is already final here, and a panic in user
+	// callback code must not flip an already-verified download into an error
+	// after the file has landed at its final path — "callback panicked"
+	// implies "file not finalized", same as during the copy.
+	if opts.ProgressCallback != nil {
+		totalSize := downloadTotalSize(contentLength, resumeOffset, resumed)
+		opts.ProgressCallback(resumeOffset+bytesWritten, totalSize, avgSpeed)
 	}
 
 	// Atomically move the verified temp file into its final location.
@@ -640,18 +691,6 @@ func writeDownloadBody(p downloadWriteParams) (*DownloadResult, error) {
 			_ = os.Remove(writePath) // best-effort cleanup
 			return nil, fmt.Errorf("failed to finalize download %s: %w", filePath, renameErr)
 		}
-	}
-
-	duration := time.Since(downloadStart)
-	avgSpeed := calculateSpeed(bytesWritten, duration)
-
-	// Final callback with complete stats
-	if opts.ProgressCallback != nil {
-		totalSize := contentLength
-		if resumed && totalSize > 0 {
-			totalSize += resumeOffset
-		}
-		opts.ProgressCallback(resumeOffset+bytesWritten, totalSize, avgSpeed)
 	}
 
 	return &DownloadResult{
@@ -667,256 +706,11 @@ func writeDownloadBody(p downloadWriteParams) (*DownloadResult, error) {
 	}, nil
 }
 
-const (
-	maxFilePathLen  = 4096
-	dirPermissions  = 0755
-	filePermissions = 0644
-)
-
-// getSystemPaths returns platform-specific system paths that should be protected.
-func getSystemPaths() []string {
-	switch runtime.GOOS {
-	case "windows":
-		return []string{
-			"c:\\windows\\", "c:\\system32\\",
-			"c:\\program files\\", "c:\\programdata\\",
-			"c:\\program files (x86)\\",
-			// Env-var patterns, expanded at check time by isSystemPath via
-			// os.ExpandEnv. Go only expands ${VAR}/$VAR syntax, NOT Windows
-			// %VAR%, so the brace form is required here — a previous %VAR%
-			// form expanded to itself and the branch was dead code. These
-			// catch installs on a non-C drive where the literals above miss.
-			"${SystemRoot}", "${windir}", "${ProgramFiles}", "${ProgramFiles(x86)}",
-		}
-	case "darwin":
-		return []string{
-			"/system/", "/library/", "/applications/",
-			"/usr/", "/bin/", "/sbin/", "/etc/", "/var/",
-		}
-	case "linux":
-		fallthrough
-	default:
-		return []string{
-			"/etc/", "/sys/", "/proc/", "/dev/", "/boot/",
-			"/root/",
-			"/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/",
-			"/lib/", "/lib32/", "/lib64/", "/usr/lib/", "/usr/lib32/", "/usr/lib64/",
-			"/run/", "/var/run/", "/sys/fs/",
-		}
-	}
-}
-
-// normalizedSystemEntry holds a pre-normalized system path for fast comparison.
-// envPattern is non-empty only on Windows for env-var patterns (e.g., "${SystemRoot}").
-type normalizedSystemEntry struct {
-	normalized string
-	envPattern string // original "${VAR}" pattern, empty for literal paths
-}
-
-var (
-	systemPathsOnce   sync.Once
-	cachedSystemPaths []normalizedSystemEntry
-)
-
-// initNormalizedSystemPaths pre-computes normalized system paths once.
-// Paths are cleaned, lowercased (Windows), and separator-normalized at init
-// time so isSystemPath only needs a single HasPrefix check per entry.
-func initNormalizedSystemPaths() {
-	raw := getSystemPaths()
-	cachedSystemPaths = make([]normalizedSystemEntry, len(raw))
-	for i, p := range raw {
-		// Windows env-var patterns (e.g., "${SystemRoot}") are expanded at
-		// check time, so store the original pattern and skip static normalization.
-		if strings.HasPrefix(p, "${") && runtime.GOOS == "windows" {
-			cachedSystemPaths[i] = normalizedSystemEntry{envPattern: p}
-			continue
-		}
-		p = filepath.Clean(p)
-		if runtime.GOOS == "windows" {
-			p = strings.ToLower(p)
-			p = strings.ReplaceAll(p, "/", "\\")
-		} else {
-			p = strings.ReplaceAll(p, "\\", "/")
-		}
-		// Ensure trailing separator to prevent prefix collision
-		// (e.g., "C:\Windows" must not match "C:\WindowsEvil").
-		if !strings.HasSuffix(p, string(filepath.Separator)) {
-			p += string(filepath.Separator)
-		}
-		cachedSystemPaths[i] = normalizedSystemEntry{normalized: p}
-	}
-}
-
 func calculateSpeed(bytes int64, duration time.Duration) float64 {
 	if duration.Seconds() > 0 {
 		return float64(bytes) / duration.Seconds()
 	}
 	return 0
-}
-
-// prepareFilePath validates and prepares file paths with security checks.
-// Returns the validated absolute path that should be used for all file operations.
-// SECURITY: This function implements multiple layers of protection:
-// 1. UNC path blocking (prevents network resource access)
-// 2. Control character filtering
-// 3. System path protection
-// 4. Path traversal detection
-// 5. Symlink attack prevention
-func prepareFilePath(filePath string) (string, error) {
-	filePathLen := len(filePath)
-	if filePathLen == 0 {
-		return "", ErrEmptyFilePath
-	}
-	if filePathLen > maxFilePathLen {
-		return "", fmt.Errorf("file path too long (max %d)", maxFilePathLen)
-	}
-
-	// Check for UNC paths
-	if filePathLen >= 2 {
-		if (filePath[0] == '\\' && filePath[1] == '\\') || (filePath[0] == '/' && filePath[1] == '/') {
-			return "", fmt.Errorf("UNC paths not allowed for security")
-		}
-	}
-
-	// Validate characters
-	for i := range filePathLen {
-		c := filePath[i]
-		if c < 0x20 || c == 0x7F || c == 0 {
-			return "", fmt.Errorf("file path contains invalid characters at position %d", i)
-		}
-	}
-
-	cleanPath := filepath.Clean(filePath)
-	absPath, err := filepath.Abs(cleanPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve path: %w", err)
-	}
-
-	// SECURITY: Check for symlinks to prevent symlink attacks
-	// An attacker could create a symlink pointing to a sensitive file
-	// and trick the application into writing to that file
-	if fi, err := os.Lstat(absPath); err == nil {
-		if fi.Mode()&os.ModeSymlink != 0 {
-			return "", fmt.Errorf("symlink paths not allowed for security")
-		}
-	}
-
-	// Check for system path access (direct path check; symlink targets
-	// are checked separately by checkParentDirSymlinks below).
-	if isSystemPath(absPath) {
-		return "", fmt.Errorf("system path access denied for security")
-	}
-
-	// Check for path traversal: after filepath.Clean, only paths starting with ".."
-	// indicate traversal above CWD. Filenames like "backup..zip" are safe.
-	if !filepath.IsAbs(filePath) && strings.HasPrefix(cleanPath, "..") {
-		wd, err := os.Getwd()
-		if err != nil {
-			return "", fmt.Errorf("failed to get working directory: %w", err)
-		}
-		wdAbs, err := filepath.Abs(wd)
-		if err != nil {
-			return "", fmt.Errorf("failed to resolve working directory: %w", err)
-		}
-
-		if !strings.HasPrefix(absPath+string(filepath.Separator), wdAbs+string(filepath.Separator)) {
-			return "", fmt.Errorf("path traversal detected: path outside working directory")
-		}
-	}
-
-	// SECURITY: Check parent directory for symlinks as well, complementing the
-	// write-to-temp-then-rename strategy in writeDownloadBody: the destination
-	// file is only created via rename of a pre-validated temp sibling, so a
-	// symlink swapped in after this check is never opened for writing (the
-	// residual TOCTOU window affects resumed downloads, which must append to
-	// the destination itself).
-	dir := filepath.Dir(absPath)
-	if dir != absPath { // Avoid infinite recursion at root
-		if err := checkParentDirSymlinks(dir, 0); err != nil {
-			return "", err
-		}
-	}
-
-	// Create directories
-	if err := os.MkdirAll(dir, dirPermissions); err != nil {
-		return "", fmt.Errorf("failed to create directories: %w", err)
-	}
-
-	return absPath, nil
-}
-
-// checkParentDirSymlinks recursively checks if any parent directory is a symlink
-// to prevent symlink-based path traversal attacks.
-func checkParentDirSymlinks(dir string, depth int) error {
-	const maxDepth = 32
-	if depth > maxDepth {
-		return fmt.Errorf("directory depth limit exceeded")
-	}
-
-	// Resolve the directory to its real path
-	resolvedDir, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		// If the directory doesn't exist yet, that's okay - it will be created
-		if os.IsNotExist(err) {
-			// Check parent recursively
-			parent := filepath.Dir(dir)
-			if parent != dir {
-				return checkParentDirSymlinks(parent, depth+1)
-			}
-			return nil
-		}
-		return fmt.Errorf("failed to evaluate symlinks: %w", err)
-	}
-
-	// If the resolved path differs from the original, a symlink was involved
-	// Check if the resolved path is in a system directory
-	if resolvedDir != dir {
-		if isSystemPath(resolvedDir) {
-			return fmt.Errorf("symlink resolves to system path")
-		}
-	}
-
-	return nil
-}
-
-// isSystemPath checks whether the given absolute path falls within a protected
-// system directory. The caller must supply an already-resolved absolute path
-// (e.g., from prepareFilePath) — no redundant filepath.Abs is performed.
-func isSystemPath(absPath string) bool {
-	systemPathsOnce.Do(initNormalizedSystemPaths)
-
-	// Normalize the input path once for comparison
-	pathNorm := absPath
-	if runtime.GOOS == "windows" {
-		pathNorm = strings.ToLower(pathNorm)
-		pathNorm = strings.ReplaceAll(pathNorm, "/", "\\")
-	} else {
-		pathNorm = strings.ReplaceAll(pathNorm, "\\", "/")
-	}
-	// Ensure trailing separator for consistent prefix matching
-	if !strings.HasSuffix(pathNorm, string(filepath.Separator)) {
-		pathNorm += string(filepath.Separator)
-	}
-
-	for _, entry := range cachedSystemPaths {
-		if entry.envPattern != "" {
-			// Windows env-var pattern: expand at check time
-			expanded := os.ExpandEnv(entry.envPattern)
-			if expanded == entry.envPattern {
-				continue // env var not set
-			}
-			normalized := strings.TrimRight(strings.ToLower(expanded), "\\") + "\\"
-			if strings.HasPrefix(pathNorm, normalized) {
-				return true
-			}
-			continue
-		}
-		if strings.HasPrefix(pathNorm, entry.normalized) {
-			return true
-		}
-	}
-
-	return false
 }
 
 // progressWriter wraps an io.Writer to invoke progress callbacks during download.
@@ -929,6 +723,19 @@ type progressWriter struct {
 	written      int64
 	startTime    time.Time
 	lastCallback time.Time
+}
+
+// downloadTotalSize computes the total size reported to progress callbacks:
+// the response Content-Length (negative for chunked responses) plus the
+// pre-existing resumed prefix, when the server reports a total at all.
+// Shared by the streaming progressWriter setup and the final callback —
+// previously two identical copies that could drift.
+func downloadTotalSize(contentLength, resumeOffset int64, resumed bool) int64 {
+	total := contentLength
+	if resumed && total > 0 {
+		total += resumeOffset
+	}
+	return total
 }
 
 const progressInterval = 200 * time.Millisecond

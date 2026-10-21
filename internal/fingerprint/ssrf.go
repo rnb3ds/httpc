@@ -22,9 +22,14 @@ const ssrfResolveTimeout = 10 * time.Second
 // override on the context (WithAllowPrivateIPs) takes precedence, matching the
 // standard dialer's behavior.
 //
-// KNOWN LIMITATION: the backend performs its own DNS resolution after this
-// check, so an attacker controlling DNS retains a narrow TOCTOU window —
-// weaker than the standard path's resolve-once-dial-IP guarantee.
+// KNOWN LIMITATIONS versus the standard path (which dials only validated IP
+// literals and therefore has neither gap):
+//   - TOCTOU: the backend performs its own DNS resolution after this check,
+//     so an attacker controlling DNS retains a narrow race window.
+//   - MIXED RECORDS: the pass condition below is "at least one allowed IP".
+//     A host resolving to both a public and a private address passes the
+//     pre-flight, and the backend's second resolution may land on the
+//     private record — deterministically, with no DNS rebinding required.
 func (a *Adapter) preflightSSRF(req *http.Request) error {
 	allowPrivateIPs := a.cfg.AllowPrivateIPs
 	if override, ok := connection.AllowPrivateIPsOverrideFromContext(req.Context()); ok {

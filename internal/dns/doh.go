@@ -273,6 +273,22 @@ func (r *DoHResolver) lookupDedup(ctx context.Context, host string) ([]net.IPAdd
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// At most one re-entry: a waiter that inherited the LEADER's cancellation
+	// while its own context is healthy gets a single fresh attempt (see the
+	// waiter branch in lookupDedupOnce). The flag bounds the retry, so even a
+	// pathological sequence of cancelled leaders terminates.
+	for retried := false; ; retried = true {
+		ips, err, again := r.lookupDedupOnce(ctx, host, retried)
+		if !again {
+			return ips, err
+		}
+	}
+}
+
+// lookupDedupOnce performs one round of the deduplicated lookup. retrying is
+// true when the caller already re-entered once after a leader cancellation;
+// a second inherited cancellation is then returned as-is.
+func (r *DoHResolver) lookupDedupOnce(ctx context.Context, host string, retrying bool) (ips []net.IPAddr, err error, retryAgain bool) {
 	r.inflight.mu.Lock()
 	if r.inflight.m == nil {
 		r.inflight.m = make(map[string]*call)
@@ -284,9 +300,23 @@ func (r *DoHResolver) lookupDedup(ctx context.Context, host string) ([]net.IPAdd
 		r.inflight.mu.Unlock()
 		select {
 		case <-c.done:
-			return c.ips, c.err
+			// A leader cancelled mid-flight publishes context.Canceled to
+			// every waiter — including callers whose own contexts are
+			// perfectly healthy. That failure belongs to the leader, not to
+			// this caller, and the connection pool does not retry DoH
+			// failures, so without this guard one cancelled request cascades
+			// into unrelated concurrent lookups of the same host. Re-enter
+			// once as a fresh leader/waiter (the just-finished call is
+			// removed from the map, or already closed — in which case the
+			// retrying flag stops the loop). Only context.Canceled
+			// retriggers: provider and timeout errors are real lookup
+			// outcomes shared by every waiter.
+			if !retrying && c.err != nil && errors.Is(c.err, context.Canceled) && ctx.Err() == nil {
+				return nil, nil, true
+			}
+			return c.ips, c.err, false
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, ctx.Err(), false
 		}
 	}
 	c := &call{done: make(chan struct{})}
@@ -300,7 +330,7 @@ func (r *DoHResolver) lookupDedup(ctx context.Context, host string) ([]net.IPAdd
 	// this host would attach to it and block until its own context deadline.
 	// Converting the panic into an error keeps waiters (and the fallback path)
 	// moving.
-	ips, err := func() (ips []net.IPAddr, err error) {
+	ips, err = func() (ips []net.IPAddr, err error) {
 		defer func() {
 			if rec := recover(); rec != nil {
 				ips, err = nil, fmt.Errorf("doh lookup panic recovered: %v", rec)
@@ -309,15 +339,20 @@ func (r *DoHResolver) lookupDedup(ctx context.Context, host string) ([]net.IPAdd
 		return r.lookupViaProviders(ctx, host)
 	}()
 
-	// Publish the result before closing done so waiters observe it.
+	// Publish the result fields, remove the call from the map, and only then
+	// close done. Delete-before-close (rather than the reverse) closes the
+	// retry race: a waiter re-entering after inheriting a cancellation either
+	// finds no entry (becomes the fresh leader) or a DIFFERENT call — it can
+	// never re-attach to this already-finished one and inherit its error a
+	// second time. Existing waiters still observe the fields: the writes
+	// happen-before close(done).
 	c.ips, c.err = ips, err
-	close(c.done)
-
 	r.inflight.mu.Lock()
 	delete(r.inflight.m, host)
 	r.inflight.mu.Unlock()
+	close(c.done)
 
-	return ips, err
+	return ips, err, false
 }
 
 // lookupViaProviders queries each configured DoH provider in priority order
@@ -434,14 +469,14 @@ func (r *DoHResolver) lookupRecordType(ctx context.Context, provider *dohProvide
 
 	req, err := http.NewRequestWithContext(ctx, "GET", requestURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("create request failed: %w", err)
+		return nil, fmt.Errorf("provider %s: create request failed: %w", provider.Name, err)
 	}
 
 	req.Header.Set("Accept", "application/dns-json")
 
 	resp, err := r.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("DoH request failed: %w", err)
+		return nil, fmt.Errorf("provider %s: DoH request failed: %w", provider.Name, err)
 	}
 	defer func() {
 		// Best-effort: bounded drain for keep-alive reuse; Close errors are
@@ -451,7 +486,7 @@ func (r *DoHResolver) lookupRecordType(ctx context.Context, provider *dohProvide
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("DoH request returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("provider %s: DoH request returned status %d", provider.Name, resp.StatusCode)
 	}
 
 	return r.parseResponse(resp, escapedHost)

@@ -5,7 +5,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/cybergodev/httpc/internal/engine"
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
@@ -697,5 +699,112 @@ func TestCaptureFromOptionsSkipsInvalidCookies(t *testing.T) {
 	}
 	if got := sm.GetCookie("bad;name"); got != nil {
 		t.Errorf("invalid cookie should be rejected, got %v", got)
+	}
+}
+
+// TestSessionManager_SetCookie_DeletionSemantics pins the alignment of the
+// public write path with storeCookies: a cookie carrying RFC 6265 deletion
+// semantics (MaxAge < 0, or an Expires in the past) removes the stored entry
+// instead of being stored. SetCookie previously stored it verbatim, so a
+// logout cookie mirrored through the public API was replayed forever — the
+// exact failure storeCookies's deletion branch exists to prevent.
+func TestSessionManager_SetCookie_DeletionSemantics(t *testing.T) {
+	sm, err := NewSessionManager(DefaultSessionConfig())
+	if err != nil {
+		t.Fatalf("NewSessionManager() error: %v", err)
+	}
+
+	store := func() {
+		if err := sm.SetCookie(&http.Cookie{Name: "sid", Value: "old"}); err != nil {
+			t.Fatalf("SetCookie(store) error: %v", err)
+		}
+	}
+
+	// MaxAge < 0 deletes (net/http maps a Set-Cookie Max-Age=0 to this form).
+	store()
+	if err := sm.SetCookie(&http.Cookie{Name: "sid", Value: "", MaxAge: -1}); err != nil {
+		t.Fatalf("SetCookie(MaxAge<0) error: %v", err)
+	}
+	if got := sm.GetCookie("sid"); got != nil {
+		t.Errorf("SetCookie(MaxAge<0) stored %v, want deletion", got)
+	}
+
+	// An Expires in the past deletes as well.
+	store()
+	if err := sm.SetCookie(&http.Cookie{Name: "sid", Value: "", Expires: time.Now().Add(-time.Hour)}); err != nil {
+		t.Fatalf("SetCookie(past Expires) error: %v", err)
+	}
+	if got := sm.GetCookie("sid"); got != nil {
+		t.Errorf("SetCookie(past Expires) stored %v, want deletion", got)
+	}
+
+	// The batch path follows the same rule.
+	store()
+	if err := sm.SetCookies([]*http.Cookie{{Name: "sid", MaxAge: -1}}); err != nil {
+		t.Fatalf("SetCookies(MaxAge<0) error: %v", err)
+	}
+	if got := sm.GetCookie("sid"); got != nil {
+		t.Errorf("SetCookies(MaxAge<0) stored %v, want deletion", got)
+	}
+}
+
+// TestSessionManager_ExpiredCookiesNotReplayed pins the read-side expiry
+// filter. Sessions have no background sweeper, so a cookie whose Expires
+// passed while stored used to be replayed forever; prepareOptions,
+// GetCookies, and GetCookie now skip expired entries at read time, keeping
+// the session view and the wire behavior identical.
+func TestSessionManager_ExpiredCookiesNotReplayed(t *testing.T) {
+	sm, err := NewSessionManager(DefaultSessionConfig())
+	if err != nil {
+		t.Fatalf("NewSessionManager() error: %v", err)
+	}
+	if err := sm.SetCookie(&http.Cookie{Name: "live", Value: "1"}); err != nil {
+		t.Fatalf("SetCookie(live) error: %v", err)
+	}
+	if err := sm.SetCookie(&http.Cookie{Name: "future", Value: "2", Expires: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatalf("SetCookie(future) error: %v", err)
+	}
+	// Every public write path treats a past-Expires cookie as a deletion, so
+	// an expired entry can only be present via direct injection — mirroring
+	// a cookie that was valid when stored and expired afterwards.
+	sm.mu.Lock()
+	sm.cookies["dead"] = &http.Cookie{Name: "dead", Value: "3", Expires: time.Now().Add(-time.Minute)}
+	sm.mu.Unlock()
+
+	if got := sm.GetCookie("dead"); got != nil {
+		t.Errorf("GetCookie(dead) = %v, want nil (expired)", got)
+	}
+	if got := sm.GetCookie("live"); got == nil || got.Value != "1" {
+		t.Errorf("GetCookie(live) = %v, want live entry", got)
+	}
+
+	names := make(map[string]bool)
+	for _, c := range sm.GetCookies() {
+		names[c.Name] = true
+		if c.Name == "dead" {
+			t.Errorf("GetCookies() included expired entry: %+v", c)
+		}
+	}
+	if !names["live"] || !names["future"] {
+		t.Errorf("GetCookies() missing non-expired entries: %v", names)
+	}
+
+	// Wire level: prepareOptions must send everything except the expired entry.
+	req := engine.AcquireRequest()
+	defer engine.ReleaseRequest(req)
+	for _, opt := range sm.prepareOptions() {
+		if err := opt.apply(req); err != nil {
+			t.Fatalf("option error: %v", err)
+		}
+	}
+	sent := make(map[string]bool)
+	for _, c := range req.Cookies() {
+		sent[c.Name] = true
+		if c.Name == "dead" {
+			t.Errorf("prepareOptions() replayed expired cookie: %+v", c)
+		}
+	}
+	if !sent["live"] || !sent["future"] {
+		t.Errorf("prepareOptions() missing non-expired cookies: %v", sent)
 	}
 }

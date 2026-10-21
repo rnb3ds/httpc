@@ -239,7 +239,7 @@ func demonstrateConfigComparison() {
 	} else {
 		fmt.Printf("  Status: %d\n", resp.StatusCode())
 	}
-	minimalClient.Close()
+	_ = minimalClient.Close()
 	fmt.Println("  No retries, short timeouts, minimal features")
 	fmt.Println("  Use case: Simple scripts, CLI tools, one-shot requests")
 }

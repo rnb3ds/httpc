@@ -64,6 +64,34 @@ config.AllowPrivateIPs = false  // blocks private IPs (production)
 - DNS rebinding attacks
 - Time-of-check-time-of-use (TOCTOU) vulnerabilities
 
+#### Proxied-target SSRF protection
+
+When a proxy is configured (`Connection.ProxyURL`, `Connection.ProxyPool`, or
+`Connection.EnableSystemProxy`), the proxy resolves the target hostname remotely,
+so the connection-layer check (`Layer 2` above) never runs for it — without a
+guard, a request to a hostname resolving to a private/link-local address (e.g.
+`metadata.google.internal`, or any name pointing at `169.254.169.254`) would be
+forwarded by the proxy and complete a full SSRF.
+
+To close this, httpc wraps the transport's `Proxy` callback with a guard
+(`ssrfGuardProxyFunc` in `internal/connection/pool.go`) that resolves and
+validates the target hostname locally before the proxy carries the request,
+rejecting it when every resolved address is blocked. This runs only while
+`Security.AllowPrivateIPs` is `false` (the default) and honors the per-request
+`WithAllowPrivateIPs` override.
+
+Known limitations (deliberate, security-first):
+
+- **Fail-closed on local DNS.** A hostname this process cannot resolve is
+  rejected even if the proxy could resolve it. Reach intranet-only hostnames via
+  `Security.SSRFExemptCIDRs` (which exempts the resolved private IPs), or opt out
+  with `Security.AllowPrivateIPs: true`.
+- **No DNS-rebinding guarantee on this path.** The proxy still performs its own
+  second resolution for the actual dial, so the direct path's
+  resolve-once-and-dial-the-validated-IP defense does not extend to proxied
+  requests. The guard re-closes the deterministic hostname→private-IP bypass; a
+  rebinding-hardened proxy requires the proxy itself to honor pinned IPs.
+
 ### 3. CRLF Injection Prevention
 
 Comprehensive validation prevents HTTP header injection attacks:

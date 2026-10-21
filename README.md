@@ -1,13 +1,13 @@
 # HTTPC - Secure HTTP Client for Go
 
-[![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://golang.org)
+[![Go Version](https://img.shields.io/badge/Go-1.27+-00ADD8?logo=go)](https://golang.org)
 [![Go Reference](https://pkg.go.dev/badge/github.com/cybergodev/httpc.svg)](https://pkg.go.dev/github.com/cybergodev/httpc)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Security](https://img.shields.io/badge/Security-Hardened-red.svg)](SECURITY.md)
 [![Dependencies](https://img.shields.io/badge/deps-minimal-brightgreen.svg)](go.mod)
 [![Thread Safe](https://img.shields.io/badge/thread%20safe-%E2%9C%93-brightgreen.svg)](docs/09_concurrency-safety.md)
 
-A fast, secure HTTP client library for Go with sensible defaults, minimal dependencies, and built-in resilience.
+A fast, secure HTTP client library for Go with sensible defaults, a lean dependency set, and built-in resilience.
 
 **[中文文档](README_zh-CN.md)** | **[www.cybergo.dev/httpc](https://www.cybergo.dev/httpc)**
 
@@ -30,6 +30,7 @@ A fast, secure HTTP client library for Go with sensible defaults, minimal depend
 - [Middleware](#middleware)
 - [Proxy Configuration](#proxy-configuration)
 - [Security Features](#security-features)
+- [Browser Transport Fingerprinting](#browser-transport-fingerprinting)
 - [Error Handling](#error-handling)
 - [Concurrency Safety](#concurrency-safety)
 - [Interfaces](#interfaces)
@@ -47,7 +48,7 @@ A fast, secure HTTP client library for Go with sensible defaults, minimal depend
 | **Built-in Resilience** | Smart retry with exponential backoff and jitter — non-idempotent requests (POST/PATCH) execute exactly once by default |
 | **Automatic Decompression** | Transparent gzip/deflate handling with zip-bomb protection |
 | **Developer Friendly** | Clean API, intuitive options pattern, comprehensive documentation |
-| **Minimal Dependencies** | 1 dependency (golang.org/x/sys), pure Go stdlib |
+| **Dependencies** | 7 direct modules — `golang.org/x/net` + `golang.org/x/sys` for the standard path, plus brotli / compress / uTLS / tls-client used only by `Security.TLSFingerprint` |
 | **Cookie Management** | Full cookie jar support with security validation |
 | **File Operations** | Secure file download with progress tracking and resume support |
 | **Streaming** | `io.Reader` request bodies, zero-copy `io.Pipe` uploads, disk-streaming downloads |
@@ -60,7 +61,7 @@ A fast, secure HTTP client library for Go with sensible defaults, minimal depend
 go get -u github.com/cybergodev/httpc
 ```
 
-**Requirements:** Go 1.25+
+**Requirements:** Go 1.27+
 
 ---
 
@@ -294,6 +295,12 @@ httpc.WithTimeout(30 * time.Second)
 // Retry configuration
 httpc.WithMaxRetries(3)
 
+// Lift the client-level timeout for one slow call
+httpc.WithNoTimeout()
+
+// Opt in to retrying a non-idempotent method (replay-safe endpoints only)
+httpc.WithRetryNonIdempotent(true)
+
 // Redirect control
 httpc.WithFollowRedirects(false)
 httpc.WithMaxRedirects(5)
@@ -327,7 +334,7 @@ httpc.WithOnResponse(func(resp httpc.ResponseMutator) error {
 | **Query** | `WithQuery(key, value)`, `WithQueryMap(map)` |
 | **Body** | `WithJSON(data)`, `WithXML(data)`, `WithForm(map)`, `WithFormData(*FormData)`, `WithFile(field, filename, content)`, `WithBody(data, ...BodyKind)`, `WithBinary([]byte, ...contentType)`, `WithStreamBody(bool)` |
 | **Cookies** | `WithCookies([]http.Cookie)`, `WithCookieMap(map)`, `WithCookieString("a=1; b=2")`, `WithSecureCookie(config)` |
-| **Control** | `WithTimeout(dur)`, `WithMaxRetries(n)`, `WithContext(ctx)`, `WithAllowPrivateIPs(bool)` |
+| **Control** | `WithTimeout(dur)`, `WithNoTimeout()`, `WithMaxRetries(n)`, `WithRetryNonIdempotent(bool)`, `WithContext(ctx)`, `WithAllowPrivateIPs(bool)` |
 | **Redirects** | `WithFollowRedirects(bool)`, `WithMaxRedirects(n)` |
 | **Callbacks** | `WithOnRequest(fn)`, `WithOnResponse(fn)` |
 
@@ -740,7 +747,7 @@ config := httpc.Config{
         Request:        30 * time.Second,
         Dial:           10 * time.Second,
         TLSHandshake:   10 * time.Second,
-        ResponseHeader: 30 * time.Second,
+        ResponseHeader: 0, // disabled: rely on the context timeout (set a positive value only for a hard transport-level cap)
         IdleConn:       90 * time.Second,
     },
 
@@ -758,6 +765,8 @@ config := httpc.Config{
         MaxTLSVersion:       tls.VersionTLS13,
         MaxResponseBodySize: 50 * 1024 * 1024, // 50 MB
         AllowPrivateIPs:     false,
+        FollowRedirects:     true,
+        MaxRedirects:        10,
     },
 
     // Retry
@@ -768,11 +777,9 @@ config := httpc.Config{
         EnableJitter:  true,
     },
 
-    // Defaults (per-request defaults: User-Agent, headers, redirect policy)
+    // Defaults (per-request defaults: User-Agent, headers)
     Defaults: httpc.RequestDefaults{
-        UserAgent:       "MyApp/1.0",
-        FollowRedirects: true,
-        MaxRedirects:    10,
+        UserAgent: "MyApp/1.0",
     },
 }
 
@@ -823,6 +830,7 @@ fmt.Println(config.String())
 | `Connection.EnableDoH` | `bool` | `false` | Enable DNS-over-HTTPS |
 | `Connection.DoHCacheTTL` | `time.Duration` | `5m` | DoH cache duration |
 | `Connection.MaxResponseHeaderBytes` | `int64` | `0` | Max response header size (0 = Go stdlib default 1MB) |
+| `Connection.PublicSuffixList` | `cookiejar.PublicSuffixList` | `nil` | Public-suffix database for the cookie jar (recommended: `golang.org/x/net/publicsuffix.List`) |
 | **Security** (`Security: httpc.SecurityConfig{...}`) ||||
 | `Security.TLSConfig` | `*tls.Config` | `nil` | Custom TLS config |
 | `Security.MinTLSVersion` | `uint16` | `TLS 1.2` | Minimum TLS version |
@@ -840,6 +848,9 @@ fmt.Println(config.String())
 | `Security.RedirectWhitelist` | `[]string` | `nil` | Allowed redirect domains |
 | `Security.MaxDecompressedBodySize` | `int64` | `100MB` | Max decompressed body size (zip bomb protection) |
 | `Security.SSRFExemptCIDRs` | `[]string` | `nil` | CIDR ranges exempted from SSRF blocking |
+| `Security.FollowRedirects` | `bool` | `true` | Follow redirects |
+| `Security.MaxRedirects` | `int` | `10` | Redirect limit; counts the initial request, so 10 follows at most 9 redirects |
+| `Security.SensitiveHeaders` | `[]string` | `nil` | Extra header names stripped on cross-origin redirects (Authorization/Cookie are always stripped) |
 | **Retry** (`Retry: httpc.RetryConfig{...}`) ||||
 | `Retry.MaxRetries` | `int` | `3` | Max retry attempts |
 | `Retry.Delay` | `time.Duration` | `1s` | Initial retry delay |
@@ -847,14 +858,12 @@ fmt.Println(config.String())
 | `Retry.EnableJitter` | `bool` | `true` | Add jitter to retries |
 | `Retry.MaxRetryDelay` | `time.Duration` | `30s` | Cap on maximum retry delay |
 | `Retry.CustomPolicy` | `RetryPolicy` | `nil` | Custom retry logic |
+| `Retry.RetryNonIdempotent` | `bool` | `false` | Retry non-idempotent methods (POST/PATCH); off by default — they execute exactly once |
 | **Middleware** (`Middleware: httpc.MiddlewareConfig{...}`) ||||
 | `Middleware.Middlewares` | `[]MiddlewareFunc` | `nil` | Middleware chain |
 | **Defaults** (`Defaults: httpc.RequestDefaults{...}`) ||||
 | `Defaults.UserAgent` | `string` | `"httpc/1.0"` | Default User-Agent |
 | `Defaults.Headers` | `map[string]string` | `{}` | Default headers |
-| **Security** (`Security: httpc.SecurityConfig{...}`) ||||
-| `Security.FollowRedirects` | `bool` | `true` | Follow redirects |
-| `Security.MaxRedirects` | `int` | `10` | Redirect limit; counts the initial request, so 10 follows at most 9 redirects |
 
 ---
 
@@ -898,11 +907,10 @@ auditCfg.OnAudit = func(a httpc.AuditEvent) {
 }
 httpc.AuditMiddleware(auditCfg)
 
-// Audit with custom config (JSON format, include headers)
+// Audit with custom config (include request/response headers in the event)
 auditCfgJSON := httpc.DefaultAuditConfig()
 auditCfgJSON.OnAudit = func(a httpc.AuditEvent) { log.Printf("[AUDIT] %v", a) }
 auditCfgJSON.IncludeHeaders = true
-auditCfgJSON.Format = "json"
 httpc.AuditMiddleware(auditCfgJSON)
 ```
 
@@ -1080,6 +1088,40 @@ result, err := httpc.Get("http://localhost:8080/health",
 )
 ```
 
+#### SSRF Protection Through a Proxy
+
+When a proxy is configured (`Connection.ProxyURL`, `Connection.ProxyPool`, or
+`Connection.EnableSystemProxy`), the proxy resolves the target hostname remotely
+instead of this process, so the connection-layer check cannot see what the proxy
+will dial. To keep SSRF protection intact on the proxied path, httpc resolves and
+validates the target hostname locally before the proxy carries the request, and
+rejects it when every resolved address is blocked (private/reserved/link-local).
+This guard runs only while `Security.AllowPrivateIPs` is `false` (the default),
+and honors the per-request `WithAllowPrivateIPs` override.
+
+Two consequences to be aware of when proxying:
+
+- **Fail-closed on local DNS.** A hostname this process cannot resolve is
+  rejected even if the proxy could resolve it — with SSRF protection on, the
+  only safe answer is to refuse. Reach intranet-only hostnames through
+  `Security.SSRFExemptCIDRs` (which exempts the resolved private IPs), or opt
+  out of the guard with `AllowPrivateIPs: true`.
+- **No DNS-rebinding guarantee on this path.** The proxy still performs its own
+  second resolution for the actual dial, so the direct path's
+  resolve-once-and-dial-the-validated-IP rebinding defense does not extend to
+  proxied requests. The guard closes the deterministic hostname→private-IP
+  bypass; a rebinding-hardened proxy would require the proxy itself to honor
+  pinned IPs.
+
+```go
+cfg := httpc.DefaultConfig()
+cfg.Connection.ProxyURL = "http://127.0.0.1:8080" // SSRF guard still enforced
+// cfg.Security.AllowPrivateIPs = false            // default: guard active
+
+// Intranet host reachable only through the proxy:
+cfg.Security.SSRFExemptCIDRs = []string{"10.0.0.0/8"} // exempts 10.x targets
+```
+
 ### Certificate Pinning
 
 Certificate pinning defends against man-in-the-middle attacks even when a trusted
@@ -1188,8 +1230,9 @@ Behavior notes:
   list to match.
 - **Proxies**: proxy pools, rotation, and circuit breaking keep working (HTTP, HTTPS and
   SOCKS5/5h). Plain-HTTP targets through an HTTP proxy traverse a CONNECT tunnel; HTTPS proxies
-  speak HTTP/1.1 CONNECT only and their own certificate is not verified (only the target's
-  handshake is fingerprinted and verified). The proxy is fixed per connection pool — rotation
+  speak HTTP/1.1 CONNECT only and their certificate is verified against the system roots and the
+  proxy hostname (set `Security.InsecureSkipVerify` to opt out, exactly as on the standard
+  transport). The proxy is fixed per connection pool — rotation
   selects a different pool rather than re-pointing a live one.
 - **Redirect coherence**: on every redirect hop the profile's first-hop values are corrected
   the way a browser does: `sec-fetch-site` is recomputed against the previous hop's URL
@@ -1311,6 +1354,11 @@ var (
     ErrFileExists           // File already exists (and Overwrite is false)
     ErrResponseBodyEmpty    // Response body is empty
     ErrResponseBodyTooLarge // Response body exceeds size limit
+    ErrInvalidMaxRedirects  // Redirect limit is negative or exceeds 50
+    ErrInvalidCredentials   // Basic/Bearer credentials failed validation
+    ErrStreamBodyRequiresDownload // WithStreamBody used with a buffered method (use Download)
+    ErrDownloadInProgress   // A download to the same path is already running
+    ErrProxyConnectionFailed // A configured proxy could not be dialed
 )
 ```
 
@@ -1457,7 +1505,7 @@ func (m *MockClient) Get(url string, options ...httpc.RequestOption) (*httpc.Res
 
 ### Example Code
 
-22 runnable examples covering all features, ordered from basic to advanced.
+23 runnable examples covering all features, ordered from basic to advanced.
 Each example is a standalone `package main` guarded by a `//go:build examples`
 tag (so it stays out of the normal build), so run them one at a time:
 
@@ -1477,6 +1525,7 @@ go run -tags examples examples/01_basic_usage.go
 | **Advanced** | [15_middleware](examples/15_middleware.go), [16_concurrent_requests](examples/16_concurrent_requests.go), [17_file_operations](examples/17_file_operations.go), [18_rest_api_client](examples/18_rest_api_client.go), [19_advanced_patterns](examples/19_advanced_patterns.go) |
 | **Security** | [20_certificate_pinning](examples/20_certificate_pinning.go), [21_ssrf_protection](examples/21_ssrf_protection.go) |
 | **Streaming** | [22_streaming_bodies](examples/22_streaming_bodies.go) |
+| **Fingerprinting** | [23_tls_fingerprint](examples/23_tls_fingerprint.go) |
 
 ---
 

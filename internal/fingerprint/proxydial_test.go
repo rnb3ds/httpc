@@ -30,13 +30,13 @@ import (
 func TestProxyDialerFactory_Schemes(t *testing.T) {
 	supported := []string{"http", "https", "socks5", "socks5h"}
 	for _, scheme := range supported {
-		if _, err := newProxyDialerFactory(&url.URL{Scheme: scheme, Host: "127.0.0.1:1"}); err != nil {
+		if _, err := newProxyDialerFactory(&url.URL{Scheme: scheme, Host: "127.0.0.1:1"}, false); err != nil {
 			t.Errorf("%s rejected: %v", scheme, err)
 		}
 	}
 
 	for _, scheme := range []string{"ftp", "quic", "socks", "socks4", "socks4a", "ss", ""} {
-		_, err := newProxyDialerFactory(&url.URL{Scheme: scheme, Host: "127.0.0.1:1"})
+		_, err := newProxyDialerFactory(&url.URL{Scheme: scheme, Host: "127.0.0.1:1"}, false)
 		if err == nil {
 			t.Errorf("%q accepted", scheme)
 			continue
@@ -50,7 +50,7 @@ func TestProxyDialerFactory_Schemes(t *testing.T) {
 // TestConnectDialer_Dial pins the non-context entry point: it delegates to
 // DialContext, so a refused proxy surfaces as a dial error rather than a hang.
 func TestConnectDialer_Dial(t *testing.T) {
-	d := newConnectDialer(url.URL{Scheme: "http", Host: "127.0.0.1:1"}, nil)
+	d := newConnectDialer(url.URL{Scheme: "http", Host: "127.0.0.1:1"}, nil, false)
 	_, err := d.Dial("tcp", "example.com:443")
 	if err == nil {
 		t.Fatal("Dial through a dead proxy succeeded")
@@ -72,7 +72,7 @@ func TestConnectDialer_ConnectTunnel(t *testing.T) {
 		Scheme: "http",
 		Host:   addr,
 		User:   url.UserPassword("user", "pass"),
-	}, nil)
+	}, nil, false)
 
 	conn, err := d.DialContext(context.Background(), "tcp", targetURL.Host)
 	if err != nil {
@@ -101,7 +101,7 @@ func TestConnectDialer_ConnectTunnel(t *testing.T) {
 // surface as an error naming the status, not as a silent usable connection.
 func TestConnectDialer_ProxyRejectsTunnel(t *testing.T) {
 	addr, _ := startConnectProxy(t, http.StatusProxyAuthRequired)
-	d := newConnectDialer(url.URL{Scheme: "http", Host: addr}, nil)
+	d := newConnectDialer(url.URL{Scheme: "http", Host: addr}, nil, false)
 
 	conn, err := d.DialContext(context.Background(), "tcp", "example.com:443")
 	if err == nil {
@@ -115,15 +115,17 @@ func TestConnectDialer_ProxyRejectsTunnel(t *testing.T) {
 
 // TestConnectDialer_DeadProxy pins the TCP-connect failure arm.
 func TestConnectDialer_DeadProxy(t *testing.T) {
-	d := newConnectDialer(url.URL{Scheme: "http", Host: "127.0.0.1:1"}, nil)
+	d := newConnectDialer(url.URL{Scheme: "http", Host: "127.0.0.1:1"}, nil, false)
 	if _, err := d.DialContext(context.Background(), "tcp", "example.com:443"); err == nil {
 		t.Fatal("dead proxy accepted")
 	}
 }
 
 // TestConnectDialer_HTTPSProxyTunnel pins the TLS-to-proxy leg: the tunnel is
-// established over TLS with ALPN http/1.1, and the proxy's certificate is not
-// verified (documented behaviour — only the target leg is verified).
+// established over TLS with ALPN http/1.1. The proxy serves a self-signed
+// certificate, so the dialer is built with InsecureSkipVerify set (the same
+// explicit opt-out a user config would carry); with verification on, this
+// same server must fail — see TestConnectDialer_HTTPSProxyCertMismatch.
 func TestConnectDialer_HTTPSProxyTunnel(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "tls-tunnel-ok")
@@ -149,7 +151,7 @@ func TestConnectDialer_HTTPSProxyTunnel(t *testing.T) {
 		}
 	}()
 
-	d := newConnectDialer(url.URL{Scheme: "https", Host: ln.Addr().String()}, nil)
+	d := newConnectDialer(url.URL{Scheme: "https", Host: ln.Addr().String()}, nil, true)
 	conn, err := d.DialContext(context.Background(), "tcp", targetURL.Host)
 	if err != nil {
 		t.Fatalf("DialContext through HTTPS proxy: %v", err)
@@ -162,6 +164,35 @@ func TestConnectDialer_HTTPSProxyTunnel(t *testing.T) {
 	body, _ := io.ReadAll(bufio.NewReader(conn))
 	if !strings.Contains(string(body), "tls-tunnel-ok") {
 		t.Errorf("body = %q", body)
+	}
+}
+
+// TestConnectDialer_HTTPSProxyCertMismatch pins the verify-by-default leg:
+// with InsecureSkipVerify false (the default), an HTTPS proxy serving a
+// self-signed certificate for 127.0.0.1 must fail the handshake — the proxy
+// leg is no longer silently trusted.
+func TestConnectDialer_HTTPSProxyCertMismatch(t *testing.T) {
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{selfSignedCert(t)},
+		NextProtos:   []string{"http/1.1"},
+	})
+	if err != nil {
+		t.Fatalf("tls.Listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go handleProxyConn(conn, http.StatusOK, &stringRing{})
+		}
+	}()
+
+	d := newConnectDialer(url.URL{Scheme: "https", Host: ln.Addr().String()}, nil, false)
+	if _, err := d.DialContext(context.Background(), "tcp", "example.com:443"); err == nil {
+		t.Fatal("self-signed HTTPS proxy accepted with certificate verification enabled")
 	}
 }
 
@@ -182,7 +213,7 @@ func TestConnectDialer_HTTPSProxyHandshakeFailure(t *testing.T) {
 		_ = conn.Close()
 	}()
 
-	d := newConnectDialer(url.URL{Scheme: "https", Host: ln.Addr().String()}, nil)
+	d := newConnectDialer(url.URL{Scheme: "https", Host: ln.Addr().String()}, nil, false)
 	if _, err := d.DialContext(context.Background(), "tcp", "example.com:443"); err == nil {
 		t.Fatal("plaintext proxy accepted for an https scheme")
 	}
@@ -199,7 +230,7 @@ func TestConnectDialer_Socks5Tunnel(t *testing.T) {
 
 	socksAddr, socksDone := startMiniSocks5(t)
 
-	d := newConnectDialer(url.URL{Scheme: "socks5", Host: socksAddr}, nil)
+	d := newConnectDialer(url.URL{Scheme: "socks5", Host: socksAddr}, nil, false)
 	conn, err := d.DialContext(context.Background(), "tcp", targetURL.Host)
 	if err != nil {
 		t.Fatalf("DialContext through SOCKS5: %v", err)
@@ -222,7 +253,7 @@ func TestConnectDialer_Socks5Tunnel(t *testing.T) {
 
 // TestConnectDialer_SocksUnreachable pins the SOCKS dial-failure arm.
 func TestConnectDialer_SocksUnreachable(t *testing.T) {
-	d := newConnectDialer(url.URL{Scheme: "socks5", Host: "127.0.0.1:1"}, nil)
+	d := newConnectDialer(url.URL{Scheme: "socks5", Host: "127.0.0.1:1"}, nil, false)
 	if _, err := d.DialContext(context.Background(), "tcp", "example.com:443"); err == nil {
 		t.Fatal("unreachable SOCKS proxy accepted")
 	}
@@ -248,7 +279,7 @@ func TestConnectDialer_ContextCancelInterruptsConnect(t *testing.T) {
 		_ = conn.Close()
 	}()
 
-	d := newConnectDialer(url.URL{Scheme: "http", Host: ln.Addr().String()}, nil)
+	d := newConnectDialer(url.URL{Scheme: "http", Host: ln.Addr().String()}, nil, false)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
@@ -271,7 +302,7 @@ func TestConnectDialer_CustomLocalAddr(t *testing.T) {
 	addr, _ := startConnectProxy(t, http.StatusOK)
 	// A loopback local address with port 0 lets the kernel pick the port while
 	// still proving the field is not dropped.
-	d := newConnectDialer(url.URL{Scheme: "http", Host: addr}, &net.TCPAddr{IP: net.ParseIP("127.0.0.1")})
+	d := newConnectDialer(url.URL{Scheme: "http", Host: addr}, &net.TCPAddr{IP: net.ParseIP("127.0.0.1")}, false)
 
 	conn, err := d.DialContext(context.Background(), "tcp", "example.com:443")
 	if err == nil {
@@ -288,7 +319,7 @@ func TestConnectDialer_CustomLocalAddr(t *testing.T) {
 // TestProxyDialerContractSatisfied pins the interface the transport's factory
 // must return.
 func TestProxyDialerContractSatisfied(t *testing.T) {
-	var _ proxy.ContextDialer = newConnectDialer(url.URL{Scheme: "http", Host: "127.0.0.1:1"}, nil)
+	var _ proxy.ContextDialer = newConnectDialer(url.URL{Scheme: "http", Host: "127.0.0.1:1"}, nil, false)
 }
 
 // startMiniSocks5 runs a minimal SOCKS5 server (no-auth, CONNECT IPv4/domain)

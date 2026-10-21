@@ -44,9 +44,15 @@ func specForDial(p *browserProfile) (utls.ClientHelloSpec, error) {
 // greaseSignatureAlgorithms replaces every GREASE placeholder in the spec's
 // signature_algorithms list with a fresh random GREASE value. Chrome sends a
 // GREASE signature scheme at the head of that list and picks a new value per
-// connection; uTLS substitutes GREASE placeholders for cipher suites, groups,
-// key shares, versions and extension IDs but leaves signature schemes
-// untouched, so it is done here.
+// connection.
+//
+// NOTE: with the pinned utls version, ApplyPreset's re-grease pass ALSO
+// re-randomizes signature schemes (u_parrots.go substitutes any GREASE value
+// in SupportedSignatureAlgorithms with its own per-connection value), so the
+// value chosen here never reaches the wire — the per-connection randomity
+// comes from utls itself. This function is kept as a defensive layer: it
+// guarantees the placeholder is at least a valid GREASE code point even if a
+// future dependency version stops re-greasing signature schemes.
 func greaseSignatureAlgorithms(spec *utls.ClientHelloSpec) {
 	for _, ext := range spec.Extensions {
 		sigalgs, ok := ext.(*utls.SignatureAlgorithmsExtension)

@@ -1489,3 +1489,64 @@ func TestFallbackLookup(t *testing.T) {
 		}
 	})
 }
+
+// TestLookupDedup_WaiterRetriesAfterLeaderCancel pins the singleflight
+// cancellation-isolation fix: a leader cancelled mid-flight used to publish
+// context.Canceled to every waiter, failing lookups whose own contexts were
+// healthy (the connection pool does not retry DoH failures, so one cancelled
+// request cascaded into unrelated concurrent lookups of the same host).
+// Healthy waiters now re-enter once as a fresh leader.
+func TestLookupDedup_WaiterRetriesAfterLeaderCancel(t *testing.T) {
+	release := make(chan struct{})
+	var hits int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Leader round (A + AAAA = 2 requests): block until released. The
+		// leader's context is cancelled while these are in flight, so they
+		// fail with context.Canceled client-side regardless of the response.
+		if atomic.AddInt32(&hits, 1) <= 2 {
+			<-release
+		}
+		w.Header().Set("Content-Type", "application/dns-json")
+		_, _ = w.Write([]byte(`{"Status":0,"Answer":[{"name":"retry.test","type":1,"data":"9.9.9.9"}]}`))
+	}))
+	defer server.Close()
+
+	resolver := NewDoHResolver([]*dohProvider{
+		{Name: "local", Template: server.URL + "/dns-query?name={name}&type=A", Priority: 1},
+	}, time.Minute) // long TTL: nothing is cached from the failed leader round
+	defer func() { _ = resolver.Close() }()
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := resolver.LookupIPAddr(leaderCtx, "retry.test")
+		leaderDone <- err
+	}()
+
+	// Wait until the leader is mid-flight (its provider requests entered the
+	// handler), then attach waiters while the call is still inflight.
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt32(&hits) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	const waiters = 3
+	waiterDone := make(chan error, waiters)
+	for i := 0; i < waiters; i++ {
+		go func() {
+			_, err := resolver.LookupIPAddr(context.Background(), "retry.test")
+			waiterDone <- err
+		}()
+	}
+	time.Sleep(50 * time.Millisecond) // let the waiters attach to the inflight call
+	close(release)                    // unblock the server (too late for the cancelled leader)
+	cancelLeader()
+
+	if err := <-leaderDone; err == nil {
+		t.Fatal("leader lookup unexpectedly succeeded after cancellation")
+	}
+	for i := 0; i < waiters; i++ {
+		if err := <-waiterDone; err != nil {
+			t.Errorf("healthy waiter failed after leader cancellation: %v", err)
+		}
+	}
+}

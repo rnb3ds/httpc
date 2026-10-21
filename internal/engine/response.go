@@ -451,14 +451,15 @@ func (p *responseProcessor) readBody(httpResp *http.Response, encoding string) (
 		if err != nil {
 			// A declared Content-Length with zero bytes read is legitimate for
 			// HEAD responses (net/http returns EOF immediately without a body);
-			// those keep the historical empty-body result. Any other EOF —
-			// partial data (io.ErrUnexpectedEOF) or EOF on the first read of a
-			// non-HEAD request — means the server truncated the body, which
-			// must surface as an error instead of a short but "successful"
-			// response. Process's strict content-length check is a second line
-			// of defense, but it is disabled by StrictContentLength=false
-			// (e.g. PerformanceConfig), which previously let truncated bodies
-			// pass silently on this path while the slow path (io.Copy) errored.
+			// those keep the historical empty-body result. Through the REAL
+			// transport that is the only producer of (EOF, 0) — truncation on
+			// a non-HEAD body surfaces as io.ErrUnexpectedEOF from ReadFull
+			// and errors below. A synthetic http.Response (custom
+			// RoundTripper) declaring Content-Length > 0 with an empty body
+			// also lands on (EOF, 0) and is accepted as an empty body; the
+			// method is not plumbed in here, and Process's strict
+			// content-length check remains the second line of defense (off
+			// under StrictContentLength=false, e.g. PerformanceConfig).
 			if err != io.EOF || n != 0 {
 				// Return the bare error: Process wraps every readBody error
 				// with "failed to read response body: %w" — repeating that
@@ -557,6 +558,9 @@ func (p *responseProcessor) createDecompressor(reader io.Reader, encoding string
 				if err := resetter.Reset(reader, nil); err != nil {
 					// SECURITY: Reset failed - close and discard the reader instead of returning to pool.
 					// A reader in error state may cause issues for subsequent users.
+					// (Deliberate fallback rather than an error, unlike the
+					// gzip branch: pinned by TestCreateDecompressor_PooledResetPaths
+					// with an injected failing Resetter.)
 					_ = pooled.Close()
 					return flate.NewReader(reader), nil
 				}

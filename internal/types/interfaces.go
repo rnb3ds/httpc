@@ -99,6 +99,12 @@ type ResponseReader interface {
 
 // ResponseWriter provides write-only access to response data.
 // Use it when a consumer only modifies response properties without reading them.
+//
+// Note on SetHeader: the key is stored exactly as given — it is NOT
+// canonicalized (unlike the request-side SetHeader). Writing "content-type"
+// alongside a server-sent canonical "Content-Type" yields two distinct
+// entries; pass http.CanonicalMIMEHeaderKey spelling to replace an
+// existing header.
 type ResponseWriter interface {
 	SetStatusCode(int)
 	SetStatus(string)

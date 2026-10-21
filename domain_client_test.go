@@ -1244,8 +1244,8 @@ func TestDomainClient_CrossOriginSessionIsolation(t *testing.T) {
 	}
 
 	// Foreign Set-Cookie must not have been captured into the session (the
-	// engine's shared cookie jar also does not replay a localhost host-only
-	// cookie to the 127.0.0.1 base origin).
+	// session is the DomainClient's single cookie store, and the origin gate
+	// kept this capture out of it entirely).
 	if _, err := dc.Get("/"); err != nil {
 		t.Fatalf("base Get() #2 error: %v", err)
 	}
@@ -1273,5 +1273,73 @@ func TestDomainClient_CrossOriginSessionIsolation(t *testing.T) {
 	}
 	if foreignAuth != "" {
 		t.Errorf("Authorization header leaked to same-host/different-port origin: %q", foreignAuth)
+	}
+}
+
+// TestDomainClient_RedirectCookieCaptureGate pins the final-URL capture gate:
+// the origin gate in Request/Download checks the INITIAL URL, but a
+// base-origin request can be redirected to a third-party origin. The final
+// hop's Set-Cookie must not be captured into the session, from where it would
+// be replayed to the base origin on the next request (a session-fixation
+// vector). Request headers need no equivalent gate: net/http strips
+// Authorization/Cookie on cross-origin redirects.
+func TestDomainClient_RedirectCookieCaptureGate(t *testing.T) {
+	var baseSawEvilCookie bool
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Set-Cookie", "evil=foreigncookie; Path=/")
+		_, _ = w.Write([]byte("foreign"))
+	}))
+	defer foreign.Close()
+
+	base := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/redirect-out":
+			http.Redirect(w, r, foreign.URL+"/set", http.StatusFound)
+		case "/redirect-in":
+			// Same-origin redirect: /redirect-in → /set-on-base.
+			http.Redirect(w, r, "/set-on-base", http.StatusFound)
+		case "/set-on-base":
+			w.Header().Set("Set-Cookie", "basecookie=captured; Path=/")
+			_, _ = w.Write([]byte("set"))
+		default:
+			for _, c := range r.Cookies() {
+				if c.Name == "evil" {
+					baseSawEvilCookie = true
+				}
+			}
+			_, _ = w.Write([]byte("probe"))
+		}
+	}))
+	defer base.Close()
+
+	cfg := httpc.DefaultConfig()
+	cfg.Security.AllowPrivateIPs = true // httptest servers listen on 127.0.0.1
+	dc, err := httpc.NewDomain(base.URL, cfg)
+	if err != nil {
+		t.Fatalf("NewDomain() error: %v", err)
+	}
+	defer func() { _ = dc.Close() }()
+
+	// Follows base → foreign redirect; the foreign Set-Cookie must NOT enter
+	// the session even though the request started on the base origin.
+	if _, err := dc.Get("/redirect-out"); err != nil {
+		t.Fatalf("Get(redirect-out) error: %v", err)
+	}
+	if got := dc.GetCookie("evil"); got != nil {
+		t.Errorf("cross-origin redirect Set-Cookie captured into session: %+v", got)
+	}
+	if _, err := dc.Get("/probe"); err != nil {
+		t.Fatalf("Get(probe) error: %v", err)
+	}
+	if baseSawEvilCookie {
+		t.Error("cross-origin redirect Set-Cookie was replayed to the base origin")
+	}
+
+	// Control: a same-origin redirect's Set-Cookie is still captured.
+	if _, err := dc.Get("/redirect-in"); err != nil {
+		t.Fatalf("Get(redirect-in) error: %v", err)
+	}
+	if got := dc.GetCookie("basecookie"); got == nil || got.Value != "captured" {
+		t.Errorf("same-origin redirect Set-Cookie not captured: %+v", got)
 	}
 }

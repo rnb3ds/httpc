@@ -336,6 +336,9 @@ func deepCopyValue(src, dst reflect.Value) {
 // reflect.New or sliced from one), the documented pattern for unexported-field
 // access. Mirroring the source too is what makes the scalar/interface branches
 // of deepCopyValue legal on unexported fields.
+//
+// The IsValid guard and default arm are defensive contracts for DIRECT
+// callers, exercised by TestDeepCopyGuardArms — not dead code.
 func deepCopyStruct(src, dst reflect.Value) {
 	if !src.IsValid() {
 		return

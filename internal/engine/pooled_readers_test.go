@@ -3,6 +3,9 @@ package engine
 // Pooled reader/wrapper mechanics: Read/EOF semantics, release discipline
 // (pool return only in Close, never at EOF), double-close safety, and the
 // concurrent-close races the delayed HTTP/2 writeLoop Close provokes.
+// All body kinds share the single pooledBody wrapper; the per-kind put
+// functions (strings/bytes readers, multipart/JSON buffers) are exercised
+// through their constructors.
 // Consolidated from coverage_test.go, request_test.go, pools_test.go, and
 // response_decompression_test.go (same subject area).
 
@@ -14,11 +17,11 @@ import (
 	"testing"
 )
 
-// TestPooledMultipartBuffer_Read validates multipart buffer pool read behavior.
-func TestPooledMultipartBuffer_Read(t *testing.T) {
+// TestPooledBody_MultipartBuffer validates multipart buffer pool read behavior.
+func TestPooledBody_MultipartBuffer(t *testing.T) {
 	t.Run("Normal read", func(t *testing.T) {
 		buf := bytes.NewBufferString("multipart data")
-		reader := &pooledMultipartBuffer{buf: buf}
+		reader := getPooledMultipartBufferWrapper(buf)
 
 		p := make([]byte, 32)
 		n, err := reader.Read(p)
@@ -30,8 +33,8 @@ func TestPooledMultipartBuffer_Read(t *testing.T) {
 		}
 	})
 
-	t.Run("Read from nil buffer", func(t *testing.T) {
-		reader := &pooledMultipartBuffer{buf: nil}
+	t.Run("Read from nil inner", func(t *testing.T) {
+		reader := &pooledBody{}
 		p := make([]byte, 10)
 		_, err := reader.Read(p)
 		if err != io.EOF {
@@ -42,7 +45,7 @@ func TestPooledMultipartBuffer_Read(t *testing.T) {
 	t.Run("Read until EOF defers pool return to Close", func(t *testing.T) {
 		buf := getMultipartBuffer()
 		buf.WriteString("data")
-		reader := &pooledMultipartBuffer{buf: buf}
+		reader := getPooledMultipartBufferWrapper(buf)
 
 		// Read everything
 		_, _ = io.ReadAll(reader)
@@ -51,8 +54,8 @@ func TestPooledMultipartBuffer_Read(t *testing.T) {
 		// (later, and on HTTP/2 from another goroutine). Releasing at EOF
 		// would recycle the wrapper while a delayed Close can still arrive
 		// and release a wrapper already reused by another request.
-		if reader.buf == nil {
-			t.Error("buf must stay owned after EOF read — release belongs to Close")
+		if reader.inner == nil {
+			t.Error("inner must stay owned after EOF read — release belongs to Close")
 		}
 		if reader.released.Load() {
 			t.Error("released must stay false after EOF read — release belongs to Close")
@@ -60,8 +63,8 @@ func TestPooledMultipartBuffer_Read(t *testing.T) {
 
 		_ = reader.Close()
 
-		if reader.buf != nil {
-			t.Error("Expected buf to be nil after Close")
+		if reader.inner != nil {
+			t.Error("Expected inner to be nil after Close")
 		}
 		if !reader.released.Load() {
 			t.Error("Expected released to be true after Close")
@@ -69,11 +72,11 @@ func TestPooledMultipartBuffer_Read(t *testing.T) {
 	})
 }
 
-// TestPooledJSONBuffer_Read validates JSON buffer pool read behavior.
-func TestPooledJSONBuffer_Read(t *testing.T) {
+// TestPooledBody_JSONBuffer validates JSON buffer pool read behavior.
+func TestPooledBody_JSONBuffer(t *testing.T) {
 	t.Run("Normal read", func(t *testing.T) {
 		buf := bytes.NewBufferString(`{"key":"value"}`)
-		reader := &pooledJSONBuffer{buf: buf}
+		reader := getPooledJSONBufferWrapper(buf)
 
 		p := make([]byte, 64)
 		n, err := reader.Read(p)
@@ -85,8 +88,8 @@ func TestPooledJSONBuffer_Read(t *testing.T) {
 		}
 	})
 
-	t.Run("Read from nil buffer", func(t *testing.T) {
-		reader := &pooledJSONBuffer{buf: nil}
+	t.Run("Read from nil inner", func(t *testing.T) {
+		reader := &pooledBody{}
 		p := make([]byte, 10)
 		_, err := reader.Read(p)
 		if err != io.EOF {
@@ -97,15 +100,15 @@ func TestPooledJSONBuffer_Read(t *testing.T) {
 	t.Run("Read until EOF defers pool return to Close", func(t *testing.T) {
 		buf := getJSONBuffer()
 		buf.WriteString(`{"test":true}`)
-		reader := &pooledJSONBuffer{buf: buf}
+		reader := getPooledJSONBufferWrapper(buf)
 
 		// Read everything
 		_, _ = io.ReadAll(reader)
 
-		// EOF must NOT release — see the matching pooledMultipartBuffer
-		// subtest for the net/http close-after-EOF rationale.
-		if reader.buf == nil {
-			t.Error("buf must stay owned after EOF read — release belongs to Close")
+		// EOF must NOT release — see the matching multipart subtest for the
+		// net/http close-after-EOF rationale.
+		if reader.inner == nil {
+			t.Error("inner must stay owned after EOF read — release belongs to Close")
 		}
 		if reader.released.Load() {
 			t.Error("released must stay false after EOF read — release belongs to Close")
@@ -113,13 +116,30 @@ func TestPooledJSONBuffer_Read(t *testing.T) {
 
 		_ = reader.Close()
 
-		if reader.buf != nil {
-			t.Error("Expected buf to be nil after Close")
+		if reader.inner != nil {
+			t.Error("Expected inner to be nil after Close")
 		}
 		if !reader.released.Load() {
 			t.Error("Expected released to be true after Close")
 		}
 	})
+}
+
+// TestPooledBody_Len pins the content-length probe shared by setContentLength:
+// every wrapped inner type exposes its remaining length, and a nil/released
+// wrapper reports zero.
+func TestPooledBody_Len(t *testing.T) {
+	if got := (&pooledBody{}).Len(); got != 0 {
+		t.Errorf("nil-inner Len = %d, want 0", got)
+	}
+	r := getPooledStringsReader("hello")
+	if got := r.(*pooledBody).Len(); got != 5 {
+		t.Errorf("strings Len = %d, want 5", got)
+	}
+	b := getPooledBytesReader([]byte("1234567"))
+	if got := b.(*pooledBody).Len(); got != 7 {
+		t.Errorf("bytes Len = %d, want 7", got)
+	}
 }
 
 // TestPooledStringsReader_NoReleaseOnEOF pins the release discipline of the
@@ -131,7 +151,7 @@ func TestPooledJSONBuffer_Read(t *testing.T) {
 // new request's live reader.
 func TestPooledStringsReader_NoReleaseOnEOF(t *testing.T) {
 	r := getPooledStringsReader("hello world")
-	pr := r.(*pooledStringsReader)
+	pr := r.(*pooledBody)
 
 	if _, err := io.ReadAll(pr); err != nil {
 		t.Fatalf("ReadAll error: %v", err)
@@ -169,7 +189,8 @@ func TestPooledReaders_ReadEOF(t *testing.T) {
 			if string(data) != tt.want {
 				t.Errorf("read %q, want %q", data, tt.want)
 			}
-			// Second read must return EOF (inner reader is nil after EOF).
+			// Second read must return EOF: the exhausted inner reader yields
+			// EOF on every subsequent read (it is only nilled at Close).
 			p := make([]byte, 10)
 			if _, err := tt.reader.Read(p); err != io.EOF {
 				t.Errorf("read after EOF: got %v, want io.EOF", err)
@@ -246,7 +267,7 @@ func TestPooledFlateReader(t *testing.T) {
 		r := &pooledFlateReader{reader: nil}
 		err := r.Close()
 		if err != nil {
-			t.Errorf("Unexpected error: %v", err)
+			t.Errorf("Expected nil error, got %v", err)
 		}
 	})
 }
@@ -254,17 +275,17 @@ func TestPooledFlateReader(t *testing.T) {
 // io.Closer is tested for all pooled reader/buffer types via table-driven test.
 func TestPooledReaders_Close(t *testing.T) {
 	t.Run("StringsReader close before reading", func(t *testing.T) {
-		reader := getPooledStringsReader("hello").(*pooledStringsReader)
+		reader := getPooledStringsReader("hello").(*pooledBody)
 		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
-		if reader.reader != nil {
-			t.Error("Expected reader to be nil after Close")
+		if reader.inner != nil {
+			t.Error("Expected inner to be nil after Close")
 		}
 	})
 
 	t.Run("StringsReader double close", func(t *testing.T) {
-		reader := getPooledStringsReader("hello").(*pooledStringsReader)
+		reader := getPooledStringsReader("hello").(*pooledBody)
 		_ = reader.Close()
 		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error on double close: %v", err)
@@ -272,17 +293,17 @@ func TestPooledReaders_Close(t *testing.T) {
 	})
 
 	t.Run("BytesReader close before reading", func(t *testing.T) {
-		reader := getPooledBytesReader([]byte("hello")).(*pooledBytesReader)
+		reader := getPooledBytesReader([]byte("hello")).(*pooledBody)
 		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
-		if reader.reader != nil {
-			t.Error("Expected reader to be nil after Close")
+		if reader.inner != nil {
+			t.Error("Expected inner to be nil after Close")
 		}
 	})
 
 	t.Run("BytesReader double close", func(t *testing.T) {
-		reader := getPooledBytesReader([]byte("hello")).(*pooledBytesReader)
+		reader := getPooledBytesReader([]byte("hello")).(*pooledBody)
 		_ = reader.Close()
 		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error on double close: %v", err)
@@ -292,17 +313,17 @@ func TestPooledReaders_Close(t *testing.T) {
 	t.Run("MultipartBuffer close owned", func(t *testing.T) {
 		buf := getMultipartBuffer()
 		buf.WriteString("multipart data")
-		reader := &pooledMultipartBuffer{buf: buf}
+		reader := getPooledMultipartBufferWrapper(buf)
 		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
-		if reader.buf != nil {
-			t.Error("Expected buf to be nil after Close")
+		if reader.inner != nil {
+			t.Error("Expected inner to be nil after Close")
 		}
 	})
 
 	t.Run("MultipartBuffer close nil", func(t *testing.T) {
-		reader := &pooledMultipartBuffer{buf: nil}
+		reader := &pooledBody{}
 		reader.released.Store(true) // already released: Close must be a no-op
 		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error: %v", err)
@@ -311,7 +332,7 @@ func TestPooledReaders_Close(t *testing.T) {
 
 	t.Run("MultipartBuffer close not-owned", func(t *testing.T) {
 		buf := bytes.NewBufferString("data")
-		reader := &pooledMultipartBuffer{buf: buf}
+		reader := getPooledMultipartBufferWrapper(buf)
 		reader.released.Store(true)
 		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error: %v", err)
@@ -321,7 +342,7 @@ func TestPooledReaders_Close(t *testing.T) {
 	t.Run("MultipartBuffer double close", func(t *testing.T) {
 		buf := getMultipartBuffer()
 		buf.WriteString("data")
-		reader := &pooledMultipartBuffer{buf: buf}
+		reader := getPooledMultipartBufferWrapper(buf)
 		_ = reader.Close()
 		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error on double close: %v", err)
@@ -331,17 +352,17 @@ func TestPooledReaders_Close(t *testing.T) {
 	t.Run("JSONBuffer close owned", func(t *testing.T) {
 		buf := getJSONBuffer()
 		buf.WriteString(`{"test": true}`)
-		reader := &pooledJSONBuffer{buf: buf}
+		reader := getPooledJSONBufferWrapper(buf)
 		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
-		if reader.buf != nil {
-			t.Error("Expected buf to be nil after Close")
+		if reader.inner != nil {
+			t.Error("Expected inner to be nil after Close")
 		}
 	})
 
 	t.Run("JSONBuffer close nil", func(t *testing.T) {
-		reader := &pooledJSONBuffer{buf: nil}
+		reader := &pooledBody{}
 		reader.released.Store(true) // already released: Close must be a no-op
 		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error: %v", err)
@@ -350,7 +371,7 @@ func TestPooledReaders_Close(t *testing.T) {
 
 	t.Run("JSONBuffer close not-owned", func(t *testing.T) {
 		buf := bytes.NewBufferString(`{"data":1}`)
-		reader := &pooledJSONBuffer{buf: buf}
+		reader := getPooledJSONBufferWrapper(buf)
 		reader.released.Store(true)
 		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error: %v", err)
@@ -360,7 +381,7 @@ func TestPooledReaders_Close(t *testing.T) {
 	t.Run("JSONBuffer double close", func(t *testing.T) {
 		buf := getJSONBuffer()
 		buf.WriteString(`{"test": true}`)
-		reader := &pooledJSONBuffer{buf: buf}
+		reader := getPooledJSONBufferWrapper(buf)
 		_ = reader.Close()
 		if err := reader.Close(); err != nil {
 			t.Errorf("Unexpected error on double close: %v", err)

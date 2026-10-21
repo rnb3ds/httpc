@@ -12,9 +12,11 @@
 //     hands the connection over with no deadline left on it.
 //
 // Supported schemes: http and https (CONNECT; https negotiates http/1.1 for
-// the tunnel leg, and that leg's certificate is not verified — only the
-// target's handshake is fingerprinted and verified on this path), plus
-// socks4/4a and socks5/5h through golang.org/x/net/proxy.
+// the tunnel leg, and that leg's certificate is verified against the system
+// roots and the proxy hostname — unless the owning config sets
+// InsecureSkipVerify, mirroring the standard transport), plus socks5/5h
+// through golang.org/x/net/proxy. socks4/socks4a are deliberately not
+// supported — x/net/proxy implements SOCKS5 only (see validateProxyScheme).
 
 package fingerprint
 
@@ -42,7 +44,7 @@ const proxyDialTimeout = 30 * time.Second
 // newProxyDialerFactory returns a factory that dials every target through
 // proxyURL. The URL is fixed per backend: the httpc proxy pool rotates by
 // selecting a different backend, never by re-pointing a live one.
-func newProxyDialerFactory(proxyURL *url.URL) (tls_client.ProxyDialerFactory, error) {
+func newProxyDialerFactory(proxyURL *url.URL, insecureSkipVerify bool) (tls_client.ProxyDialerFactory, error) {
 	if err := validateProxyScheme(proxyURL.Scheme); err != nil {
 		return nil, err
 	}
@@ -52,7 +54,7 @@ func newProxyDialerFactory(proxyURL *url.URL) (tls_client.ProxyDialerFactory, er
 		// The proxy URL and the timeout are fixed per backend: the transport's
 		// arguments restate them, and the deadline actually honoured comes
 		// from the request context.
-		return newConnectDialer(target, localAddr), nil
+		return newConnectDialer(target, localAddr, insecureSkipVerify), nil
 	}, nil
 }
 
@@ -72,18 +74,20 @@ func validateProxyScheme(scheme string) error {
 
 // connectDialer dials every target through one fixed proxy.
 type connectDialer struct {
-	proxy     url.URL
-	localAddr *net.TCPAddr
-	tcp       *net.Dialer
-	socks     func() (proxy.Dialer, error) // lazily built; nil for CONNECT proxies
+	proxy              url.URL
+	localAddr          *net.TCPAddr
+	insecureSkipVerify bool
+	tcp                *net.Dialer
+	socks              func() (proxy.Dialer, error) // lazily built; nil for CONNECT proxies
 }
 
 // newConnectDialer builds the dialer for one proxy URL.
-func newConnectDialer(proxyURL url.URL, localAddr *net.TCPAddr) *connectDialer {
+func newConnectDialer(proxyURL url.URL, localAddr *net.TCPAddr, insecureSkipVerify bool) *connectDialer {
 	d := &connectDialer{
-		proxy:     proxyURL,
-		localAddr: localAddr,
-		tcp:       &net.Dialer{Timeout: proxyDialTimeout, LocalAddr: localAddr},
+		proxy:              proxyURL,
+		localAddr:          localAddr,
+		insecureSkipVerify: insecureSkipVerify,
+		tcp:                &net.Dialer{Timeout: proxyDialTimeout, LocalAddr: localAddr},
 	}
 	if strings.HasPrefix(proxyURL.Scheme, "socks") {
 		d.socks = func() (proxy.Dialer, error) { return proxy.FromURL(&proxyURL, d.tcp) }
@@ -144,11 +148,14 @@ func (d *connectDialer) dialConnect(ctx context.Context, network, addr string) (
 	if d.proxy.Scheme == "https" {
 		tlsConn := tls.Client(conn, &tls.Config{
 			NextProtos: []string{"http/1.1"},
-			ServerName: host,
-			// The proxy leg is not the fingerprinting target: only the
-			// target's handshake is verified on this path. Documented in the
-			// README's proxy notes.
-			InsecureSkipVerify: true, //nolint:gosec // see comment above
+			// Verify the proxy leg the way the standard transport verifies
+			// every TLS peer: full chain + hostname validation against the
+			// system roots. InsecureSkipVerify is the user's explicit opt-out
+			// (Security.InsecureSkipVerify), honoured here for parity — a
+			// spoofed browser handshake to the target is no reason to accept
+			// an unauthenticated MITM on the proxy leg.
+			ServerName:         host,
+			InsecureSkipVerify: d.insecureSkipVerify,
 		})
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
 			_ = conn.Close()

@@ -799,6 +799,36 @@ func BenchmarkClient_WithCookies(b *testing.B) {
 	}
 }
 
+// BenchmarkHeaderMiddleware_StaticHeaders measures the per-request cost of the
+// HeaderMiddleware apply loop. The header map is frozen at middleware creation,
+// so the deterministic key order should be computed once, not re-sorted on every
+// request — this benchmark isolates that hot loop.
+func BenchmarkHeaderMiddleware_StaticHeaders(b *testing.B) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	cfg := testConfig()
+	cfg.Middleware.Middlewares = []MiddlewareFunc{
+		HeaderMiddleware(&HeaderConfig{Headers: map[string]string{
+			"X-Header-1": "value1",
+			"X-Header-2": "value2",
+			"X-Header-3": "value3",
+			"X-Header-4": "value4",
+			"X-Header-5": "value5",
+		}}),
+	}
+	client, _ := New(cfg)
+	defer func() { _ = client.Close() }()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		_, _ = client.Get(ts.URL)
+	}
+}
+
 // Moved from middleware_test.go (benchmark in a unit-test file):
 func BenchmarkMiddlewareOverhead(b *testing.B) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

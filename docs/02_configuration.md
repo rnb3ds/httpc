@@ -286,6 +286,7 @@ config := httpc.Config{
         MaxResponseBodySize: 50 * 1024 * 1024, // 50 MB
         AllowPrivateIPs:     false,
         StrictContentLength: true,
+        FollowRedirects:     true,
 
         // Full-stack browser transport fingerprinting (TLS + HTTP/2 +
         // ordered header block). Empty = standard stack. See README section
@@ -306,11 +307,6 @@ config := httpc.Config{
         Headers: map[string]string{
             "Accept": "application/json",
         },
-    },
-
-    // Redirect policy
-    Security: httpc.SecurityConfig{
-        FollowRedirects: true,
     },
 }
 
@@ -467,7 +463,7 @@ client, err := httpc.New(config)
 
 **Note:** URL and header validation are enabled by default for security.
 
-**SSRF and proxies:** when a proxy (`Connection.ProxyURL`, `ProxyPool`, or system proxy) is active, the transport dials only the proxy and the target hostname is resolved *by the proxy*. The client-side resolve-validate-dial SSRF guard therefore does not see the target's resolved IPs — only the hostname-string pre-check applies (legacy IP-literal notations like `0x7f000001` are still blocked). A public-looking hostname that resolves to a private address *at the proxy* can pivot the proxy toward its own internal network (proxy-side metadata services, etc.). Only route through proxies you control, and treat the proxy itself as the SSRF trust boundary.
+**SSRF and proxies:** when a proxy (`Connection.ProxyURL`, `ProxyPool`, or system proxy) is active, httpc resolves and validates the target hostname locally before the proxy carries the request, rejecting it when every resolved address is blocked — the same private/reserved/link-local rules as the direct path. This runs only while `AllowPrivateIPs` is `false` (the default) and honors the per-request `WithAllowPrivateIPs` override. Two caveats: the check is **fail-closed on local DNS** (a hostname this process cannot resolve is rejected even if the proxy could resolve it — reach intranet hosts via `Security.SSRFExemptCIDRs` or opt out with `AllowPrivateIPs: true`), and the direct path's **DNS-rebinding guarantee does not extend** to proxied requests (the proxy still performs its own second resolution). See `SECURITY.md` §2.
 
 ### Retry
 
@@ -483,7 +479,7 @@ client, err := httpc.New(config)
 
 **Note:** If Retry-After header is present in the response, its value takes precedence (capped at 60s).
 
-**Retry idempotency (default since v1.7.0):** retries apply only to idempotent methods (GET, HEAD, OPTIONS, TRACE, PUT, DELETE). A POST or PATCH executes exactly once even when `MaxRetries > 0` — a timeout or retryable 5xx may arrive *after* the server committed the operation, and replaying the body could duplicate it (double payment, double insert). To opt in for a replay-tolerant endpoint, set `Retry.RetryNonIdempotent: true` on the Config, or scope it to a single request with `WithRetryNonIdempotent(true)`. Idempotency keys are the safer server-side companion either way.
+**Retry idempotency (default since v1.6.3):** retries apply only to idempotent methods (GET, HEAD, OPTIONS, TRACE, PUT, DELETE). A POST or PATCH executes exactly once even when `MaxRetries > 0` — a timeout or retryable 5xx may arrive *after* the server committed the operation, and replaying the body could duplicate it (double payment, double insert). To opt in for a replay-tolerant endpoint, set `Retry.RetryNonIdempotent: true` on the Config, or scope it to a single request with `WithRetryNonIdempotent(true)`. Idempotency keys are the safer server-side companion either way.
 
 ### Middleware
 

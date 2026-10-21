@@ -61,6 +61,11 @@ func TestIsPrivateOrReservedIP(t *testing.T) {
 		{"NAT64 mapped private", "64:ff9b::a00:1", true},
 		{"NAT64 mapped public", "64:ff9b::808:808", false},
 
+		// Local-Use NAT64 prefix (RFC 8215): blocked wholesale — it may carry
+		// translations of RFC 1918 addresses at non-fixed offsets.
+		{"RFC 8215 local-use NAT64 private target", "64:ff9b:1::a00:1", true},
+		{"RFC 8215 local-use NAT64 public target", "64:ff9b:1::808:808", true},
+
 		// Remaining SSRF bypass literals (formerly TestSSRFBypassPrevention,
 		// retired as a strict subset of this table)
 		{"IPv4-mapped loopback variant", "::ffff:127.0.0.2", true},
@@ -472,6 +477,8 @@ func TestValidateAndParseURL_BoundaryConditions(t *testing.T) {
 		{"invalid URL parse", "http://[::1:bad", true, "invalid URL"},
 		{"missing scheme", "example.com/path", true, "scheme is required"},
 		{"missing host", "http://", true, "host is required"},
+		// Host=":8080" is non-empty but Hostname() is "" — must fail closed.
+		{"empty hostname with port", "http://:8080/x", true, "host is required"},
 		{"unsupported scheme ftp", "ftp://example.com/file", true, "unsupported URL scheme"},
 		{"valid HTTP", "http://example.com/path", false, ""},
 		{"valid HTTPS", "https://example.com/path?q=1", false, ""},
@@ -795,5 +802,37 @@ func TestLooksLikeLegacyIPLiteral(t *testing.T) {
 				t.Errorf("looksLikeLegacyIPLiteral(%q) = %v, want %v", tt.host, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestCanonicalProxyAddr_IDNA pins the IDNA alignment with net/http's dial
+// form: non-ASCII proxy hostnames are punycoded before the port is appended,
+// on both the explicit-port and default-port paths (previously documented as
+// a limitation — an IDN proxy never matched its own dial address).
+func TestCanonicalProxyAddr_IDNA(t *testing.T) {
+	u, err := url.Parse("http://münchen.example:8080")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := CanonicalProxyAddr(u); got != "xn--mnchen-3ya.example:8080" {
+		t.Errorf("explicit port: CanonicalProxyAddr = %q, want xn--mnchen-3ya.example:8080", got)
+	}
+
+	u2, err := url.Parse("socks5://münchen.example")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := CanonicalProxyAddr(u2); got != "xn--mnchen-3ya.example:1080" {
+		t.Errorf("default port: CanonicalProxyAddr = %q, want xn--mnchen-3ya.example:1080", got)
+	}
+
+	// ASCII hosts pass through unchanged (both port forms).
+	u3, _ := url.Parse("http://proxy.internal:3128")
+	if got := CanonicalProxyAddr(u3); got != "proxy.internal:3128" {
+		t.Errorf("ascii explicit port: got %q", got)
+	}
+	u4, _ := url.Parse("http://proxy.internal")
+	if got := CanonicalProxyAddr(u4); got != "proxy.internal:80" {
+		t.Errorf("ascii default port: got %q", got)
 	}
 }
