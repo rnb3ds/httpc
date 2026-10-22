@@ -711,3 +711,43 @@ func TestSelect_Concurrent(t *testing.T) {
 		t.Errorf("proxy2 openUntil = %d, want 0 (never opened)", ou)
 	}
 }
+
+// TestNextIndex_RandomStrategyHonored pins that NextIndex (the rotation
+// wiring's per-request base draw) honors StrategyRandom. Before the fix it
+// always advanced the round-robin cursor, so ProxyRotatePerRequest and
+// ProxyRotateOnStatus silently downgraded the random strategy to sequential
+// round-robin. Deterministic assertions only: values stay in range, and a
+// 50-draw sample over a 2-proxy pool contains both indexes (failure odds
+// 2*2^-50 — impossible in practice, so no flake risk).
+func TestNextIndex_RandomStrategyHonored(t *testing.T) {
+	t.Run("round robin stays sequential", func(t *testing.T) {
+		pool := newTestPool(t, testPoolOpts{})
+		for i := 0; i < 6; i++ {
+			if got := pool.NextIndex(); got != i%3 {
+				t.Fatalf("NextIndex() = %d, want %d", got, i%3)
+			}
+		}
+	})
+
+	t.Run("random draws in range and varies", func(t *testing.T) {
+		pool := newTestPool(t, testPoolOpts{
+			proxies:  []string{testProxy1, testProxy2},
+			strategy: StrategyRandom,
+		})
+		seen0, seen1 := false, false
+		for i := 0; i < 50; i++ {
+			idx := pool.NextIndex()
+			if idx < 0 || idx > 1 {
+				t.Fatalf("NextIndex() = %d, want 0 or 1", idx)
+			}
+			if idx == 0 {
+				seen0 = true
+			} else {
+				seen1 = true
+			}
+		}
+		if !seen0 || !seen1 {
+			t.Fatalf("50 random draws produced indexes (0=%v, 1=%v); want both", seen0, seen1)
+		}
+	})
+}

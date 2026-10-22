@@ -31,7 +31,7 @@ func TestWireHeaders(t *testing.T) {
 		}
 		// Get canonicalises the lookup, so the browser's lower-case casing is
 		// checked against the raw key directly.
-		if _, ok := out["sec-ch-ua"]; !ok {
+		if _, ok := out["sec-ch-ua"]; !ok { //nolint:staticcheck // SA1008: deliberate — the fingerprint wire set keeps sec-ch-ua lower-case
 			t.Errorf("sec-ch-ua missing under its browser casing: %v", out)
 		}
 		if _, ok := out[ehttp.HeaderOrderKey]; ok {

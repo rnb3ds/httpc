@@ -91,7 +91,7 @@ func demonstrateSessionWithClient() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Configure session headers
 	if err := client.SetHeader("Accept", "application/json"); err != nil {

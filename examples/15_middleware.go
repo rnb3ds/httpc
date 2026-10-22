@@ -58,7 +58,7 @@ func demonstrateLoggingMiddleware() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Make a request - logging is automatic
 	resp, err := client.Get("https://httpbin.org/get",
@@ -87,7 +87,7 @@ func demonstrateRequestIDMiddleware() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Make multiple requests - each gets unique ID
 	for i := 1; i <= 3; i++ {
@@ -142,7 +142,7 @@ func demonstrateMetricsMiddleware() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Make multiple requests
 	for i := 1; i <= 3; i++ {
@@ -187,7 +187,7 @@ func demonstrateRecoveryMiddleware() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Without recovery this panic would crash the process; with it, the
 	// panic surfaces as a normal error the caller can handle.
@@ -222,7 +222,7 @@ func demonstrateAuditMiddleware() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Make request with user context
 	ctx := context.WithValue(context.Background(), httpc.UserIDKey, "user-123")
@@ -256,7 +256,7 @@ func demonstrateHeaderMiddleware() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	resp, err := client.Get("https://httpbin.org/headers")
 	if err != nil {
@@ -288,7 +288,7 @@ func demonstrateMiddlewareChain() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	resp, err := client.Get("https://httpbin.org/get",
 		httpc.WithQuery("chained", "middlewares"),
@@ -317,7 +317,7 @@ func demonstrateMiddlewareChain() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client2.Close()
+	defer func() { _ = client2.Close() }()
 
 	resp, err = client2.Get("https://httpbin.org/get",
 		httpc.WithQuery("chain", "composed"),

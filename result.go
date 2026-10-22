@@ -120,9 +120,12 @@ type RequestMeta struct {
 	// ProxyURL is the URL of the proxy that served the final attempt of this
 	// request, as selected by the configured proxy (a single Connection.ProxyURL
 	// or a proxy pool entry). Empty when no proxy was used or the connection
-	// was direct. With proxy rotation each retry attempt may use a different
-	// proxy; this field reports the proxy that produced the returned response
-	// (see Attempts for the number of attempts made).
+	// was direct — note that with Connection.EnableSystemProxy the effective
+	// proxy is detected dynamically and is NOT recorded here (the field stays
+	// empty even when the system proxy carried the request). With proxy
+	// rotation each retry attempt may use a different proxy; this field
+	// reports the proxy that produced the returned response (see Attempts for
+	// the number of attempts made).
 	ProxyURL string
 	// RedirectChain contains the URLs followed during redirects.
 	RedirectChain []string

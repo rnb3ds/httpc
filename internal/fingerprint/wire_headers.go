@@ -24,10 +24,10 @@ import (
 
 // wireHeaders returns the header map the fingerprint transport writes for one
 // request: every non-magic header from the fork request map, with the two
-// magic order keys (Header-Order: / PHeader-Order:) dropped. Values are copied
-// so the reported map owns its backing arrays (the fork map is reused across
-// retries on the adapter path, and the engine's Result retains the reported
-// map).
+// magic order keys (Header-Order: / PHeader-Order:) dropped. The copy is
+// defensive: the engine's Result retains the reported map independently of
+// the per-trip fork map (prepareWireRequest clones the engine request — and
+// therefore the fork map — fresh for every round trip, retries included).
 func wireHeaders(h ehttp.Header) http.Header {
 	if h == nil {
 		return nil

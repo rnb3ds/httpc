@@ -128,7 +128,7 @@ func TestFingerprintDriftStableVersionLag(t *testing.T) {
 			}
 			if lag >= maxLag {
 				t.Errorf("%s profile lags stable by %d majors (shipped %d, stable %d): "+
-					"cut a new profile per internal/fingerprint/PROFILES.md", tt.browser, lag, tt.shipped, stable)
+					"cut a new profile (see the profile_chrome.go / profile_firefox.go headers)", tt.browser, lag, tt.shipped, stable)
 			}
 		})
 	}

@@ -3,7 +3,6 @@ package security
 import (
 	"strings"
 	"sync"
-	"unicode/utf8"
 
 	"golang.org/x/net/idna"
 
@@ -27,10 +26,9 @@ func normalizeDomain(domain string) string {
 		return ""
 	}
 
-	// Find leading/trailing whitespace and check if lowercase needed
+	// Find leading/trailing whitespace
 	start := 0
 	end := len(domain)
-	needsLower := false
 
 	// Skip leading whitespace (ASCII only for performance)
 	for start < end && (domain[start] == ' ' || domain[start] == '\t' || domain[start] == '\n' || domain[start] == '\r') {
@@ -49,25 +47,14 @@ func normalizeDomain(domain string) string {
 		end--
 	}
 
-	// Check if any uppercase letters exist
-	for i := start; i < end; i++ {
-		if domain[i] >= 'A' && domain[i] <= 'Z' {
-			needsLower = true
-			break
-		}
+	// Lowercase via the shared helper. Its own fast path returns the input
+	// unchanged when no uppercase exists, so the untrimmed input takes one
+	// scan total — the former pre-scan here scanned the same bytes a second
+	// time inside ASCIILower.
+	if start == 0 && end == len(domain) {
+		return validation.ASCIILower(domain)
 	}
-
-	// Fast path: no changes needed
-	if start == 0 && end == len(domain) && !needsLower {
-		return domain
-	}
-
-	// Build normalized string
-	result := domain[start:end]
-	if needsLower {
-		return validation.ASCIILower(result)
-	}
-	return result
+	return validation.ASCIILower(domain[start:end])
 }
 
 // normalizeDomainForCompare maps a configured or observed domain to its
@@ -85,22 +72,12 @@ func normalizeDomainForCompare(domain string) string {
 	if domain == "" {
 		return ""
 	}
-	if !isASCII(domain) {
+	if !validation.IsASCII(domain) {
 		if ascii, err := idna.Lookup.ToASCII(domain); err == nil {
 			domain = ascii
 		}
 	}
 	return prefix + domain
-}
-
-// isASCII reports whether s consists entirely of ASCII bytes.
-func isASCII(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= utf8.RuneSelf {
-			return false
-		}
-	}
-	return true
 }
 
 // NewDomainWhitelist creates a new DomainWhitelist from a list of domains.

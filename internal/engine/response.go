@@ -492,12 +492,13 @@ func (p *responseProcessor) readBody(httpResp *http.Response, encoding string) (
 
 	body := buf.Bytes()
 
-	// SECURITY: After decompression, check body size against configured limit.
-	if isCompressed && int64(len(body)) > maxSize {
-		return nil, fmt.Errorf("decompressed response body exceeds limit of %d bytes (potential zip bomb)", maxSize)
-	}
-
+	// SECURITY: enforce the size limit (post-decompression for compressed
+	// bodies). One comparison; only the message distinguishes the zip-bomb
+	// case from a plain oversize body.
 	if int64(len(body)) > maxSize {
+		if isCompressed {
+			return nil, fmt.Errorf("decompressed response body exceeds limit of %d bytes (potential zip bomb)", maxSize)
+		}
 		return nil, fmt.Errorf("response body exceeds limit of %d bytes", maxSize)
 	}
 

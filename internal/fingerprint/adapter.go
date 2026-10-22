@@ -45,16 +45,15 @@
 //   - Response bodies arrive decoded (gzip/deflate/br/zstd, see decode.go);
 //     the engine sees identity bodies with Content-Length already reset. The
 //     transport's own decompression is switched off so decoding happens once.
-//   - SSRF protection uses a pre-flight resolve+validate (the backend dials
-//     on its own, so the connection-layer validator cannot apply). Two gaps
-//     remain versus the standard path, documented in the public
-//     SecurityConfig.TLSFingerprint docs: (a) a theoretical TOCTOU window
-//     between validation and the backend's own DNS resolution, and (b) a
-//     host that resolves to a MIX of public and private addresses passes
-//     the "at least one allowed IP" pre-flight, and the backend's second
-//     resolution may land on the private record — deterministically, with
-//     no DNS rebinding required (the standard path dials only validated IP
-//     literals and has neither gap).
+//   - SSRF protection: DIRECT connections dial through the validating dialer
+//     (directdial.go) — resolve once, filter to allowed IPs, dial the
+//     validated IP literals — which is the same dial-layer guarantee the
+//     standard pool has: no TOCTOU window and no mixed-record pass. A
+//     request-time pre-flight (ssrf.go) runs as defense-in-depth and fails
+//     blocked targets before any dial. PROXIED requests cannot pin (the
+//     proxy resolves the target itself), so the pre-flight is their
+//     enforcement — identical in rule and residual to the standard path's
+//     validateProxiedTarget.
 package fingerprint
 
 import (
@@ -71,6 +70,7 @@ import (
 	utls "github.com/bogdanfinn/utls"
 
 	"github.com/cybergodev/httpc/internal/connection"
+	"github.com/cybergodev/httpc/internal/types"
 )
 
 // Config wires the adapter to the owning engine client.
@@ -244,10 +244,12 @@ func (a *Adapter) RoundTrip(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
-// defaultUserAgent is httpc's Defaults.UserAgent value. When the engine-side
+// defaultUserAgent aliases the shared facade constant: when the engine-side
 // request carries exactly this UA, it is dropped so the browser preset's
-// version-matched User-Agent is used instead.
-const defaultUserAgent = "httpc/1.0"
+// version-matched User-Agent is used instead. The alias keeps local call
+// sites short while guaranteeing the fingerprint path and Defaults.UserAgent
+// can never drift apart.
+const defaultUserAgent = types.DefaultUserAgent
 
 // engineAcceptEncodings are the values the engine auto-injects when the user
 // has not set Accept-Encoding ("gzip, deflate" for buffered requests,

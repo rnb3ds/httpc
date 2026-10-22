@@ -29,7 +29,7 @@ func main() {
 func demonstrateBasicDoH() {
 	fmt.Println("--- Example 1: Basic DoH ---")
 
-	// Enable DoH - uses CF, Google, and Ali DNS providers by default
+	// Enable DoH - uses Cloudflare, Google, and Ali DNS providers by default
 	config := httpc.DefaultConfig()
 	config.Connection.EnableDoH = true
 
@@ -38,7 +38,7 @@ func demonstrateBasicDoH() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	start := time.Now()
 	resp, err := client.Get("https://httpbin.org/get",
@@ -72,7 +72,7 @@ func demonstrateDoHWithCacheTTL() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// First request resolves via DoH and caches
 	start1 := time.Now()

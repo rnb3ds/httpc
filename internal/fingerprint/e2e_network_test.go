@@ -14,7 +14,8 @@
 //
 // When a profile is re-cut for a new browser build, re-baseline BOTH strings
 // (JA4 and the HTTP/2 hash) and keep the update in the same commit as the
-// profile data. See internal/fingerprint/PROFILES.md.
+// profile data (the profile_* .go file headers document what one profile
+// covers and where each layer lives).
 package fingerprint_test
 
 import (
@@ -66,6 +67,9 @@ func TestPeetWSE2ESafariIOS(t *testing.T) {
 }
 
 // peetWSResponse is the subset of tls.peet.ws/api/all the assertions need.
+// The HTTP/2 fingerprint fields carry the echo service's own wire names
+// ("akamai_fingerprint*"); they are kept verbatim so JSON decoding matches the
+// upstream response shape, and are not a reference to any detection vendor.
 type peetWSResponse struct {
 	UserAgent string `json:"user_agent"`
 	TLS       struct {
@@ -107,7 +111,7 @@ func peetWS(t *testing.T, preset string) peetWSResponse {
 // set), the exact HTTP/2 fingerprint string and its hash, and the UA the
 // preset claims. The shipped label is Chrome 155; the JA4/HTTP/2 constants
 // date from the Chrome 152 capture and are unchanged because Chrome 152–156
-// share the same ClientHello and H2 chain (see PROFILES.md).
+// share the same ClientHello and H2 chain (see profile_chrome.go).
 func TestPeetWSE2EChrome(t *testing.T) {
 	out := peetWS(t, "chrome-latest")
 

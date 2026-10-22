@@ -224,8 +224,19 @@ func (p *Pool) selectRandom(now int64) *url.URL {
 // position. Used by the retry layer to reserve a unique base proxy per
 // request, ensuring inter-request rotation; each retry attempt then uses
 // base + attempt as the SelectIndex argument for intra-request rotation.
+//
+// Under StrategyRandom the base is drawn uniformly at random instead of
+// advancing the cursor: without this, any rotation wiring (ProxyRotatePerRequest
+// or ProxyRotateOnStatus, both of which pin every attempt to SelectIndex)
+// would silently turn the random strategy into sequential round-robin. The
+// random draw is per REQUEST (per base), so the base+attempt walk stays
+// deterministic within one attempt — redirect hops re-selecting the same
+// index keep landing on the same proxy.
 func (p *Pool) NextIndex() int {
 	n := len(p.entries)
+	if p.strategy == StrategyRandom {
+		return rand.IntN(n)
+	}
 	// Pre-increment value, modulo before the int conversion — see
 	// selectRoundRobin for both rationales.
 	return int((p.counter.Add(1) - 1) % uint64(n))
@@ -303,7 +314,6 @@ func (p *Pool) Hosts() []string {
 }
 
 // Len returns the number of proxies in the pool.
-// Currently exercised only by tests.
 func (p *Pool) Len() int {
 	return len(p.entries)
 }

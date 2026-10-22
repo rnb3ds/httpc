@@ -119,6 +119,12 @@ func (gr *gzipReadCloser) Close() error {
 		return err
 	}
 
+	// NOTE: unlike zstdReadCloser (Reset(nil) drops the source reference) and
+	// brotliReadCloser below, stdlib gzip offers no reference-releasing reset:
+	// Reset(r) eagerly reads the gzip header from r, so Reset(nil) panics.
+	// The pooled reader therefore retains the wrapped response-body chain
+	// until the next acquire re-targets it — accepted, bounded retention (one
+	// body chain per pooled reader), not a leak.
 	gzipReaderPool.Put(gr.Reader)
 	return nil
 }
@@ -129,6 +135,9 @@ type brotliReadCloser struct {
 }
 
 func (br *brotliReadCloser) Close() error {
+	// Drop the source reference before pooling (see gzipReadCloser.Close).
+	// Reset cannot fail on a nil source — it only swaps the reader's input.
+	_ = br.Reset(nil) // best-effort reference release
 	brotliReaderPool.Put(br.Reader)
 	return nil
 }

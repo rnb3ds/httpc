@@ -79,7 +79,7 @@ func newTransportBackend(cfg Config, proxyURL *url.URL, p *browserProfile, os os
 		DisableCompression: true,
 	}
 
-	opts := make([]tls_client.HttpClientOption, 0, 9)
+	opts := make([]tls_client.HttpClientOption, 0, 10)
 	opts = append(opts,
 		tls_client.WithTimeoutSeconds(0), // the engine owns the deadline budget
 		tls_client.WithClientProfile(p.clientProfile()),
@@ -125,6 +125,14 @@ func newTransportBackend(cfg Config, proxyURL *url.URL, p *browserProfile, os os
 		// deliberately runs with no client timeout (the engine owns the
 		// deadline budget), so the built-in path would set a deadline of "now".
 		opts = append(opts, tls_client.WithProxyDialerFactory(factory))
+	} else {
+		// Direct connections install the validating dialer through the same
+		// factory hook (tls-client uses a non-nil factory as THE dialer even
+		// without a proxy): resolve once, filter to SSRF-allowed IPs, dial the
+		// validated literals. This is what gives the direct fingerprint path
+		// the standard pool's dial-layer guarantee — no TOCTOU window, no
+		// mixed-record pass. See directdial.go.
+		opts = append(opts, tls_client.WithProxyDialerFactory(newValidatingDialerFactory(cfg)))
 	}
 
 	client, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(), opts...)

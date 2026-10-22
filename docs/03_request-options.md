@@ -12,9 +12,11 @@ This guide covers all available request options in HTTPC for customizing HTTP re
 - [Query Parameters](#query-parameters)
 - [Request Body](#request-body)
 - [File Upload](#file-upload)
+- [Streaming Request Bodies](#streaming-request-bodies)
 - [Timeout & Context](#timeout--context)
 - [Retry Options](#retry-options)
 - [SSRF Override](#ssrf-override)
+- [Package-Level Routing Options](#package-level-routing-options)
 - [Cookies](#cookies)
 - [Request Callbacks](#request-callbacks)
 - [Advanced Body Options](#advanced-body-options)
@@ -285,6 +287,44 @@ resp, err := client.Post(url,
 )
 ```
 
+## Streaming Request Bodies
+
+`WithBody` accepts an `io.Reader` directly — the body is streamed instead of
+buffered. Content-Type is **not** auto-detected for readers, so set it
+explicitly:
+
+```go
+// Stream from a file or any io.Reader
+result, err := httpc.Post("https://example.com/upload",
+    httpc.WithBody(file),
+    httpc.WithHeader("Content-Type", "application/octet-stream"),
+)
+```
+
+Zero-copy streaming with `io.Pipe` — the producer goroutine writes while the
+HTTP transport consumes concurrently:
+
+```go
+pr, pw := io.Pipe()
+go func() {
+    defer pw.Close()
+    // Write chunks to pw ...
+}()
+
+result, err := httpc.Post("https://example.com/upload",
+    httpc.WithBody(pr),
+    httpc.WithHeader("Content-Type", "application/octet-stream"),
+)
+```
+
+> **Security:** `WithBody(io.Reader)` **bypasses request-body-size validation**.
+> Wrap untrusted readers with `io.LimitReader` to enforce a cap:
+> `httpc.WithBody(io.LimitReader(reader, 10<<20))` limits the body to 10 MB.
+
+> **Response side:** regular `Get` / `Post` always buffer the full response
+> body. `WithStreamBody(true)` is effective only with `Download`, which streams
+> the response to disk — see [07_file-download.md](07_file-download.md).
+
 ## Timeout & Context
 
 ### Request Timeout
@@ -412,6 +452,54 @@ result, err := client.Get("http://localhost:8080/health",
 > **SECURITY:** Only enable this on requests whose URL is trusted and not derived
 > from untrusted user input. For whole-client access to internal services, prefer
 > setting `Security.AllowPrivateIPs = true` on the `Config`.
+
+## Package-Level Routing Options
+
+`WithProxy`, `WithSystemProxy`, and `WithTLSFingerprint` are **routing options**:
+they apply only to the package-level functions (`httpc.Get`, `httpc.Post`,
+`httpc.Request`, `httpc.Download`, ...), which use a shared default client. Each
+routes a single call to a dedicated client, leaving the default client (and any
+other in-flight calls) untouched.
+
+```go
+// Route through an explicit proxy (http/https/socks5/socks5h)
+result, err := httpc.Get("https://api.example.com/data",
+    httpc.WithProxy("http://127.0.0.1:7890"),
+)
+
+// Route through the system proxy (env vars + platform settings)
+result, err := httpc.Get("https://api.example.com/data",
+    httpc.WithSystemProxy(),
+)
+
+// Route through a browser TLS-fingerprint client (impersonate Chrome/Firefox)
+result, err := httpc.Get("https://api.example.com/data",
+    httpc.WithTLSFingerprint("chrome-windows"),
+)
+
+// Composable: explicit proxy + browser fingerprint
+result, err := httpc.Get("https://api.example.com/data",
+    httpc.WithProxy("http://127.0.0.1:7890"),
+    httpc.WithTLSFingerprint("chrome"),
+)
+```
+
+**Semantics:**
+
+- Each distinct `(proxy, fingerprint)` combination is cached as its own client,
+  with isolated connection pools and TLS sessions, inheriting the default
+  client's secure defaults (SSRF protection, TLS 1.2+, timeouts, retries).
+- Priority: `WithProxy` > `WithSystemProxy` (matches `Config`'s
+  `ProxyURL` > `EnableSystemProxy`).
+- The fingerprint value is validated against the preset registry — an unknown
+  preset fails with `ErrInvalidSecurity`; an invalid proxy URL fails with
+  `ErrInvalidConnection`.
+- Close all routed clients with `httpc.CloseRoutedClients()`.
+- On an explicit client instance (`client.Get`, `DomainClient`, ...) these
+  options return an error — they are package-level routing, not per-request
+  modifiers. Use `Config.Connection.ProxyURL`,
+  `Config.Connection.EnableSystemProxy`, and `Config.Security.TLSFingerprint`
+  there instead.
 
 ## Cookies
 
@@ -604,6 +692,9 @@ result, err = client.Post(url, httpc.WithBody(data, httpc.BodyMultipart))
 | `WithFollowRedirects(follow)`    | Redirect policy      | `WithFollowRedirects(false)`            |
 | `WithMaxRedirects(n)`            | Max redirects        | `WithMaxRedirects(5)`                   |
 | `WithAllowPrivateIPs(allow)`     | Per-request SSRF override | `WithAllowPrivateIPs(true)`        |
+| `WithProxy(url)`                 | Route through an explicit proxy (package-level functions only) | `WithProxy("http://127.0.0.1:7890")` |
+| `WithSystemProxy()`              | Route through the system proxy (package-level functions only) | `WithSystemProxy()` |
+| `WithTLSFingerprint(preset)`     | Route through a browser fingerprint client (package-level functions only) | `WithTLSFingerprint("chrome")` |
 | `WithStreamBody(stream)`         | Stream response body (Download only — see note below) | `WithStreamBody(true)`                  |
 | `WithOnRequest(callback)`        | Pre-request callback | `WithOnRequest(func(req) error { ... })` |
 | `WithOnResponse(callback)`       | Post-response callback | `WithOnResponse(func(resp) error { ... })` |

@@ -3,8 +3,8 @@
 // License. The TLS spec is surf's own contribution —utls upstream has no
 // Chrome 152 hello —so it lives here and must track real Chrome releases.
 //
-// Chrome majors 152 through 156 ship an identical ClientHello (same JA4, see
-// PROFILES.md), so the one spec below serves both shipped profiles:
+// Chrome majors 152 through 156 ship an identical ClientHello (same JA4), so
+// the one spec below serves both shipped profiles:
 // chrome-155 (the current label; 155 went stable 2026-10-06) and chrome-152
 // (the retired major, kept as an explicit version pin). Per-major data is
 // only the UA map and the sec-ch-ua brand list —the GREASE brand, its
@@ -334,6 +334,27 @@ func chromeBaseHeaders(p *browserProfile, os osKey) []headerField {
 	}
 }
 
+// chromeIOSBaseHeaders builds the iOS (CriOS) static header set: the Chrome
+// base WITHOUT the Client Hints family. CriOS is WebKit underneath (the
+// profile's TLS and H2 layers are Safari's), and WebKit never shipped UA
+// Client Hints — a real CriOS request carries no sec-ch-ua/-mobile/-platform,
+// and emitting them alongside a Safari ClientHello is a header/TLS
+// combination no real browser produces (exactly what cross-layer coherence
+// checks look for). firefox158IOS models the same constraint with a hint-less
+// Firefox base; the safariOrder* tables tolerate the absent names.
+func chromeIOSBaseHeaders(p *browserProfile, os osKey) []headerField {
+	h := chromeBaseHeaders(p, os)
+	out := h[:0] // filter in place: chromeBaseHeaders returns a fresh slice per call
+	for _, f := range h {
+		switch f.Name {
+		case "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform":
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
 // chromeInsertGet adds the navigation (GET) header values.
 var chromeInsertGet = []headerField{
 	{Name: "Accept", Value: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"},
@@ -426,8 +447,8 @@ var chrome155Desktop = &browserProfile{
 // chrome155Android is the placeholder Chrome 155 Android profile: desktop
 // TLS and H2 bytes with mobile UA/Client Hints values. KNOWN to be wrong at
 // the TLS layer —live traffic shows Android Chrome as a 16-extension hello
-// (t13d1516h2_8daaf6152771_02713d6af862, see PROFILES.md), and the exact
-// 16-extension set is not yet identified —pending a real device capture.
+// (t13d1516h2_8daaf6152771_02713d6af862), and the exact 16-extension set is
+// not yet identified —pending a real device capture.
 var chrome155Android = &browserProfile{
 	name:              "chrome-155-android",
 	hello:             helloFromSpec(chromeSpecMobile),
@@ -449,18 +470,20 @@ var chrome155Android = &browserProfile{
 // (t13d2013h2_a09f3c656075_7f0f34a4126d) matches the dominant live iOS
 // observation, and the H2 chain is safariIOSH2. The UA is a real CriOS
 // capture on iOS 26.3, matching the 26.3 WebKit the hello claims. The
-// regular-header order remains the desktop approximation (see PROFILES.md).
+// regular-header order remains the desktop approximation.
 var chrome155IOS = &browserProfile{
-	name:     "chrome-155-ios",
-	hello:    helloFromID(utls.HelloSafari_26_3),
-	ua:       chrome155UA,
-	platform: chromePlatform,
-	secCHUA:  chrome155SecCHUA,
+	name:  "chrome-155-ios",
+	hello: helloFromID(utls.HelloSafari_26_3),
+	ua:    chrome155UA,
+	// CriOS is WebKit underneath: no Chromium Client Hints on the wire (see
+	// chromeIOSBaseHeaders), so the platform map and brand list are unused.
+	platform: nil,
+	secCHUA:  "",
 	// iOS WebKit keeps a fixed extension order: no Chromium shuffle.
 	shuffleExtensions: false,
 	orderGet:          safariOrderGet,
 	orderPost:         safariOrderPost,
-	baseHeaders:       chromeBaseHeaders,
+	baseHeaders:       chromeIOSBaseHeaders,
 	insertGet:         chromeInsertGet,
 	insertPost:        chromeInsertPost,
 	h2:                safariIOSH2,

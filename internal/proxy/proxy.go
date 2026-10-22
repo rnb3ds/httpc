@@ -2,8 +2,6 @@
 package proxy
 
 import (
-	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -192,58 +190,14 @@ func matchProxyBypassEntry(host, entry string) bool {
 // macOS bypass lists support that form, so a Windows build would otherwise
 // see an unused helper here.
 
-// parseProxyURL parses a proxy URL string, normalizing bare host:port values
-// by prepending "http://" when no recognizable scheme is present.
+// parseProxyURL parses an environment-sourced proxy URL. All system-source
+// normalization (bare host:port, the bare "socks" scheme, case-insensitive
+// schemes) and validation (allow-list, host requirement, credential
+// redaction in errors) live in validation.ParseSystemProxyURL — the shared
+// single point — so the environment and Windows registry detection paths
+// cannot drift apart again.
 func parseProxyURL(proxy string) (*url.URL, error) {
-	if proxy == "" {
-		return nil, nil
-	}
-	// Normalize the bare "socks" scheme to "socks5" (same as the Windows
-	// registry path): net/http recognizes socks5/socks5h but not "socks://".
-	if after, ok := strings.CutPrefix(proxy, "socks://"); ok {
-		proxy = "socks5://" + after
-	}
-	// Scheme allow-list matches validation.ValidateProxyURL exactly (the
-	// previous prefix check accepted "httpx://"/"socks4://", deferring failure
-	// to a per-request transport error instead of a clear detection-time one).
-	// Only values carrying an explicit "://" are treated as schemed — a bare
-	// "host:port" like "proxy:3128" parses with the hostname in the scheme
-	// position and must keep the http fallback below.
-	if i := strings.Index(proxy, "://"); i > 0 {
-		scheme := strings.ToLower(proxy[:i])
-		switch scheme {
-		case "http", "https", "socks5", "socks5h":
-		default:
-			return nil, fmt.Errorf("unsupported proxy scheme %q", scheme)
-		}
-	}
-	u, err := url.Parse(proxy)
-	if err == nil && u != nil {
-		switch u.Scheme {
-		case "http", "https", "socks5", "socks5h":
-			return u, nil
-		}
-	}
-	// Fall back to prepending "http://" for bare host:port values.
-	u, err = url.Parse("http://" + proxy)
-	if err != nil {
-		return nil, proxyParseError(proxy, err)
-	}
-	return u, nil
-}
-
-// proxyParseError redacts credentials from a proxy URL parse failure.
-// url.Parse errors embed the raw URL verbatim (`parse "http://user:pass@…":
-// invalid port …`), and proxy addresses frequently carry auth — the error is
-// stored per-scheme and returned to callers on every request, where it ends
-// up in logs via *url.Error chains. Keep the parse reason, drop the raw URL.
-func proxyParseError(proxy string, err error) error {
-	reason := err.Error()
-	var ue *url.Error
-	if errors.As(err, &ue) {
-		reason = ue.Err.Error() // inner reason, without the raw URL
-	}
-	return fmt.Errorf("invalid proxy URL %q: %s", validation.SanitizeURL(proxy), reason)
+	return validation.ParseSystemProxyURL(proxy)
 }
 
 // shouldUseProxy reports whether requests to the given host should use a proxy,

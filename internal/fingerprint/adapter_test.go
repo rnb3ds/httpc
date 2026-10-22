@@ -412,7 +412,7 @@ func TestToStdResponse_FullFieldParity(t *testing.T) {
 	}
 	// The browser stores sec-ch-ua under its lower-case key; Header.Get
 	// canonicalises the lookup, so assert the raw key directly.
-	if got := resp.Request.Header["sec-ch-ua"]; len(got) != 1 || got[0] != `"Chromium";v="155"` {
+	if got := resp.Request.Header["sec-ch-ua"]; len(got) != 1 || got[0] != `"Chromium";v="155"` { //nolint:staticcheck // SA1008: deliberate — the fingerprint wire set keeps sec-ch-ua lower-case
 		t.Errorf("report request sec-ch-ua = %v, want the wire value under browser casing", got)
 	}
 	if _, ok := resp.Request.Header[ehttp.HeaderOrderKey]; ok {

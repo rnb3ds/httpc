@@ -256,15 +256,22 @@ func transferCancelOwnership(resp *Response, overallCancel *context.CancelFunc) 
 	*overallCancel = nil
 }
 
-// effectiveRequestTimeout resolves the per-request timeout budget: the explicit
-// WithTimeout value when set, else the client-level Config.Timeout, unless the
-// request opts out via NoTimeout. A non-positive result means "no budget".
+// effectiveRequestTimeout resolves the per-request timeout budget: an explicit
+// WithTimeout value always wins; without one, NoTimeout suppresses the
+// client-level Config.Timeout; otherwise the client default applies. A
+// non-positive result means "no budget".
+//
+// The explicit timeout is checked FIRST deliberately: both options' public
+// docs promise that WithNoTimeout lifts only the client-level default while
+// an explicit WithTimeout is "always honored" — so the documented combination
+// WithNoTimeout()+WithTimeout(30s) must keep its 30s cap, never run
+// unbounded. (NoTimeout alone still lifts the client default entirely.)
 func effectiveRequestTimeout(c *Client, req *Request) time.Duration {
-	if req.NoTimeout() {
-		return 0
-	}
 	if t := req.Timeout(); t > 0 {
 		return t
+	}
+	if req.NoTimeout() {
+		return 0
 	}
 	return c.config.Timeout
 }
@@ -1027,30 +1034,9 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 		resp.cancelFunc = streamCancel
 		setCancelFuncToNil() // Prevent deferred cancel; ReleaseResponse handles cleanup
 
-		if httpResp.Request != nil {
-			resp.SetRequestHeaders(captureRequestHeaders(httpResp.Request))
-			if httpResp.Request.URL != nil {
-				resp.SetRequestURL(httpResp.Request.URL.String())
-			}
-			resp.SetRequestMethod(httpResp.Request.Method)
-		}
-
-		// Capture redirect metadata for streaming responses. Reading the chain
-		// straight off the settings object avoids a ctx.Value chain walk (the
-		// settings pointer is already in scope from SetRedirectPolicy).
-		if redirectSettings != nil {
-			if redirectChain := redirectSettings.getChain(); len(redirectChain) > 0 {
-				resp.SetRedirectChain(redirectChain)
-				resp.SetRedirectCount(len(redirectChain))
-			}
-		}
-
-		// Invoke OnResponse callback for streaming responses
-		if reqCopy.onResponse != nil {
-			if err := reqCopy.onResponse(resp); err != nil {
-				ReleaseResponse(resp)
-				return nil, classifyErrorWithSanitizedURL(fmt.Errorf("onResponse callback failed: %w", err), sanitizeOnce(), req.Method(), 0)
-			}
+		attachFinalRequestMetadata(resp, httpResp, redirectSettings)
+		if err := invokeOnResponse(reqCopy, resp, sanitizeOnce); err != nil {
+			return nil, err
 		}
 
 		return resp, nil
@@ -1067,33 +1053,52 @@ func (c *Client) executeRequest(req *Request, skipCopy bool) (*Response, error) 
 		return nil, classifyErrorWithSanitizedURL(err, sanitizeOnce(), req.Method(), 0)
 	}
 
-	// Read the chain straight off the settings object (see the streaming-path
-	// note above) rather than walking the request context.
+	attachFinalRequestMetadata(resp, httpResp, redirectSettings)
+	if err := invokeOnResponse(reqCopy, resp, sanitizeOnce); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// attachFinalRequestMetadata copies the final (post-redirect) request
+// identity and the redirect chain onto resp. It is the single shared
+// implementation for the streaming and buffered response paths of
+// executeRequest — the two previously carried verbatim copies of these
+// blocks, and a new field sourced from httpResp.Request or redirectSettings
+// added to only one of them would silently be missing on the other path.
+func attachFinalRequestMetadata(resp *Response, httpResp *http.Response, redirectSettings *redirectSettings) {
+	if httpResp.Request != nil {
+		resp.SetRequestHeaders(captureRequestHeaders(httpResp.Request))
+		// Set the actual final request URL and method (after redirects).
+		if httpResp.Request.URL != nil {
+			resp.SetRequestURL(httpResp.Request.URL.String())
+		}
+		resp.SetRequestMethod(httpResp.Request.Method)
+	}
+	// Read the chain straight off the settings object rather than walking the
+	// request context: avoids a ctx.Value chain walk (the settings pointer is
+	// already in scope from SetRedirectPolicy).
 	if redirectSettings != nil {
 		if redirectChain := redirectSettings.getChain(); len(redirectChain) > 0 {
 			resp.SetRedirectChain(redirectChain)
 			resp.SetRedirectCount(len(redirectChain))
 		}
 	}
+}
 
-	if httpResp.Request != nil {
-		resp.SetRequestHeaders(captureRequestHeaders(httpResp.Request))
-		// Set the actual request URL and method
-		if httpResp.Request.URL != nil {
-			resp.SetRequestURL(httpResp.Request.URL.String())
-		}
-		resp.SetRequestMethod(httpResp.Request.Method)
+// invokeOnResponse runs the per-request OnResponse callback, releasing resp
+// and classifying the error when the callback fails. Shared by both response
+// paths of executeRequest (see attachFinalRequestMetadata).
+func invokeOnResponse(reqCopy *Request, resp *Response, sanitizeOnce func() string) error {
+	if reqCopy.onResponse == nil {
+		return nil
 	}
-
-	// Invoke OnResponse callback after response processing
-	if reqCopy.onResponse != nil {
-		if err := reqCopy.onResponse(resp); err != nil {
-			ReleaseResponse(resp)
-			return nil, classifyErrorWithSanitizedURL(fmt.Errorf("onResponse callback failed: %w", err), sanitizeOnce(), req.Method(), 0)
-		}
+	if err := reqCopy.onResponse(resp); err != nil {
+		ReleaseResponse(resp)
+		return classifyErrorWithSanitizedURL(fmt.Errorf("onResponse callback failed: %w", err), sanitizeOnce(), reqCopy.Method(), 0)
 	}
-
-	return resp, nil
+	return nil
 }
 
 // IsClosed returns true if the client has been closed.

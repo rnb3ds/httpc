@@ -11,6 +11,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // detectPlatform reads proxy settings from Windows registry/system settings
@@ -206,14 +208,13 @@ func parseWindowsProxyRoutes(proxyStr string) (*windowsProxyRoutes, error) {
 				servers[strings.ToLower(strings.TrimSpace(kv[0]))] = strings.TrimSpace(kv[1])
 			}
 		}
+		// Parse via the shared system-source parser (validation.ParseSystemProxyURL)
+		// rather than a local variant: the registry path previously accepted any
+		// scheme here (a "socks://" per-protocol value kept a scheme net/http
+		// cannot use, failing per-request instead of at detection) and skipped
+		// the bare-socks normalization its own simple-format branch below applied.
 		parse := func(server string) (*url.URL, error) {
-			if server == "" {
-				return nil, nil
-			}
-			if !strings.Contains(server, "://") {
-				server = "http://" + server
-			}
-			return url.Parse(server)
+			return validation.ParseSystemProxyURL(server)
 		}
 		httpURL, err := parse(servers["http"])
 		if err != nil {
@@ -235,23 +236,14 @@ func parseWindowsProxyRoutes(proxyStr string) (*windowsProxyRoutes, error) {
 		return &windowsProxyRoutes{httpURL: httpURL, httpsURL: httpsURL}, nil
 	}
 
-	// Simple server:port format (possibly with an explicit scheme).
-	// Normalize the bare "socks" scheme to "socks5": net/http's Transport proxy
-	// support recognizes socks5/socks5h but not "socks://", so leaving a value
-	// like "socks://host:1080" unchanged would yield a "socks" scheme the
-	// transport cannot use (silently ignored or a confusing dial error).
-	if after, ok := strings.CutPrefix(proxyStr, "socks://"); ok {
-		proxyStr = "socks5://" + after
-	}
-
-	if !strings.HasPrefix(proxyStr, "http://") &&
-		!strings.HasPrefix(proxyStr, "https://") &&
-		!strings.HasPrefix(proxyStr, "socks5://") &&
-		!strings.HasPrefix(proxyStr, "socks5h://") {
-		proxyStr = "http://" + proxyStr
-	}
-
-	u, err := url.Parse(proxyStr)
+	// Simple server:port format (possibly with an explicit scheme). Shared
+	// system-source parsing (validation.ParseSystemProxyURL) applies the bare
+	// host:port and bare-socks normalizations and the scheme allow-list —
+	// case-insensitively: the former case-sensitive prefix checks turned an
+	// uppercase-scheme registry value ("HTTP://proxy:8080") into
+	// "http://HTTP://…" and silently disabled the system proxy on the parse
+	// error.
+	u, err := validation.ParseSystemProxyURL(proxyStr)
 	if err != nil {
 		return nil, err
 	}

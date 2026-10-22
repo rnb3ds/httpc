@@ -107,12 +107,23 @@ type ConnectionConfig struct {
 	// breaking: after ProxyFailureThreshold consecutive failures the proxy is
 	// temporarily removed from rotation and restored after ProxyCooldown.
 	//
+	// HTTP/2 is automatically disabled while a pool of more than one proxy is
+	// active (see EnableHTTP2): the standard library's h2 connection pool is
+	// keyed by target host only and would otherwise pin all requests to
+	// whichever proxy's tunnel connected first, silently bypassing proxy
+	// selection — including rotation retries. Set EnableProxyPoolHTTP2 to
+	// restore HTTP/2 with per-proxy connection isolation instead.
+	//
 	// Priority: lower than ProxyURL, higher than EnableSystemProxy. If both
 	// ProxyURL and ProxyPool are set, ProxyURL wins (single-proxy mode).
 	// Default: nil (no proxy pool).
 	ProxyPool []string
 
 	// ProxyPoolStrategy selects how proxies are chosen from ProxyPool.
+	// RoundRobin (default) advances one entry per selection; Random draws a
+	// healthy proxy uniformly at random — including under per-request
+	// rotation, where each request's base proxy is drawn randomly and retry
+	// attempts walk forward from it deterministically.
 	// Default: ProxyStrategyRoundRobin.
 	ProxyPoolStrategy ProxyStrategy
 
@@ -156,8 +167,44 @@ type ConnectionConfig struct {
 	// Default: nil.
 	ProxyRotateOnStatus []int
 
+	// EnableProxyPoolHTTP2 restores HTTP/2 support for a multi-proxy pool by
+	// giving each proxy its own transport (and therefore its own HTTP/2
+	// connection pool) behind a per-request dispatcher. Proxy rotation,
+	// ProxyRotateOnStatus, and Meta.ProxyURL reporting behave exactly as with
+	// the default forced HTTP/1; the difference is that concurrent requests
+	// routed to the SAME proxy multiplex over one HTTP/2 tunnel instead of
+	// opening one HTTP/1 connection each.
+	//
+	// Trade-offs:
+	//   - Requests routed to the same proxy share that proxy's connections —
+	//     including concurrent ones (an in-flight tunnel is joined by the
+	//     next same-proxy request), which correlates them at the network
+	//     level. When requests must not be correlatable, leave this off.
+	//     ProxyRotatePerRequest alone does NOT prevent the sharing: rotation
+	//     indexes repeat every pool-size requests, and its idle-connection
+	//     drain only reaches connections that are no longer in flight.
+	//   - Connection limits (MaxConnsPerHost, MaxIdleConnsPerHost) apply per
+	//     proxy transport; the process-wide ceiling becomes limit × pool
+	//     size. MaxTotalConns still caps all dials globally.
+	//
+	// Requires EnableHTTP2 (the combination is rejected by ValidateConfig)
+	// and a ProxyPool with more than one entry and no ProxyURL; it has no
+	// effect outside a multi-proxy pool. With Security.TLSFingerprint the
+	// fingerprint transport's own per-proxy backends apply and this field is
+	// ignored.
+	// Default: false (the pool uses HTTP/1, where every new connection
+	// re-consults the pool).
+	EnableProxyPoolHTTP2 bool
+
 	// EnableHTTP2 enables HTTP/2 protocol support.
 	// Default: true.
+	//
+	// Forced off while a rotating proxy pool is active (ProxyPool with more
+	// than one entry and no ProxyURL) unless EnableProxyPoolHTTP2 is set:
+	// net/http's h2 connection pool is keyed by target host only, so with
+	// several proxies it would serve every request through whichever proxy's
+	// tunnel connected first, bypassing proxy rotation and load balancing.
+	// See ProxyPool and EnableProxyPoolHTTP2.
 	EnableHTTP2 bool
 
 	// EnableCookies enables automatic cookie handling with a cookie jar.
@@ -270,15 +317,16 @@ type SecurityConfig struct {
 	//     rejects the combination). MinTLSVersion/MaxTLSVersion are silently
 	//     ignored when TLSFingerprint is set — the preset's ClientHello
 	//     dictates the version range.
-	//   - SSRF protection uses a resolve-then-validate pre-flight instead of
-	//     the standard path's dial-layer validation; redirects are re-checked
-	//     per hop by the engine. The pre-flight is weaker than the standard
-	//     path in two ways: a TOCTOU window remains between validation and
-	//     the backend's own DNS resolution, and a host resolving to a MIX of
-	//     public and private addresses passes ("at least one allowed IP") —
-	//     the backend's second resolution may then land on the private
-	//     record, deterministically and without DNS rebinding. The standard
-	//     path dials only validated IP literals and has neither gap.
+	//   - SSRF protection on DIRECT connections dials only validated IP
+	//     literals (resolve once, filter to allowed IPs, dial the literal —
+	//     see internal/fingerprint/directdial.go): the same dial-layer
+	//     guarantee as the standard path, with neither a TOCTOU window nor a
+	//     mixed-record pass. A request-time pre-flight fails blocked targets
+	//     before any dial, and redirects are re-checked per hop by the
+	//     engine. Through a PROXY the target cannot be pinned (the proxy
+	//     resolves it), so the pre-flight is the enforcement — the same rule
+	//     and the same trust-the-proxy residual as the standard path's
+	//     proxied-target validation.
 	//   - Response bodies are decoded by httpc itself (gzip/deflate/br/zstd)
 	//     and handed to the engine as identity bodies.
 	//   - Fingerprinted connections are not counted in pool metrics and do
@@ -533,7 +581,7 @@ func toEngineOptions(options []RequestOption) []engine.RequestOption {
 	if len(options) == 0 {
 		return nil
 	}
-	out := make([]engine.RequestOption, 1, 1)
+	out := make([]engine.RequestOption, 1)
 	out[0] = func(r RequestMutator) error {
 		for _, opt := range options {
 			if opt == nil {
@@ -710,7 +758,10 @@ func DefaultConfig() Config {
 			Middlewares: nil,
 		},
 		Defaults: RequestDefaults{
-			UserAgent: "httpc/1.0",
+			// Shared constant: the fingerprint adapter matches this exact
+			// value to drop the engine default in favor of the browser
+			// preset's UA (see types.DefaultUserAgent).
+			UserAgent: types.DefaultUserAgent,
 			Headers:   make(map[string]string),
 		},
 	}
@@ -796,6 +847,12 @@ func ValidateConfig(cfg *Config) error {
 		if code < 100 || code > 599 {
 			return fmt.Errorf("%w: Connection.ProxyRotateOnStatus contains invalid HTTP status code %d (must be 100-599)", ErrInvalidConnection, code)
 		}
+	}
+	// Fail fast on the contradictory combination instead of silently ignoring
+	// the flag: EnableProxyPoolHTTP2 exists to bring HTTP/2 back for pools,
+	// so requesting it while HTTP/2 is off is always a configuration mistake.
+	if cfg.Connection.EnableProxyPoolHTTP2 && !cfg.Connection.EnableHTTP2 {
+		return fmt.Errorf("%w: Connection.EnableProxyPoolHTTP2 requires Connection.EnableHTTP2 to be set", ErrInvalidConnection)
 	}
 	if cfg.Connection.DoHCacheTTL < 0 {
 		return fmt.Errorf("%w: Connection.DoHCacheTTL cannot be negative, got %v", ErrInvalidConnection, cfg.Connection.DoHCacheTTL)

@@ -1,6 +1,7 @@
 # HTTPC - 安全的 Go HTTP 客户端
 
 [![Go Version](https://img.shields.io/badge/Go-1.27+-00ADD8?logo=go)](https://golang.org)
+[![Release](https://img.shields.io/github/v/release/cybergodev/httpc)](https://github.com/cybergodev/httpc/releases)
 [![Go Reference](https://pkg.go.dev/badge/github.com/cybergodev/httpc.svg)](https://pkg.go.dev/github.com/cybergodev/httpc)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Security](https://img.shields.io/badge/Security-Hardened-red.svg)](SECURITY.md)
@@ -17,7 +18,7 @@
 
 - [特性](#特性)
 - [安装](#安装)
-- [快速开始](#快速开始-5-分钟)
+- [快速开始](#快速开始)
 - [HTTP 方法](#http-方法)
 - [请求选项](#请求选项)
 - [响应处理](#响应处理)
@@ -25,7 +26,6 @@
 - [文件下载](#文件下载)
 - [流式传输](#流式传输)
 - [域名客户端 (会话管理)](#域名客户端-会话管理)
-- [会话管理器](#会话管理器)
 - [配置](#配置)
 - [中间件](#中间件)
 - [代理配置](#代理配置)
@@ -48,7 +48,7 @@
 | **内置弹性** | 智能重试，支持指数退避和抖动 —— 非幂等请求（POST/PATCH）默认仅执行一次 |
 | **自动解压缩** | 透明的 gzip/deflate 处理，带 Zip 炸弹防护 |
 | **开发者友好** | 简洁的 API、直观的选项模式、完善的文档 |
-| **依赖** | 7 个直接模块 —— 标准路径用 `golang.org/x/net` + `golang.org/x/sys`；brotli / compress / uTLS / tls-client 仅供 `Security.TLSFingerprint` 使用 |
+| **依赖** | 7 个直接模块 —— 标准路径用 `golang.org/x/net` + `golang.org/x/sys`；brotli / compress / uTLS / tls-client / fhttp 仅供 `Security.TLSFingerprint` 使用 |
 | **Cookie 管理** | 完整的 Cookie Jar 支持，带安全验证 |
 | **文件操作** | 安全的文件下载，支持进度跟踪和断点续传 |
 | **流式传输** | `io.Reader` 请求体、零拷贝 `io.Pipe` 上传、磁盘流式下载 |
@@ -61,92 +61,42 @@
 go get -u github.com/cybergodev/httpc
 ```
 
+```go
+import "github.com/cybergodev/httpc"
+```
+
 **环境要求：** Go 1.27+
 
 ---
 
-## 快速开始 (5 分钟)
-
-### 简单 GET 请求
+## 快速开始
 
 ```go
-package main
-
-import (
-    "fmt"
-    "log"
-
-    "github.com/cybergodev/httpc"
-)
-
-func main() {
-    // 包级函数 - 适用于简单请求
-    result, err := httpc.Get("https://httpbin.org/get")
-    if err != nil {
-        log.Fatal(err)
-    }
-    fmt.Printf("状态码: %d, 耗时: %v\n", result.StatusCode(), result.Meta.Duration)
+// 包级函数 —— 无需创建客户端
+result, err := httpc.Get("https://httpbin.org/get")
+if err != nil {
+    log.Fatal(err)
 }
+fmt.Printf("状态码: %d, 耗时: %v\n", result.StatusCode(), result.Meta.Duration)
 ```
 
-### 带认证的 POST JSON 请求
+超出一次性请求的场景，请创建可复用的客户端（推荐）：
 
 ```go
-package main
-
-import (
-    "fmt"
-    "log"
-    "time"
-
-    "github.com/cybergodev/httpc"
-)
-
-func main() {
-    user := map[string]string{"name": "John", "email": "john@example.com"}
-    result, err := httpc.Post("https://httpbin.org/post",
-        httpc.WithJSON(user),
-        httpc.WithBearerToken("your-token"),
-        httpc.WithTimeout(30*time.Second),
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-    fmt.Printf("响应: %s\n", result.Body())
+client, err := httpc.NewDefault()
+if err != nil {
+    log.Fatal(err)
 }
+defer client.Close()
+
+result, err := client.Get("https://api.example.com/users",
+    httpc.WithQuery("page", 1),
+    httpc.WithQuery("limit", 20),
+)
 ```
 
-### 使用客户端实例 (推荐)
-
-```go
-package main
-
-import (
-    "fmt"
-    "log"
-
-    "github.com/cybergodev/httpc"
-)
-
-func main() {
-    // 创建可复用的客户端 (使用默认配置)
-    client, err := httpc.NewDefault()
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer client.Close()
-
-    // 发起多个请求
-    result, err := client.Get("https://api.example.com/users",
-        httpc.WithQuery("page", 1),
-        httpc.WithQuery("limit", 20),
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-    fmt.Printf("状态码: %d\n", result.StatusCode())
-}
-```
+完整可运行程序：[examples/01_basic_usage.go](examples/01_basic_usage.go) ·
+[docs/01_getting-started.md](docs/01_getting-started.md)。
 
 ---
 
@@ -181,151 +131,8 @@ result, _ := httpc.Request(ctx, "PROPFIND", url)
 
 ## 请求选项
 
-### 请求头
-
-```go
-// 单个请求头
-httpc.WithHeader("Authorization", "Bearer token")
-
-// 多个请求头
-httpc.WithHeaderMap(map[string]string{
-    "X-Custom":      "value",
-    "X-Request-ID":  "123",
-})
-
-// User-Agent
-httpc.WithUserAgent("my-app/1.0")
-```
-
-### 认证
-
-```go
-// Bearer 令牌
-httpc.WithBearerToken("your-jwt-token")
-
-// Basic 认证
-httpc.WithBasicAuth("username", "password")
-```
-
-### 查询参数
-
-```go
-// 单个参数
-httpc.WithQuery("page", 1)
-
-// 多个参数
-httpc.WithQueryMap(map[string]any{"page": 1, "limit": 20})
-```
-
-### 请求体
-
-```go
-// JSON
-httpc.WithJSON(data)
-
-// XML
-httpc.WithXML(data)
-
-// 表单数据 (application/x-www-form-urlencoded)
-httpc.WithForm(map[string]string{"key": "value"})
-
-// Multipart 表单数据 (文件上传)
-formData := &httpc.FormData{
-    Fields: map[string]string{"key": "value"},
-    Files: map[string]*httpc.FileData{
-        "upload": {Filename: "doc.pdf", Content: fileBytes, ContentType: "application/pdf"},
-    },
-}
-httpc.WithFormData(formData)
-
-// 或使用快捷方式上传单个文件
-httpc.WithFile("file", "document.pdf", fileBytes)
-
-// 原始请求体 (自动检测 Content-Type)
-httpc.WithBody([]byte("raw data"))
-httpc.WithBody(data, httpc.BodyJSON) // 显式指定 BodyKind
-
-// io.Reader 请求体 (流式上传；需显式设置 Content-Type)
-httpc.WithBody(fileReader)
-
-// BodyKind 常量: BodyAuto, BodyJSON, BodyXML, BodyForm, BodyBinary, BodyMultipart
-
-httpc.WithBinary(binaryData, "application/pdf")
-
-// 流式响应体 (仅对 Download 有效；见流式传输)
-httpc.WithStreamBody(true)
-```
-
-### Cookie
-
-```go
-// 单个 Cookie
-httpc.WithCookies([]http.Cookie{{Name: "session", Value: "abc123"}})
-
-// 批量设置多个 Cookie (高效，预分配容量)
-httpc.WithCookies([]http.Cookie{
-    {Name: "session_id", Value: "abc123"},
-    {Name: "user_pref", Value: "dark_mode"},
-})
-
-// 从 Map 设置多个 Cookie
-httpc.WithCookieMap(map[string]string{
-    "session_id": "abc123",
-    "user_pref":  "dark_mode",
-})
-
-// Cookie 字符串
-httpc.WithCookieString("session=abc123; token=xyz")
-
-// 安全 Cookie 验证 (验证 Cookie 安全属性)
-cfg := httpc.DefaultCookieSecurityConfig()
-cfg.RequireSecure = true
-httpc.WithSecureCookie(cfg)
-```
-
-### 请求控制
-
-```go
-// Context 用于取消请求
-httpc.WithContext(ctx)
-
-// 超时设置
-httpc.WithTimeout(30 * time.Second)
-
-// 重试配置
-httpc.WithMaxRetries(3)
-
-// 对某次慢请求解除客户端级超时
-httpc.WithNoTimeout()
-
-// 选择重试非幂等方法（仅限可安全重放的端点）
-httpc.WithRetryNonIdempotent(true)
-
-// 重定向控制
-httpc.WithFollowRedirects(false)
-httpc.WithMaxRedirects(5)
-
-// 单次请求的 SSRF 覆盖 (针对一个受信任的内部 URL 的逃生舱)
-httpc.WithAllowPrivateIPs(true)
-```
-
-### 回调函数
-
-```go
-// 请求发送前
-httpc.WithOnRequest(func(req httpc.RequestMutator) error {
-    log.Printf("发送 %s %s", req.Method(), req.URL())
-    return nil
-})
-
-// 响应接收后
-httpc.WithOnResponse(func(resp httpc.ResponseMutator) error {
-    log.Printf("收到状态码 %d", resp.StatusCode())
-    return nil
-})
-```
-
-### 完整选项参考
+每个请求都接受 `With*` 选项 —— 请求头、认证、查询参数、请求体、Cookie、
+超时、重试、重定向、SSRF 覆盖、回调，以及包级的代理/指纹路由：
 
 | 类别 | 选项 |
 |------|------|
@@ -336,7 +143,16 @@ httpc.WithOnResponse(func(resp httpc.ResponseMutator) error {
 | **Cookie** | `WithCookies([]http.Cookie)`, `WithCookieMap(map)`, `WithCookieString("a=1; b=2")`, `WithSecureCookie(config)` |
 | **控制** | `WithTimeout(dur)`, `WithNoTimeout()`, `WithMaxRetries(n)`, `WithRetryNonIdempotent(bool)`, `WithContext(ctx)`, `WithAllowPrivateIPs(bool)` |
 | **重定向** | `WithFollowRedirects(bool)`, `WithMaxRedirects(n)` |
+| **路由** | `WithProxy(url)`, `WithSystemProxy()`, `WithTLSFingerprint(preset)` — 仅包级函数 |
 | **回调** | `WithOnRequest(fn)`, `WithOnResponse(fn)` |
+
+每个选项的详细说明与示例：
+[docs/03_request-options.md](docs/03_request-options.md)。
+
+> **包级路由**：`WithProxy` / `WithSystemProxy` / `WithTLSFingerprint` 把单次
+> 包级调用路由到一个缓存的专用客户端（隔离连接池，继承默认客户端的安全
+> 默认）；用 `httpc.CloseRoutedClients()` 统一关闭。在客户端实例上使用会返回
+> 错误 —— 请改用 `Config.Connection.*` / `Security.TLSFingerprint`。
 
 ---
 
@@ -345,79 +161,32 @@ httpc.WithOnResponse(func(resp httpc.ResponseMutator) error {
 ```go
 result, _ := httpc.Get("https://api.example.com/users/123")
 
-// Result 结构组成:
-// result.Request  -> *RequestInfo  (URL, Method, Headers, Cookies)
-// result.Response -> *ResponseInfo (StatusCode, Status, Proto, Headers, Body, RawBody, ContentLength, Cookies)
-// result.Meta     -> *RequestMeta  (Duration, Attempts, ProxyURL, RedirectCount, RedirectChain)
+// Result.Request / Result.Response / Result.Meta 携带完整的请求、响应
+// 与元数据（耗时、尝试次数、代理、重定向链）。
 
-// 快速访问方法 (nil 安全)
-fmt.Println(result.StatusCode())     // 200
-fmt.Println(result.Proto())          // "HTTP/1.1" 或 "HTTP/2.0"
-fmt.Println(result.RawBody())        // 响应体 ([]byte)
-fmt.Println(result.Body())           // 响应体 (string)
+fmt.Println(result.StatusCode()) // 200
+fmt.Println(result.Body())       // 响应体 (string)
 
-// 状态检查
-if result.IsSuccess() { }            // 2xx
-if result.IsRedirect() { }           // 3xx
-if result.IsClientError() { }        // 4xx
-if result.IsServerError() { }        // 5xx
+if result.IsSuccess() { }        // 2xx；另有 IsRedirect / IsClientError / IsServerError
 
-// 解析 JSON 响应
-var data map[string]interface{}
-if err := result.Unmarshal(&data); err != nil {
+var data map[string]any
+if err := result.Unmarshal(&data); err != nil { // 解析 JSON
     log.Fatal(err)
 }
 
-// Cookie 访问
-cookie := result.GetCookie("session")
-if result.HasCookie("session") { }
-
-// 获取请求时发送的 Cookie
-reqCookie := result.GetRequestCookie("token")
-if result.HasRequestCookie("token") { }
-
-// 获取所有 Cookie
-allResponse := result.ResponseCookies()
-allRequest := result.RequestCookies()
-
-// 保存响应到文件
-if err := result.SaveToFile("response.json"); err != nil {
-    log.Fatal(err)
-}
-
-// 元数据
-fmt.Println(result.Meta.Duration)      // 请求耗时
-fmt.Println(result.Meta.Attempts)      // 重试次数
-fmt.Println(result.Meta.ProxyURL)      // 本次请求使用的代理（"" = 直连）
-fmt.Println(result.Meta.RedirectCount) // 重定向次数
-fmt.Println(result.Meta.RedirectChain) // 重定向 URL 链
-
-// 字符串表示 (安全日志 - 敏感请求头已遮蔽)
-fmt.Println(result.String())
+fmt.Println(result.Meta.ProxyURL) // 使用的代理（"" = 直连；系统代理不记录）
+fmt.Println(result.String())      // 可安全打日志 —— 敏感请求头已遮蔽
 ```
 
 ### 自动解压缩
 
-HTTPC 会透明地解压 `gzip` 和 `deflate` 响应。默认会自动发送
-`Accept-Encoding: gzip, deflate`（可通过 `WithHeader("Accept-Encoding", ...)`
-覆盖或扩展）。解压缩炸弹 (Zip 炸弹) 防护将解压后的大小限制在
-`Security.MaxDecompressedBodySize`（默认 100 MB）。
+`gzip` / `deflate` 响应会被透明解压（解压缩炸弹防护将解压后大小限制在
+`Security.MaxDecompressedBodySize`，默认 100 MB）。其他任何
+`Content-Encoding`（如 `br`、`zstd` 或 `gzip, br` 列表）都会直接返回错误，
+而不是把原始压缩字节当正文返回 —— 通常仅在手动设置 `Accept-Encoding` 时发生。
 
-```go
-result, _ := httpc.Get("https://httpbin.org/gzip",
-    httpc.WithHeaderMap(map[string]string{"Accept-Encoding": "gzip, deflate"}),
-)
-fmt.Println(result.Body()) // 已自动解压
-```
-
-> **注意：** 除 `gzip`、`deflate` 和 `identity` 之外的任何 `Content-Encoding`
-> (如 Brotli `br`、LZW `compress`、`zstd`，或多编码列表 `gzip, br`)都会**直接
-> 返回错误**，而不是把原始压缩字节当作响应体静默返回。由于 httpc 只声明
-> `gzip, deflate`，通常仅在你手动设置 `Accept-Encoding` 时才会发生。
-
-> **流式请求：** 使用 `WithStreamBody(true)` 的请求（包括 `Download`）会发送
-> `Accept-Encoding: identity` —— 流式路径直接交付原始传输字节，因此不会请求
-> 压缩内容。流式请求上手动设置的 `Accept-Encoding` 将按原样生效。
+完整检查 API（Cookie、`SaveToFile`、重定向链、请求元数据）：
+[docs/08_request-inspection.md](docs/08_request-inspection.md)。
 
 ---
 
@@ -427,9 +196,7 @@ fmt.Println(result.Body()) // 已自动解压
 ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 defer cancel()
 
-result, err := httpc.Get("https://api.example.com",
-    httpc.WithContext(ctx),
-)
+result, err := httpc.Get("https://api.example.com", httpc.WithContext(ctx))
 if errors.Is(err, context.DeadlineExceeded) {
     fmt.Println("请求超时")
 }
@@ -439,281 +206,70 @@ if errors.Is(err, context.DeadlineExceeded) {
 
 ## 文件下载
 
-### 简单下载
-
-文件下载内置安全防护：
-- **UNC 路径阻断** - 防止访问 Windows 网络路径
-- **系统路径保护** - 禁止写入关键系统目录
-- **路径遍历检测** - 防止目录逃逸攻击
-- **断点续传支持** - 自动恢复中断的下载
-
-```go
-result, _ := httpc.Download(context.Background(),
-    "https://example.com/file.zip",
-    &httpc.DownloadConfig{FilePath: "downloads/file.zip"},
-)
-fmt.Printf("已下载: %s，速度: %s/s\n",
-    httpc.FormatBytes(result.BytesWritten),
-    httpc.FormatSpeed(result.AverageSpeed))
-```
-
-### 带进度的下载
-
-```go
-opts := httpc.DefaultDownloadConfig()
-opts.FilePath = "downloads/large.zip"
-opts.ProgressCallback = func(downloaded, total int64, speed float64) {
-    pct := float64(downloaded) / float64(total) * 100
-    fmt.Printf("\r%.1f%% - %s/s", pct, httpc.FormatSpeed(speed))
-}
-result, _ := httpc.Download(context.Background(), url, opts)
-```
-
-### 断点续传下载
+`Download` 流式写入磁盘，内置防护（UNC/系统路径阻断、路径遍历检测），
+并支持进度、断点续传与校验和验证：
 
 ```go
 opts := httpc.DefaultDownloadConfig()
 opts.FilePath = "downloads/large.zip"
 opts.ResumeDownload = true
-result, _ := httpc.Download(context.Background(), url, opts)
-if result.Resumed {
-    fmt.Println("下载已从上次位置恢复")
+opts.ProgressCallback = func(downloaded, total int64, speed float64) {
+    fmt.Printf("\r%.1f%% - %s/s", float64(downloaded)/float64(total)*100, httpc.FormatSpeed(speed))
 }
+result, err := httpc.Download(ctx, "https://example.com/large.zip", opts)
 ```
 
-### 带 Context 的下载
-
-`Download` 直接接收 `context.Context`，因此取消和超时开箱即用 — 无需单独的 "WithContext" 入口：
-
-```go
-ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-defer cancel()
-
-result, _ := httpc.Download(ctx,
-    "https://example.com/large.zip",
-    &httpc.DownloadConfig{FilePath: "downloads/large.zip"},
-)
-
-// 完全控制：下载配置 + Context + 请求选项
-result, _ := httpc.Download(ctx, url, opts,
-    httpc.WithBearerToken("your-token"),
-)
-```
-
-### DownloadConfig 字段
-
-| 字段 | 类型 | 描述 |
-|------|------|------|
-| `FilePath` | `string` | 下载文件保存路径 |
-| `ProgressCallback` | `DownloadProgressCallback` | 进度回调: `func(downloaded, total int64, speed float64)` |
-| `Overwrite` | `bool` | 覆盖已存在文件 (默认: `false`) |
-| `ResumeDownload` | `bool` | 断点续传 (默认: `false`) |
-| `Checksum` | `string` | 用于校验的预期校验和 |
-| `ChecksumAlgorithm` | `ChecksumAlgorithm` | 校验算法 (如 `httpc.ChecksumSHA256`) |
-
-### 下载函数
-
-| 函数 | 描述 |
-|------|------|
-| `Download(ctx, url, cfg, ...options)` | **规范入口** — 包级别下载的单一函数 |
-
-### DownloadResult 字段
-
-| 字段 | 类型 | 描述 |
-|------|------|------|
-| `FilePath` | `string` | 本地文件路径 |
-| `BytesWritten` | `int64` | 总写入字节数 |
-| `Duration` | `time.Duration` | 下载耗时 |
-| `AverageSpeed` | `float64` | 平均下载速度 (字节/秒) |
-| `StatusCode` | `int` | HTTP 状态码 |
-| `ContentLength` | `int64` | 服务器返回的 Content-Length |
-| `Resumed` | `bool` | 是否从断点恢复 |
-| `ResponseCookies` | `[]*http.Cookie` | 响应中的 Cookie |
-| `ActualChecksum` | `string` | 下载文件的实际校验和 |
-| `Proto` | `string` | HTTP 协议版本 (如 "HTTP/1.1", "HTTP/2.0") |
-| `ResponseHeaders` | `http.Header` | 响应头 |
-| `RequestURL` | `string` | 实际请求 URL |
-| `RequestMethod` | `string` | 使用的 HTTP 方法 |
-| `RequestHeaders` | `http.Header` | 发送的请求头 |
+`Download` 直接接收 `context.Context`，也接受请求选项：
+`httpc.Download(ctx, url, opts, httpc.WithBearerToken(...))`。配置与结果字段：
+[docs/07_file-download.md](docs/07_file-download.md)。
 
 ---
 
 ## 流式传输
 
-对于大型数据，HTTPC 支持流式传输以避免将整个数据缓冲到内存中。
-
-### 流式请求体 (上传)
-
-`WithBody` 直接接受 `io.Reader`。对于 Reader，Content-Type **不会**被自动检测，需显式设置：
+**上传** —— `WithBody` 接受任意 `io.Reader`（需显式设置 Content-Type；
+`io.Pipe` 实现零拷贝流式）：
 
 ```go
-// 从文件或任何 io.Reader 流式传输
 result, err := httpc.Post("https://example.com/upload",
     httpc.WithBody(file),
     httpc.WithHeader("Content-Type", "application/octet-stream"),
 )
 ```
 
-使用 `io.Pipe` 实现零拷贝流式传输 — 生产者 goroutine 写入数据，HTTP 传输层并发消费：
+> **安全提示：** `WithBody(io.Reader)` 绕过请求体大小验证 ——
+> 不受信任的 Reader 请用 `io.LimitReader` 包裹。
 
-```go
-pr, pw := io.Pipe()
-go func() {
-    defer pw.Close()
-    // 向 pw 写入数据块 ...
-}()
+**下载** —— `Download()` 将响应流式写入磁盘，从不缓冲。常规 `Get` / `Post`
+始终缓冲完整响应；对其传入 `WithStreamBody(true)` 会返回
+`ErrStreamBodyRequiresDownload`。
 
-result, err := httpc.Post("https://example.com/upload",
-    httpc.WithBody(pr),
-    httpc.WithHeader("Content-Type", "application/octet-stream"),
-)
-```
-
-> **安全提示：** `WithBody(io.Reader)` **绕过请求体大小验证**。
-> 使用 `io.LimitReader` 包裹不受信任的 Reader 以强制限制：
-> ```go
-> httpc.WithBody(io.LimitReader(reader, 10<<20)) // 限制 10 MB
-> ```
-
-### 流式响应体 (下载)
-
-`Download()` 将响应体直接流式写入磁盘 — 不会缓冲完整数据。
-`WithStreamBody(true)` 会自动应用：
-
-```go
-result, _ := httpc.Download(ctx,
-    "https://example.com/large.zip",
-    &httpc.DownloadConfig{FilePath: "downloads/large.zip"},
-)
-```
-
-> **注意：** 常规的 `Get` / `Post` 等方法**始终将完整响应体缓冲到内存中**。
-> 对这些方法传入 `WithStreamBody(true)` 会返回 `ErrStreamBodyRequiresDownload`
-> 错误 — 处理大型响应请使用 `Download`。详见[文件下载](#文件下载)。
+详细说明：[docs/03_request-options.md](docs/03_request-options.md) § 流式请求体 ·
+[docs/07_file-download.md](docs/07_file-download.md)。
 
 ---
 
 ## 域名客户端 (会话管理)
 
-用于对同一域名发起多次请求，自动管理 Cookie 和请求头：
+对同一域名发起多次请求，自动管理 Cookie 和请求头：
 
 ```go
 client, _ := httpc.NewDomainDefault("https://api.example.com")
 defer client.Close()
 
-// 登录 - 服务器设置 Cookie
-client.Post("/login", httpc.WithJSON(credentials))
+client.Post("/login", httpc.WithJSON(credentials)) // 服务器设置 Cookie
+client.SetHeader("Authorization", "Bearer "+token) // 持久请求头
 
-// 设置持久请求头 (所有请求都会携带)
-client.SetHeader("Authorization", "Bearer "+token)
-
-// 后续请求自动携带 Cookie 和请求头
-profile, _ := client.Get("/profile")
-data, _ := client.Get("/data")
+profile, _ := client.Get("/profile") // 自动携带 Cookie 和请求头
 ```
 
-### Cookie 管理
-
-```go
-// 单个 Cookie
-client.SetCookie(&http.Cookie{Name: "session", Value: "abc"})
-
-// 多个 Cookie
-client.SetCookies([]*http.Cookie{
-    {Name: "session", Value: "abc"},
-    {Name: "token", Value: "xyz"},
-})
-
-// 读取 Cookie
-cookie := client.GetCookie("session")   // 单个 Cookie
-allCookies := client.GetCookies()        // 所有 Cookie
-
-// 删除 Cookie
-client.DeleteCookie("session")
-client.ClearCookies()
-```
-
-### 请求头管理
-
-```go
-client.SetHeader("X-Custom", "value")
-client.SetHeaders(map[string]string{"X-App": "v1", "X-Version": "1.0"})
-headers := client.GetHeaders()
-client.DeleteHeader("X-Old")
-client.ClearHeaders()
-```
-
-### 访问器
-
-```go
-client.URL()     // 完整基础 URL
-client.Domain()  // 仅域名
-client.Session() // 底层 SessionManager
-```
-
-### 文件下载 (相对路径)
-
-```go
-result, _ := client.Download(ctx, "/files/data.csv", &httpc.DownloadConfig{FilePath: "data.csv"})
-result, _ := client.Download(ctx, "/files/large.zip", downloadOpts)
-```
-
-### 所有 HTTP 方法
-
-```go
-result, _ := client.Get("/users")
-result, _ := client.Post("/users", httpc.WithJSON(data))
-result, _ := client.Put("/users/1", httpc.WithJSON(data))
-result, _ := client.Patch("/users/1", httpc.WithJSON(data))
-result, _ := client.Delete("/users/1")
-result, _ := client.Head("/users")
-result, _ := client.Options("/users")
-result, _ := client.Request(ctx, "PROPFIND", "/resource")
-```
-
----
-
-## 会话管理器
-
-`SessionManager` 提供线程安全的 Cookie 和请求头管理，内部被 `DomainClient` 使用，也可独立使用：
-
-```go
-// 创建会话管理器
-sm, _ := httpc.NewSessionManagerDefault()
-
-// 或带 Cookie 安全验证
-cfg := httpc.DefaultSessionConfig()
-cfg.CookieSecurity = httpc.StrictCookieSecurityConfig()
-sm, _ := httpc.NewSessionManager(cfg)
-
-// 管理 Cookie
-sm.SetCookie(&http.Cookie{Name: "session", Value: "abc"})
-sm.SetCookies([]*http.Cookie{{Name: "token", Value: "xyz"}})
-cookie := sm.GetCookie("session")
-allCookies := sm.GetCookies()
-sm.DeleteCookie("session")
-sm.ClearCookies()
-
-// 管理请求头
-sm.SetHeader("Authorization", "Bearer token")
-sm.SetHeaders(map[string]string{"X-App": "v1"})
-headers := sm.GetHeaders()
-sm.DeleteHeader("X-Old")
-sm.ClearHeaders()
-
-// 从响应更新
-sm.UpdateFromResult(result)
-sm.UpdateFromCookies(responseCookies)
-
-// Cookie 安全设置
-sm.SetCookieSecurity(httpc.StrictCookieSecurityConfig())
-```
+`Client` 的所有方法都支持相对路径（含 `Download`）。底层 `SessionManager`
+（线程安全的 Cookie/请求头存储）也可独立使用：
+[docs/06_cookie-api.md](docs/06_cookie-api.md)。
 
 ---
 
 ## 配置
-
-### 预设配置
 
 ```go
 // 推荐的默认配置
@@ -722,310 +278,79 @@ client, _ := httpc.NewDefault()
 // 最高安全性 (启用 SSRF 防护)
 client, _ := httpc.New(httpc.SecureConfig())
 
-// 高吞吐量
+// 高吞吐量 / 轻量级 / 仅限测试
 client, _ := httpc.New(httpc.PerformanceConfig())
-
-// 轻量级 (无重试)
 client, _ := httpc.New(httpc.MinimalConfig())
-
-// 仅限测试 - 禁用安全特性!
-client, _ := httpc.New(httpc.TestingConfig())
+client, _ := httpc.New(httpc.TestingConfig()) // 禁用安全特性！
 ```
-
-### 自定义配置
 
 ```go
-config := httpc.Config{
-    // 超时设置
-    Timeouts: httpc.TimeoutConfig{
-        Request:        30 * time.Second,
-        Dial:           10 * time.Second,
-        TLSHandshake:   10 * time.Second,
-        ResponseHeader: 0, // 禁用：依赖 Context 超时（仅当需要传输层硬上限时才设为正值）
-        IdleConn:       90 * time.Second,
-    },
-
-    // 连接设置
-    Connection: httpc.ConnectionConfig{
-        MaxIdleConns:    100,
-        MaxConnsPerHost: 20,
-        EnableHTTP2:     true,
-        EnableCookies:   false,
-    },
-
-    // 安全设置
-    Security: httpc.SecurityConfig{
-        MinTLSVersion:       tls.VersionTLS12,
-        MaxTLSVersion:       tls.VersionTLS13,
-        MaxResponseBodySize: 50 * 1024 * 1024, // 50 MB
-        AllowPrivateIPs:     false,
-        FollowRedirects:     true,
-        MaxRedirects:        10,
-    },
-
-    // 重试设置
-    Retry: httpc.RetryConfig{
-        MaxRetries:    3,
-        Delay:         1 * time.Second,
-        BackoffFactor: 2.0,
-        EnableJitter:  true,
-    },
-
-    // 默认设置 (每次请求的默认值：User-Agent、请求头)
-    Defaults: httpc.RequestDefaults{
-        UserAgent: "MyApp/1.0",
-    },
-}
-
-// 创建客户端前验证配置 (New() 内部也会自动验证)
-if err := config.Validate(); err != nil {
+config := httpc.DefaultConfig()
+config.Timeouts.Request = 30 * time.Second
+config.Connection.MaxIdleConns = 100
+config.Security.MaxResponseBodySize = 50 * 1024 * 1024
+config.Retry.MaxRetries = 3
+if err := config.Validate(); err != nil { // New() 内部也会自动验证
     log.Fatal(err)
 }
-
 client, _ := httpc.New(config)
-
-// 检查配置 (敏感值自动遮蔽)
-fmt.Println(config.String())
+fmt.Println(config.String()) // 敏感值自动遮蔽
 ```
 
-### 配置选项
-
-| 函数 | 描述 |
-|------|------|
-| `DefaultConfig()` | 推荐的默认配置 |
-| `SecureConfig()` | 最高安全性 (启用 SSRF 防护) |
-| `PerformanceConfig()` | 高吞吐量 |
-| `MinimalConfig()` | 轻量级 (无重试) |
-| `TestingConfig()` | 仅限测试 - 禁用安全特性 |
-| `Config.Validate()` | 验证配置，返回错误（函数形态：`ValidateConfig(cfg)`） |
-| `Config.String()` | 安全字符串表示 (敏感值已遮蔽) |
-
-| 选项 | 类型 | 默认值 | 描述 |
-|------|------|--------|------|
-| **超时设置** (`Timeouts`) ||||
-| `Timeouts.Request` | `time.Duration` | `180s` | 整体请求超时 |
-| `Timeouts.Dial` | `time.Duration` | `10s` | TCP 连接超时 |
-| `Timeouts.TLSHandshake` | `time.Duration` | `10s` | TLS 握手超时 |
-| `Timeouts.ResponseHeader` | `time.Duration` | `0` | 响应头超时 (0 = 禁用，使用 Context 超时) |
-| `Timeouts.IdleConn` | `time.Duration` | `90s` | 空闲连接超时 |
-| **连接设置** (`Connection`) ||||
-| `Connection.MaxIdleConns` | `int` | `50` | 最大空闲连接数 |
-| `Connection.MaxConnsPerHost` | `int` | `10` | 每个主机最大连接数 |
-| `Connection.ProxyURL` | `string` | `""` | 代理 URL (http/https/socks5/socks5h) |
-| `Connection.EnableSystemProxy` | `bool` | `false` | 自动检测系统代理 |
-| `Connection.ProxyPool` | `[]string` | `nil` | 用于轮换的代理 URL（见[代理配置](#代理配置)） |
-| `Connection.ProxyPoolStrategy` | `ProxyStrategy` | `ProxyStrategyRoundRobin` | 代理选择算法（`ProxyStrategyRoundRobin` 或 `ProxyStrategyRandom`） |
-| `Connection.ProxyFailureThreshold` | `int` | `3` | 触发熔断前的连续连接失败次数 |
-| `Connection.ProxyCooldown` | `time.Duration` | `30s` | 被熔断的代理退出轮换的时长 |
-| `Connection.ProxyRotateOnStatus` | `[]int` | `nil` | 触发代理轮换的 HTTP 状态码（如 `[]int{403}`） |
-| `Connection.ProxyRotatePerRequest` | `bool` | `false` | 每次请求前关闭空闲连接，使传输层重新评估代理池，保证逐请求轮换（增加开销：无连接复用）。需要 ProxyPool；对 ProxyURL 无效 |
-| `Connection.EnableHTTP2` | `bool` | `true` | 启用 HTTP/2 |
-| `Connection.EnableCookies` | `bool` | `false` | 启用 Cookie Jar |
-| `Connection.EnableDoH` | `bool` | `false` | 启用 DNS-over-HTTPS |
-| `Connection.DoHCacheTTL` | `time.Duration` | `5m` | DoH 缓存时长 |
-| `Connection.MaxResponseHeaderBytes` | `int64` | `0` | 最大响应头大小 (0 = Go 标准库默认 1MB) |
-| `Connection.PublicSuffixList` | `cookiejar.PublicSuffixList` | `nil` | Cookie Jar 的公共后缀数据库（推荐：`golang.org/x/net/publicsuffix.List`） |
-| **安全设置** (`Security`) ||||
-| `Security.TLSConfig` | `*tls.Config` | `nil` | 自定义 TLS 配置 |
-| `Security.MinTLSVersion` | `uint16` | `TLS 1.2` | 最低 TLS 版本 |
-| `Security.MaxTLSVersion` | `uint16` | `TLS 1.3` | 最高 TLS 版本 |
-| `Security.InsecureSkipVerify` | `bool` | `false` | 跳过 TLS 验证 (仅限测试！) |
-| `Security.TLSFingerprint` | `string` | `""` | 浏览器指纹预设 — 见 [浏览器传输指纹](#浏览器传输指纹) |
-| `Security.TLSFingerprintDisableSessionTickets` | `bool` | `false` | 强制每个指纹连接完整 TLS 握手（Chrome 档案默认恢复会话） |
-| `Security.CertificatePinner` | `CertificatePinner` | `nil` | 证书固定 — 即使 CA 被攻破也拒绝 MITM（指纹路径亦支持） |
-| `Security.MaxResponseBodySize` | `int64` | `10MB` | 最大响应体大小 |
-| `Security.MaxRequestBodySize` | `int64` | `0` | 最大请求体大小 (0 = 不限制；不会回退到 MaxResponseBodySize)。`io.Reader` 请求体在发送期强制 |
-| `Security.AllowPrivateIPs` | `bool` | `false` | 允许私有 IP (默认启用 SSRF 防护) |
-| `Security.ValidateURL` | `bool` | `true` | 启用 URL 验证 |
-| `Security.ValidateHeaders` | `bool` | `true` | 启用请求头验证 |
-| `Security.StrictContentLength` | `bool` | `true` | 严格 Content-Length 检查 |
-| `Security.RedirectWhitelist` | `[]string` | `nil` | 允许的重定向域名 |
-| `Security.MaxDecompressedBodySize` | `int64` | `100MB` | 最大解压响应体大小 (Zip 炸弹防护) |
-| `Security.SSRFExemptCIDRs` | `[]string` | `nil` | 豁免 SSRF 阻断的 CIDR 范围 |
-| `Security.FollowRedirects` | `bool` | `true` | 跟随重定向 |
-| `Security.MaxRedirects` | `int` | `10` | 重定向上限;计入初始请求,即 10 最多跟随 9 次重定向 |
-| `Security.SensitiveHeaders` | `[]string` | `nil` | 跨域重定向时额外剥离的请求头名（Authorization/Cookie 始终剥离） |
-| **重试设置** (`Retry`) ||||
-| `Retry.MaxRetries` | `int` | `3` | 最大重试次数 |
-| `Retry.Delay` | `time.Duration` | `1s` | 初始重试延迟 |
-| `Retry.BackoffFactor` | `float64` | `2.0` | 退避乘数 |
-| `Retry.EnableJitter` | `bool` | `true` | 重试添加抖动 |
-| `Retry.MaxRetryDelay` | `time.Duration` | `30s` | 最大重试延迟上限 |
-| `Retry.CustomPolicy` | `RetryPolicy` | `nil` | 自定义重试逻辑 |
-| `Retry.RetryNonIdempotent` | `bool` | `false` | 重试非幂等方法（POST/PATCH）；默认关闭 —— 它们仅执行一次 |
-| **中间件设置** (`Middleware: httpc.MiddlewareConfig{...}`) ||||
-| `Middleware.Middlewares` | `[]MiddlewareFunc` | `nil` | 中间件链 |
-| **默认设置** (`Defaults: httpc.RequestDefaults{...}`) ||||
-| `Defaults.UserAgent` | `string` | `"httpc/1.0"` | 默认 User-Agent |
-| `Defaults.Headers` | `map[string]string` | `{}` | 默认请求头 |
+`Timeouts` / `Connection` / `Security` / `Retry` / `Middleware` / `Defaults`
+全部字段 —— 类型、默认值与行为说明（代理池、DoH、指纹、证书固定、SSRF
+豁免、重定向上限）：[docs/02_configuration.md](docs/02_configuration.md)。
 
 ---
 
 ## 中间件
 
-每个可配置中间件遵循相同模式：`XxxConfig` 结构体、`DefaultXxxConfig()`
-构造函数，以及 `XxxMiddleware(cfg)` 工厂函数。传入 `nil` 使用默认值。
-
-### 内置中间件
+可组合的请求中间件：日志、Panic 恢复、请求 ID、超时、静态请求头、指标
+收集与安全审计：
 
 ```go
-// 请求日志
-httpc.LoggingMiddleware(&httpc.LoggingConfig{LogFunc: log.Printf})
-
-// Panic 恢复（无需配置）
-httpc.RecoveryMiddleware()
-
-// 请求 ID（nil 配置 = 默认值："X-Request-ID" 头，crypto/rand 生成器）
-httpc.RequestIDMiddleware(&httpc.RequestIDConfig{HeaderName: "X-Request-ID"})
-
-// 超时强制执行
-httpc.TimeoutMiddleware(&httpc.TimeoutMiddlewareConfig{Duration: 30 * time.Second})
-
-// 静态请求头
-httpc.HeaderMiddleware(&httpc.HeaderConfig{
-    Headers: map[string]string{"X-App-Version": "1.0.0"},
-})
-
-// 指标收集
-httpc.MetricsMiddleware(&httpc.MetricsConfig{
-    OnMetrics: func(method, url string, statusCode int, duration time.Duration, err error) {
-        metrics.Record(method, url, statusCode, duration)
-    },
-})
-
-// 安全审计
-auditCfg := httpc.DefaultAuditConfig()
-auditCfg.OnAudit = func(a httpc.AuditEvent) {
-    log.Printf("[AUDIT] %s %s -> %d (%v)", a.Method, a.URL, a.StatusCode, a.Duration)
-}
-httpc.AuditMiddleware(auditCfg)
-
-// 带自定义配置的审计（在事件中包含请求/响应头）
-auditCfgJSON := httpc.DefaultAuditConfig()
-auditCfgJSON.OnAudit = func(a httpc.AuditEvent) { log.Printf("[AUDIT] %v", a) }
-auditCfgJSON.IncludeHeaders = true
-httpc.AuditMiddleware(auditCfgJSON)
-```
-
-### AuditEvent 字段
-
-| 字段 | 类型 | 描述 |
-|------|------|------|
-| `Timestamp` | `time.Time` | 请求时间戳 |
-| `Method` | `string` | HTTP 方法 |
-| `URL` | `string` | 请求 URL |
-| `StatusCode` | `int` | 响应状态码 |
-| `Duration` | `time.Duration` | 请求耗时 |
-| `Attempts` | `int` | 重试次数 |
-| `Error` | `error` | 错误信息 |
-| `SourceIP` | `string` | 来源 IP (通过上下文键 `SourceIPKey` 设置) |
-| `UserID` | `string` | 用户 ID (通过上下文键 `UserIDKey` 设置) |
-| `RedirectChain` | `[]string` | 重定向 URL 链 |
-| `ReqHeaders` | `map[string][]string` | 请求头 (当 `IncludeHeaders: true` 时) |
-| `RespHeaders` | `map[string][]string` | 响应头 (当 `IncludeHeaders: true` 时) |
-
-`AuditEvent` 支持通过 `MarshalJSON()` 进行 JSON 序列化。
-
-### 链式中间件
-
-```go
-chainedMiddleware := httpc.Chain(
-    httpc.RecoveryMiddleware(),
-    httpc.LoggingMiddleware(&httpc.LoggingConfig{LogFunc: log.Printf}),
-    httpc.RequestIDMiddleware(nil),
-    httpc.HeaderMiddleware(&httpc.HeaderConfig{Headers: map[string]string{"X-App": "v1"}}),
-)
-config.Middleware.Middlewares = []httpc.MiddlewareFunc{chainedMiddleware}
-```
-
-### 自定义中间件
-
-```go
-func CustomMiddleware() httpc.MiddlewareFunc {
-    return func(next httpc.Handler) httpc.Handler {
-        return func(ctx context.Context, req httpc.RequestMutator) (httpc.ResponseMutator, error) {
-            // 请求发送前
-            req.SetHeader("X-Custom", "value")
-
-            // 调用下一个处理器
-            resp, err := next(ctx, req)
-
-            // 响应接收后
-            return resp, err
-        }
-    }
+config := httpc.DefaultConfig()
+config.Middleware.Middlewares = []httpc.MiddlewareFunc{
+    httpc.Chain(
+        httpc.RecoveryMiddleware(),
+        httpc.LoggingMiddleware(&httpc.LoggingConfig{LogFunc: log.Printf}),
+        httpc.RequestIDMiddleware(nil),
+        httpc.AuditMiddleware(nil), // nil = 默认审计配置
+    ),
 }
 ```
+
+每个可配置中间件遵循相同模式（`XxxConfig` + `DefaultXxxConfig()` +
+`XxxMiddleware(cfg)`，传 `nil` 用默认值）；自定义中间件是对 `httpc.Handler`
+的包装函数。完整指南（含 `AuditEvent` 字段）：
+[docs/11_middleware.md](docs/11_middleware.md)。
 
 ---
 
 ## 代理配置
 
 ```go
-// 手动代理
 config := httpc.DefaultConfig()
-config.Connection.ProxyURL = "http://127.0.0.1:8080"
-// 或 HTTPS 代理: "https://proxy.example.com:8443"
-
-// 系统代理自动检测 (Windows/macOS/Linux)
-config := httpc.DefaultConfig()
-config.Connection.EnableSystemProxy = true  // 从环境变量和系统设置读取
+config.Connection.ProxyURL = "http://127.0.0.1:8080" // http/https/socks5/socks5h
+// 或：config.Connection.EnableSystemProxy = true    // 环境变量 + 平台设置
 ```
 
-### 代理池（轮换 + 熔断）
-
-在多个代理之间分发请求，支持自动故障转移和基于状态码的轮换：
+代理池提供轮换、熔断与基于状态码的轮换：
 
 ```go
-config := httpc.DefaultConfig()
 config.Connection.ProxyPool = []string{
     "http://proxy1.example.com:7070",
-    "http://proxy2.example.com:8080",
-    "socks5://proxy3.example.com:1080",
+    "socks5://proxy2.example.com:1080",
 }
-// 策略：ProxyStrategyRoundRobin（默认）或 ProxyStrategyRandom
-config.Connection.ProxyPoolStrategy = httpc.ProxyStrategyRoundRobin
-
-// 熔断：连续 5 次连接失败后跳过该代理 60 秒，然后重试（半开探测）。
-// 默认值：阈值=3，冷却=30s。
-config.Connection.ProxyFailureThreshold = 5
-config.Connection.ProxyCooldown = 60 * time.Second
-
-// 遇到 403 时轮换代理（IP 封锁）。请求会通过不同的代理 IP 重试。
-// 需要 Retry.MaxRetries > 0。
-// 与连接失败不同，基于状态码的轮换不会触发熔断——封锁通常是目标相关的。
-config.Connection.ProxyRotateOnStatus = []int{403}
+config.Connection.ProxyRotateOnStatus = []int{403} // 403 时换代理 IP 重试
 config.Retry.MaxRetries = 3
 ```
 
-### 逐请求代理轮换
-
-默认情况下，HTTP 连接复用会导致对同一主机的连续请求复用上次的代理隧道，
-跳过代理池选择。启用 `ProxyRotatePerRequest` 可保证每个独立的 `Get`/`Post`
-调用通过不同的代理路由：
-
-```go
-config.Connection.ProxyRotatePerRequest = true
-```
-
-这会在每次请求开始时关闭空闲连接，使传输层重新评估代理池。它会增加少量开销
-（无连接复用），但对于爬虫或指纹轮换场景必不可少。需要 `ProxyPool`；
-对 `ProxyURL` 无效。
-
-### 查询本次请求使用的代理
-
-每个 `Result` 都会报告产生最终响应所使用的代理，因此可以对每次请求验证或
-记录轮换情况（空字符串表示直连）：
-
-```go
-result, _ := client.Get("https://httpbin.org/ip")
-fmt.Println(result.Meta.ProxyURL) // 例如 "http://proxy2.example.com:8080"
-```
-
-发生重试时，每次尝试可能使用不同的代理；`ProxyURL` 反映的是返回响应的那次
-尝试（`Meta.Attempts` 为尝试次数）。
-
+每个 `Result` 都报告产生最终响应的代理（`result.Meta.ProxyURL`，空字符串 =
+直连 —— `EnableSystemProxy` 动态检测的系统代理不会记录在此字段）。
 **优先级：** `ProxyURL` > `ProxyPool` > `EnableSystemProxy` > 直连。
+代理池、策略、熔断、逐请求轮换、每代理 HTTP/2（`EnableProxyPoolHTTP2`）：
+[docs/12_proxy.md](docs/12_proxy.md)。
 
 ---
 
@@ -1041,101 +366,54 @@ fmt.Println(result.Meta.ProxyURL) // 例如 "http://proxy2.example.com:8080"
 | **域名白名单** | 限制重定向到允许的域名 |
 | **响应大小限制** | 可配置限制，防止内存耗尽 |
 
-### 重定向域名白名单
-
-```go
-config := httpc.DefaultConfig()
-config.Security.RedirectWhitelist = []string{"api.example.com", "secure.example.com"}
-```
-
 ### SSRF 防护
 
-默认情况下，`AllowPrivateIPs` 为 `false`（SSRF 防护已启用），阻止连接到私有/保留 IP 地址。仅在连接内部服务时设为 `true`：
+私有/保留 IP 默认被阻断（`Security.AllowPrivateIPs` 为 `false`）。可按粒度放宽：
 
 ```go
-// SSRF 防护默认已启用
-client, _ := httpc.New(httpc.DefaultConfig())
-
-// 允许私有 IP 用于内部服务访问
 cfg := httpc.DefaultConfig()
-cfg.Security.AllowPrivateIPs = true
+cfg.Security.SSRFExemptCIDRs = []string{"10.0.0.0/8"} // 豁免 CIDR（如 VPN/VPC）
 client, _ := httpc.New(cfg)
 
-// 或豁免特定 CIDR 范围（如 VPN/VPC）
-cfg := httpc.DefaultConfig()
-cfg.Security.SSRFExemptCIDRs = []string{"10.0.0.0/8", "100.64.0.0/10"}
-client, _ := httpc.New(cfg)
-```
-
-如果只需对单个受信任的内部地址发起调用，而不想放宽整个客户端的安全策略，
-可使用单次请求的 `WithAllowPrivateIPs` 选项（仅对该次请求覆盖客户端的 SSRF 策略）：
-
-```go
-// 默认客户端会阻断私有 IP；此处仅对这一次请求放行
+// 或仅对单个受信任的内部 URL 放行：
 result, err := httpc.Get("http://localhost:8080/health",
-    httpc.WithAllowPrivateIPs(true),
-)
+    httpc.WithAllowPrivateIPs(true))
 ```
+
+经代理时，httpc 会在请求进入代理前本地解析并校验目标主机名。两个注意点：
+**本地 DNS 失败即拒绝**（本进程无法解析的主机名会被拒绝，即使代理能解析 ——
+请用 `SSRFExemptCIDRs` 豁免）；**无 DNS 重绑定保证**（代理会做自己的第二次解析）。
 
 ### 证书固定
 
-证书固定 (Certificate Pinning) 即使在受信任的证书颁发机构 (CA) 被攻破时也能防御中间人攻击：除非服务器提供已固定的公钥，否则 TLS 握手将被拒绝。通过将 `CertificatePinner` 赋值给 `Security.CertificatePinner` 来启用。
+在服务器未提供已固定公钥时拒绝 TLS 握手 —— 即使受信任 CA 被攻破也能防御
+中间人攻击：
 
 ```go
-// 按 SubjectPublicKeyInfo (SPKI) 的 base64 编码 SHA-256 哈希固定。
-// 提供多个哈希以支持密钥轮换（任一匹配即通过）。
 pinner, err := httpc.NewSPKIHashPinner(
     "YLh1dUR9y6Kja30RrAn7JKnbQG/uEtLMkBgFF2fuihg=", // 当前密钥
     "C5+lpZ7tcVwmwQIMcRtPbsQtWLABXhQzejna0wHFr8M=", // 备用密钥（轮换）
 )
-if err != nil {
-    log.Fatal(err)
-}
-
 cfg := httpc.DefaultConfig()
 cfg.Security.CertificatePinner = pinner
 client, err := httpc.New(cfg)
 ```
 
-证书固定在指纹路径（`Security.TLSFingerprint`）上同样可用：pinner 作为伪装握手的
-`VerifyPeerCertificate` 钩子运行；当同时设置 `InsecureSkipVerify` 时，pinner 成为唯一
-校验门槛并仅固定叶子证书（跳过校验时无法获得已验证链）。
-
-从证书生成 SPKI 哈希：
-
-```bash
-openssl x509 -in cert.pem -pubkey -noout | openssl pkey -pubin -outform der \
-  | openssl dgst -sha256 -binary | openssl enc -base64
-```
-
-| 函数 | 描述 |
-|------|------|
-| `NewSPKIHashPinner(hashes ...string)` | 按 base64 SHA-256 SPKI 哈希固定（推荐；HPKP 格式） |
-| `NewPublicKeyPinner(publicKeys ...[]byte)` | 按 DER 编码 PKIX 公钥固定 |
-| `NewCertificatePinnerChain(pinners ...CertificatePinner)` | 组合多个固定器（任一匹配即通过） |
+证书固定与 `Security.TLSFingerprint` 兼容；设置 `InsecureSkipVerify` 时，pinner 成为唯一校验门槛（固定叶子证书）。
 
 ### 安全警告输出
 
-默认情况下，使用不安全配置（如 `TestingConfig()`、`InsecureSkipVerify: true`）时会在 stderr 打印安全警告。可重定向或抑制这些警告：
-
-```go
-// 抑制安全警告 (如 CI 环境)
-httpc.SetSecurityWarnOutput(io.Discard)
-
-// 或重定向到自定义日志
-httpc.SetSecurityWarnOutput(os.Stderr)
-```
-
+不安全配置（`TestingConfig()`、`InsecureSkipVerify: true`）默认会在 stderr
+打印警告，可重定向或抑制：`httpc.SetSecurityWarnOutput(io.Discard)`。
 
 ---
 
 ## 浏览器传输指纹
 
-做浏览器指纹识别的站点检测的远不止 User-Agent：TLS ClientHello
-（JA3/JA4）、HTTP/2 帧（SETTINGS 值与顺序、WINDOW_UPDATE、伪头顺序、优先级、HPACK
-行为），以及 header 块本身（包括与 ClientHello 版本一致的 User-Agent）。设置
-`Security.TLSFingerprint` 后，httpc 的传输层被整体替换为浏览器仿真，走完全指纹化的
-HTTP/2（优先）与 HTTP/1.1（回退）：
+做指纹识别的站点检测的远不止 User-Agent——TLS ClientHello（JA3/JA4）、HTTP/2
+分帧与有序 header 块。设置 `Security.TLSFingerprint` 后，httpc 的传输层被整体
+替换为浏览器仿真，走完全指纹化的 HTTP/2（优先）与 HTTP/1.1（回退）；重定向、
+重试、中间件、流式下载与 Cookie 处理仍是 httpc 的语义：
 
 ```go
 cfg := httpc.DefaultConfig()
@@ -1143,83 +421,24 @@ cfg.Security.TLSFingerprint = "chrome-latest" // 或 "chrome-windows"、"firefox
 client, err := httpc.New(cfg)
 ```
 
-传输层之上的全部能力保持不变：重定向、重试、中间件、流式下载与 Cookie 处理仍是
-httpc 的语义。
+**预设**：`chrome` / `chrome-latest` / `chrome-155` 与 `firefox` /
+`firefox-latest` / `firefox-158`，均有 `*-windows` / `*-macos` / `*-linux`
+桌面变体与 `*-android` / `*-ios` 移动变体（如 `chrome-windows`、`firefox-ios`），
+另有 `safari-ios`（= `ios-safari-latest`）与旧版本固定别名 `chrome-152` /
+`firefox-148`。暂无桌面 Safari 档案（无已验证数据）。`TLSFingerprint` 留空即
+保持标准协议栈，不引入额外依赖。
 
-**能力边界**：指纹化让*传输层*（TLS、HTTP/2 帧、有序 header 块）在被动观测上与被仿真
-的浏览器不可区分（JA3/JA4、HTTP/2 指纹、header 顺序）。它不复制浏览器端的 JavaScript
-或行为信号——任何纯 HTTP 客户端都做不到——因此在站点要求这些的场景下，它不能替代真实
-浏览器或经授权的挑战求解环节。档案是单个浏览器构建的快照，会随浏览器发版老化：更新
-流程见 `internal/fingerprint/PROFILES.md`，另有一项每周 CI 任务监测漂移
-（`.github/workflows/fingerprint-drift.yml`）。
+要点行为——完整说明见 [docs/10_tls-fingerprinting.md](docs/10_tls-fingerprinting.md)：
 
-**预设名**：`chrome` / `chrome-latest` / `chrome-155`（= Chrome 155）与
-`firefox` / `firefox-latest` / `firefox-158`（= Firefox 158），均可加 OS 后缀 ——
-桌面变体 `*-windows` / `*-macos` / `*-linux`，移动变体 `*-android` / `*-ios`
-（如 `chrome-windows`、`firefox-ios`），另保留旧版本固定别名 `chrome-152`、
-`firefox-148` 与旧复合别名 `android-chrome-latest`、`ios-chrome-latest`，以及
-`safari-ios`（= `ios-safari-latest`）—— Safari 使用与其他 iOS 预设相同的已验证
-WebKit 数据。没有桌面 Safari 档案：macOS Safari 的 ClientHello 有差异，且暂无
-已验证数据。
+- **头部集权威**：预设替换同名头（含 User-Agent）；自定义头原样透传。
+- **ALPN 决定协议**：服务器支持就走 HTTP/2，否则 HTTP/1.1，从不重放；不尝试 HTTP/3（QUIC 会绕过证书固定）。
+- **代理语义保留**：代理池、轮换、熔断（HTTP/HTTPS/SOCKS5）；HTTPS 代理与任何 TLS 对端一样做证书校验。
+- **证书固定可用**：每次指纹化握手都运行 `CertificatePinner`；`Security.TLSConfig` 与指纹互斥。
+- **SSRF 防护**：直连保持与标准传输层同级的拨号层保证。
+- **能力边界**：仅覆盖被动传输观测——不含浏览器 JavaScript 或行为信号。预设已端到端实测（`internal/fingerprint/e2e_network_test.go`）；
+  每周 CI 任务监测档案漂移。
 
-行为说明：
-
-- **头部集权威**：预设以浏览器档案的值替换请求中的同名头（User-Agent、Accept、
-  Accept-Language 等），使线上形态与伪装的 ClientHello 保持一致；自定义头原样透传。
-  显式设置的 User-Agent 在该路径上**不会**覆盖预设。头部名按浏览器真实大小写输出——
-  `sec-ch-ua*` 小写、其余 Title-Case——HTTP/1.1 与 HTTP/2 都一样。`Result.Request.Headers`
-  报告的正是这些线上头（浏览器的 UA 与大小写），而非引擎侧的默认值（如 `httpc/1.0`）。
-- **协议**：由 ALPN 决定。服务器支持 HTTP/2 就走 HTTP/2，只支持 HTTP/1.1 就走
-  HTTP/1.1，且请求从不重放——两层之间没有手动回退。不尝试 HTTP/3：QUIC 连接使用独立的
-  TLS 栈，会绕过 `CertificatePinner`，静默丢失固定校验比不做协议竞速更糟。
-  `Connection.EnableHTTP2=false` 将该路径钉定在 HTTP/1.1，并同步改写 ClientHello 的 ALPN
-  列表。
-- **代理**：代理池、轮换与熔断语义保留（支持 HTTP、HTTPS 与 SOCKS5/5h）。HTTP 明文目标
-  经 HTTP 代理走 CONNECT 隧道；HTTPS 代理仅以 HTTP/1.1 CONNECT 隧道接入、代理自身证书
-  不做校验（仅目标侧握手被指纹化并校验）。代理固定绑定在连接池上——轮换是切换到另一个
-  连接池，而不是把在用的那个改指向。
-- **重定向一致性**：每个重定向跳转都会按浏览器行为修正档案的首跳取值：针对上一跳
-  URL 重算 `sec-fetch-site`（`same-origin` / `same-site` / `cross-site`）、丢弃
-  `sec-fetch-user`（仅首跳携带）；301/302/303 将 fetch 风格请求降级为 GET 时保留
-  fetch 风格头部，而不是切换成导航头部。
-- **证书固定可用**：`CertificatePinner` 在每次指纹化握手上运行（见上文证书固定一节）；
-  `Security.TLSConfig` 仍与指纹互斥（自定义 `tls.Config` 无法塑造伪装的 ClientHello）。
-- **解压**：档案广播 `gzip, deflate, br, zstd`，指纹栈全部解码（保持流式），以
-  identity 正文交给引擎 —— 引擎看不到原始 `Content-Encoding`，解码后的流因此按
-  `MaxResponseBodySize` 限流（`MaxDecompressedBodySize` 在该路径不生效）。未知
-  `Content-Encoding` 会显式报错，而不是把压缩字节当正文返回。
-- **SSRF 防护**：以"先解析再校验"的预检方式逐请求执行（含每个重定向跳转）；
-  相比标准路径的拨号层校验略弱（存在理论上的 DNS TOCTOU 窗口）。
-- **限制**：指纹连接不计入连接池指标、不走 `Connection.EnableDoH`。Android 预设
-  （`*-android`）目前输出桌面端指纹字节 —— 占位实现，待真实设备抓包后替换（见
-  `internal/fingerprint/PROFILES.md`）。iOS 预设（`*-ios`，含 `safari-ios`）使用真实
-  WebKit 数据（Safari 26.3 的 TLS 与 HTTP/2，已线上字节级实测），常规头部顺序仍为
-  桌面近似。
-- **会话恢复**：Chrome 档案按连接池缓存 TLS 会话票，重复连接以 PSK 恢复 —— 与
-  真实浏览器重访站点的行为一致（`session_resumption_test.go` 已实测）。ClientHello
-  不含 pre_shared_key 扩展的档案（Firefox、iOS WebKit 系列）始终完整握手。设置
-  `Security.TLSFingerprintDisableSessionTickets` 可强制每连接完整握手。
-- **已端到端实测**：`chrome-latest` 协商 h2，HTTP/2 指纹为
-  `1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p`
-  （哈希 `52d84b11737d980aef856699f885ca86`），UA 为 Chrome/155；`firefox-latest` 为
-  `1:65536;2:0;4:131072;5:16384|12517377|0|m,p,a,s`
-  （哈希 `6ea73faa8fc5aac76bded7bd238f6433`），UA 为 Firefox/158；`chrome-ios` 与
-  `safari-ios` 为 WebKit JA4 `t13d2013h2_a09f3c656075_7f0f34a4126d`，HTTP/2 指纹
-  `2:0;3:100;4:2097152;9:1|10420225|0|m,s,a,p`
-  （哈希 `c52879e43202aeb92740be6e8c86ea96`）—— 见
-  `internal/fingerprint/e2e_network_test.go`
-  （`go test -tags fingerprint_e2e ./internal/fingerprint/ -run PeetWSE2E`）。
-
-指纹数据存放在本仓库（`internal/fingerprint`）：ClientHello spec、HTTP/2 SETTINGS 序列
-与头部表都由 httpc 自己构建，再通过
-[`bogdanfinn/tls-client`](https://github.com/bogdanfinn/tls-client) 的 profile 接口交给
-传输层——因此档案可以领先于任何上游库的发布。传输层本身（uTLS 握手、HTTP/2 分帧、头部
-顺序与大小写）由该库提供，解压使用
-[`andybalholm/brotli`](https://github.com/andybalholm/brotli) 与
-[`klauspost/compress`](https://github.com/klauspost/compress)（zstd）。浏览器档案数据最初
-移植自 [`enetx/surf`](https://github.com/enetx/surf)（MIT）；httpc 不依赖该客户端库，也不
-再依赖 `enetx/http`、`enetx/http2` 或 `refraction-networking/utls`。`TLSFingerprint` 留空
-即保持标准协议栈，不引入额外依赖。
+---
 
 ## 错误处理
 
@@ -1228,92 +447,30 @@ result, err := httpc.Get(url)
 if err != nil {
     var clientErr *httpc.ClientError
     if errors.As(err, &clientErr) {
-        fmt.Printf("错误: %s (代码: %s)\n", clientErr.Message, clientErr.Code())
-        fmt.Printf("可重试: %v\n", clientErr.IsRetryable())
+        fmt.Printf("错误: %s (代码: %s)，可重试: %v\n",
+            clientErr.Message, clientErr.Code(), clientErr.IsRetryable())
     }
     return err
 }
-
-// 检查响应状态
-if !result.IsSuccess() {
-    return fmt.Errorf("意外的状态码: %d", result.StatusCode())
-}
 ```
 
-### ClientError 字段
-
-| 字段 | 类型 | 描述 |
-|------|------|------|
-| `Type` | `ErrorType` | 错误分类 |
-| `Message` | `string` | 可读的错误描述 |
-| `Cause` | `error` | 底层错误 (可用 `%w` 解包) |
-| `URL` | `string` | 请求 URL |
-| `Method` | `string` | HTTP 方法 |
-| `Attempts` | `int` | 总尝试次数 (含首次) |
-| `StatusCode` | `int` | HTTP 状态码 (如适用) |
-| `Host` | `string` | 保留字段;引擎当前从不赋值 |
-
-### 错误类型
-
-```go
-const (
-    ErrorTypeUnknown        // 未知或未分类错误
-    ErrorTypeNetwork        // 网络级错误 (连接被拒绝, DNS 失败)
-    ErrorTypeTimeout        // 请求超时
-    ErrorTypeContextCanceled // Context 被取消
-    ErrorTypeResponseRead   // 读取响应体错误
-    ErrorTypeTransport      // HTTP 传输错误
-    ErrorTypeRetryExhausted // 保留用于重试耗尽;实际耗尽时保留最后一次错误的类型——请用 Attempts / IsRetryable() 判断
-    ErrorTypeTLS            // TLS 握手错误
-    ErrorTypeCertificate    // 证书验证错误
-    ErrorTypeDNS            // DNS 解析错误
-    ErrorTypeValidation     // 请求验证错误
-    ErrorTypeHTTP           // HTTP 级错误 (4xx, 5xx)
-)
-```
-
-### 哨兵错误
-
-```go
-var (
-    ErrClientClosed         // 客户端已关闭
-    ErrNilConfig            // 提供了 nil 配置
-    ErrInvalidHeader        // 请求头验证失败
-    ErrInvalidTimeout       // 超时为负数或超出限制
-    ErrInvalidRetry         // 重试配置无效
-    ErrInvalidConnection    // 连接配置无效
-    ErrInvalidSecurity      // 安全配置无效
-    ErrInvalidMiddleware    // 中间件配置无效
-    ErrEmptyFilePath        // 文件路径为空
-    ErrFileExists           // 文件已存在 (且 Overwrite 为 false)
-    ErrResponseBodyEmpty    // 响应体为空
-    ErrResponseBodyTooLarge // 响应体超过大小限制
-    ErrInvalidMaxRedirects  // 重定向上限为负数或超过 50
-    ErrInvalidCredentials   // Basic/Bearer 凭据校验失败
-    ErrStreamBodyRequiresDownload // 在缓冲方法上使用 WithStreamBody（请用 Download）
-    ErrDownloadInProgress   // 同一路径已有下载正在进行
-    ErrProxyConnectionFailed // 配置的代理无法拨号
-)
-```
-
-### 错误分类
-
-```go
-// 使用 errors.As 检查错误类型
-var clientErr *httpc.ClientError
-if errors.As(err, &clientErr) {
-    fmt.Printf("类型: %s, 可重试: %v\n", clientErr.Code(), clientErr.IsRetryable())
-}
-```
+`ClientError` 携带 `Type` / `Message` / `Cause`（用 `%w` 解包）/ `URL` /
+`Method` / `Attempts` / `StatusCode`。常见类型：`ErrorTypeNetwork`、
+`ErrorTypeTimeout`、`ErrorTypeTLS`、`ErrorTypeDNS`、`ErrorTypeHTTP`；重试耗尽时
+保留最后一次错误的类型 —— 请用 `Attempts` / `IsRetryable()` 判断。供
+`errors.Is` 使用的哨兵包括 `ErrClientClosed`、`ErrFileExists`、
+`ErrStreamBodyRequiresDownload`（请用 `Download`）、`ErrProxyConnectionFailed`
+及配置校验的 `ErrInvalid*` 系列。完整参考：
+[docs/04_error-handling.md](docs/04_error-handling.md)。
 
 ---
 
 ## 并发安全
 
-HTTPC 设计为 goroutine 安全：
+httpc 客户端可安全并发使用：
 
 ```go
-client, _ := httpc.NewDefault() // 默认配置
+client, _ := httpc.NewDefault()
 defer client.Close()
 
 var wg sync.WaitGroup
@@ -1322,40 +479,25 @@ for i := 0; i < 100; i++ {
     go func() {
         defer wg.Done()
         result, _ := client.Get("https://api.example.com")
-        // 处理响应...
+        // ...
     }()
 }
 wg.Wait()
 ```
 
-### 默认客户端管理
+- 所有 `Client` 方法均可安全并发使用；包级函数共享默认客户端
+  （`SetDefaultClient` 自定义、`CloseDefaultClient` 重置）
+- `Result` 对象返回后不可变 —— 并发读取安全
+- `WithProxy` / `WithSystemProxy` / `WithTLSFingerprint` 创建独立路由客户端，
+  用 `CloseRoutedClients()` 统一回收
 
-包级函数 (`Get`, `Post` 等) 使用共享的默认客户端，你可以自定义它：
-
-```go
-// 设置自定义默认客户端
-customClient, _ := httpc.New(httpc.SecureConfig())
-_ = httpc.SetDefaultClient(customClient)
-
-// 关闭并重置默认客户端
-_ = httpc.CloseDefaultClient()
-```
-
-**线程安全保证：**
-- 所有 `Client` 方法均可安全并发使用
-- 包级函数安全使用共享的默认客户端
-- `Result` 对象返回后不可变 — 并发读取安全;仅需避免多个 goroutine 向同一 `Result` 变量赋值
-- 内部指标使用原子操作
+详细说明：[docs/09_concurrency-safety.md](docs/09_concurrency-safety.md)。
 
 ---
 
 ## 接口
 
-HTTPC 暴露接口用于测试和扩展。在需要 Mock HTTP 调用时使用这些接口：
-
-### Doer
-
-最简接口 — 仅包含 `Request` 方法：
+用于测试和扩展的接口 —— 需要 Mock HTTP 调用时使用：
 
 ```go
 type Doer interface {
@@ -1363,50 +505,8 @@ type Doer interface {
 }
 ```
 
-### Client
-
-完整客户端接口 — 扩展 `Doer`，提供便捷方法和下载支持：
-
-```go
-type Client interface {
-    Doer
-    Get(url string, options ...RequestOption) (*Result, error)
-    Post(url string, options ...RequestOption) (*Result, error)
-    Put(url string, options ...RequestOption) (*Result, error)
-    Patch(url string, options ...RequestOption) (*Result, error)
-    Delete(url string, options ...RequestOption) (*Result, error)
-    Head(url string, options ...RequestOption) (*Result, error)
-    Options(url string, options ...RequestOption) (*Result, error)
-    Download(ctx context.Context, url string, cfg *DownloadConfig, options ...RequestOption) (*DownloadResult, error)
-    Close() error
-}
-```
-
-### DomainClienter
-
-扩展 `Client`，增加域级会话管理：
-
-```go
-type DomainClienter interface {
-    Client
-    URL() string
-    Domain() string
-    SetHeader(key, value string) error
-    SetHeaders(headers map[string]string) error
-    DeleteHeader(key string)
-    ClearHeaders()
-    GetHeaders() map[string]string
-    SetCookie(cookie *http.Cookie) error
-    SetCookies(cookies []*http.Cookie) error
-    DeleteCookie(name string)
-    ClearCookies()
-    GetCookies() []*http.Cookie
-    GetCookie(name string) *http.Cookie
-    Session() *SessionManager
-}
-```
-
-### 测试中使用
+`Client` 扩展 `Doer`，增加逐方法便捷函数、`Download` 与 `Close()`；
+`DomainClienter` 再增加域级会话管理。嵌入接口可获得前向兼容的 Mock：
 
 ```go
 type MockClient struct {
@@ -1435,19 +535,19 @@ func (m *MockClient) Get(url string, options ...httpc.RequestOption) (*httpc.Res
 | [文件下载](docs/07_file-download.md) | 带进度的文件下载 |
 | [请求检查](docs/08_request-inspection.md) | 请求/响应检查 |
 | [并发安全](docs/09_concurrency-safety.md) | 线程安全保证 |
+| [浏览器传输指纹](docs/10_tls-fingerprinting.md) | 浏览器传输指纹详解 |
+| [中间件](docs/11_middleware.md) | 内置与自定义中间件 |
+| [代理](docs/12_proxy.md) | 代理池、轮换、熔断 |
 | [安全](SECURITY.md) | 安全特性和最佳实践 |
 
 ### 示例代码
 
-23 个可运行的示例覆盖所有功能，按从基础到高级排序。
-每个示例都是独立的 `package main`，并带有 `//go:build examples` 构建标签（因此不会进入常规构建），需逐个运行：
+24 个可运行示例，按从基础到高级排序。每个都是带 `//go:build examples` 标签的
+独立 `package main`（不进入常规构建），需逐个运行：
 
 ```bash
 go run -tags examples examples/01_basic_usage.go
 ```
-
-> 调用真实端点（`httpbin.org`、`example.com`）的示例需要网络访问。
-> 证书固定和 SSRF 防护示例是自包含的 — 被拒绝*正是*防护按预期工作的体现。
 
 | 类别 | 示例 |
 |------|------|
@@ -1458,6 +558,7 @@ go run -tags examples examples/01_basic_usage.go
 | **安全** | [20_certificate_pinning](examples/20_certificate_pinning.go), [21_ssrf_protection](examples/21_ssrf_protection.go) |
 | **流式传输** | [22_streaming_bodies](examples/22_streaming_bodies.go) |
 | **指纹** | [23_tls_fingerprint](examples/23_tls_fingerprint.go) |
+| **包级路由** | [24_package_routing](examples/24_package_routing.go) |
 
 ---
 

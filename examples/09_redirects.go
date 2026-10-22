@@ -10,6 +10,11 @@ import (
 	"github.com/cybergodev/httpc"
 )
 
+// This example demonstrates redirect handling: automatic following (the
+// default), disabling or capping redirects, restricting hops to a
+// RedirectWhitelist, and inspecting the followed chain in Result.Meta.
+// Perfect for: Scraping and login flows where redirect policy matters
+
 func main() {
 	fmt.Println("=== HTTPC Redirect Examples ===")
 
@@ -47,7 +52,7 @@ func example1AutoFollow() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// This URL redirects to the final destination
 	resp, err := client.Get("https://httpbin.org/redirect/3")
@@ -73,7 +78,7 @@ func example2NoFollow() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Get the redirect response without following
 	resp, err := client.Get("https://httpbin.org/redirect/1")
@@ -101,7 +106,7 @@ func example3MaxRedirects() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// This will fail: /redirect/3 needs 4 requests, the limit allows 2
 	resp, err := client.Get("https://httpbin.org/redirect/3")
@@ -132,7 +137,7 @@ func example4PerRequestControl() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Override to not follow redirects for this specific request
 	resp, err := client.Get("https://httpbin.org/redirect/1",
@@ -176,7 +181,7 @@ func example5RedirectChain() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Follow multiple redirects and track the chain
 	resp, err := client.Get("https://httpbin.org/redirect/3")
@@ -207,7 +212,7 @@ func example6ManualHandling() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	currentURL := "https://httpbin.org/redirect/3"
 	redirectCount := 0
@@ -284,7 +289,7 @@ func example7RedirectWhitelist() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Same-domain redirect: allowed (httpbin.org -> httpbin.org)
 	resp, err := client.Get("https://httpbin.org/redirect/1")

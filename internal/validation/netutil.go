@@ -1,11 +1,14 @@
 package validation
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
 	"net/url"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"golang.org/x/net/idna"
 )
@@ -141,6 +144,46 @@ func ValidateIPWithExemptions(ip net.IP, exemptNets []*net.IPNet) error {
 	return nil
 }
 
+// ResolveFilteredIPs is the single implementation of the SSRF
+// resolve-and-filter rule, shared by every enforcement layer: the standard
+// dial path and the proxied-target pre-check (internal/connection/pool.go),
+// the fingerprint pre-flight (internal/fingerprint/ssrf.go), and the
+// fingerprint validating dialer (internal/fingerprint/directdial.go). The
+// four hand-maintained copies it replaced had already drifted in timeout
+// derivation and error text; a filter-rule change now applies everywhere at
+// once.
+//
+// It resolves host via lookup (nil means net.DefaultResolver; tests
+// substitute a seam) under the shared DNS timeout policy — capped at 10s,
+// tightened to dialTimeout when dialTimeout is positive and smaller — and
+// returns the resolved IPs that survive FilterAllowedIPs. Resolution errors
+// are returned unwrapped so each layer keeps its own error prefix; an empty
+// allowed set is NOT an error here (each layer reports it with its own
+// message, some after further processing the IPs).
+func ResolveFilteredIPs(ctx context.Context, host string, exemptNets []*net.IPNet, dialTimeout time.Duration, lookup func(context.Context, string) ([]net.IPAddr, error)) ([]net.IP, error) {
+	if lookup == nil {
+		lookup = net.DefaultResolver.LookupIPAddr
+	}
+	dnsTimeout := 10 * time.Second
+	if dialTimeout > 0 && dialTimeout < dnsTimeout {
+		dnsTimeout = dialTimeout
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	dnsCtx, cancel := context.WithTimeout(ctx, dnsTimeout)
+	defer cancel()
+	ipAddrs, err := lookup(dnsCtx, host)
+	if err != nil {
+		return nil, err
+	}
+	ips := make([]net.IP, len(ipAddrs))
+	for i, addr := range ipAddrs {
+		ips[i] = addr.IP
+	}
+	return FilterAllowedIPs(ips, exemptNets), nil
+}
+
 // FilterAllowedIPs filters a list of IPs to only those allowed under SSRF rules.
 // Private/reserved IPs are excluded unless they match an exempt CIDR range.
 // Returns nil slice when no IPs are allowed.
@@ -190,13 +233,15 @@ func isLocalhost(hostname string) bool {
 		}
 	}
 
-	// Check exact matches - handle both cases for "localhost"
+	// Exact IP-literal loopback matches. The "localhost"/"LOCALHOST" cases
+	// this switch used to carry are subsumed by the EqualFold branch below
+	// (both are length 9 and start with l/L).
 	switch hostname {
-	case "localhost", "LOCALHOST", "127.0.0.1", "::1", "0.0.0.0", "::":
+	case "127.0.0.1", "::1", "0.0.0.0", "::":
 		return true
 	}
 
-	// Check for "Localhost" and other case variations without allocation
+	// Check "Localhost" and other case variations without allocation
 	// Only do case-insensitive check if first char is 'l' or 'L'
 	if hlen == 9 && (hostname[0] == 'l' || hostname[0] == 'L') {
 		// Check "localhost" case-insensitively
@@ -357,6 +402,39 @@ func redactErrorURL(err error, rawURL string) error {
 	return errors.New(strings.ReplaceAll(err.Error(), rawURL, sanitized))
 }
 
+// ParseSystemProxyURL parses a proxy address obtained from system sources —
+// environment variables (HTTP_PROXY/HTTPS_PROXY) and platform settings
+// (Windows registry, macOS networksetup). It is the system-detection
+// counterpart of ValidateProxyURL and the single normalization point for
+// those sources: the environment and registry paths previously carried two
+// hand-maintained variants of these rules, and their drift made an
+// uppercase-scheme registry value silently disable the system proxy.
+//
+// Normalization applied before validation:
+//   - "" (or whitespace) returns (nil, nil): "no value configured" is not an
+//     error at the system-detection layer.
+//   - A bare "socks" scheme is mapped to "socks5" — net/http recognizes
+//     socks5/socks5h but not "socks://".
+//   - A bare host:port ("proxy:3128", the dominant registry/env spelling,
+//     which parses with the hostname in the scheme position) gets an
+//     "http://" prefix.
+//
+// Everything else — including uppercase schemes, which url.Parse lowercases —
+// is validated by ValidateProxyURL unchanged, inheriting its scheme
+// allow-list, host requirement, and credential redaction.
+func ParseSystemProxyURL(raw string) (*url.URL, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	if after, ok := strings.CutPrefix(raw, "socks://"); ok {
+		raw = "socks5://" + after
+	} else if !strings.Contains(raw, "://") {
+		raw = "http://" + raw
+	}
+	return ValidateProxyURL(raw)
+}
+
 // schemeDefaultPorts maps proxy URL schemes to the port net/http appends when
 // the proxy URL omits one (mirrors net/http transport.schemePort, which drives
 // the address the transport actually dials).
@@ -392,7 +470,7 @@ func CanonicalProxyAddr(u *url.URL) string {
 	// default. Testing SplitHostPort instead would keep the literal "proxy:"
 	// and never match the dialed "proxy:80".
 	host := u.Hostname()
-	if !isASCIIString(host) {
+	if !IsASCII(host) {
 		if ascii, err := idna.Lookup.ToASCII(host); err == nil {
 			host = ascii
 		}
@@ -404,10 +482,48 @@ func CanonicalProxyAddr(u *url.URL) string {
 	return net.JoinHostPort(host, port)
 }
 
-// isASCIIString reports whether s consists solely of ASCII bytes.
-func isASCIIString(s string) bool {
+// SameOrigin reports whether two URLs share an origin per RFC 6454: scheme,
+// host, and effective port, with scheme-default ports normalized ("example.com"
+// and "example.com:80" under http are one origin; "example.com:8080" is not).
+// It is the single canonical implementation shared by the engine's redirect
+// credential-stripping and the fingerprint path's sec-fetch-site computation —
+// the two previously carried private copies whose semantics had drifted apart.
+func SameOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(a.Scheme, b.Scheme) &&
+		strings.EqualFold(a.Hostname(), b.Hostname()) &&
+		EffectivePort(a) == EffectivePort(b)
+}
+
+// EffectivePort returns u's explicit port, or the scheme's default when the
+// URL omits one. Schemes are matched case-insensitively (url.Parse already
+// lowercases the scheme; the fold is belt-and-braces for hand-built URLs).
+// A URL with neither port nor a recognized scheme has no effective port and
+// matches only the same degenerate form — engines only route http/https
+// (ws/wss included for the transports that speak them), so the "" default is
+// unreachable through validated requests and exists to fail closed on the
+// exotic forms rather than lump them onto port 80.
+func EffectivePort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https", "wss":
+		return "443"
+	case "http", "ws":
+		return "80"
+	default:
+		return ""
+	}
+}
+
+// IsASCII reports whether s consists solely of ASCII bytes. Exported next to
+// ASCIILower so the security package's IDNA pre-checks can share this
+// predicate instead of carrying an identical private copy: the two gate the
+// same normalization family (proxy addresses, redirect-whitelist domains) and
+// must never diverge.
+func IsASCII(s string) bool {
 	for i := 0; i < len(s); i++ {
-		if s[i] >= 0x80 {
+		if s[i] >= utf8.RuneSelf {
 			return false
 		}
 	}

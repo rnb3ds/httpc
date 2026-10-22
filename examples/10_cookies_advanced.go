@@ -46,7 +46,7 @@ func demonstrateRequestCookies() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Method 1: Single cookie using WithCookies
 	resp, err := client.Get("https://httpbin.org/cookies",
@@ -126,7 +126,7 @@ func demonstrateResponseCookies() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Server sets cookies
 	resp, err := client.Get("https://httpbin.org/response-headers?Set-Cookie=session=abc123&Set-Cookie=user=john")
@@ -168,7 +168,7 @@ func demonstrateCookieJar() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Step 1: Server sets cookies via redirect
 	fmt.Println("Step 1: Server sets cookies")
@@ -199,7 +199,7 @@ func demonstrateCookieString() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Parse cookie string (like from browser DevTools)
 	cookieString := "BSID=4418ECBB1281B550; PSTM=1733760779; UPN=12314753"
@@ -233,7 +233,7 @@ func demonstrateAdvancedScenarios() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Scenario 1: Session management
 	sessionCookie := http.Cookie{
@@ -313,7 +313,7 @@ func demonstrateRequestCookieInspection() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	resp, err := client.Get("https://httpbin.org/cookies",
 		httpc.WithCookies([]http.Cookie{

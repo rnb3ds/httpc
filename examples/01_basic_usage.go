@@ -105,7 +105,7 @@ func useClientInstance() {
 		fmt.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close() // Always close the client
+	defer func() { _ = client.Close() }() // Always close the client
 
 	// GET with query parameters
 	resp, err := client.Get("https://echo.hoppscotch.io",

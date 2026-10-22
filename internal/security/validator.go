@@ -278,6 +278,15 @@ func (v *Validator) validateRequestBodySize(body any) error {
 			}
 		}
 	case *types.FormData:
+		// A typed-nil (*FormData)(nil) in a non-nil any reaches this arm (a
+		// middleware calling SetBody with one, say); b.Fields below would
+		// panic in the security layer. The engine's multipart encoder guards
+		// the identical input (internal/engine/request.go) — mirror it here so
+		// validation fails with a clear error instead, preserving the
+		// zero-panic-surface contract.
+		if b == nil {
+			return fmt.Errorf("multipart body is a nil *FormData")
+		}
 		for k, v := range b.Fields {
 			// Account for: field key + value + Content-Disposition overhead (~60 bytes per field).
 			size += int64(len(k)) + int64(len(v)) + 60

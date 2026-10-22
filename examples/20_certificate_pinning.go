@@ -86,7 +86,7 @@ func demonstrateSPKIHashPinning() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	_, err = client.Get("https://httpbin.org/get", httpc.WithTimeout(15*time.Second))
 	reportPinnedRequest(err)
@@ -116,7 +116,7 @@ func demonstrateKeyRotation() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	_, err = client.Get("https://httpbin.org/get", httpc.WithTimeout(15*time.Second))
 	reportPinnedRequest(err)
@@ -149,7 +149,7 @@ func demonstratePinnerChain() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	_, err = client.Get("https://httpbin.org/get", httpc.WithTimeout(15*time.Second))
 	reportPinnedRequest(err)
@@ -190,7 +190,7 @@ func demonstratePublicKeyPinner() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	_, err = client.Get("https://httpbin.org/get", httpc.WithTimeout(15*time.Second))
 	reportPinnedRequest(err)

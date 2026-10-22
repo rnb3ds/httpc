@@ -21,7 +21,7 @@ func main() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// 1. HEAD - Get headers only (no body)
 	demonstrateHEAD(client)

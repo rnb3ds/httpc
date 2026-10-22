@@ -205,8 +205,15 @@ func (r *DoHResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAd
 				copy(ips, entry.IPs)
 				return ips, nil
 			}
-			// Expired — atomically delete and decrement counter only if we win the race
-			if _, deleted := r.cache.LoadAndDelete(host); deleted {
+			// Expired — delete only when the entry we saw is still the stored
+			// one. A keyed LoadAndDelete here could evict a FRESH entry that a
+			// concurrent goroutine stored after winning this same expired-path
+			// race (it deleted the expired entry, re-resolved, admitted a new
+			// entry — then this goroutine's delete removed the new one,
+			// forcing an extra provider round-trip). CompareAndDelete compares
+			// by interface (pointer) identity, so only the stale entry can be
+			// removed; the counter still moves exactly once per removed entry.
+			if r.cache.CompareAndDelete(host, cached) {
 				r.cacheSize.Add(-1)
 			}
 		}

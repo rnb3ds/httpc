@@ -460,6 +460,8 @@ client, err := httpc.New(config)
 | `Security.FollowRedirects`      | `bool`        | true    | Follow HTTP redirects              |
 | `Security.MaxRedirects`         | `int`         | 10      | Maximum redirects to follow        |
 | `Security.CertificatePinner`    | `CertificatePinner` | nil | Certificate pinning for MITM defense (see `NewSPKIHashPinner`, `NewPublicKeyPinner`) |
+| `Security.TLSFingerprint`       | `string`      | ""      | Browser TLS-fingerprint preset (e.g. `chrome-latest`, `firefox-windows`); replaces the transport with a browser emulation — see the README section "Browser Transport Fingerprinting" |
+| `Security.TLSFingerprintDisableSessionTickets` | `bool` | false | Force a full TLS handshake on every fingerprinted connection (Chrome profiles resume sessions by default) |
 
 **Note:** URL and header validation are enabled by default for security.
 

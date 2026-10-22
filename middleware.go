@@ -192,9 +192,17 @@ const (
 // Chain combines multiple middlewares into a single middleware.
 // Middlewares are executed in the order they are provided (first to last).
 // The final handler is executed after all middlewares have processed the request.
+//
+// Nil entries are skipped: New builds the chain from Config.Middleware.Middlewares
+// at construction time, outside every recover safety net, so a nil MiddlewareFunc
+// must degrade to a no-op rather than crash the constructor (and direct Chain
+// users get the same tolerance).
 func Chain(middlewares ...MiddlewareFunc) MiddlewareFunc {
 	return func(final Handler) Handler {
 		for _, mw := range slices.Backward(middlewares) {
+			if mw == nil {
+				continue
+			}
 			final = mw(final)
 		}
 		return final
@@ -591,7 +599,7 @@ func AuditMiddleware(config *AuditConfig) MiddlewareFunc {
 			if resp != nil {
 				event.StatusCode = resp.StatusCode()
 				event.Attempts = resp.Attempts()
-				event.RedirectChain = resp.RedirectChain()
+				event.RedirectChain = sanitizeRedirectChain(resp.RedirectChain())
 			}
 
 			// Include headers if configured
@@ -612,6 +620,27 @@ func AuditMiddleware(config *AuditConfig) MiddlewareFunc {
 			return resp, err
 		}
 	}
+}
+
+// sanitizeRedirectChain maps validation.SanitizeURL over a redirect chain
+// before it enters an AuditEvent. The chain is captured as raw URL.String()
+// values — query strings included — and OAuth/OIDC flows routinely carry
+// code=/token=/session_id= in redirect URLs (names on the library's own
+// sensitive-query list), so an unsanitized chain would record secrets in a
+// compliance log even though every other field of the same event is redacted.
+// The circular-redirect error in the engine's redirect policy already applies
+// the same sanitization to its message; this keeps the audit trail consistent
+// with it. Returns nil unchanged (an empty chain must not become an empty,
+// non-nil slice in the event).
+func sanitizeRedirectChain(chain []string) []string {
+	if len(chain) == 0 {
+		return nil
+	}
+	out := make([]string, len(chain))
+	for i, u := range chain {
+		out[i] = validation.SanitizeURL(u)
+	}
+	return out
 }
 
 // buildMaskSet creates a set of canonical header names for masking.

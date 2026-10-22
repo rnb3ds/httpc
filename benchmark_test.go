@@ -203,9 +203,14 @@ func BenchmarkClient_MemoryAllocation_SmallResponse(b *testing.B) {
 
 func BenchmarkClient_MemoryAllocation_LargeResponse(b *testing.B) {
 	largeBody := strings.Repeat("x", 64*1024) // 64KB
+	// Hoisted out of the handler: converting the string per request made the
+	// SERVER side allocate a fresh 64KB copy every iteration, so ~25% of the
+	// reported B/op was harness noise that drowned out the client-side number
+	// this benchmark exists to measure.
+	largeBodyBytes := []byte(largeBody)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(largeBody))
+		_, _ = w.Write(largeBodyBytes)
 	}))
 	defer server.Close()
 
