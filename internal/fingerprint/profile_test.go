@@ -92,7 +92,7 @@ func TestProfile_OrderCoversHeaderSet(t *testing.T) {
 }
 
 // TestProfile_H2SettingsSequence pins the exact SETTINGS emission order —
-// frame order is wire-visible and part of the Akamai fingerprint, so the
+// frame order is wire-visible and part of the HTTP/2 fingerprint, so the
 // sequences are asserted as literal snapshots.
 func TestProfile_H2SettingsSequence(t *testing.T) {
 	chromeWant := []h2Setting{

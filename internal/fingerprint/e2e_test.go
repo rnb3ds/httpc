@@ -194,7 +194,8 @@ func TestFingerprintRedirectFollowedByEngine(t *testing.T) {
 // browser UA is authoritative on the fingerprint path. With the default
 // httpc UA it is dropped so the preset applies; an explicitly set UA is also
 // replaced — the profile's header set wins so the wire stays coherent with
-// the spoofed ClientHello.
+// the spoofed ClientHello. It also pins that Result.Request.Headers reports
+// the wire UA (the browser's), not the engine-side default or override.
 func TestFingerprintUserAgentRule(t *testing.T) {
 	var seenUA string
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -206,17 +207,22 @@ func TestFingerprintUserAgentRule(t *testing.T) {
 	client := newFingerprintClient(t, "chrome")
 
 	// Default: the preset's Chrome UA must be used, not httpc/1.0.
-	if _, err := client.Get(srv.URL); err != nil {
+	res, err := client.Get(srv.URL)
+	if err != nil {
 		t.Fatalf("default-UA GET failed: %v", err)
 	}
 	if !strings.Contains(seenUA, "Chrome/") {
 		t.Errorf("default path UA = %q, want a Chrome UA from the preset", seenUA)
 	}
+	if got := res.Request.Headers.Get("User-Agent"); got != seenUA {
+		t.Errorf("Result.Request.Headers User-Agent = %q, want the wire UA %q", got, seenUA)
+	}
 
 	// Explicit per-request UA: the profile replaces it (coherence beats
 	// override on the fingerprint path).
 	const custom = "myapp/9.9 (explicit)"
-	if _, err := client.Get(srv.URL, httpc.WithUserAgent(custom)); err != nil {
+	res, err = client.Get(srv.URL, httpc.WithUserAgent(custom))
+	if err != nil {
 		t.Fatalf("custom-UA GET failed: %v", err)
 	}
 	if !strings.Contains(seenUA, "Chrome/") {
@@ -224,6 +230,9 @@ func TestFingerprintUserAgentRule(t *testing.T) {
 	}
 	if seenUA == custom {
 		t.Error("explicit UA must not leak to the wire in fingerprint mode")
+	}
+	if got := res.Request.Headers.Get("User-Agent"); got != seenUA {
+		t.Errorf("Result.Request.Headers User-Agent = %q, want the wire UA %q", got, seenUA)
 	}
 }
 

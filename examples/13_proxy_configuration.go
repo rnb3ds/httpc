@@ -29,7 +29,7 @@ func main() {
 	// Example 5: Proxy pool with round-robin rotation
 	demonstrateProxyPool()
 
-	// Example 6: Status-based proxy rotation (CF/WAF evasion)
+	// Example 6: Status-based proxy rotation (rotate on HTTP 403)
 	demonstrateStatusRotation()
 
 	// Example 7: Per-request proxy rotation
@@ -225,7 +225,7 @@ func demonstrateProxyPool() {
 
 // demonstrateStatusRotation shows proxy rotation triggered by HTTP status codes.
 func demonstrateStatusRotation() {
-	fmt.Println("--- Example 6: Rotate Proxy on 403 (CF/WAF Evasion) ---")
+	fmt.Println("--- Example 6: Rotate Proxy on 403 ---")
 
 	config := httpc.DefaultConfig()
 	config.Connection.ProxyPool = []string{
@@ -322,7 +322,7 @@ func printSummary() {
 	fmt.Println("VPN software (Clash/V2Ray)  | ProxyURL: \"http://127.0.0.1:7890\"")
 	fmt.Println("Proxy pool / scraping       | ProxyPool: [\"http://p1:8080\", \"http://p2:8080\"]")
 	fmt.Println("Per-request rotation        | ProxyPool + ProxyRotatePerRequest: true")
-	fmt.Println("CF/WAF evasion              | ProxyPool + ProxyRotateOnStatus: [403]")
+	fmt.Println("Rotate proxy on 403         | ProxyPool + ProxyRotateOnStatus: [403]")
 	fmt.Println("System proxy (Windows/Mac)  | EnableSystemProxy: true")
 	fmt.Println("Development (no proxy)      | Default (no configuration needed)")
 	fmt.Println()

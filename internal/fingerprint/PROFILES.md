@@ -3,8 +3,8 @@
 Profiles are snapshots of **one browser build's** wire behavior. Browsers ship every
 ~4 weeks; a profile that does not move with them becomes a contradiction on the wire
 (a User-Agent claiming one version, a ClientHello claiming another), and cross-layer
-consistency checks are exactly what modern WAFs score. This runbook defines how a
-profile is cut, verified, and refreshed.
+consistency checks are a common way sites score that contradiction. This runbook defines
+how a profile is cut, verified, and refreshed.
 
 ## What one profile is
 
@@ -16,7 +16,7 @@ profile is cut, verified, and refreshed.
 | HTTP/2 frames | `profile_*.go` — `chrome152H2` / `firefox148H2` | SETTINGS order+values, connection flow, stream id, root priority |
 | Header block | `profile_*.go` — order tables, base headers, per-method inserts, `secCHUA`, UA/platform maps | GET = navigation shape, POST = fetch/XHR shape |
 | Preset names | `preset.go` | Registry; `*-latest` aliases follow the shipped version. Third family: `safari-ios` on the same verified WebKit data (`profile_safari.go`) |
-| Verification gates | `e2e_network_test.go` + `ja4.go`/`ja4_test.go` | Byte-exact Akamai H2 hashes **and byte-exact JA4 strings** against tls.peet.ws; JA4s are also derived **offline** from the specs (`ja4OfSpec`), so a spec edit that changes the wire shape fails a unit test before any network run |
+| Verification gates | `e2e_network_test.go` + `ja4.go`/`ja4_test.go` | Byte-exact HTTP/2 hashes **and byte-exact JA4 strings** against tls.peet.ws; JA4s are also derived **offline** from the specs (`ja4OfSpec`), so a spec edit that changes the wire shape fails a unit test before any network run |
 
 Each browser has explicit **single points of substitution** for its mobile variant
 (`chrome152SpecMobile`, `chrome152H2Mobile`, Firefox equivalents) — today verbatim
@@ -37,7 +37,7 @@ ungoogled-chromium builds of the same version are not interchangeable
    key shares, signature algorithms (incl. GREASE position), ALPN, new/removed
    extensions. Watch for post-quantum and trust-anchor changes first — those are
    the fields recent Chrome majors moved.
-2. **HTTP/2**: read the Akamai fingerprint string from the echo endpoint, e.g.
+2. **HTTP/2**: read the HTTP/2 fingerprint string from the echo endpoint, e.g.
    `1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p`. Map it back onto
    SETTINGS id:value pairs in emission order, the connection-level
    WINDOW_UPDATE increment, PRIORITY frames (usually none for Chrome), and the
@@ -62,7 +62,7 @@ ungoogled-chromium builds of the same version are not interchangeable
 5. **Local gates**: `go test -race ./internal/fingerprint/` must pass.
 6. **Re-baseline the network gates**: run
    `go test -tags fingerprint_e2e ./internal/fingerprint/ -run PeetWSE2E -v`,
-   transcribe the fresh **JA4 strings**, Akamai hashes and UA into
+   transcribe the fresh **JA4 strings**, HTTP/2 hashes and UA into
    `e2e_network_test.go`, and commit data + gates together (never update one
    without the other). The JA4 assertion is exact on purpose: a prefix check
    would pass for any TLS 1.3 + h2 client and could never notice a lost ML-DSA
@@ -80,7 +80,7 @@ observation in public JA4 databases) plus the Safari iOS 26 H2 chain
 The regular-header order tables (`safariOrderGet`/`safariOrderPost`) carry
 WebKit's `m,s,a,p` pseudo order but keep the desktop regular-header
 approximation — replace them when a real CriOS/FxiOS capture exists. The
-network gates pin the WebKit JA4 and Akamai hash.
+network gates pin the WebKit JA4 and HTTP/2 hash.
 
 **Android remains a placeholder**: `chrome155Android` emits desktop TLS bytes,
 which are KNOWN wrong — live traffic shows Android Chrome as a 16-extension
@@ -116,14 +116,14 @@ means one of:
    second source (e.g. a self-hosted `fingerproxy`) before acting.
 
 peet.ws is a third-party service; for self-hosted verification, run any endpoint
-that echoes JA3/JA4 + the Akamai H2 fingerprint and point a local copy of the
+that echoes JA3/JA4 + the HTTP/2 fingerprint and point a local copy of the
 gates at it.
 
-## Coherence checklist (what a WAF cross-checks)
+## Coherence checklist (what a site cross-checks)
 
 Every layer must point at **one** browser build:
 
-- JA4 (TLS) ↔ Akamai H2 hash (framing) ↔ header order and values (JA4H) ↔
+- JA4 (TLS) ↔ HTTP/2 hash (framing) ↔ header order and values (JA4H) ↔
   `sec-ch-ua` brand list ↔ User-Agent.
 - Updating the UA string alone manufactures a mismatch. Never mix data captured
   from different browser versions, and land data + verification hashes in the

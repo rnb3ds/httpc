@@ -35,7 +35,7 @@ const (
 // (draft-ietf-tls-trust-anchor-ids, code point 0xca34). Chrome 152 sends it
 // on every ClientHello, so its presence is part of the Chrome 152 JA4
 // (t13d1517h2_—; a hello without it is a pre-152 fingerprint, which some
-// Akamai deployments reject when the UA claims Chrome 152.
+// sites reject when the UA claims Chrome 152.
 const extensionTrustAnchors uint16 = 0xca34
 
 // chrome152TrustAnchorIDs is the extension body Chrome 152 sends: a

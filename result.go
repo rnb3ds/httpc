@@ -63,7 +63,10 @@ var cachedSensitiveHeaderNames = func() []string {
 // nested pointer (e.g. Response may be nil when the request errored).
 type Result struct {
 	// Request describes the request as finally sent (after redirects,
-	// retries, and middleware).
+	// retries, and middleware). On the TLS-fingerprint path, its Headers
+	// reflect the wire headers actually written by the fingerprint transport
+	// (browser profile values under browser casing), not the engine-side
+	// defaults such as the httpc/1.0 User-Agent.
 	Request *RequestInfo
 	// Response carries the final response data; nil when the request errored
 	// before a response arrived.
@@ -79,7 +82,10 @@ type RequestInfo struct {
 	URL string
 	// Method is the HTTP method used.
 	Method string
-	// Headers contains the request headers.
+	// Headers contains the request headers. On the TLS-fingerprint path these
+	// are the wire headers actually written by the fingerprint transport
+	// (browser profile values under browser casing, the magic order keys
+	// omitted); otherwise they are the engine-side request headers.
 	Headers http.Header
 	// Cookies contains the request cookies.
 	Cookies []*http.Cookie

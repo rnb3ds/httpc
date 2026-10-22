@@ -144,7 +144,7 @@ type ConnectionConfig struct {
 	// Retry.MaxRetries > 0, the request is retried; under round-robin or random
 	// strategy the retry naturally selects a different proxy IP.
 	//
-	// Typical use: []int{403} for CF/WAF IP-based blocking. Unlike
+	// Typical use: []int{403} for IP-based blocking. Unlike
 	// connection failures, status-based rotation does NOT circuit-break the
 	// proxy — blocks are often target-specific (a proxy blocked on one site may
 	// work fine on another). Requires Retry.MaxRetries > 0 to take effect,
@@ -241,7 +241,9 @@ type SecurityConfig struct {
 	//     the browser profile's values so the wire stays coherent with the
 	//     spoofed ClientHello. Custom headers pass through untouched — in
 	//     particular, an explicitly set User-Agent does NOT override the
-	//     preset on this path.
+	//     preset on this path. Result.Request.Headers reports these wire
+	//     headers (the browser's UA and casing), not the engine-side defaults
+	//     such as the httpc/1.0 User-Agent.
 	//   - Header names are written with the browser's own casing (lower-case
 	//     sec-ch-ua, Title-Case everything else), including on HTTP/1.1.
 	//   - Redirect hops stay browser-coherent: sec-fetch-site is recomputed

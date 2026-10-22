@@ -111,7 +111,7 @@ type Config struct {
 
 	// ExtraRetryableStatusCodes are HTTP status codes beyond the built-in set
 	// (408/429/500/502/503/504) that should trigger a retry. Seeded from
-	// Connection.ProxyRotateOnStatus to rotate proxies on WAF/CF blocks.
+	// Connection.ProxyRotateOnStatus to rotate proxies on status-based blocks.
 	ExtraRetryableStatusCodes []int
 
 	// CustomRetryPolicy allows providing a custom retry policy implementation.

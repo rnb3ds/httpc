@@ -230,7 +230,7 @@ func (a *Adapter) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 
-	resp := toStdResponse(forkResp, req)
+	resp := toStdResponse(forkResp, req, forkReq.Header)
 
 	// Decode encoded bodies on the response object the engine reads, so the
 	// stale encoded-length hazard cannot exist: ContentEncoding/ContentLength
@@ -315,9 +315,22 @@ func toForkRequest(req *http.Request) *ehttp.Request {
 
 // toStdResponse converts a fork *http.Response back to the stdlib type. The
 // engine reads httpResp.Request for request metadata, so the original
-// stdlib request is restored into the back-reference field. The TLS state is
+// stdlib request is restored into the back-reference field — but its Header
+// map is replaced with the fork's wire headers (the browser profile's values
+// under the browser's casing, magic order keys dropped) so Result.Request.Headers
+// reports what the transport actually sent, not the engine-side default
+// httpc/1.0 UA that the profile replaced on the wire. The TLS state is
 // translated, not dropped (see state.go).
-func toStdResponse(resp *ehttp.Response, req *http.Request) *http.Response {
+//
+// wire is the fork request's header map after the profile header pipeline;
+// the fork's *ehttp.Response.Header holds the RESPONSE headers, so the wire
+// request headers cannot be recovered from resp alone.
+func toStdResponse(resp *ehttp.Response, req *http.Request, wire ehttp.Header) *http.Response {
+	reportReq := req
+	if req != nil {
+		reportReq = req.Clone(req.Context())
+		reportReq.Header = wireHeaders(wire) // nil for empty
+	}
 	return &http.Response{
 		Status:           resp.Status,
 		StatusCode:       resp.StatusCode,
@@ -331,7 +344,7 @@ func toStdResponse(resp *ehttp.Response, req *http.Request) *http.Response {
 		Close:            resp.Close,
 		Uncompressed:     resp.Uncompressed,
 		Trailer:          http.Header(resp.Trailer),
-		Request:          req,
+		Request:          reportReq,
 		TLS:              toStdConnState(resp.TLS),
 	}
 }

@@ -998,7 +998,7 @@ config.Connection.ProxyPoolStrategy = httpc.ProxyStrategyRoundRobin
 config.Connection.ProxyFailureThreshold = 5
 config.Connection.ProxyCooldown = 60 * time.Second
 
-// Rotate proxy on 403 (CF/WAF IP blocking). The request is retried
+// Rotate proxy on 403 (IP-based blocking). The request is retried
 // through a different proxy IP. Requires Retry.MaxRetries > 0.
 // Unlike connection failures, status-based rotation does NOT circuit-break
 // the proxy — blocks are often target-specific.
@@ -1179,7 +1179,7 @@ httpc.SetSecurityWarnOutput(os.Stderr)
 
 ## Browser Transport Fingerprinting
 
-Modern WAFs (Cloudflare, Akamai, DataDome) fingerprint more than the User-Agent: the TLS
+Sites that fingerprint browsers observe more than the User-Agent: the TLS
 ClientHello (JA3/JA4), the HTTP/2 frames (SETTINGS values and order, WINDOW_UPDATE,
 pseudo-header order, priorities, HPACK behavior), and the header block itself — including
 a User-Agent coherent with the ClientHello version. Setting `Security.TLSFingerprint`
@@ -1196,13 +1196,13 @@ Everything above the transport stays in charge: redirects, retries, middleware, 
 downloads, and cookie handling keep their httpc semantics.
 
 **Scope**: fingerprinting makes the *transport layers* — TLS, HTTP/2 framing, ordered header
-block — indistinguishable from the spoofed browser, which defeats passive fingerprinting
-(JA3/JA4, the Akamai H2 fingerprint, header order). It does **not** defeat — no pure HTTP
-client can — defenses that execute JavaScript (Cloudflare Managed Challenge / Turnstile,
-DataDome, Akamai sensor), behavioral scoring, or IP reputation; those call for a real
-browser or an authorized challenge-solving step. Profiles are snapshots of one browser
-build and age as browsers ship: `internal/fingerprint/PROFILES.md` documents the update
-runbook, and a weekly CI job watches for drift (`.github/workflows/fingerprint-drift.yml`).
+block — indistinguishable from the spoofed browser on passive observations (JA3/JA4, the
+HTTP/2 fingerprint, header order). It does not reproduce browser-side JavaScript or
+behavioral signals — no pure HTTP client can — so it is not a substitute for a real browser
+or an authorized challenge-solving step where a site requires one. Profiles are snapshots of
+one browser build and age as browsers ship: `internal/fingerprint/PROFILES.md` documents the
+update runbook, and a weekly CI job watches for drift
+(`.github/workflows/fingerprint-drift.yml`).
 
 **Preset names** are browser profiles with optional OS suffixes: `chrome` / `chrome-latest`
 / `chrome-155` (= Chrome 155) and `firefox` / `firefox-latest` / `firefox-158`
@@ -1221,7 +1221,8 @@ Behavior notes:
   stays coherent with the spoofed ClientHello; custom headers pass through untouched. An
   explicitly set User-Agent does **not** override the preset on this path. Names are written
   with the browser's own casing — lower-case `sec-ch-ua*`, Title-Case everything else — on
-  HTTP/1.1 as well as HTTP/2.
+  HTTP/1.1 as well as HTTP/2. `Result.Request.Headers` reports exactly these wire headers
+  (the browser's UA and casing), not the engine-side defaults such as `httpc/1.0`.
 - **Protocols**: ALPN decides. A server that speaks HTTP/2 gets HTTP/2, one that only speaks
   HTTP/1.1 gets HTTP/1.1, and no request is ever replayed: there is no manual fallback between
   the two. HTTP/3 is never attempted — a QUIC connection uses a separate TLS stack that
@@ -1263,12 +1264,12 @@ Behavior notes:
   carries no pre_shared_key extension (Firefox, the iOS WebKit profiles) always
   full-handshake. Set `Security.TLSFingerprintDisableSessionTickets` to force a full
   handshake on every connection.
-- **Verified end-to-end**: `chrome-latest` negotiates h2 with the Chrome Akamai fingerprint
+- **Verified end-to-end**: `chrome-latest` negotiates h2 with the Chrome HTTP/2 fingerprint
   `1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p` (hash `52d84b11737d980aef856699f885ca86`)
   and a Chrome 155 UA; `firefox-latest` yields
   `1:65536;2:0;4:131072;5:16384|12517377|0|m,p,a,s` (hash `6ea73faa8fc5aac76bded7bd238f6433`)
   with a Firefox 158 UA; `chrome-ios` and `safari-ios` yield the WebKit JA4
-  `t13d2013h2_a09f3c656075_7f0f34a4126d` with Akamai
+  `t13d2013h2_a09f3c656075_7f0f34a4126d` with the HTTP/2 fingerprint
   `2:0;3:100;4:2097152;9:1|10420225|0|m,s,a,p` (hash `c52879e43202aeb92740be6e8c86ea96`) —
   see `internal/fingerprint/e2e_network_test.go`
   (`go test -tags fingerprint_e2e ./internal/fingerprint/ -run PeetWSE2E`).

@@ -991,7 +991,7 @@ config.Connection.ProxyPoolStrategy = httpc.ProxyStrategyRoundRobin
 config.Connection.ProxyFailureThreshold = 5
 config.Connection.ProxyCooldown = 60 * time.Second
 
-// 遇到 403 时轮换代理（Cloudflare/WAF IP 封锁）。请求会通过不同的代理 IP 重试。
+// 遇到 403 时轮换代理（IP 封锁）。请求会通过不同的代理 IP 重试。
 // 需要 Retry.MaxRetries > 0。
 // 与连接失败不同，基于状态码的轮换不会触发熔断——封锁通常是目标相关的。
 config.Connection.ProxyRotateOnStatus = []int{403}
@@ -1131,7 +1131,7 @@ httpc.SetSecurityWarnOutput(os.Stderr)
 
 ## 浏览器传输指纹
 
-现代 WAF（Cloudflare、Akamai、DataDome）检测的远不止 User-Agent：TLS ClientHello
+做浏览器指纹识别的站点检测的远不止 User-Agent：TLS ClientHello
 （JA3/JA4）、HTTP/2 帧（SETTINGS 值与顺序、WINDOW_UPDATE、伪头顺序、优先级、HPACK
 行为），以及 header 块本身（包括与 ClientHello 版本一致的 User-Agent）。设置
 `Security.TLSFingerprint` 后，httpc 的传输层被整体替换为浏览器仿真，走完全指纹化的
@@ -1146,13 +1146,12 @@ client, err := httpc.New(cfg)
 传输层之上的全部能力保持不变：重定向、重试、中间件、流式下载与 Cookie 处理仍是
 httpc 的语义。
 
-**能力边界**：指纹化让*传输层*（TLS、HTTP/2 帧、有序 header 块）与被仿真的浏览器
-不可区分，足以对抗被动指纹检测（JA3/JA4、Akamai H2 指纹、header 顺序）。它**不能**
-对抗 —— 任何纯 HTTP 客户端都不能 —— 需要执行 JavaScript 的防线（Cloudflare
-Managed Challenge / Turnstile、DataDome、Akamai sensor）、行为评分或 IP 信誉；这类
-目标需要真实浏览器或经授权的挑战求解环节。档案是单个浏览器构建的快照，会随浏览器
-发版老化：更新流程见 `internal/fingerprint/PROFILES.md`，另有一项每周 CI 任务监测
-漂移（`.github/workflows/fingerprint-drift.yml`）。
+**能力边界**：指纹化让*传输层*（TLS、HTTP/2 帧、有序 header 块）在被动观测上与被仿真
+的浏览器不可区分（JA3/JA4、HTTP/2 指纹、header 顺序）。它不复制浏览器端的 JavaScript
+或行为信号——任何纯 HTTP 客户端都做不到——因此在站点要求这些的场景下，它不能替代真实
+浏览器或经授权的挑战求解环节。档案是单个浏览器构建的快照，会随浏览器发版老化：更新
+流程见 `internal/fingerprint/PROFILES.md`，另有一项每周 CI 任务监测漂移
+（`.github/workflows/fingerprint-drift.yml`）。
 
 **预设名**：`chrome` / `chrome-latest` / `chrome-155`（= Chrome 155）与
 `firefox` / `firefox-latest` / `firefox-158`（= Firefox 158），均可加 OS 后缀 ——
@@ -1168,7 +1167,8 @@ WebKit 数据。没有桌面 Safari 档案：macOS Safari 的 ClientHello 有差
 - **头部集权威**：预设以浏览器档案的值替换请求中的同名头（User-Agent、Accept、
   Accept-Language 等），使线上形态与伪装的 ClientHello 保持一致；自定义头原样透传。
   显式设置的 User-Agent 在该路径上**不会**覆盖预设。头部名按浏览器真实大小写输出——
-  `sec-ch-ua*` 小写、其余 Title-Case——HTTP/1.1 与 HTTP/2 都一样。
+  `sec-ch-ua*` 小写、其余 Title-Case——HTTP/1.1 与 HTTP/2 都一样。`Result.Request.Headers`
+  报告的正是这些线上头（浏览器的 UA 与大小写），而非引擎侧的默认值（如 `httpc/1.0`）。
 - **协议**：由 ALPN 决定。服务器支持 HTTP/2 就走 HTTP/2，只支持 HTTP/1.1 就走
   HTTP/1.1，且请求从不重放——两层之间没有手动回退。不尝试 HTTP/3：QUIC 连接使用独立的
   TLS 栈，会绕过 `CertificatePinner`，静默丢失固定校验比不做协议竞速更糟。
@@ -1199,12 +1199,12 @@ WebKit 数据。没有桌面 Safari 档案：macOS Safari 的 ClientHello 有差
   真实浏览器重访站点的行为一致（`session_resumption_test.go` 已实测）。ClientHello
   不含 pre_shared_key 扩展的档案（Firefox、iOS WebKit 系列）始终完整握手。设置
   `Security.TLSFingerprintDisableSessionTickets` 可强制每连接完整握手。
-- **已端到端实测**：`chrome-latest` 协商 h2，Akamai H2 指纹为
+- **已端到端实测**：`chrome-latest` 协商 h2，HTTP/2 指纹为
   `1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p`
   （哈希 `52d84b11737d980aef856699f885ca86`），UA 为 Chrome/155；`firefox-latest` 为
   `1:65536;2:0;4:131072;5:16384|12517377|0|m,p,a,s`
   （哈希 `6ea73faa8fc5aac76bded7bd238f6433`），UA 为 Firefox/158；`chrome-ios` 与
-  `safari-ios` 为 WebKit JA4 `t13d2013h2_a09f3c656075_7f0f34a4126d`，Akamai
+  `safari-ios` 为 WebKit JA4 `t13d2013h2_a09f3c656075_7f0f34a4126d`，HTTP/2 指纹
   `2:0;3:100;4:2097152;9:1|10420225|0|m,s,a,p`
   （哈希 `c52879e43202aeb92740be6e8c86ea96`）—— 见
   `internal/fingerprint/e2e_network_test.go`
