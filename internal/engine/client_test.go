@@ -1640,9 +1640,9 @@ func TestClient_TimeoutHandling(t *testing.T) {
 }
 
 // TestEffectiveRequestTimeout_NoTimeout pins the per-request timeout
-// resolution order, including the previously untested NoTimeout branch:
-// NoTimeout wins over everything, then the per-request timeout, then the
-// client-level config timeout.
+// resolution order: an explicit WithTimeout always wins, NoTimeout suppresses
+// only the client-level default, then the client-level config timeout
+// applies.
 func TestEffectiveRequestTimeout_NoTimeout(t *testing.T) {
 	c := &Client{config: &Config{Timeout: 30 * time.Second}}
 	req := &Request{}
@@ -1656,20 +1656,29 @@ func TestEffectiveRequestTimeout_NoTimeout(t *testing.T) {
 		t.Errorf("per-request override: effectiveRequestTimeout = %v, want 5s", got)
 	}
 
+	req.SetTimeout(0)
 	req.SetNoTimeout(true)
 	if got := effectiveRequestTimeout(c, req); got != 0 {
 		t.Errorf("NoTimeout: effectiveRequestTimeout = %v, want 0 (no budget)", got)
 	}
 
-	// NoTimeout wins even when an explicit per-request timeout is set.
+	// An explicit per-request timeout is always honored, even alongside
+	// NoTimeout (the documented contract: WithNoTimeout lifts only the
+	// client-level default). This used to resolve to 0 — silently dropping
+	// the caller's cap — before the priority was corrected.
 	req.SetTimeout(7 * time.Second)
+	if got := effectiveRequestTimeout(c, req); got != 7*time.Second {
+		t.Errorf("NoTimeout + Timeout: effectiveRequestTimeout = %v, want 7s", got)
+	}
+
+	req.SetTimeout(0)
 	if got := effectiveRequestTimeout(c, req); got != 0 {
-		t.Errorf("NoTimeout + Timeout: effectiveRequestTimeout = %v, want 0", got)
+		t.Errorf("NoTimeout + no explicit timeout: effectiveRequestTimeout = %v, want 0 (client default lifted)", got)
 	}
 
 	req.SetNoTimeout(false)
-	if got := effectiveRequestTimeout(c, req); got != 7*time.Second {
-		t.Errorf("NoTimeout cleared: effectiveRequestTimeout = %v, want 7s", got)
+	if got := effectiveRequestTimeout(c, req); got != 30*time.Second {
+		t.Errorf("NoTimeout cleared: effectiveRequestTimeout = %v, want 30s", got)
 	}
 }
 

@@ -101,9 +101,10 @@ func initNormalizedSystemPaths() {
 // SECURITY: This function implements multiple layers of protection:
 // 1. UNC path blocking (prevents network resource access)
 // 2. Control character filtering
-// 3. System path protection
-// 4. Path traversal detection
-// 5. Symlink attack prevention
+// 3. Windows-only hazards: DOS device names and NTFS alternate data streams
+// 4. System path protection
+// 5. Path traversal detection
+// 6. Symlink attack prevention
 func prepareFilePath(filePath string) (string, error) {
 	filePathLen := len(filePath)
 	if filePathLen == 0 {
@@ -126,6 +127,14 @@ func prepareFilePath(filePath string) (string, error) {
 		if c < 0x20 || c == 0x7F || c == 0 {
 			return "", fmt.Errorf("file path contains invalid characters at position %d", i)
 		}
+	}
+
+	// Windows-only hazards (no-op elsewhere): DOS device names and NTFS
+	// alternate data streams. Checked on the raw input, before Clean — the
+	// device-name comparison wants the caller's final path component, and
+	// colon positions are Clean-invariant anyway.
+	if err := checkWindowsReservedPath(filePath); err != nil {
+		return "", err
 	}
 
 	cleanPath := filepath.Clean(filePath)
@@ -270,6 +279,82 @@ func isSystemPath(absPath string) bool {
 func rejectSymlink(path string) error {
 	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("symlink paths not allowed for security")
+	}
+	return nil
+}
+
+// windowsReservedDeviceNames lists the legacy DOS device names that Windows
+// resolves to devices even when the name carries an extension or trailing
+// dots/spaces ("CON.txt" opens the console, "COM1 " the serial port): an
+// os.OpenFile(O_CREATE|O_TRUNC) against such a name writes the response body
+// to the device instead of a file, silently. Read-only after initialization —
+// must not be mutated (concurrent reads).
+var windowsReservedDeviceNames = func() map[string]bool {
+	names := []string{"CON", "PRN", "AUX", "NUL"}
+	for i := 1; i <= 9; i++ {
+		names = append(names, fmt.Sprintf("COM%d", i), fmt.Sprintf("LPT%d", i))
+	}
+	set := make(map[string]bool, len(names))
+	for _, n := range names {
+		set[n] = true
+	}
+	return set
+}()
+
+// checkWindowsReservedPath rejects two Windows-only filename hazards the
+// generic character filter cannot see: NTFS alternate data streams (a colon
+// beyond a leading drive letter — "file.txt:stream" — where the body would
+// vanish into a hidden stream) and DOS device names in the final component
+// ("CON", "COM1", …). It is a no-op on non-Windows platforms, where colons
+// and these names are ordinary filename characters ("com1" is a legal, common
+// Linux filename; blocking it there would be a false positive).
+func checkWindowsReservedPath(path string) error {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	if err := rejectAlternateDataStream(path); err != nil {
+		return err
+	}
+	return rejectReservedDeviceName(path)
+}
+
+// rejectAlternateDataStream rejects any colon that is not the drive-letter
+// separator of a local path. A valid local path has its first colon at index
+// 1 ("C:" or "C:\…" / "C:/…"); a UNC path would start with a separator and is
+// already rejected upstream. Everything else — "file.txt:ads", "dir:a\file",
+// a second colon after a drive spec — opens an NTFS alternate data stream.
+func rejectAlternateDataStream(path string) error {
+	first := strings.IndexByte(path, ':')
+	switch {
+	case first == -1:
+		return nil
+	case first == 1 && (len(path) == 2 || path[2] == '\\' || path[2] == '/'):
+		if strings.IndexByte(path[2:], ':') != -1 {
+			return fmt.Errorf("alternate data stream syntax not allowed for security")
+		}
+		return nil
+	default:
+		return fmt.Errorf("alternate data stream syntax not allowed for security")
+	}
+}
+
+// rejectReservedDeviceName rejects a final path component whose base name is
+// a DOS device name. The comparison ignores an extension ("CON.txt"), case,
+// and trailing dots/spaces — Windows device resolution ignores all three, so
+// the filter must too. Only the final component is checked: writing
+// "dir\CON\file.txt" fails at MkdirAll with an OS error long before any
+// device is opened, and a directory merely NAMED like a device is harmless.
+func rejectReservedDeviceName(path string) error {
+	base := path[strings.LastIndexAny(path, `\/`)+1:]
+	if dot := strings.IndexByte(base, '.'); dot >= 0 {
+		base = base[:dot]
+	}
+	base = strings.TrimRight(base, " .")
+	if base == "" {
+		return nil
+	}
+	if windowsReservedDeviceNames[strings.ToUpper(base)] {
+		return fmt.Errorf("DOS device name %q not allowed for security", base)
 	}
 	return nil
 }

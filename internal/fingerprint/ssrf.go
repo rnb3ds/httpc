@@ -1,35 +1,25 @@
 package fingerprint
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"net/http"
-	"time"
 
 	"github.com/cybergodev/httpc/internal/connection"
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
-// ssrfResolveTimeout caps the pre-flight DNS lookup so a slow resolver cannot
-// stall the request beyond the engine's own budget.
-const ssrfResolveTimeout = 10 * time.Second
-
 // preflightSSRF validates the request target before handing it to the backend.
-// The backend dials on its own, so this mirrors the connection-layer check the
-// standard path performs (resolve once, filter to allowed IPs) at request
-// granularity instead of connection granularity. A per-request AllowPrivateIPs
-// override on the context (WithAllowPrivateIPs) takes precedence, matching the
-// standard dialer's behavior.
+// For DIRECT connections this is now defense-in-depth: the validating dialer
+// (directdial.go) resolve-validates-pins every dial, so the pre-flight only
+// fails the request earlier and never widens what can connect. For PROXIED
+// requests it remains the enforcement — the proxy resolves the target itself,
+// so pinning is impossible and this check is the same rule, with the same
+// trust-the-proxy residual, as the standard path's validateProxiedTarget.
 //
-// KNOWN LIMITATIONS versus the standard path (which dials only validated IP
-// literals and therefore has neither gap):
-//   - TOCTOU: the backend performs its own DNS resolution after this check,
-//     so an attacker controlling DNS retains a narrow race window.
-//   - MIXED RECORDS: the pass condition below is "at least one allowed IP".
-//     A host resolving to both a public and a private address passes the
-//     pre-flight, and the backend's second resolution may land on the
-//     private record — deterministically, with no DNS rebinding required.
+// A per-request AllowPrivateIPs override on the context
+// (WithAllowPrivateIPs) takes precedence, matching both the standard dialer
+// and the validating dialer's behavior.
 func (a *Adapter) preflightSSRF(req *http.Request) error {
 	allowPrivateIPs := a.cfg.AllowPrivateIPs
 	if override, ok := connection.AllowPrivateIPsOverrideFromContext(req.Context()); ok {
@@ -52,17 +42,15 @@ func (a *Adapter) preflightSSRF(req *http.Request) error {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(req.Context(), ssrfResolveTimeout)
-	defer cancel()
-	ipAddrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	// Shared SSRF resolve-and-filter rule (validation.ResolveFilteredIPs) —
+	// the same implementation the standard path's dialer and proxied-target
+	// check and the validating dialer below use; dialTimeout 0 keeps the
+	// 10s cap this pre-flight always applied.
+	allowed, err := validation.ResolveFilteredIPs(req.Context(), host, a.cfg.ExemptNets, 0, nil)
 	if err != nil {
 		return fmt.Errorf("fingerprint: SSRF pre-flight: DNS resolution failed for %s: %w", host, err)
 	}
-	ips := make([]net.IP, len(ipAddrs))
-	for i, addr := range ipAddrs {
-		ips[i] = addr.IP
-	}
-	if len(validation.FilterAllowedIPs(ips, a.cfg.ExemptNets)) == 0 {
+	if len(allowed) == 0 {
 		return fmt.Errorf("fingerprint: SSRF protection: domain %s resolves only to blocked addresses", host)
 	}
 	return nil

@@ -83,6 +83,126 @@ func (o *cookieOption) apply(r RequestMutator) error {
 	return nil
 }
 
+// proxyOption is the named request-option type backing WithProxy. It is a
+// package-level ROUTING option rather than a per-request modifier: the
+// package-level dispatch (withDefault / Download) extracts it statically —
+// before any request is built — and routes the call to a dedicated proxy
+// client instead of the default client. It never reaches the engine.
+type proxyOption struct {
+	url string
+}
+
+// apply implements the RequestOption contract for proxyOption. It always
+// returns an error: WithProxy is meaningful only on package-level functions,
+// which strip this option during routing. On an explicit client instance
+// (client.Get, DomainClient, ...) the option has no per-request meaning, so
+// failing loudly is honest — use Config.Connection.ProxyURL there instead.
+func (o *proxyOption) apply(r RequestMutator) error {
+	return fmt.Errorf("WithProxy is a package-level routing option; set Config.Connection.ProxyURL on the client instance instead")
+}
+
+// fingerprintOption is the named request-option type backing WithTLSFingerprint.
+// Like proxyOption it is a package-level ROUTING option: the dispatch layer
+// extracts it statically and routes the call to a dedicated fingerprinted
+// client. It never reaches the engine.
+type fingerprintOption struct {
+	preset string
+}
+
+// apply implements the RequestOption contract for fingerprintOption. It always
+// returns an error: WithTLSFingerprint is meaningful only on package-level
+// functions, which strip this option during routing. On an explicit client
+// instance use Config.Security.TLSFingerprint instead.
+func (o *fingerprintOption) apply(r RequestMutator) error {
+	return fmt.Errorf("WithTLSFingerprint is a package-level routing option; set Config.Security.TLSFingerprint on the client instance instead")
+}
+
+// systemProxyOption is the named request-option type backing WithSystemProxy.
+// Like proxyOption and fingerprintOption it is a package-level ROUTING option:
+// the dispatch layer extracts it statically and routes the call to a dedicated
+// client with system-proxy detection enabled. It never reaches the engine and
+// carries no data (a marker).
+type systemProxyOption struct{}
+
+// apply implements the RequestOption contract for systemProxyOption. It always
+// returns an error: WithSystemProxy is meaningful only on package-level
+// functions, which strip this option during routing. On an explicit client
+// instance use Config.Connection.EnableSystemProxy instead.
+func (o *systemProxyOption) apply(r RequestMutator) error {
+	return fmt.Errorf("WithSystemProxy is a package-level routing option; set Config.Connection.EnableSystemProxy on the client instance instead")
+}
+
+// WithProxy sets a proxy for a package-level request. It is a routing option:
+// the package-level functions (Get, Post, Request, Download, ...) extract it
+// and route the call through a dedicated proxy client, leaving the shared
+// default client (and any other in-flight requests) untouched.
+//
+// On an explicit client instance it returns an error — use
+// Config.Connection.ProxyURL there instead.
+//
+// The proxy URL accepts http, https, socks5, and socks5h schemes (the same
+// set ValidateProxyURL accepts for Config.Connection.ProxyURL). It takes
+// precedence over the default client's own proxy configuration.
+//
+//	// Route this one request through a proxy, leaving the default client as-is
+//	result, err := httpc.Get("https://example.com",
+//	    httpc.WithProxy("http://127.0.0.1:7890"),
+//	)
+//
+// SECURITY: like Connection.ProxyURL, the proxy URL may carry credentials
+// (user:pass@host). httpc never logs them, but do not embed secrets in source.
+func WithProxy(proxyURL string) RequestOption {
+	return &proxyOption{url: proxyURL}
+}
+
+// WithTLSFingerprint sets a browser TLS fingerprint preset for a package-level
+// request. Like WithProxy it is a routing option: the package-level functions
+// (Get, Post, Request, Download, ...) extract it and route the call through a
+// dedicated fingerprinted client, leaving the shared default client untouched.
+//
+// On an explicit client instance it returns an error — use
+// Config.Security.TLSFingerprint there instead.
+//
+// The value must be a known preset (case-insensitive, whitespace-trimmed):
+// "chrome", "firefox", and their OS/version aliases (see
+// SecurityConfig.TLSFingerprint for the full list). An unknown preset fails the
+// request with ErrInvalidSecurity, mirroring ValidateConfig.
+//
+//	// Impersonate Chrome on this one call, leaving the default client as-is
+//	result, err := httpc.Get("https://example.com",
+//	    httpc.WithTLSFingerprint("chrome-windows"),
+//	)
+func WithTLSFingerprint(preset string) RequestOption {
+	return &fingerprintOption{preset: preset}
+}
+
+// WithSystemProxy routes a package-level request through a client that uses
+// automatic system proxy detection. Like WithProxy and WithTLSFingerprint it is
+// a routing option: the package-level functions (Get, Post, Request, Download,
+// ...) extract it and route the call through a dedicated client with
+// Connection.EnableSystemProxy set, leaving the shared default client untouched.
+//
+// On an explicit client instance it returns an error — use
+// Config.Connection.EnableSystemProxy there instead.
+//
+// Detection reads environment variables (HTTP_PROXY/HTTPS_PROXY/NO_PROXY) and
+// platform settings (Windows registry, macOS system configuration). Requests to
+// localhost/loopback and NO_PROXY-exempt hosts bypass the proxy, matching
+// net/http behavior. When no system proxy is configured the request connects
+// directly.
+//
+// It composes with WithProxy and WithTLSFingerprint, but WithProxy takes
+// precedence: a call carrying both WithProxy and WithSystemProxy routes through
+// the explicit proxy, matching Config's priority (ProxyURL > EnableSystemProxy).
+//
+//	// Route this one call through the system-configured proxy, if any
+//	result, err := httpc.Get("https://example.com",
+//	    httpc.WithSystemProxy(),
+//	)
+func WithSystemProxy() RequestOption {
+	return &systemProxyOption{}
+}
+
 // WithHeader sets a single HTTP header on the request.
 // Returns ErrInvalidHeader if the key or value contains invalid characters
 // (CRLF injection prevention).

@@ -331,18 +331,24 @@ func TestToForkRequest_MinimalFields(t *testing.T) {
 
 // TestToStdResponse_FullFieldParity pins the fork→stdlib response conversion,
 // including the Request back-reference contract: the engine reads
-// resp.Request for request metadata, so the ORIGINAL stdlib request must be
-// restored (the fork's own Request pointer is not convertible).
+// resp.Request for request metadata, so the original stdlib request's fields
+// are restored — except Header, which is replaced with the fork's wire
+// headers (browser casing, magic order keys dropped) so Result.Request.Headers
+// reports what actually went out.
 func TestToStdResponse_FullFieldParity(t *testing.T) {
 	origReq, _ := http.NewRequest(http.MethodGet, "https://example.com/page", nil)
+	origReq.Header.Set("User-Agent", "httpc/1.0")
 
 	forkResp := &ehttp.Response{
-		Status:           "200 OK",
-		StatusCode:       200,
-		Proto:            "HTTP/2.0",
-		ProtoMajor:       2,
-		ProtoMinor:       0,
-		Header:           ehttp.Header{"Content-Type": {"text/html"}},
+		Status:     "200 OK",
+		StatusCode: 200,
+		Proto:      "HTTP/2.0",
+		ProtoMajor: 2,
+		ProtoMinor: 0,
+		Header: ehttp.Header{
+			"Content-Type":   {"text/html"},
+			"Content-Length": {"7"},
+		},
 		Body:             io.NopCloser(strings.NewReader("<html/>")),
 		ContentLength:    7,
 		TransferEncoding: []string{"identity"},
@@ -352,7 +358,16 @@ func TestToStdResponse_FullFieldParity(t *testing.T) {
 		TLS:              &utls.ConnectionState{NegotiatedProtocol: "h2"},
 	}
 
-	resp := toStdResponse(forkResp, origReq)
+	// The fork REQUEST headers are a separate map: the profile pipeline wrote
+	// the browser values here; the fork's Response.Header is the server's.
+	forkReqHeaders := ehttp.Header{
+		"User-Agent":          {"Mozilla/5.0 ... Chrome/155.0"},
+		"sec-ch-ua":           {`"Chromium";v="155"`},
+		ehttp.HeaderOrderKey:  {"user-agent", "sec-ch-ua"},
+		ehttp.PHeaderOrderKey: {":method", ":authority", ":scheme", ":path"},
+	}
+
+	resp := toStdResponse(forkResp, origReq, forkReqHeaders)
 
 	if resp.Status != "200 OK" || resp.StatusCode != 200 {
 		t.Errorf("status = %q %d", resp.Status, resp.StatusCode)
@@ -361,7 +376,7 @@ func TestToStdResponse_FullFieldParity(t *testing.T) {
 		t.Errorf("proto = %q %d.%d", resp.Proto, resp.ProtoMajor, resp.ProtoMinor)
 	}
 	if resp.Header.Get("Content-Type") != "text/html" {
-		t.Errorf("Header not carried: %v", resp.Header)
+		t.Errorf("response Header not carried: %v", resp.Header)
 	}
 	if resp.Body != forkResp.Body {
 		t.Error("Body reader not shared (streaming ownership would break)")
@@ -384,21 +399,48 @@ func TestToStdResponse_FullFieldParity(t *testing.T) {
 	if resp.TLS == nil || resp.TLS.NegotiatedProtocol != "h2" {
 		t.Errorf("TLS state not carried: %v", resp.TLS)
 	}
-	if resp.Request != origReq {
-		t.Fatalf("Request back-reference = %v, want the original stdlib request", resp.Request)
+	// Request back-reference: a clone (not the original), with the wire header
+	// map in place of the engine-side header map.
+	if resp.Request == nil || resp.Request == origReq {
+		t.Fatalf("Request back-reference = %v, want a clone of the original", resp.Request)
+	}
+	if resp.Request.URL.String() != origReq.URL.String() {
+		t.Errorf("report request URL = %q, want %q", resp.Request.URL, origReq.URL)
+	}
+	if got := resp.Request.Header.Get("User-Agent"); got != "Mozilla/5.0 ... Chrome/155.0" {
+		t.Errorf("report request User-Agent = %q, want the wire (browser) UA", got)
+	}
+	// The browser stores sec-ch-ua under its lower-case key; Header.Get
+	// canonicalises the lookup, so assert the raw key directly.
+	if got := resp.Request.Header["sec-ch-ua"]; len(got) != 1 || got[0] != `"Chromium";v="155"` { //nolint:staticcheck // SA1008: deliberate — the fingerprint wire set keeps sec-ch-ua lower-case
+		t.Errorf("report request sec-ch-ua = %v, want the wire value under browser casing", got)
+	}
+	if _, ok := resp.Request.Header[ehttp.HeaderOrderKey]; ok {
+		t.Error("report request Header must drop the Header-Order magic key")
+	}
+	if _, ok := resp.Request.Header[ehttp.PHeaderOrderKey]; ok {
+		t.Error("report request Header must drop the PHeader-Order magic key")
+	}
+	// The original request's header map must be untouched.
+	if origReq.Header.Get("User-Agent") != "httpc/1.0" {
+		t.Errorf("original request headers mutated: %v", origReq.Header)
 	}
 }
 
 // TestToStdResponse_MinimalFields pins the zero-value conversion.
 func TestToStdResponse_MinimalFields(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodHead, "https://example.com/", nil)
-	resp := toStdResponse(&ehttp.Response{}, req)
+	resp := toStdResponse(&ehttp.Response{}, req, nil)
 
 	if resp.StatusCode != 0 || resp.Body != nil || resp.Header != nil {
 		t.Errorf("minimal response not passthrough: %+v", resp)
 	}
-	if resp.Request != req {
-		t.Error("Request back-reference contract violated on minimal response")
+	// Request back-reference is a clone carrying the (empty) wire header map.
+	if resp.Request == nil || resp.Request == req {
+		t.Error("Request back-reference must be a clone on the fingerprint path")
+	}
+	if resp.Request.URL.String() != req.URL.String() {
+		t.Errorf("report request URL = %q, want %q", resp.Request.URL, req.URL)
 	}
 }
 

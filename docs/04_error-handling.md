@@ -454,6 +454,10 @@ HTTPC defines sentinel errors for specific failure conditions:
 | `httpc.ErrResponseBodyEmpty` | Response body is empty |
 | `httpc.ErrResponseBodyTooLarge` | Response body exceeds size limit |
 | `httpc.ErrStreamBodyRequiresDownload` | `WithStreamBody` used with a standard request method (Get/Post/.../Request); streaming requires `Download` |
+| `httpc.ErrInvalidMaxRedirects` | Redirect limit is negative or exceeds 50 |
+| `httpc.ErrInvalidCredentials` | Basic/Bearer credentials failed validation |
+| `httpc.ErrDownloadInProgress` | A download to the same file path is already running |
+| `httpc.ErrProxyConnectionFailed` | A configured proxy could not be dialed |
 
 ### ClientError Fields
 

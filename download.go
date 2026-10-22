@@ -143,7 +143,7 @@ func Download(ctx context.Context, url string, cfg *DownloadConfig, options ...R
 	if cfg == nil {
 		return nil, fmt.Errorf("download config cannot be nil")
 	}
-	client, err := getDefaultClient()
+	client, options, err := resolvePackageClient(options)
 	if err != nil {
 		return nil, err
 	}

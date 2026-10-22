@@ -233,6 +233,7 @@ func TestDefaultConfig(t *testing.T) {
 		{"ProxyPoolStrategy", config.ProxyPoolStrategy, proxypool.StrategyRoundRobin},
 		{"ProxyFailureThreshold", config.ProxyFailureThreshold, 0},
 		{"ProxyCooldown", config.ProxyCooldown, time.Duration(0)},
+		{"EnableProxyPoolHTTP2", config.EnableProxyPoolHTTP2, false},
 
 		// Security
 		{"AllowPrivateIPs", config.AllowPrivateIPs, false},

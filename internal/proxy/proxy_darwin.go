@@ -5,7 +5,6 @@ package proxy
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -96,8 +95,8 @@ func matchBypassCIDR(host, entry string) bool {
 // the network service name to query (resolved once by the caller).
 func (d *Detector) getMacOSProxy(service, toolType string) *url.URL {
 	// Run networksetup command to get proxy settings. Bounded by a timeout:
-	// this runs while holding the Detector write lock on the client-construction
-	// path, so a wedged networksetup would otherwise block NewClient forever.
+	// this runs on the client-construction path, so a wedged networksetup
+	// would otherwise block NewClient forever.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "networksetup", "-"+toolType, service)
@@ -236,9 +235,10 @@ func (d *Detector) parseNetworkSetupOutput(output string) *url.URL {
 		return nil
 	}
 
-	// Construct proxy URL
-	proxyStr := fmt.Sprintf("http://%s:%d", server, port)
-	proxyURL, err := url.Parse(proxyStr)
+	// Construct proxy URL. JoinHostPort brackets an IPv6 server literal — the
+	// former Sprintf produced "http://fe80::1:8080", which url.Parse rejects
+	// ("invalid port"), silently dropping the system proxy on IPv6 setups.
+	proxyURL, err := url.Parse("http://" + net.JoinHostPort(server, strconv.Itoa(port)))
 	if err != nil {
 		return nil
 	}

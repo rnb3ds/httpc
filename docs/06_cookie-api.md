@@ -376,3 +376,27 @@ dc.ClearCookies()
 | `GetCookies() []*http.Cookie` | Get all cookies |
 | `DeleteCookie(name string)` | Remove a cookie by name |
 | `ClearCookies()` | Remove all cookies |
+
+Beyond cookies, `DomainClient` manages persistent headers, exposes base-URL
+accessors, and supports downloads with relative paths:
+
+```go
+// Persistent headers (sent with every request)
+dc.SetHeader("Authorization", "Bearer "+token)
+dc.SetHeaders(map[string]string{"X-App": "v1", "X-Version": "1.0"})
+headers := dc.GetHeaders()
+dc.DeleteHeader("X-Old")
+dc.ClearHeaders()
+
+// Accessors
+dc.URL()     // full base URL
+dc.Domain()  // domain only
+dc.Session() // underlying *SessionManager (also usable standalone)
+
+// Download with a relative path
+result, err := dc.Download(ctx, "/files/data.csv",
+    &httpc.DownloadConfig{FilePath: "data.csv"})
+```
+
+Every method from the `Client` interface works with relative paths:
+`Get` / `Post` / `Put` / `Patch` / `Delete` / `Head` / `Options` / `Request`.

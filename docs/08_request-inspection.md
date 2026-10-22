@@ -59,6 +59,13 @@ userAgent := result.Request.Headers.Get("User-Agent")
 cookieHeader := result.Request.Headers.Get("Cookie")
 ```
 
+> **TLS fingerprinting note**: When `Security.TLSFingerprint` is set, the
+> browser profile's header set is authoritative — the preset's version-matched
+> `User-Agent` (and `Accept`, `Accept-Language`, …) replace the client's own
+> values on the wire. `Result.Request.Headers` reports exactly those wire
+> headers (the browser's UA and casing), not the engine-side defaults such as
+> `httpc/1.0`.
+
 ## Inspecting Request Cookies
 
 ### Method 1: Direct Access to Cookie Header

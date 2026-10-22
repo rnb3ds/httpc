@@ -11,6 +11,11 @@ import (
 	"github.com/cybergodev/httpc"
 )
 
+// This example demonstrates proxy configuration: a single explicit
+// Connection.ProxyURL, automatic system-proxy detection, and a rotating
+// proxy pool with circuit breaking and status-based rotation.
+// Perfect for: Egress through corporate proxies or distributed scraping
+
 func main() {
 	fmt.Println("=== Proxy Configuration Examples ===")
 
@@ -29,11 +34,14 @@ func main() {
 	// Example 5: Proxy pool with round-robin rotation
 	demonstrateProxyPool()
 
-	// Example 6: Status-based proxy rotation (CF/WAF evasion)
+	// Example 6: Status-based proxy rotation (rotate on HTTP 403)
 	demonstrateStatusRotation()
 
 	// Example 7: Per-request proxy rotation
 	demonstratePerRequestRotation()
+
+	// Example 8: Per-proxy HTTP/2 (opt-in)
+	demonstrateProxyPoolHTTP2()
 
 	// Summary
 	printSummary()
@@ -55,7 +63,7 @@ func demonstrateDirectConnection() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Make an actual request to verify connectivity
 	resp, err := client.Get("https://httpbin.org/ip",
@@ -87,7 +95,7 @@ func demonstrateSystemProxy() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Make a request - will use system proxy if configured
 	resp, err := client.Get("https://httpbin.org/ip",
@@ -132,7 +140,7 @@ func demonstrateManualProxy() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	fmt.Printf("Proxy URL: %s\n", proxyURL)
 	fmt.Println("Attempting request through proxy...")
@@ -171,7 +179,7 @@ func demonstrateProxyPriority() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	fmt.Println("Configuration:")
 	fmt.Println("  ProxyURL: http://127.0.0.1:8080")
@@ -209,7 +217,7 @@ func demonstrateProxyPool() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	fmt.Printf("Proxy pool: %d proxies, round-robin strategy\n", len(config.Connection.ProxyPool))
 	fmt.Println("Each request rotates to the next proxy IP.")
@@ -225,7 +233,7 @@ func demonstrateProxyPool() {
 
 // demonstrateStatusRotation shows proxy rotation triggered by HTTP status codes.
 func demonstrateStatusRotation() {
-	fmt.Println("--- Example 6: Rotate Proxy on 403 (CF/WAF Evasion) ---")
+	fmt.Println("--- Example 6: Rotate Proxy on 403 ---")
 
 	config := httpc.DefaultConfig()
 	config.Connection.ProxyPool = []string{
@@ -233,7 +241,7 @@ func demonstrateStatusRotation() {
 		"http://127.0.0.1:7891",
 		"http://127.0.0.1:7892",
 	}
-	// When a response returns 403 (e.g. CF challenge), retry with a
+	// When a response returns 403 (e.g. IP-based blocking), retry with a
 	// different proxy. Under round-robin, the retry naturally picks the next
 	// proxy IP. This does NOT circuit-break the proxy — blocks are often
 	// target-specific.
@@ -249,7 +257,7 @@ func demonstrateStatusRotation() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	fmt.Println("ProxyRotateOnStatus: [403]")
 	fmt.Println("On 403 -> retry -> next proxy IP (round-robin advances automatically)")
@@ -278,7 +286,7 @@ func demonstratePerRequestRotation() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	fmt.Println("ProxyRotatePerRequest: true")
 	fmt.Println("Each client.Get() call uses a different proxy IP.")
@@ -298,6 +306,54 @@ func demonstratePerRequestRotation() {
 		}
 		fmt.Printf("  request %d: proxy=%s exit IP=%s\n",
 			i, resp.Meta.ProxyURL, strings.TrimSpace(resp.Body()))
+	}
+	fmt.Println()
+}
+
+// demonstrateProxyPoolHTTP2 shows the opt-in per-proxy HTTP/2 mode: each pool
+// proxy gets its own transport (and HTTP/2 pool) behind a per-request
+// dispatcher, so rotation keeps working while concurrent requests through the
+// same proxy multiplex over one HTTP/2 tunnel.
+func demonstrateProxyPoolHTTP2() {
+	fmt.Println("--- Example 8: Per-Proxy HTTP/2 (EnableProxyPoolHTTP2) ---")
+
+	config := httpc.DefaultConfig()
+	config.Connection.ProxyPool = []string{
+		"http://127.0.0.1:7890",
+		"http://127.0.0.1:7891",
+		"http://127.0.0.1:7892",
+	}
+	// Without this flag a multi-proxy pool runs on HTTP/1: net/http's shared
+	// HTTP/2 pool is keyed by target host only and would pin every request to
+	// the first proxy that connected. With it, each proxy's HTTP/2 pool is
+	// isolated, so rotation is honored AND same-proxy requests multiplex.
+	config.Connection.EnableProxyPoolHTTP2 = true
+	config.Timeouts.Request = 10 * time.Second
+
+	client, err := httpc.New(config)
+	if err != nil {
+		log.Printf("Failed to create client: %v\n", err)
+		return
+	}
+	defer func() { _ = client.Close() }()
+
+	fmt.Println("EnableProxyPoolHTTP2: true")
+	fmt.Println("Rotation + circuit breaking behave as on HTTP/1.")
+	fmt.Println("Concurrent requests via the same proxy share one HTTP/2 tunnel.")
+	fmt.Println("Leave it off when requests must not be correlatable.")
+
+	// Verify: protocol and serving proxy per request (fails if the pool
+	// proxies are not running).
+	fmt.Println("Sending 3 requests to an IP-echo service (fails if the pool proxies are not running):")
+	for i := 1; i <= len(config.Connection.ProxyPool); i++ {
+		resp, err := client.Get("https://ipinfo.io/ip",
+			httpc.WithTimeout(10*time.Second),
+		)
+		if err != nil {
+			fmt.Printf("  request %d: failed: %v\n", i, err)
+			continue
+		}
+		fmt.Printf("  request %d: proto=%s proxy=%s\n", i, resp.Proto(), resp.Meta.ProxyURL)
 	}
 	fmt.Println()
 }
@@ -322,7 +378,7 @@ func printSummary() {
 	fmt.Println("VPN software (Clash/V2Ray)  | ProxyURL: \"http://127.0.0.1:7890\"")
 	fmt.Println("Proxy pool / scraping       | ProxyPool: [\"http://p1:8080\", \"http://p2:8080\"]")
 	fmt.Println("Per-request rotation        | ProxyPool + ProxyRotatePerRequest: true")
-	fmt.Println("CF/WAF evasion              | ProxyPool + ProxyRotateOnStatus: [403]")
+	fmt.Println("Rotate proxy on 403         | ProxyPool + ProxyRotateOnStatus: [403]")
 	fmt.Println("System proxy (Windows/Mac)  | EnableSystemProxy: true")
 	fmt.Println("Development (no proxy)      | Default (no configuration needed)")
 	fmt.Println()

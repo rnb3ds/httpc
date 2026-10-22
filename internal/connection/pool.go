@@ -56,6 +56,12 @@ type PoolManager struct {
 	// every path.
 	proxyFunc func(*http.Request) (*url.URL, error)
 
+	// proxyDispatcher is non-nil only when EnableProxyPoolHTTP2 is active
+	// (proxy pool with >1 proxy and HTTP/2 enabled): it replaces the shared
+	// transport as the client's RoundTripper, routing each request through a
+	// per-proxy transport. See proxydispatch.go.
+	proxyDispatcher *perProxyRoundTripper
+
 	// atomic.Int64 (not plain int64 + atomic funcs) guarantees 8-byte
 	// alignment on 32-bit platforms, where interior struct fields are only
 	// 4-aligned and atomic 64-bit ops would panic.
@@ -126,6 +132,12 @@ type Config struct {
 	ProxyPoolStrategy     proxypool.Strategy
 	ProxyFailureThreshold int
 	ProxyCooldown         time.Duration
+
+	// EnableProxyPoolHTTP2 routes pool traffic through one dedicated transport
+	// per proxy (each with its own HTTP/2 pool) instead of forcing HTTP/1 on
+	// the shared transport. See NewPoolManager's dispatcher activation for the
+	// exact conditions and pool.go's force-HTTP/1 comment for the rationale.
+	EnableProxyPoolHTTP2 bool
 
 	AllowPrivateIPs bool
 
@@ -222,25 +234,6 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 	if !config.EnableHTTP2 {
 		forceAttemptHTTP2 = false
 	}
-
-	transport := &http.Transport{
-		DialContext:            pm.createDialer(),
-		TLSHandshakeTimeout:    config.TLSHandshakeTimeout,
-		ResponseHeaderTimeout:  config.ResponseHeaderTimeout,
-		IdleConnTimeout:        config.IdleConnTimeout,
-		ExpectContinueTimeout:  config.ExpectContinueTimeout,
-		MaxResponseHeaderBytes: config.MaxResponseHeaderBytes,
-		MaxIdleConns:           config.MaxIdleConns,
-		MaxIdleConnsPerHost:    config.MaxIdleConnsPerHost,
-		MaxConnsPerHost:        config.MaxConnsPerHost,
-		ForceAttemptHTTP2:      forceAttemptHTTP2,
-		DisableCompression:     true, // Always disable automatic decompression - we handle it manually
-		DisableKeepAlives:      config.DisableKeepAlives,
-	}
-
-	// Always set TLSClientConfig — it is required for HTTPS connections
-	// through HTTP proxies (CONNECT tunnels).
-	transport.TLSClientConfig = pm.createTLSConfig()
 
 	// Configure proxy settings with priority:
 	// 1. Manual proxy URL (highest priority)
@@ -350,6 +343,32 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 	}
 	// If neither condition is met, transport.Proxy remains nil (direct connection).
 
+	// A rotating proxy pool forces HTTP/1 on the SHARED transport: net/http's
+	// HTTP/2 pool keys connections by (scheme, target authority) — the proxy
+	// carrying a CONNECT tunnel is not part of the key — so once any tunnel
+	// upgrades to h2, later requests to that authority (including retry
+	// attempts that rotation would steer to a different proxy) are served
+	// from the h2 pool without ever consulting Transport.Proxy. That silently
+	// defeats per-request rotation and pool load balancing under concurrency.
+	// HTTP/1 connections are keyed per proxy, so every new connection
+	// re-consults the pool.
+	//
+	// Two exemptions keep HTTP/2 where it is safe and beneficial:
+	//   - a single-proxy pool: with exactly one possible exit the
+	//     authority-only key cannot route requests through the wrong proxy,
+	//     and h2 multiplexing over that tunnel is a pure win;
+	//   - EnableProxyPoolHTTP2 (opt-in): each proxy gets its OWN transport
+	//     via the dispatcher below, so no h2 pool ever spans proxies and
+	//     rotation is honored while same-proxy requests multiplex.
+	// (The fingerprint transport is unaffected either way: it pins one
+	// backend per proxy, so its connection pools never span proxies.)
+	poolActive := config.ProxyURL == "" && pm.proxyPool != nil
+	if poolActive && pm.proxyPool.Len() > 1 && !config.EnableProxyPoolHTTP2 {
+		forceAttemptHTTP2 = false
+	}
+
+	transport := pm.buildTransport(forceAttemptHTTP2)
+
 	// Assign the resolved proxy function to the transport. Transports dialing
 	// outside this package (the fingerprint adapter) obtain the same selection
 	// through SelectProxy — and the raw (unguarded) proxyFunc, since the
@@ -359,7 +378,42 @@ func NewPoolManager(config *Config) (*PoolManager, error) {
 	transport.Proxy = pm.ssrfGuardProxyFunc(pm.proxyFunc)
 
 	pm.transport = transport
+
+	// Per-proxy dispatcher (opt-in, requires an h2-capable multi-proxy pool):
+	// replaces the shared transport as the client's RoundTripper so each
+	// proxy's connections — and HTTP/2 pool — stay isolated while selection
+	// still flows through SelectProxy (rotation, attempt indexes, recorder).
+	if poolActive && pm.proxyPool.Len() > 1 && config.EnableProxyPoolHTTP2 && config.EnableHTTP2 {
+		pm.proxyDispatcher = newPerProxyRoundTripper(pm, transport)
+	}
+
 	return pm, nil
+}
+
+// buildTransport constructs an *http.Transport with the pool's shared
+// connection parameters (dialer, TLS config, timeouts, limits). The base
+// transport and the per-proxy dispatcher's transports both come from here so
+// the two cannot drift. Proxy is assigned by the caller.
+func (pm *PoolManager) buildTransport(forceAttemptHTTP2 bool) *http.Transport {
+	transport := &http.Transport{
+		DialContext:            pm.createDialer(),
+		TLSHandshakeTimeout:    pm.config.TLSHandshakeTimeout,
+		ResponseHeaderTimeout:  pm.config.ResponseHeaderTimeout,
+		IdleConnTimeout:        pm.config.IdleConnTimeout,
+		ExpectContinueTimeout:  pm.config.ExpectContinueTimeout,
+		MaxResponseHeaderBytes: pm.config.MaxResponseHeaderBytes,
+		MaxIdleConns:           pm.config.MaxIdleConns,
+		MaxIdleConnsPerHost:    pm.config.MaxIdleConnsPerHost,
+		MaxConnsPerHost:        pm.config.MaxConnsPerHost,
+		ForceAttemptHTTP2:      forceAttemptHTTP2,
+		DisableCompression:     true, // Always disable automatic decompression - we handle it manually
+		DisableKeepAlives:      pm.config.DisableKeepAlives,
+	}
+
+	// Always set TLSClientConfig — it is required for HTTPS connections
+	// through HTTP proxies (CONNECT tunnels).
+	transport.TLSClientConfig = pm.createTLSConfig()
+	return transport
 }
 
 // SelectProxy returns the proxy URL that applies to a request for targetURL,
@@ -416,8 +470,17 @@ func (pm *PoolManager) ssrfGuardProxyFunc(proxyFunc func(*http.Request) (*url.UR
 		return nil
 	}
 	return func(req *http.Request) (*url.URL, error) {
+		// Guard BEFORE the proxyFunc call: every proxyFunc installed by this
+		// package dereferences req (req.Context()) on entry, so a nil request
+		// panicked inside proxyFunc while the req == nil check below — placed
+		// after the call — was unreachable. net/http never passes a nil
+		// request; this arm is purely defensive and mirrors the dispatcher's
+		// nil-request contract (see proxydispatch.go).
+		if req == nil {
+			return nil, errors.New("http: nil request")
+		}
 		u, err := proxyFunc(req)
-		if err != nil || u == nil || req == nil || req.URL == nil {
+		if err != nil || u == nil || req.URL == nil {
 			return u, err
 		}
 
@@ -633,31 +696,15 @@ func (pm *PoolManager) resolveAndValidateAddress(ctx context.Context, address st
 		return []string{address}, nil
 	}
 
-	// For domain names, resolve and filter to allowed IPs.
-	// Derive the resolution timeout from the caller's context so request
-	// cancellation aborts the lookup promptly (the DoH path already honors ctx).
-	// Cap at 10s to avoid unbounded waits; derive from DialTimeout when smaller.
-	dnsTimeout := 10 * time.Second
-	if pm.config.DialTimeout > 0 && pm.config.DialTimeout < dnsTimeout {
-		dnsTimeout = pm.config.DialTimeout
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	dnsCtx, dnsCancel := context.WithTimeout(ctx, dnsTimeout)
-	defer dnsCancel()
-	ipAddrs, err := net.DefaultResolver.LookupIPAddr(dnsCtx, host)
+	// For domain names, resolve and filter to allowed IPs via the shared
+	// SSRF resolve-and-filter rule (validation.ResolveFilteredIPs — the same
+	// helper the proxied-target check and the fingerprint paths use). The
+	// timeout derives from the caller's context and DialTimeout inside the
+	// helper, so request cancellation aborts the lookup promptly.
+	allowedIPs, err := validation.ResolveFilteredIPs(ctx, host, pm.config.ExemptNets, pm.config.DialTimeout, nil)
 	if err != nil {
 		return nil, fmt.Errorf("DNS resolution failed for SSRF validation of %s: %w", host, err)
 	}
-	ips := make([]net.IP, len(ipAddrs))
-	for i, addr := range ipAddrs {
-		ips[i] = addr.IP
-	}
-
-	// Filter to public/exempted IPs — supports Split-Horizon DNS environments
-	// where a domain may resolve to both public and private IPs.
-	allowedIPs := validation.FilterAllowedIPs(ips, pm.config.ExemptNets)
 	if len(allowedIPs) == 0 {
 		return nil, fmt.Errorf("domain %s resolves only to blocked addresses", host)
 	}
@@ -702,26 +749,15 @@ func validateProxiedTarget(ctx context.Context, u *url.URL, exemptNets []*net.IP
 		return nil
 	}
 
-	// Mirror the direct path's DNS timeout: derive from the caller's context,
-	// capped at 10s, tightened to DialTimeout when smaller.
-	dnsTimeout := 10 * time.Second
-	if dialTimeout > 0 && dialTimeout < dnsTimeout {
-		dnsTimeout = dialTimeout
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	dnsCtx, dnsCancel := context.WithTimeout(ctx, dnsTimeout)
-	defer dnsCancel()
-	ipAddrs, err := net.DefaultResolver.LookupIPAddr(dnsCtx, host)
+	// Resolve-and-filter via the shared SSRF rule (validation.ResolveFilteredIPs,
+	// the same helper the direct dial path and the fingerprint paths use): one
+	// implementation of the hostname→blocked-IP check, so the proxied path's
+	// policy can never drift from the direct path's.
+	allowed, err := validation.ResolveFilteredIPs(ctx, host, exemptNets, dialTimeout, nil)
 	if err != nil {
 		return fmt.Errorf("SSRF protection: DNS resolution failed for %s: %w", host, err)
 	}
-	ips := make([]net.IP, len(ipAddrs))
-	for i, addr := range ipAddrs {
-		ips[i] = addr.IP
-	}
-	if len(validation.FilterAllowedIPs(ips, exemptNets)) == 0 {
+	if len(allowed) == 0 {
 		return fmt.Errorf("SSRF protection: domain %s resolves only to blocked addresses", host)
 	}
 	return nil
@@ -834,14 +870,27 @@ func (pm *PoolManager) GetTransport() *http.Transport {
 	return pm.transport
 }
 
+// GetRoundTripper returns the RoundTripper requests should be sent through:
+// the per-proxy dispatcher when EnableProxyPoolHTTP2 is active, otherwise the
+// shared transport. The engine installs this as the http.Client's Transport.
+func (pm *PoolManager) GetRoundTripper() http.RoundTripper {
+	if pm.proxyDispatcher != nil {
+		return pm.proxyDispatcher
+	}
+	return pm.transport
+}
+
 // CloseIdleConnections closes all idle connections in the underlying transport.
 // Used by the retry layer to force the transport to re-evaluate transport.Proxy
 // on the next request — without this, HTTP/2 connection reuse through a CONNECT
 // tunnel can bypass Proxy() and reuse the connection from a previous attempt,
-// defeating proxy rotation.
+// defeating proxy rotation. Per-proxy dispatcher transports are swept too.
 func (pm *PoolManager) CloseIdleConnections() {
 	if pm.transport != nil {
 		pm.transport.CloseIdleConnections()
+	}
+	if pm.proxyDispatcher != nil {
+		pm.proxyDispatcher.closeIdleConnections()
 	}
 }
 
@@ -907,6 +956,9 @@ func (pm *PoolManager) Close() error {
 
 	if pm.transport != nil {
 		pm.transport.CloseIdleConnections()
+	}
+	if pm.proxyDispatcher != nil {
+		pm.proxyDispatcher.closeIdleConnections()
 	}
 
 	// Aggregate counters are intentionally NOT reset here: trackedConn.Close()

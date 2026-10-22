@@ -206,6 +206,7 @@ func buildConnectionSubConfig(cfg *Config, jar http.CookieJar) connection.Config
 	conn.ProxyPoolStrategy = cfg.Connection.ProxyPoolStrategy
 	conn.ProxyFailureThreshold = cfg.Connection.ProxyFailureThreshold
 	conn.ProxyCooldown = cfg.Connection.ProxyCooldown
+	conn.EnableProxyPoolHTTP2 = cfg.Connection.EnableProxyPoolHTTP2
 
 	conn.AllowPrivateIPs = cfg.Security.AllowPrivateIPs
 	conn.ExemptNets = cfg.parsedCIDRs

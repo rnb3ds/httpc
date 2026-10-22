@@ -961,6 +961,69 @@ func TestAuditMiddlewareNoCallbackIsNoOp(t *testing.T) {
 	}
 }
 
+func TestAuditMiddleware_SanitizesRedirectChain(t *testing.T) {
+	var got AuditEvent
+	auditCfg := DefaultAuditConfig()
+	auditCfg.OnAudit = func(event AuditEvent) { got = event }
+
+	// OAuth/OIDC-style chain: the authorization code and session id ride the
+	// redirect URLs' query strings. An unsanitized chain would carry them
+	// into a compliance log even though every other event field is redacted.
+	terminal := func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
+		return &mockResponse{
+			statusCode: http.StatusFound,
+			redirectChain: []string{
+				"https://auth.example.com/authorize?client_id=abc&scope=read",
+				"https://app.example.com/cb?code=S3CRET&session_id=S3SSID",
+			},
+		}, nil
+	}
+
+	handler := AuditMiddleware(auditCfg)(terminal)
+	if _, err := handler(context.Background(), &mockRequest{method: "GET", url: "https://api.example.com/data"}); err != nil {
+		t.Fatalf("pipeline failed: %v", err)
+	}
+
+	if len(got.RedirectChain) != 2 {
+		t.Fatalf("redirect chain length = %d, want 2", len(got.RedirectChain))
+	}
+	for i, u := range got.RedirectChain {
+		if strings.Contains(u, "S3CRET") || strings.Contains(u, "S3SSID") {
+			t.Errorf("chain[%d] leaks a secret: %s", i, u)
+		}
+	}
+	if !strings.Contains(got.RedirectChain[0], "client_id=[REDACTED]") {
+		t.Errorf("chain[0] should redact client_id: %s", got.RedirectChain[0])
+	}
+	if !strings.Contains(got.RedirectChain[1], "code=[REDACTED]") {
+		t.Errorf("chain[1] should redact code: %s", got.RedirectChain[1])
+	}
+	// The non-sensitive scope parameter survives.
+	if !strings.Contains(got.RedirectChain[0], "scope=read") {
+		t.Errorf("chain[0] should keep non-sensitive params: %s", got.RedirectChain[0])
+	}
+}
+
+func TestSanitizeRedirectChain(t *testing.T) {
+	if got := sanitizeRedirectChain(nil); got != nil {
+		t.Errorf("nil chain should stay nil, got %v", got)
+	}
+	if got := sanitizeRedirectChain([]string{}); got != nil {
+		t.Errorf("empty chain should stay nil, got %v", got)
+	}
+	// Sanitization must not alias the input slice: the engine's chain is
+	// pooled storage, and a shared backing array would recycle the event's
+	// data under it.
+	in := []string{"https://a.example/x?token=T"}
+	got := sanitizeRedirectChain(in)
+	if len(got) != 1 {
+		t.Fatalf("unexpected output %v", got)
+	}
+	if &got[0] == &in[0] {
+		t.Error("output must not alias the input slice")
+	}
+}
+
 func TestAuditMiddlewareWithError(t *testing.T) {
 	var capturedEvent AuditEvent
 	var mu sync.Mutex

@@ -56,7 +56,7 @@ func demonstrateStandardStack() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	fmt.Println("  TLSFingerprint: \"\" (standard crypto/tls, no spoofing)")
 	request("standard", client)
@@ -75,7 +75,7 @@ func demonstrateChromeProfile() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	fmt.Println("  TLSFingerprint: \"chrome-windows\"")
 	fmt.Println("  Spoofs Chrome's ClientHello (JA3/JA4), HTTP/2 frames, and headers")
@@ -96,7 +96,7 @@ func demonstrateFirefoxProfile() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	fmt.Println("  TLSFingerprint: \"firefox\" (short alias for the Firefox profile)")
 	request("firefox", client)
@@ -128,7 +128,7 @@ func demonstrateNoSessionTickets() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	fmt.Println("  TLSFingerprint: \"chrome-latest\"")
 	fmt.Println("  TLSFingerprintDisableSessionTickets: true (no PSK resumption)")

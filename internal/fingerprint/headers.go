@@ -18,7 +18,7 @@
 //     placeholders never own their name, so engine-set Cookie/Referer/
 //     Authorization values survive under their own key.
 //
-// Semantics pinned by tests (and by the Akamai H2 hash in the network e2e):
+// Semantics pinned by tests (and by the HTTP/2 fingerprint in the network e2e):
 //   - The order-key lists are built from the FULL sorted key set including
 //     empty placeholders (authorization/cookie/origin/referer/content-type/
 //     content-length) — placeholders occupy wire slots but are not sent, so

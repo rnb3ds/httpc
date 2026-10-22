@@ -53,7 +53,7 @@ func demonstrateCallbacks() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Request callback - runs before request is sent
 	onRequest := func(req httpc.RequestMutator) error {
@@ -101,7 +101,7 @@ func demonstratePoolingModel() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	const numRequests = 10
 
@@ -128,7 +128,7 @@ func demonstrateSaveToFile() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// SaveToFile writes the response body directly to disk.
 	// For large file downloads, prefer Download (with a DownloadConfig),
@@ -181,7 +181,7 @@ func demonstrateTestingConfig() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Fast request - good for tests
 	start := time.Now()
@@ -200,7 +200,7 @@ func demonstrateTestingConfig() {
 	fmt.Println()
 	fmt.Println("    func TestAPI(t *testing.T) {")
 	fmt.Println("        client, _ := httpc.New(httpc.TestingConfig())")
-	fmt.Println("        defer client.Close()")
+	fmt.Println("        defer func() { _ = client.Close() }()")
 	fmt.Println()
 	fmt.Println("        ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)")
 	fmt.Println("        defer cancel()")

@@ -158,9 +158,39 @@
 //	httpc.WithMaxRedirects(5)
 //	httpc.WithStreamBody(true) // Download only; errors on Get/Post/...
 //
+//	// Package-level routing (package-level functions only — see below)
+//	httpc.WithProxy("http://proxy:8080") // route this call through a proxy
+//	httpc.WithSystemProxy()              // use the system-configured proxy, if any
+//	httpc.WithTLSFingerprint("chrome")   // impersonate Chrome on this call
+//
 //	// Callbacks
 //	httpc.WithOnRequest(callback)
 //	httpc.WithOnResponse(callback)
+//
+// # Package-Level Routing (WithProxy / WithSystemProxy / WithTLSFingerprint)
+//
+// The package-level functions (Get, Post, Request, Download, ...) use a shared
+// default client. WithProxy, WithSystemProxy, and WithTLSFingerprint route a
+// single call through a dedicated client instead, leaving the default client
+// (and any other in-flight calls) untouched:
+//
+//	result, err := httpc.Get("https://api.example.com/data",
+//	    httpc.WithSystemProxy(),
+//	    httpc.WithTLSFingerprint("chrome-windows"),
+//	)
+//
+// WithProxy routes through an explicit proxy; WithSystemProxy enables automatic
+// system-proxy detection (environment variables and platform settings). When
+// both are present, WithProxy wins, matching Config's priority. Each distinct
+// (proxy, fingerprint) combination is cached as its own client, inheriting the
+// same secure defaults as the default client (SSRF protection, TLS 1.2+,
+// timeouts, retries) and differing only in the routing options. Close them with
+// CloseRoutedClients.
+//
+// These are routing options and only meaningful on package-level functions. On
+// an explicit client instance they return an error — use
+// Config.Connection.ProxyURL, Config.Connection.EnableSystemProxy, and
+// Config.Security.TLSFingerprint there instead.
 //
 // # DomainClient
 //

@@ -20,6 +20,15 @@ import (
 // the middleware chain (Handler) and by RequestOption, where a value must be
 // both inspected and modified.
 
+// DefaultUserAgent is the value httpc's Defaults.UserAgent carries when the
+// caller does not override it. It lives here — the one internal package both
+// the facade (DefaultConfig) and the fingerprint adapter (which must
+// recognize the engine-side default to drop it in favor of the browser
+// preset's UA) already import — so the two can never drift: a changed literal
+// in one place only would silently stop the fingerprint path from dropping
+// the old default.
+const DefaultUserAgent = "httpc/1.0"
+
 // RequestReader provides read-only access to request data.
 // Use it when a consumer only inspects request properties without modifying
 // them (mirroring how ResponseReader is used by RetryPolicy).

@@ -2,16 +2,20 @@ package httpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
+	"net/url"
 	"sync"
 	"sync/atomic"
 
 	"github.com/cybergodev/httpc/internal/engine"
+	"github.com/cybergodev/httpc/internal/fingerprint"
 	"github.com/cybergodev/httpc/internal/types"
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // backgroundCtx is a convenience alias for context.Background(), used as the
@@ -590,16 +594,279 @@ func CloseDefaultClient() error {
 	return client.Close()
 }
 
-// withDefault resolves the default client and dispatches a request through it.
-// It is the single dispatch point for every package-level HTTP function, so the
-// package-level verbs and Request share one code path instead of duplicating the
-// default-client resolution in two separate helpers.
+// routingKey identifies one package-level routed client. The zero value is the
+// default (direct, no fingerprint) client; a non-zero proxy, systemProxy, or
+// fingerprint selects a dedicated client. The fields are the only
+// instance-level knobs the routing options can currently express — extend this
+// struct when a new routing option is added.
+type routingKey struct {
+	proxy       string // raw proxy URL string ("" = no proxy)
+	systemProxy bool   // enable system proxy detection (false = off)
+	fingerprint string // resolved fingerprint preset name ("" = standard stack)
+}
+
+// isZero reports whether the key routes to the default client (no routing
+// option carried).
+func (k routingKey) isZero() bool {
+	return k.proxy == "" && !k.systemProxy && k.fingerprint == ""
+}
+
+// String renders the routing key with the proxy URL's credentials redacted.
+// CloseRoutedClients interpolates the key into a returned error; without this
+// method fmt prints the raw proxy string — password included — which apps
+// typically log. Every other proxy-URL error path in the codebase already
+// redacts (validation.ValidateProxyURL, proxypool, system-proxy detection);
+// this closes the last gap. An unparseable URL (unreachable here — creation
+// validates it) is rendered as a placeholder rather than echoed raw, so a
+// future code path cannot reintroduce the leak through the error branch.
+func (k routingKey) String() string {
+	proxy := ""
+	if k.proxy != "" {
+		if u, err := url.Parse(k.proxy); err == nil {
+			proxy = u.Redacted()
+		} else {
+			proxy = "<invalid-proxy-url>"
+		}
+	}
+	return fmt.Sprintf("{proxy:%s systemProxy:%t fingerprint:%s}", proxy, k.systemProxy, k.fingerprint)
+}
+
+// routingClientEntry is one cached package-level routed client, keyed by
+// routingKey. Created lazily on first use and closed by CloseRoutedClients.
+type routingClientEntry struct {
+	key    routingKey
+	client *clientImpl
+}
+
+// routedClients caches the dedicated clients that package-level routing
+// options (WithProxy, WithSystemProxy, WithTLSFingerprint) create, keyed by
+// routingKey. The proxy field uses the raw (pre-canonicalized) URL string
+// because it is the caller's identity for the proxy — two spellings of the same
+// proxy (e.g. "host" vs "host:1080") are distinct entries, which is correct:
+// they may resolve to different dial addresses. The fingerprint field uses the
+// resolved canonical preset name (see ResolvePresetName), so "Chrome" and
+// "chrome" share one client.
+var routedClients sync.Map // map[routingKey]*routingClientEntry
+
+// routedClientsMu serializes the routed-clients slow path: creation inside
+// getOrCreateRoutedClient and the sweep in CloseRoutedClients. The Load fast
+// path stays lock-free; the mutex makes create-vs-create and create-vs-close
+// interleavings impossible, so the resolution logic can never return a client
+// it closed itself (the former LoadOrStore loser branch did exactly that when
+// the raced-in winner turned out to be closed) and never strands a live
+// client outside the cache for CloseRoutedClients to miss.
+var routedClientsMu sync.Mutex
+
+// getOrCreateRoutedClient returns the cached routed client for key, creating it
+// on first use. The client is built from DefaultConfig() with the key's proxy
+// and fingerprint applied — so every routed client inherits the same secure
+// defaults (SSRF protection, TLS, timeouts, retries) as the default client and
+// differs only in the routing options that produced the key.
+//
+// The fingerprint is resolved and canonicalized here (ResolvePresetName), so a
+// miss surfaces as ErrInvalidSecurity before any client is built and so that
+// aliases ("Chrome" vs "chrome") collapse onto one cache entry. The proxy URL
+// is validated here too; both mirrors ValidateConfig's treatment of the
+// equivalent Config fields. The zero key returns the default client via
+// getDefaultClient.
+func getOrCreateRoutedClient(key routingKey) (Client, error) {
+	if key.isZero() {
+		return getDefaultClient()
+	}
+
+	if key.proxy != "" {
+		if _, err := validation.ValidateProxyURL(key.proxy); err != nil {
+			return nil, fmt.Errorf("%w: WithProxy: %w", ErrInvalidConnection, err)
+		}
+	}
+	if key.fingerprint != "" {
+		resolved, ok := fingerprint.ResolvePresetName(key.fingerprint)
+		if !ok {
+			return nil, fmt.Errorf("%w: WithTLSFingerprint %q is not a known browser preset", ErrInvalidSecurity, key.fingerprint)
+		}
+		key.fingerprint = resolved // canonicalize the cache key
+	}
+
+	// Fast path: a live cached client (lock-free). A closed entry falls
+	// through to the locked slow path, which self-heals it.
+	if entry, ok := routedClients.Load(key); ok {
+		e := entry.(*routingClientEntry)
+		if !e.client.engine.IsClosed() {
+			return e.client, nil
+		}
+	}
+
+	// Slow path under routedClientsMu: exactly one creator runs at a time and
+	// CloseRoutedClients (same mutex) cannot interleave. The double-check
+	// below therefore sees the final state, and the entry returned to the
+	// caller is the entry stored — the former LoadOrStore loser branch closed
+	// its own client before checking the raced-in winner, then returned that
+	// same closed client when the winner turned out dead.
+	routedClientsMu.Lock()
+	defer routedClientsMu.Unlock()
+
+	if entry, ok := routedClients.Load(key); ok {
+		e := entry.(*routingClientEntry)
+		if !e.client.engine.IsClosed() {
+			return e.client, nil
+		}
+		// Self-heal a closed client (the caller may have closed it directly).
+		routedClients.Delete(key)
+	}
+
+	cfg := DefaultConfig()
+	if key.proxy != "" {
+		cfg.Connection.ProxyURL = key.proxy
+	}
+	if key.systemProxy {
+		cfg.Connection.EnableSystemProxy = true
+	}
+	if key.fingerprint != "" {
+		cfg.Security.TLSFingerprint = key.fingerprint
+	}
+
+	client, err := New(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create routed client: %w", err)
+	}
+	impl, ok := client.(*clientImpl)
+	if !ok {
+		_ = client.Close() // prevent resource leak on unexpected type
+		return nil, fmt.Errorf("unexpected client type")
+	}
+
+	routedClients.Store(key, &routingClientEntry{key: key, client: impl})
+	return impl, nil
+}
+
+// CloseRoutedClients closes every cached package-level routed client (the
+// WithProxy, WithSystemProxy, and WithTLSFingerprint clients) and clears the
+// cache. It is idempotent and safe for concurrent use. It does not close the
+// default client — use CloseDefaultClient for that. Unlike CloseDefaultClient it
+// does not return the first close error, but closes as many clients as possible
+// and returns a joined error (errors.Join) when any close fails.
+func CloseRoutedClients() error {
+	// Hold routedClientsMu so the sweep cannot interleave with a concurrent
+	// getOrCreateRoutedClient creation: a client created before this call is
+	// always closed, and a client created after it starts is never swept.
+	routedClientsMu.Lock()
+	defer routedClientsMu.Unlock()
+
+	var errs error
+	routedClients.Range(func(key, value any) bool {
+		routedClients.Delete(key)
+		entry := value.(*routingClientEntry)
+		if err := entry.client.Close(); err != nil {
+			errs = errors.Join(errs, fmt.Errorf("routed client %v: %w", entry.key, err))
+		}
+		return true
+	})
+	return errs
+}
+
+// withDefault resolves the target client (a WithProxy/WithSystemProxy/
+// WithTLSFingerprint-routed client, or the default) and dispatches a request
+// through it. It is the single dispatch point for every package-level HTTP
+// function, so the package-level verbs and Request share one code path instead
+// of duplicating the default-client resolution in two separate helpers.
 func withDefault(ctx context.Context, method, url string, options []RequestOption) (*Result, error) {
-	client, err := getDefaultClient()
+	client, options, err := resolvePackageClient(options)
 	if err != nil {
 		return nil, err
 	}
 	return client.Request(ctx, method, url, options...)
+}
+
+// extractProxyOption returns the WithProxy option carried on options, or nil.
+// WithProxy is a routing option (see proxyOption): it is stripped before the
+// request executes and never reaches the engine.
+func extractProxyOption(options []RequestOption) *proxyOption {
+	for _, opt := range options {
+		if po, ok := opt.(*proxyOption); ok {
+			return po
+		}
+	}
+	return nil
+}
+
+// extractFingerprintOption returns the WithTLSFingerprint option carried on
+// options, or nil. Like WithProxy it is a routing option, stripped before the
+// request executes.
+func extractFingerprintOption(options []RequestOption) *fingerprintOption {
+	for _, opt := range options {
+		if fo, ok := opt.(*fingerprintOption); ok {
+			return fo
+		}
+	}
+	return nil
+}
+
+// extractSystemProxyOption reports whether a WithSystemProxy routing option is
+// carried on options. Like WithProxy and WithTLSFingerprint it is stripped
+// before the request executes.
+func extractSystemProxyOption(options []RequestOption) bool {
+	for _, opt := range options {
+		if _, ok := opt.(*systemProxyOption); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// stripRoutingOptions returns options with the routing options (proxyOption,
+// systemProxyOption, and fingerprintOption) removed. These are handled by the
+// dispatch layer and would otherwise fail the request when they reach the
+// engine (their apply returns an error — see proxyOption.apply /
+// systemProxyOption.apply / fingerprintOption.apply). The input slice is
+// returned unchanged when no routing option is present, keeping the common
+// (no-routing) path allocation-free.
+func stripRoutingOptions(options []RequestOption) []RequestOption {
+	hasRouting := false
+	for _, opt := range options {
+		switch opt.(type) {
+		case *proxyOption, *systemProxyOption, *fingerprintOption:
+			hasRouting = true
+		}
+	}
+	if !hasRouting {
+		return options
+	}
+	out := make([]RequestOption, 0, len(options)-1)
+	for _, opt := range options {
+		switch opt.(type) {
+		case *proxyOption, *systemProxyOption, *fingerprintOption:
+			continue
+		}
+		out = append(out, opt)
+	}
+	return out
+}
+
+// resolvePackageClient resolves which client a package-level call should run
+// on, honoring WithProxy, WithSystemProxy, and WithTLSFingerprint. Returns the
+// target client and the options with the routing options stripped. Validation
+// of the routing values (proxy URL, fingerprint preset) happens in
+// getOrCreateRoutedClient.
+func resolvePackageClient(options []RequestOption) (Client, []RequestOption, error) {
+	key := routingKey{}
+	if po := extractProxyOption(options); po != nil {
+		key.proxy = po.url
+	}
+	// WithProxy takes precedence over WithSystemProxy (mirrors Config: ProxyURL >
+	// EnableSystemProxy); when both are present the system-proxy flag is dropped
+	// so the cache key collapses onto the explicit-proxy client.
+	if key.proxy == "" && extractSystemProxyOption(options) {
+		key.systemProxy = true
+	}
+	if fo := extractFingerprintOption(options); fo != nil {
+		key.fingerprint = fo.preset
+	}
+	options = stripRoutingOptions(options)
+	c, err := getOrCreateRoutedClient(key)
+	if err != nil {
+		return nil, nil, err
+	}
+	return c, options, nil
 }
 
 // Package-level HTTP convenience functions (Get, Post, Put, Patch, Delete,

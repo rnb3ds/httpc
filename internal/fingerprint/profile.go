@@ -59,7 +59,7 @@ type headerField struct {
 
 // h2Config is a profile's HTTP/2 fingerprint data. SettingsOrder is the exact
 // SETTINGS-frame emission order (frame order is wire-visible and part of the
-// Akamai fingerprint); pseudoOrder is the pseudo-header wire order (Chrome
+// HTTP/2 fingerprint); pseudoOrder is the pseudo-header wire order (Chrome
 // m,a,s,p; Firefox and iOS WebKit differ); the remaining fields map onto the
 // transport's exported knobs. Zero-valued StreamID/ConnectionFlow mean
 // "leave default"; hasPriority gates PriorityParam (its zero value is a

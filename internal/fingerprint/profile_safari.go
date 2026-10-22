@@ -6,7 +6,7 @@
 //
 // Header values come from real Safari 26 captures (navigation and fetch/XHR
 // shapes); the wire ORDER of the regular headers remains the shared
-// approximation (see PROFILES.md). Safari emits no Client Hints and no
+// approximation. Safari emits no Client Hints and no
 // GREASE: a fixed, quieter header block than the Chromium family.
 //
 // There is deliberately no desktop-safari preset: macOS Safari's ClientHello
@@ -69,7 +69,7 @@ var safariInsertPost = fetchStyleInsertPost("u=3, i")
 // :method,:scheme,:authority,:path order (the per-request order table drives
 // the wire pseudo order —the h2 pseudoOrder field alone does not), while
 // the regular-header section remains the desktop approximation pending real
-// CriOS/FxiOS captures (see PROFILES.md).
+// CriOS/FxiOS captures.
 var safariOrderGet = []string{
 	":method",
 	":scheme",

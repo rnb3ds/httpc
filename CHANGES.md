@@ -4,6 +4,26 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ---
 
+## v1.7.1 - Package-Level Routing Options, Fingerprint SSRF Parity & Audit Hardening (2026-10-23)
+
+### Added
+- `WithProxy(url)`, `WithSystemProxy()` and `WithTLSFingerprint(preset)` per-request options — route a package-level call (Get/Post/Request/Download/…) through a dedicated cached client, leaving the shared default client untouched; the proxy URL (http/https/socks5/socks5h) and fingerprint preset are validated up front, `WithProxy` wins over `WithSystemProxy`, and on an explicit client instance they return an error (use `Config.Connection.*` / `Security.TLSFingerprint` there instead)
+- `CloseRoutedClients()` — closes and clears the per-routing-key client cache built by the routing options above
+- `examples/24_package_routing.go` — package-level proxy / system-proxy / TLS-fingerprint routing (example index now 24)
+
+### Security
+- Fingerprint-path SSRF parity: direct (non-proxied) TLS-fingerprint requests now resolve once, filter to SSRF-allowed IPs, and dial only the validated IP literals (IPv6→IPv4 failover) — dial-layer enforcement now matches the standard path; proxied requests keep the documented trust-the-proxy residual
+- Audit logs: redirect-chain URLs now pass `SanitizeURL` — OAuth `code`/`token`/`session_id` values in redirect URLs no longer reach audit events
+- Windows `SaveToFile`/downloads reject DOS device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9, with extension/case folding) and NTFS alternate data streams (`file.txt:ads`) in output paths
+- Proxy credentials are redacted from routed-client cache keys and `CloseRoutedClients()` error output
+
+### Fixed
+- `Result.Request.Headers` on the TLS-fingerprint path now reports the wire request headers (browser User-Agent and casing) instead of the engine-side `httpc/1.0` default
+- `New` no longer panics on a nil entry in `Config.Middleware.Middlewares`; `Chain` now skips nil middleware functions
+- Same-origin/port derivation for redirects is consolidated into one fail-closed helper — the standard and fingerprint redirect paths previously disagreed on unknown schemes
+
+---
+
 ## v1.7.0 - Proxied-Target SSRF Fix, Full Code Audit & Performance (2026-10-22)
 
 ### Breaking

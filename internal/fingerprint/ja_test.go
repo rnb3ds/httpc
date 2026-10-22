@@ -13,7 +13,17 @@ import (
 // placeholder becomes one of the 16 GREASE code points (0x0a0a + 0x1010*n),
 // and non-placeholder schemes are untouched.
 func TestGreaseSignatureAlgorithms(t *testing.T) {
-	spec := &chrome152Spec
+	// Work on a deep CLONE of the shared spec. greaseSignatureAlgorithms
+	// mutates the SignatureAlgorithmsExtension in place; running it against
+	// &chrome152Spec replaced the GREASE placeholder with a concrete code
+	// point for the rest of the process, so a second run (`go test -count=2`)
+	// failed this test's own pre-mutation assertion at line 21. The clone
+	// preserves the assertion's meaning: it fails exactly when the real
+	// chrome spec no longer starts with the placeholder.
+	spec := cloneSpec(&chrome152Spec)
+	if spec == nil {
+		t.Fatal("cloneSpec returned nil")
+	}
 	sigs := findSigAlgs(spec)
 	if sigs == nil {
 		t.Fatal("chrome spec has no signature_algorithms extension")
@@ -32,7 +42,7 @@ func TestGreaseSignatureAlgorithms(t *testing.T) {
 			// at write time.
 			v := uint16(scheme)
 			isGREASE := false
-			for n := 0; n < 16; n++ {
+			for n := range 16 {
 				if v == uint16(0x0a0a+0x1010*n) {
 					isGREASE = true
 					break

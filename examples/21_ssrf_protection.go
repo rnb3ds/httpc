@@ -72,7 +72,7 @@ func demonstrateDefaultBlock() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	_, err = client.Get("http://127.0.0.1:9/")
 	report(err)
@@ -91,7 +91,7 @@ func demonstratePerRequestOverride() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// The override applies to this one request only; other requests on the same
 	// client keep the default SSRF protection. A short timeout bounds the dial
@@ -124,7 +124,7 @@ func demonstrateExemptCIDRs() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	_, err = client.Get(
 		"http://10.0.0.1:9/",
@@ -150,7 +150,7 @@ func demonstrateAllowAllPrivate() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	_, err = client.Get(
 		"http://127.0.0.1:9/",

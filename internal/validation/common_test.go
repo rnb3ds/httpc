@@ -531,9 +531,13 @@ func TestValidateHeaderKeyValue_EdgeCases(t *testing.T) {
 	}
 }
 
-// TestIsValidHeaderChar_Boundaries tests the character boundary conditions for
-// HTTP header name validation including control characters, DEL, and ASCII edges.
-func TestIsValidHeaderChar_Boundaries(t *testing.T) {
+// TestValidateHeaderKeyValue_SingleCharBoundaries pins the header-key
+// character table's boundary conditions — control characters, DEL, ASCII
+// edges — through the production path. A one-byte key exercises the table
+// 1:1, so the cases double as the table's edge spec (the former
+// TestIsValidHeaderChar_Boundaries pinned a since-removed wrapper that no
+// production caller used).
+func TestValidateHeaderKeyValue_SingleCharBoundaries(t *testing.T) {
 	tests := []struct {
 		name string
 		char rune
@@ -562,9 +566,10 @@ func TestIsValidHeaderChar_Boundaries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isValidHeaderChar(tt.char)
+			err := ValidateHeaderKeyValue(string(tt.char), "")
+			got := err == nil
 			if got != tt.want {
-				t.Errorf("isValidHeaderChar(%d/%q) = %v, want %v", tt.char, tt.char, got, tt.want)
+				t.Errorf("ValidateHeaderKeyValue(%q) valid = %v (err: %v), want %v", tt.char, got, err, tt.want)
 			}
 		})
 	}

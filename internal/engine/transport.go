@@ -154,9 +154,13 @@ func newTransport(config *Config, pool *connection.PoolManager) (*transport, err
 		sensitiveHeaders:  mergeSensitiveHeaders(config.SensitiveHeaders),
 	}
 
-	// Create http.Client with optional cookie jar
+	// Create http.Client with optional cookie jar. GetRoundTripper installs
+	// the per-proxy dispatcher when EnableProxyPoolHTTP2 is active (one
+	// transport — and HTTP/2 pool — per proxy); otherwise it is the shared
+	// transport above. t.transport keeps pointing at the shared transport for
+	// CloseIdleConnections compatibility and tests.
 	httpClient := &http.Client{
-		Transport: httpTransport,
+		Transport: pool.GetRoundTripper(),
 	}
 
 	// Browser fingerprinting replaces the underlying transport: TLS
@@ -372,35 +376,14 @@ func mergeSensitiveHeaders(extra []string) []string {
 	return merged
 }
 
-// sameOrigin reports whether two URLs share an origin per RFC 6454: scheme,
-// host, and effective port, with scheme-default ports normalized (so
-// "example.com" and "example.com:80" under http are one origin, while
-// "example.com:8080" is not). checkRedirect uses it to decide when
+// sameOrigin reports whether the two URLs share an RFC 6454 origin; the
+// canonical implementation lives in validation.SameOrigin (shared with the
+// fingerprint path). checkRedirect uses it to decide when
 // Authorization/Cookie/Proxy-Authorization must be stripped; comparing
 // hostname alone would treat "example.com:443 → example.com:8080" as
 // same-origin and leak credentials across what is really a server change.
 func sameOrigin(a, b *url.URL) bool {
-	return strings.EqualFold(a.Scheme, b.Scheme) &&
-		strings.EqualFold(a.Hostname(), b.Hostname()) &&
-		effectivePort(a) == effectivePort(b)
-}
-
-// effectivePort returns u's explicit port, or the scheme's default when the
-// URL omits one (mirrors net/http's schemePort). A URL with neither port nor
-// recognized scheme has no effective port and matches only the same
-// degenerate form.
-func effectivePort(u *url.URL) string {
-	if p := u.Port(); p != "" {
-		return p
-	}
-	switch u.Scheme {
-	case "https":
-		return "443"
-	case "http":
-		return "80"
-	default:
-		return ""
-	}
+	return validation.SameOrigin(a, b)
 }
 
 // redirectContextKey is a typed context key for redirect settings.

@@ -5,6 +5,7 @@ package main
 import (
 	"crypto/tls"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/cybergodev/httpc"
@@ -38,10 +39,10 @@ func demonstrateDefaultConfig() {
 	// Create client with default settings
 	client, err := httpc.NewDefault()
 	if err != nil {
-		fmt.Println(err)
+		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	resp, err := client.Get("https://httpbin.org/get")
 	if err != nil {
@@ -65,10 +66,10 @@ func demonstrateSecureConfig() {
 	// Create client with enhanced security
 	client, err := httpc.New(httpc.SecureConfig())
 	if err != nil {
-		fmt.Println(err)
+		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Note: If you're in a network environment that uses VPN (e.g., Tailscale with
 	// 100.64.0.0/10) or other reserved IP ranges, the SSRF protection in SecureConfig
@@ -106,10 +107,10 @@ func demonstratePerformanceConfig() {
 	// Create client optimized for performance
 	client, err := httpc.New(httpc.PerformanceConfig())
 	if err != nil {
-		fmt.Println(err)
+		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	resp, err := client.Get("https://httpbin.org/get")
 	if err != nil {
@@ -147,10 +148,10 @@ func demonstrateCustomConfig() {
 
 	client, err := httpc.New(config)
 	if err != nil {
-		fmt.Println(err)
+		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	resp, err := client.Get("https://echo.hoppscotch.io",
 		httpc.WithQuery("custom", "config"),

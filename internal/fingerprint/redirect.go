@@ -20,6 +20,8 @@ import (
 	"strings"
 
 	ehttp "github.com/bogdanfinn/fhttp"
+
+	"github.com/cybergodev/httpc/internal/validation"
 )
 
 // sec-fetch-site values a browser emits for one hop (Fetch Standard
@@ -147,7 +149,7 @@ func applyRedirectOverrides(dst *ehttp.Header, f redirectFacts) {
 // share a registrable domain, "cross-site" otherwise. Either host empty
 // (unreachable through the engine's URL validation) classifies cross-site.
 func fetchSite(prev, cur *url.URL) string {
-	if sameOriginURL(prev, cur) {
+	if validation.SameOrigin(prev, cur) {
 		return fetchSiteSameOrigin
 	}
 	ph, ch := prev.Hostname(), cur.Hostname()
@@ -158,29 +160,6 @@ func fetchSite(prev, cur *url.URL) string {
 		return fetchSiteSameSite
 	}
 	return fetchSiteCrossSite
-}
-
-// sameOriginURL compares two URLs by RFC 6454 origin: scheme, host, and
-// port with scheme-default ports normalized (example.com and
-// example.com:443 under https are one origin).
-func sameOriginURL(a, b *url.URL) bool {
-	return strings.EqualFold(a.Hostname(), b.Hostname()) &&
-		strings.EqualFold(a.Scheme, b.Scheme) &&
-		effectivePort(a) == effectivePort(b)
-}
-
-// effectivePort returns the URL's transport port, substituting the scheme
-// default when none is stated.
-func effectivePort(u *url.URL) string {
-	if p := u.Port(); p != "" {
-		return p
-	}
-	switch strings.ToLower(u.Scheme) {
-	case "https", "wss":
-		return "443"
-	default:
-		return "80"
-	}
 }
 
 // registrableDomain approximates a host's eTLD+1: the last two labels, or

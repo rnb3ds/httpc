@@ -12,6 +12,11 @@ import (
 	"github.com/cybergodev/httpc"
 )
 
+// This example demonstrates concurrent requests: one client safely shared
+// across goroutines, bounded parallelism, and collecting results as they
+// complete.
+// Perfect for: Fan-out workloads and batch API consumption
+
 func main() {
 	fmt.Println("=== Concurrent Requests Examples ===")
 
@@ -39,7 +44,7 @@ func demonstrateParallelRequests() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	urls := []string{
 		"https://echo.hoppscotch.io/api/users",
@@ -106,7 +111,7 @@ func demonstrateWorkerPool() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	const numWorkers = 5
 	urls := make([]string, 20)
@@ -170,7 +175,7 @@ func demonstrateConcurrentWithErrors() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	type task struct {
 		id  int
@@ -256,7 +261,7 @@ func demonstrateRateLimited() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	const (
 		maxConcurrent = 3

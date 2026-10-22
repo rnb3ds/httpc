@@ -1,7 +1,7 @@
 //go:build fingerprint_e2e
 
 // Network end-to-end verification against tls.peet.ws, which echoes the
-// client's TLS (ja3/ja4) and HTTP/2 (akamai) fingerprints. Run with:
+// client's TLS (ja3/ja4) and HTTP/2 (SETTINGS-order) fingerprints. Run with:
 //
 //	go test -tags fingerprint_e2e ./internal/fingerprint/ -run PeetWSE2E -v
 //
@@ -13,8 +13,9 @@
 // list — the whole point of these gates is to catch exactly that drift.
 //
 // When a profile is re-cut for a new browser build, re-baseline BOTH strings
-// (JA4 and the Akamai hash) and keep the update in the same commit as the
-// profile data. See internal/fingerprint/PROFILES.md.
+// (JA4 and the HTTP/2 hash) and keep the update in the same commit as the
+// profile data (the profile_* .go file headers document what one profile
+// covers and where each layer lives).
 package fingerprint_test
 
 import (
@@ -27,21 +28,21 @@ import (
 
 // Baseline fingerprints for the shipped profiles, captured 2026-10-21.
 const (
-	chromeJA4         = "t13d1517h2_8daaf6152771_cb7bf5808d99"
-	chromeAkamaiHash  = "52d84b11737d980aef856699f885ca86"
-	chromeAkamaiPrint = "1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p"
+	chromeJA4     = "t13d1517h2_8daaf6152771_cb7bf5808d99"
+	chromeH2Hash  = "52d84b11737d980aef856699f885ca86"
+	chromeH2Print = "1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p"
 
-	firefoxJA4         = "t13d1715h2_5b57614c22b0_a54fffd0eb61"
-	firefoxAkamaiHash  = "6ea73faa8fc5aac76bded7bd238f6433"
-	firefoxAkamaiPrint = "1:65536;2:0;4:131072;5:16384|12517377|0|m,p,a,s"
+	firefoxJA4     = "t13d1715h2_5b57614c22b0_a54fffd0eb61"
+	firefoxH2Hash  = "6ea73faa8fc5aac76bded7bd238f6433"
+	firefoxH2Print = "1:65536;2:0;4:131072;5:16384|12517377|0|m,p,a,s"
 
 	// iOS (WebKit) baseline: JA4 derived offline (ja4_test.go) and matching
-	// the dominant live iOS observation in public JA4 databases; the Akamai
+	// the dominant live iOS observation in public JA4 databases; the HTTP/2
 	// chain is the Safari iOS 26 capture cross-checked against tls-client's
 	// Safari_IOS_26_0 profile (BSD-3).
-	safariIOSJA4         = "t13d2013h2_a09f3c656075_7f0f34a4126d"
-	safariIOSAkamaiHash  = "c52879e43202aeb92740be6e8c86ea96"
-	safariIOSAkamaiPrint = "2:0;3:100;4:2097152;9:1|10420225|0|m,s,a,p"
+	safariIOSJA4     = "t13d2013h2_a09f3c656075_7f0f34a4126d"
+	safariIOSH2Hash  = "c52879e43202aeb92740be6e8c86ea96"
+	safariIOSH2Print = "2:0;3:100;4:2097152;9:1|10420225|0|m,s,a,p"
 )
 
 // TestPeetWSE2ESafariIOS pins the third family: iOS Safari rides the same
@@ -53,19 +54,22 @@ func TestPeetWSE2ESafariIOS(t *testing.T) {
 	if out.TLS.JA4 != safariIOSJA4 {
 		t.Errorf("JA4 = %q, want %q", out.TLS.JA4, safariIOSJA4)
 	}
-	if out.HTTP2.AkamaiFingerprintHash != safariIOSAkamaiHash {
-		t.Errorf("akamai hash = %q, want %q (raw=%q)",
-			out.HTTP2.AkamaiFingerprintHash, safariIOSAkamaiHash, out.HTTP2.AkamaiFingerprint)
+	if out.HTTP2.H2FingerprintHash != safariIOSH2Hash {
+		t.Errorf("h2 hash = %q, want %q (raw=%q)",
+			out.HTTP2.H2FingerprintHash, safariIOSH2Hash, out.HTTP2.H2Fingerprint)
 	}
 	if !contains(out.UserAgent, "Version/26.0") {
 		t.Errorf("User-Agent = %q, want Safari's Version/26.0 token", out.UserAgent)
 	}
 
-	t.Logf("safari-ios: ja4=%s akamai=%s hash=%s ua=%s",
-		out.TLS.JA4, out.HTTP2.AkamaiFingerprint, out.HTTP2.AkamaiFingerprintHash, out.UserAgent)
+	t.Logf("safari-ios: ja4=%s h2=%s hash=%s ua=%s",
+		out.TLS.JA4, out.HTTP2.H2Fingerprint, out.HTTP2.H2FingerprintHash, out.UserAgent)
 }
 
 // peetWSResponse is the subset of tls.peet.ws/api/all the assertions need.
+// The HTTP/2 fingerprint fields carry the echo service's own wire names
+// ("akamai_fingerprint*"); they are kept verbatim so JSON decoding matches the
+// upstream response shape, and are not a reference to any detection vendor.
 type peetWSResponse struct {
 	UserAgent string `json:"user_agent"`
 	TLS       struct {
@@ -74,8 +78,8 @@ type peetWSResponse struct {
 	} `json:"tls"`
 	HTTPVersion string `json:"http_version"`
 	HTTP2       struct {
-		AkamaiFingerprint     string `json:"akamai_fingerprint"`
-		AkamaiFingerprintHash string `json:"akamai_fingerprint_hash"`
+		H2Fingerprint     string `json:"akamai_fingerprint"`
+		H2FingerprintHash string `json:"akamai_fingerprint_hash"`
 	} `json:"http2"`
 }
 
@@ -104,10 +108,10 @@ func peetWS(t *testing.T, preset string) peetWSResponse {
 
 // TestPeetWSE2EChrome pins the Chrome fingerprint on every layer an echo
 // endpoint can observe: the exact JA4 (TLS range, cipher list and extension
-// set), the exact Akamai H2 string and its hash, and the UA the preset claims.
-// The shipped label is Chrome 155; the JA4/Akamai constants date from the
-// Chrome 152 capture and are unchanged because Chrome 152–156 share the same
-// ClientHello and H2 chain (see PROFILES.md).
+// set), the exact HTTP/2 fingerprint string and its hash, and the UA the
+// preset claims. The shipped label is Chrome 155; the JA4/HTTP/2 constants
+// date from the Chrome 152 capture and are unchanged because Chrome 152–156
+// share the same ClientHello and H2 chain (see profile_chrome.go).
 func TestPeetWSE2EChrome(t *testing.T) {
 	out := peetWS(t, "chrome-latest")
 
@@ -121,17 +125,17 @@ func TestPeetWSE2EChrome(t *testing.T) {
 			"  signature algorithms or ALPN. Check profile_chrome.go against a real\n"+
 			"  Chrome capture before re-baselining this constant.", out.TLS.JA4, chromeJA4)
 	}
-	if out.HTTP2.AkamaiFingerprintHash != chromeAkamaiHash {
-		t.Errorf("akamai hash = %q, want %q (raw=%q, want %q)",
-			out.HTTP2.AkamaiFingerprintHash, chromeAkamaiHash,
-			out.HTTP2.AkamaiFingerprint, chromeAkamaiPrint)
+	if out.HTTP2.H2FingerprintHash != chromeH2Hash {
+		t.Errorf("h2 hash = %q, want %q (raw=%q, want %q)",
+			out.HTTP2.H2FingerprintHash, chromeH2Hash,
+			out.HTTP2.H2Fingerprint, chromeH2Print)
 	}
 	if out.TLS.JA3 == "" {
 		t.Error("JA3 missing from peet.ws response")
 	}
 
-	t.Logf("chrome: ja4=%s akamai=%s hash=%s",
-		out.TLS.JA4, out.HTTP2.AkamaiFingerprint, out.HTTP2.AkamaiFingerprintHash)
+	t.Logf("chrome: ja4=%s h2=%s hash=%s",
+		out.TLS.JA4, out.HTTP2.H2Fingerprint, out.HTTP2.H2FingerprintHash)
 }
 
 // TestPeetWSE2EUserAgentCoherence verifies the preset's browser UA is sent
@@ -161,17 +165,17 @@ func TestPeetWSE2EFirefox(t *testing.T) {
 	if out.TLS.JA4 != firefoxJA4 {
 		t.Errorf("JA4 = %q, want %q", out.TLS.JA4, firefoxJA4)
 	}
-	if out.HTTP2.AkamaiFingerprintHash != firefoxAkamaiHash {
-		t.Errorf("akamai hash = %q, want %q (raw=%q, want %q)",
-			out.HTTP2.AkamaiFingerprintHash, firefoxAkamaiHash,
-			out.HTTP2.AkamaiFingerprint, firefoxAkamaiPrint)
+	if out.HTTP2.H2FingerprintHash != firefoxH2Hash {
+		t.Errorf("h2 hash = %q, want %q (raw=%q, want %q)",
+			out.HTTP2.H2FingerprintHash, firefoxH2Hash,
+			out.HTTP2.H2Fingerprint, firefoxH2Print)
 	}
 	if !contains(out.UserAgent, "Firefox/158.") {
 		t.Errorf("User-Agent = %q, want a Firefox/158 version string", out.UserAgent)
 	}
 
-	t.Logf("firefox: ja4=%s akamai=%s hash=%s",
-		out.TLS.JA4, out.HTTP2.AkamaiFingerprint, out.HTTP2.AkamaiFingerprintHash)
+	t.Logf("firefox: ja4=%s h2=%s hash=%s",
+		out.TLS.JA4, out.HTTP2.H2Fingerprint, out.HTTP2.H2FingerprintHash)
 }
 
 // TestPeetWSE2EChromeIOS pins the iOS preset on the TLS layer: Chrome on iOS
@@ -183,17 +187,17 @@ func TestPeetWSE2EChromeIOS(t *testing.T) {
 	if out.TLS.JA4 != safariIOSJA4 {
 		t.Errorf("JA4 = %q, want %q (the WebKit hello)", out.TLS.JA4, safariIOSJA4)
 	}
-	if out.HTTP2.AkamaiFingerprintHash != safariIOSAkamaiHash {
-		t.Errorf("akamai hash = %q, want %q (raw=%q, want %q)",
-			out.HTTP2.AkamaiFingerprintHash, safariIOSAkamaiHash,
-			out.HTTP2.AkamaiFingerprint, safariIOSAkamaiPrint)
+	if out.HTTP2.H2FingerprintHash != safariIOSH2Hash {
+		t.Errorf("h2 hash = %q, want %q (raw=%q, want %q)",
+			out.HTTP2.H2FingerprintHash, safariIOSH2Hash,
+			out.HTTP2.H2Fingerprint, safariIOSH2Print)
 	}
 	if !contains(out.UserAgent, "CriOS/155.") {
 		t.Errorf("User-Agent = %q, want a CriOS/155 string", out.UserAgent)
 	}
 
-	t.Logf("chrome-ios: ja4=%s akamai=%s hash=%s ua=%s",
-		out.TLS.JA4, out.HTTP2.AkamaiFingerprint, out.HTTP2.AkamaiFingerprintHash, out.UserAgent)
+	t.Logf("chrome-ios: ja4=%s h2=%s hash=%s ua=%s",
+		out.TLS.JA4, out.HTTP2.H2Fingerprint, out.HTTP2.H2FingerprintHash, out.UserAgent)
 }
 
 // contains reports whether s contains sub.

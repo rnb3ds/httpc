@@ -12,6 +12,11 @@ import (
 	"github.com/cybergodev/httpc"
 )
 
+// This example demonstrates httpc's error handling: classifying failures
+// with ClientError and errors.As/Is, checking retryability, and reacting to
+// timeouts and validation errors distinctly.
+// Perfect for: APIs that need structured error reporting and recovery logic
+
 func main() {
 	fmt.Println("=== Error Handling Examples ===")
 
@@ -48,7 +53,7 @@ func demonstrateBasicErrors() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	resp, err := client.Get("https://echo.hoppscotch.io")
 	if err != nil {
@@ -77,7 +82,7 @@ func demonstrateHTTPErrors() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	statusURLs := []string{
 		"https://httpbin.org/status/404", // Not Found
@@ -134,7 +139,7 @@ func demonstrateTimeoutErrors() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Very short timeout to demonstrate timeout handling
 	resp, err := client.Get("https://echo.hoppscotch.io",
@@ -164,7 +169,7 @@ func demonstrateContextCancellation() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Create a context that we'll cancel
 	ctx, cancel := context.WithCancel(context.Background())
@@ -201,7 +206,7 @@ func demonstrateParsingErrors() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	resp, err := client.Get("https://httpbin.org/html")
 	if err != nil {
@@ -247,7 +252,7 @@ func fetchUserData(userID int) (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -311,7 +316,7 @@ func demonstrateStructuredErrors() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Trigger a timeout to get a structured error
 	resp, err := client.Get("https://echo.hoppscotch.io",

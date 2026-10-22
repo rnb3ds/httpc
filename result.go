@@ -63,7 +63,10 @@ var cachedSensitiveHeaderNames = func() []string {
 // nested pointer (e.g. Response may be nil when the request errored).
 type Result struct {
 	// Request describes the request as finally sent (after redirects,
-	// retries, and middleware).
+	// retries, and middleware). On the TLS-fingerprint path, its Headers
+	// reflect the wire headers actually written by the fingerprint transport
+	// (browser profile values under browser casing), not the engine-side
+	// defaults such as the httpc/1.0 User-Agent.
 	Request *RequestInfo
 	// Response carries the final response data; nil when the request errored
 	// before a response arrived.
@@ -79,7 +82,10 @@ type RequestInfo struct {
 	URL string
 	// Method is the HTTP method used.
 	Method string
-	// Headers contains the request headers.
+	// Headers contains the request headers. On the TLS-fingerprint path these
+	// are the wire headers actually written by the fingerprint transport
+	// (browser profile values under browser casing, the magic order keys
+	// omitted); otherwise they are the engine-side request headers.
 	Headers http.Header
 	// Cookies contains the request cookies.
 	Cookies []*http.Cookie
@@ -114,9 +120,12 @@ type RequestMeta struct {
 	// ProxyURL is the URL of the proxy that served the final attempt of this
 	// request, as selected by the configured proxy (a single Connection.ProxyURL
 	// or a proxy pool entry). Empty when no proxy was used or the connection
-	// was direct. With proxy rotation each retry attempt may use a different
-	// proxy; this field reports the proxy that produced the returned response
-	// (see Attempts for the number of attempts made).
+	// was direct — note that with Connection.EnableSystemProxy the effective
+	// proxy is detected dynamically and is NOT recorded here (the field stays
+	// empty even when the system proxy carried the request). With proxy
+	// rotation each retry attempt may use a different proxy; this field
+	// reports the proxy that produced the returned response (see Attempts for
+	// the number of attempts made).
 	ProxyURL string
 	// RedirectChain contains the URLs followed during redirects.
 	RedirectChain []string

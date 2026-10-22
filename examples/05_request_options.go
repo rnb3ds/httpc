@@ -20,7 +20,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// 1. Body Formats
 	demonstrateBodyFormats(client)
@@ -30,6 +30,9 @@ func main() {
 
 	// 3. Query Parameters
 	demonstrateQueryParams(client)
+
+	// 4. Custom request option (RequestOptionFunc)
+	demonstrateCustomOption(client)
 
 	fmt.Println("\n=== All Examples Completed ===")
 }
@@ -257,5 +260,32 @@ func demonstrateQueryParams(client httpc.Client) {
 		log.Printf("Special chars error: %v\n", err)
 	} else {
 		fmt.Printf("[OK] Special characters (auto-encoded): Status %d\n", resp.StatusCode())
+	}
+}
+
+// demonstrateCustomOption shows building a custom per-request option with
+// RequestOptionFunc — the extension point when no built-in option fits
+// (request signing, dynamic headers, conditional mutations).
+func demonstrateCustomOption(client httpc.Client) {
+	fmt.Println("--- Custom Request Option (RequestOptionFunc) ---")
+
+	// RequestOptionFunc adapts a plain function to the RequestOption
+	// interface. Inside, RequestMutator exposes the outgoing request:
+	// SetHeader, method, URL, and the body accessors.
+	signed := httpc.RequestOptionFunc(func(req httpc.RequestMutator) error {
+		req.SetHeader("X-Timestamp", time.Now().UTC().Format(time.RFC3339))
+		req.SetHeader("X-Signature", "sig-of-"+req.Method()+"-"+req.URL())
+		return nil
+	})
+
+	// Custom options compose with built-in ones like any other option.
+	resp, err := client.Get("https://echo.hoppscotch.io",
+		signed,
+		httpc.WithHeader("X-Custom", "built-in option"),
+	)
+	if err != nil {
+		log.Printf("Custom option error: %v\n", err)
+	} else {
+		fmt.Printf("[OK] Custom option applied: Status %d\n\n", resp.StatusCode())
 	}
 }

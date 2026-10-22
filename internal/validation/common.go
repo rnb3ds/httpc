@@ -143,8 +143,9 @@ func ValidateMultipartToken(s, what string) error {
 // the value check below produce byte-identical results and error messages to
 // that generic form:
 //   - the empty/too-long checks mirror validateInputString's guards;
-//   - a byte >= 0x80 fails the ASCII-only header-key table, exactly like the
-//     generic form's isValidHeaderChar(rune) for any non-ASCII rune;
+//   - a byte >= 0x80 fails the ASCII-only header-key table, so any non-ASCII
+//     rune (whose UTF-8 lead byte is >= 0x80) is rejected, exactly like the
+//     generic per-rune form would;
 //   - bytes < 0x20 or == 0x7F are rejected first, so the table lookup only
 //     runs for printable ASCII (the table itself marks them invalid, so the
 //     ordering only affects which message is produced, not the outcome).
@@ -184,16 +185,6 @@ func ValidateHeaderKeyValue(key, value string) error {
 	}
 
 	return nil
-}
-
-// isValidHeaderChar checks if a character is valid in HTTP header names.
-// Optimized with a lookup table for O(1) character validation.
-func isValidHeaderChar(r rune) bool {
-	// Fast path: use lookup table for common ASCII range
-	if r >= 0 && r <= 127 {
-		return validHeaderCharTable[r]
-	}
-	return false
 }
 
 // validHeaderCharTable is a lookup table for valid HTTP header characters.

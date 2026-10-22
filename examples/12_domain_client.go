@@ -43,7 +43,7 @@ func demonstrateBasicUsage() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Access base URL and domain info
 	fmt.Printf("Base URL: %s\n", client.URL())
@@ -93,7 +93,7 @@ func demonstrateStateManagement() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Set persistent headers
 	if err := client.SetHeaders(map[string]string{
@@ -156,7 +156,7 @@ func demonstrateRelativePaths() {
 		log.Printf("Failed to create client: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Valid: Relative paths (automatically prefixed with base URL)
 	paths := []string{
@@ -210,7 +210,7 @@ func demonstrateCustomConfigAndDownload() {
 		log.Printf("Failed to create domain client: %v\n", err)
 		return
 	}
-	defer dc.Close()
+	defer func() { _ = dc.Close() }()
 	fmt.Printf("[OK] Created DomainClient with custom config (UA: %s)\n", cfg.Defaults.UserAgent)
 
 	// DomainClient.Download works like Client.Download but resolves the path

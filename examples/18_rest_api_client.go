@@ -227,6 +227,11 @@ func (c *APIClient) SearchUsers(ctx context.Context, query string) ([]User, erro
 	return users, nil
 }
 
+// This example demonstrates building a typed REST API client on top of
+// httpc: a small service struct with CRUD methods, JSON bodies, bearer
+// auth, and per-endpoint error handling.
+// Perfect for: Wrapping a versioned HTTP API in a Go client package
+
 func main() {
 	fmt.Println("=== REST API Client Example ===")
 
@@ -237,7 +242,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 

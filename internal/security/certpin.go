@@ -320,6 +320,15 @@ func (c *certificatePinnerChain) VerifyPeerCertificate(rawCerts [][]byte, verifi
 
 	var errs error
 	for _, pinner := range c.pinners {
+		// Skip nil elements: NewCertificatePinnerChain accepts them, and a nil
+		// interface method call panics inside the TLS handshake (crypto/tls
+		// does not recover). The concrete pinners already defend typed-nil
+		// receivers; this mirrors that hardening for true nils. If ALL
+		// elements are nil the loop joins nothing and errs stays nil, falling
+		// through to the fail-closed no-match error below.
+		if pinner == nil {
+			continue
+		}
 		err := pinner.VerifyPeerCertificate(rawCerts, verifiedChains)
 		if err == nil {
 			return nil // Match found

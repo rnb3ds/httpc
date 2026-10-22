@@ -335,9 +335,10 @@ func TestProxyPool_HTTPSRotation(t *testing.T) {
 	}
 }
 
-// TestProxyPool_RotateOn403_OneProxySucceeds simulates the real-world CF/WAF
-// scenario: proxy-A always gets 403 (blocked), proxy-B returns 200 (passes).
-// The client should rotate from A to B on 403 and return 200.
+// TestProxyPool_RotateOn403_OneProxySucceeds simulates the real-world
+// status-based blocking scenario: proxy-A always gets 403 (blocked), proxy-B
+// returns 200 (passes). The client should rotate from A to B on 403 and
+// return 200.
 func TestProxyPool_RotateOn403_OneProxySucceeds(t *testing.T) {
 	var mu sync.Mutex
 	var attempted []string
@@ -351,7 +352,7 @@ func TestProxyPool_RotateOn403_OneProxySucceeds(t *testing.T) {
 
 		if proxyID == "proxy-A" {
 			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write([]byte("CF blocked")) // best-effort test response
+			_, _ = w.Write([]byte("blocked")) // best-effort test response
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -359,7 +360,7 @@ func TestProxyPool_RotateOn403_OneProxySucceeds(t *testing.T) {
 	}))
 	defer target.Close()
 
-	// Two forward proxies: A (blocked by CF) and B (passes CF).
+	// Two forward proxies: A (returns 403) and B (returns 200).
 	proxyA := forwardProxy("proxy-A")
 	defer proxyA.Close()
 	proxyB := forwardProxy("proxy-B")

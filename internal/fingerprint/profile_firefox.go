@@ -238,7 +238,7 @@ var firefox158Android = &browserProfile{
 // firefox158IOS is the Firefox 158 iOS profile: FxiOS is WebKit underneath
 // (Apple mandate), so the TLS and HTTP/2 layers are Safari's —the same
 // HelloSafari_26_3 hello and safariIOSH2 chain as chrome-155-ios. The
-// regular-header order remains the desktop approximation (see PROFILES.md).
+// regular-header order remains the desktop approximation.
 var firefox158IOS = &browserProfile{
 	name:              "firefox-158-ios",
 	hello:             helloFromID(utls.HelloSafari_26_3),

@@ -92,6 +92,19 @@ Known limitations (deliberate, security-first):
   requests. The guard re-closes the deterministic hostname→private-IP bypass; a
   rebinding-hardened proxy requires the proxy itself to honor pinned IPs.
 
+#### Fingerprint-path parity
+
+The TLS-fingerprint transport (`Security.TLSFingerprint`) runs outside the
+standard dialer, so it carries the same defense itself
+(`internal/fingerprint/directdial.go`): direct connections resolve once,
+filter to SSRF-allowed IPs, and dial only the validated IP literals — the
+same no-TOCTOU, no-mixed-record guarantee as Layer 2, enforced inside the
+backend transport's dial hook. A request-time pre-flight
+(`internal/fingerprint/ssrf.go`) fails blocked targets before any dial and
+re-runs on every redirect hop. Proxied fingerprint requests use the
+pre-flight as their enforcement, with exactly the proxied-target rule and
+residuals described above.
+
 ### 3. CRLF Injection Prevention
 
 Comprehensive validation prevents HTTP header injection attacks:
