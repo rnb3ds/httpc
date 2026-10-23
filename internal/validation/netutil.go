@@ -391,15 +391,16 @@ func ValidateProxyURL(rawURL string) (*url.URL, error) {
 
 // redactErrorURL replaces any occurrence of rawURL inside err's message with
 // its sanitized form, so a wrapped url.Parse error ("parse \"raw\": …") does
-// not carry credentials up the error chain. When rawURL has nothing to
-// sanitize the original error is returned unchanged, preserving its type for
+// not carry credentials up the error chain. Escaped (%q) occurrences are
+// matched too — see RedactURLInMessage. When rawURL has nothing to sanitize
+// the original error is returned unchanged, preserving its type for
 // errors.Is/As; otherwise a new error is built from the scrubbed message.
 func redactErrorURL(err error, rawURL string) error {
-	sanitized := SanitizeURL(rawURL)
-	if sanitized == rawURL || !strings.Contains(err.Error(), rawURL) {
+	msg, changed := RedactURLInMessage(err.Error(), rawURL)
+	if !changed {
 		return err
 	}
-	return errors.New(strings.ReplaceAll(err.Error(), rawURL, sanitized))
+	return errors.New(msg)
 }
 
 // ParseSystemProxyURL parses a proxy address obtained from system sources —

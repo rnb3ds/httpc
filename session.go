@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/url"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -194,7 +196,15 @@ func (s *SessionManager) GetHeaders() map[string]string {
 // (public API path), which previously disagreed: SetCookie stored deletion
 // cookies verbatim.
 func isDeletionCookie(cookie *http.Cookie) bool {
-	return cookie.MaxAge < 0 || (!cookie.Expires.IsZero() && cookie.Expires.Before(time.Now()))
+	// RFC 6265 §5.2.2: Max-Age takes precedence over Expires. MaxAge < 0
+	// (also how net/http maps a server's Max-Age=0) always deletes. A cookie
+	// with a POSITIVE MaxAge and a past Expires is NOT a deletion — the
+	// Max-Age wins and the cookie lives until its Max-Age elapses. MaxAge 0
+	// means "unspecified", leaving Expires to decide.
+	if cookie.MaxAge != 0 {
+		return cookie.MaxAge < 0
+	}
+	return !cookie.Expires.IsZero() && cookie.Expires.Before(time.Now())
 }
 
 // isExpiredCookie reports whether a stored cookie's Expires moment has
@@ -203,6 +213,41 @@ func isDeletionCookie(cookie *http.Cookie) bool {
 // sent and stops appearing in the session view at the same instant.
 func isExpiredCookie(cookie *http.Cookie) bool {
 	return !cookie.Expires.IsZero() && cookie.Expires.Before(time.Now())
+}
+
+// applyMaxAgeExpiry normalizes a stored cookie's positive Max-Age into an
+// Expires moment so the read-side isExpiredCookie — which compares Expires
+// only — enforces it (RFC 6265 §5.2.2: Max-Age takes precedence, so it
+// overwrites any Expires the cookie carried). Previously a Max-Age=60 cookie
+// with no Expires attribute never expired and was replayed forever.
+func applyMaxAgeExpiry(c *http.Cookie) {
+	if c.MaxAge > 0 {
+		c.Expires = time.Now().Add(time.Duration(c.MaxAge) * time.Second)
+		c.MaxAge = 0
+	}
+}
+
+// cookieMatchesRequest applies the RFC 6265 replay scoping rules to a stored
+// cookie: the Secure attribute (never replayed over cleartext) and §5.1.4
+// path-match. An empty cookie Path (or one not starting with "/", which
+// §5.2.4 says to ignore) defaults to the match-everything "/" scope.
+func cookieMatchesRequest(c *http.Cookie, reqPath string, secureScheme bool) bool {
+	if c.Secure && !secureScheme {
+		return false
+	}
+	cookiePath := c.Path
+	if cookiePath == "" || !strings.HasPrefix(cookiePath, "/") {
+		return true
+	}
+	if cookiePath == reqPath {
+		return true
+	}
+	// Prefix match requires a path-segment boundary: either the cookie path
+	// ends with "/" or the next request-path byte is "/" (blocks "/admin"
+	// matching "/adminx"). Equality was handled above, so the index is in
+	// range.
+	return strings.HasPrefix(reqPath, cookiePath) &&
+		(strings.HasSuffix(cookiePath, "/") || reqPath[len(cookiePath)] == '/')
 }
 
 // SetCookie adds or updates a cookie in the session.
@@ -241,6 +286,7 @@ func (s *SessionManager) SetCookie(cookie *http.Cookie) error {
 	// caller's pointer would let later mutations of that *http.Cookie race
 	// the session's read paths (which snapshot the value under RLock).
 	cp := *cookie
+	applyMaxAgeExpiry(&cp)
 	s.cookies[cp.Name] = &cp
 	return nil
 }
@@ -252,10 +298,19 @@ func (s *SessionManager) SetCookies(cookies []*http.Cookie) error {
 	if s == nil {
 		return fmt.Errorf("session manager is nil")
 	}
-	// Pre-validate all cookies outside the lock
+	// Pre-validate all cookies outside the lock. Deletion-semantic cookies
+	// (logout cookies typically carry no Secure/HttpOnly attributes) are
+	// skipped by BOTH validation passes: validating them first made a strict
+	// cookie-security config abort the whole batch and leave the stale
+	// session cookie in place — the exact replay condition the deletion
+	// check exists to prevent. They only remove state; there is nothing to
+	// validate.
 	for i, cookie := range cookies {
 		if cookie == nil {
 			return fmt.Errorf("cookie at index %d is nil", i)
+		}
+		if isDeletionCookie(cookie) {
+			continue
 		}
 		if err := validation.ValidateCookie(cookie); err != nil {
 			return fmt.Errorf("invalid cookie at index %d: %w", i, err)
@@ -268,6 +323,9 @@ func (s *SessionManager) SetCookies(cookies []*http.Cookie) error {
 
 	// Validate all cookies for security before storing any (atomic write)
 	for _, cookie := range cookies {
+		if isDeletionCookie(cookie) {
+			continue
+		}
 		if err := s.validateCookieSecurity(cookie); err != nil {
 			return fmt.Errorf("cookie security validation failed for %s: %w", cookie.Name, err)
 		}
@@ -282,6 +340,7 @@ func (s *SessionManager) SetCookies(cookies []*http.Cookie) error {
 			continue
 		}
 		cp := *cookie
+		applyMaxAgeExpiry(&cp)
 		s.cookies[cp.Name] = &cp
 	}
 	return nil
@@ -359,7 +418,11 @@ func (s *SessionManager) GetCookie(name string) *http.Cookie {
 
 // prepareOptions creates RequestOptions from the current session state.
 // This is used internally by DomainClient to apply session cookies and headers to outgoing requests.
-func (s *SessionManager) prepareOptions() []RequestOption {
+// fullURL is the request target: session cookies are replayed only when their
+// stored Path and Secure attributes match it (RFC 6265 §5.1.4 path-match and
+// the Secure flag) — previously every cookie was replayed to every path on
+// the origin, so a cookie the server scoped to /admin was broadcast site-wide.
+func (s *SessionManager) prepareOptions(fullURL string) []RequestOption {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -368,6 +431,18 @@ func (s *SessionManager) prepareOptions() []RequestOption {
 
 	if cookieCount == 0 && headerCount == 0 {
 		return nil
+	}
+
+	// Replay scoping inputs. Parse failures and empty paths fall back to the
+	// permissive defaults ("/" matches every cookie-path, scheme not secure):
+	// the URL was built and validated by buildURL, so this only guards
+	// against regressions without withholding session state on false alarms.
+	reqPath, secureScheme := "/", false
+	if u, err := url.Parse(fullURL); err == nil {
+		if u.Path != "" {
+			reqPath = u.Path
+		}
+		secureScheme = u.Scheme == "https"
 	}
 
 	options := make([]RequestOption, 0, 2)
@@ -387,7 +462,7 @@ func (s *SessionManager) prepareOptions() []RequestOption {
 		slices.Sort(names)
 		cookies := make([]http.Cookie, 0, cookieCount)
 		for _, name := range names {
-			if c := s.cookies[name]; !isExpiredCookie(c) {
+			if c := s.cookies[name]; !isExpiredCookie(c) && cookieMatchesRequest(c, reqPath, secureScheme) {
 				cookies = append(cookies, *c)
 			}
 		}
@@ -475,6 +550,7 @@ func (s *SessionManager) storeCookies(cookies []*http.Cookie) {
 			continue
 		}
 		cp := *cookie
+		applyMaxAgeExpiry(&cp)
 		s.cookies[cp.Name] = &cp
 	}
 }

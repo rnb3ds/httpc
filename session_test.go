@@ -474,7 +474,7 @@ func TestSessionManager_prepareOptions(t *testing.T) {
 	}
 
 	// Test empty session
-	options := session.prepareOptions()
+	options := session.prepareOptions("https://example.com/any/path")
 	if options != nil {
 		t.Error("Expected nil options for empty session")
 	}
@@ -483,7 +483,7 @@ func TestSessionManager_prepareOptions(t *testing.T) {
 	_ = session.SetCookie(&http.Cookie{Name: "session", Value: "abc123"})
 	_ = session.SetHeader("Authorization", "Bearer token")
 
-	options = session.prepareOptions()
+	options = session.prepareOptions("https://example.com/any/path")
 	if len(options) < 2 {
 		t.Errorf("Expected at least 2 options, got %d", len(options))
 	}
@@ -792,7 +792,7 @@ func TestSessionManager_ExpiredCookiesNotReplayed(t *testing.T) {
 	// Wire level: prepareOptions must send everything except the expired entry.
 	req := engine.AcquireRequest()
 	defer engine.ReleaseRequest(req)
-	for _, opt := range sm.prepareOptions() {
+	for _, opt := range sm.prepareOptions("https://example.com/any/path") {
 		if err := opt.apply(req); err != nil {
 			t.Fatalf("option error: %v", err)
 		}

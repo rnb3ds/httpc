@@ -148,7 +148,11 @@ func (r *retryEngine) calculateExponentialDelay(attempt int) time.Duration {
 	}
 
 	backoffFactor := r.config.BackoffFactor
-	if backoffFactor <= 0 {
+	// !(x > 0) rather than x <= 0: NaN compares false against everything, so
+	// the <= form let a NaN factor through and collapsed the backoff (a NaN
+	// duration conversion clamps to a negative value, suppressed to zero
+	// delay). The negated form catches NaN, zero, and negative uniformly.
+	if !(backoffFactor > 0) {
 		backoffFactor = 2.0
 	}
 

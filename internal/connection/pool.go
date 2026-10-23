@@ -767,6 +767,16 @@ func (pm *PoolManager) createTLSConfig() *tls.Config {
 	// If a custom TLS config is provided, use it (but add cert pinning if configured)
 	if pm.config.TLSConfig != nil {
 		tlsConfig := pm.config.TLSConfig.Clone()
+		// Honor the explicit Connection.InsecureSkipVerify opt-out on this
+		// path too. Previously the flag was silently ignored here (it was
+		// applied only on the synthesized path below) while New's warning
+		// announced that verification was disabled — the opposite of the
+		// actual behavior. One-directional: only the explicit opt-out is
+		// applied; a TLSConfig that itself sets InsecureSkipVerify keeps
+		// working regardless of the top-level flag.
+		if pm.config.InsecureSkipVerify {
+			tlsConfig.InsecureSkipVerify = true
+		}
 		// Add certificate pinning verification if configured. Chain onto any
 		// user-supplied VerifyPeerCertificate callback instead of replacing
 		// it: custom CA validation or mTLS hooks must keep working.

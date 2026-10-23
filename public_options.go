@@ -3,6 +3,8 @@ package httpc
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
@@ -70,13 +72,29 @@ func (o *cookieOption) apply(r RequestMutator) error {
 		return nil
 	}
 
+	// Last-set-wins per name: an earlier cookie with the same name — from a
+	// previous option in this request, or from session state applied before
+	// per-request options — is REPLACED, not appended alongside. Appending
+	// produced "Cookie: sid=old; sid=new", and servers (first-match, like
+	// net/http's r.Cookie) read the stale value, so a per-request override
+	// silently lost.
 	existing := ensureCookieCapacity(r.Cookies(), len(o.cookies))
 
 	for i := range o.cookies {
 		if err := validation.ValidateCookie(&o.cookies[i]); err != nil {
 			return fmt.Errorf("invalid cookie %s: %w", o.cookies[i].Name, err)
 		}
-		existing = append(existing, o.cookies[i])
+		replaced := false
+		for j := range existing {
+			if existing[j].Name == o.cookies[i].Name {
+				existing[j] = o.cookies[i]
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			existing = append(existing, o.cookies[i])
+		}
 	}
 
 	r.SetCookies(existing)
@@ -224,6 +242,11 @@ func WithUserAgent(userAgent string) RequestOption {
 }
 
 // WithBasicAuth sets HTTP Basic Authentication using the provided username and password.
+// Unlike the equivalent WithHeader("Authorization", "Basic …"), this option is
+// NOT captured into SessionManager state (captureFromOptions only recognizes
+// the named header/cookie option types) — credentials deliberately do not
+// persist into session snapshots. Re-apply it per request when using a
+// DomainClient, or use WithHeader if session capture is wanted.
 // Returns ErrInvalidCredentials if username is empty, or if username or password
 // exceeds the maximum length or contains invalid characters.
 func WithBasicAuth(username, password string) RequestOption {
@@ -246,6 +269,10 @@ func WithBasicAuth(username, password string) RequestOption {
 }
 
 // WithBearerToken sets the Authorization header to "Bearer <token>".
+// Like WithBasicAuth (and unlike the equivalent WithHeader("Authorization", …)),
+// this option is NOT captured into SessionManager state — credentials
+// deliberately do not persist into session snapshots. Re-apply it per request
+// when using a DomainClient, or use WithHeader if session capture is wanted.
 // Returns ErrInvalidCredentials if token is empty or fails token format validation.
 func WithBearerToken(token string) RequestOption {
 	return RequestOptionFunc(func(r RequestMutator) error {
@@ -376,13 +403,21 @@ func queryValueLength(v any) int {
 
 // WithJSON sets the request body as JSON and sets Content-Type to application/json.
 // This is a convenience method; the equivalent is WithBody(data, BodyJSON).
-// Returns an error if data is nil.
+// The value is JSON-encoded regardless of input type (see encodeExplicitBody):
+// a string "hello" is sent as the JSON value "hello" (quoted). To send raw
+// JSON text or bytes verbatim, use WithBody(data) (auto) with an explicit
+// Content-Type header instead.
+// Returns an error if data is nil or cannot be encoded.
 func WithJSON(data any) RequestOption {
 	return RequestOptionFunc(func(r RequestMutator) error {
 		if data == nil {
 			return fmt.Errorf("JSON data cannot be nil")
 		}
-		r.SetBody(data)
+		v, err := encodeExplicitBody(data, json.Marshal)
+		if err != nil {
+			return fmt.Errorf("JSON encode failed: %w", err)
+		}
+		r.SetBody(v)
 		r.SetHeader("Content-Type", "application/json")
 		return nil
 	})
@@ -390,16 +425,39 @@ func WithJSON(data any) RequestOption {
 
 // WithXML sets the request body as XML and sets Content-Type to application/xml.
 // This is a convenience method; the equivalent is WithBody(data, BodyXML).
-// Returns an error if data is nil.
+// The value is XML-encoded regardless of input type (see encodeExplicitBody).
+// Returns an error if data is nil or cannot be encoded.
 func WithXML(data any) RequestOption {
 	return RequestOptionFunc(func(r RequestMutator) error {
 		if data == nil {
 			return fmt.Errorf("XML data cannot be nil")
 		}
-		r.SetBody(data)
+		v, err := encodeExplicitBody(data, xml.Marshal)
+		if err != nil {
+			return fmt.Errorf("XML encode failed: %w", err)
+		}
+		r.SetBody(v)
 		r.SetHeader("Content-Type", "application/xml")
 		return nil
 	})
+}
+
+// encodeExplicitBody enforces the documented "forces JSON/XML encoding
+// regardless of input type" contract of the explicit body kinds: string and
+// []byte inputs are passed through the encoder (a raw "hello" becomes the
+// JSON value "hello"; a []byte becomes its base64 JSON form) instead of
+// reaching the engine's verbatim string/[]byte branches — which used to put
+// invalid JSON on the wire under a Content-Type: application/json header.
+// Every other type passes through unchanged: the engine's Build already
+// marshals those per the kind, and io.Reader bodies keep their pass-through
+// semantics (an encoder cannot consume a stream).
+func encodeExplicitBody(data any, encode func(any) ([]byte, error)) (any, error) {
+	switch data.(type) {
+	case string, []byte:
+		return encode(data)
+	default:
+		return data, nil
+	}
 }
 
 // WithBody sets the request body with automatic or explicit type detection.
@@ -444,10 +502,18 @@ func WithBody(data any, kind ...BodyKind) RequestOption {
 
 		switch bodyKind {
 		case BodyJSON:
-			r.SetBody(data)
+			v, err := encodeExplicitBody(data, json.Marshal)
+			if err != nil {
+				return fmt.Errorf("JSON encode failed: %w", err)
+			}
+			r.SetBody(v)
 			r.SetHeader("Content-Type", "application/json")
 		case BodyXML:
-			r.SetBody(data)
+			v, err := encodeExplicitBody(data, xml.Marshal)
+			if err != nil {
+				return fmt.Errorf("XML encode failed: %w", err)
+			}
+			r.SetBody(v)
 			r.SetHeader("Content-Type", "application/xml")
 		case BodyForm:
 			// Shared validate-then-encode path with WithForm (see applyFormBody),
@@ -597,8 +663,12 @@ func setAutoDetectedBody(r RequestMutator, data any) (string, error) {
 		r.SetBody(v)
 		return "text/plain; charset=utf-8", nil
 	case []byte:
-		if v == nil {
-			return "", fmt.Errorf("binary data cannot be nil")
+		// Empty and nil are rejected together, matching convertToBinary's
+		// gate for the explicit BodyBinary kind — the same degenerate input
+		// must not be gated differently per code path (previously the auto
+		// path sent an empty octet-stream body while BodyBinary errored).
+		if len(v) == 0 {
+			return "", fmt.Errorf("binary data cannot be empty")
 		}
 		r.SetBody(v)
 		return "application/octet-stream", nil
@@ -844,7 +914,10 @@ func WithTimeout(timeout time.Duration) RequestOption {
 }
 
 // WithContext sets the context for the request, enabling timeout and cancellation control.
-// The context overrides the client's default timeout for this request.
+// A context deadline NARROWS the client's default request timeout: the shorter
+// of the two applies (a context deadline farther out leaves the client default
+// in force, and a deadline-free context never lifts it — combine with
+// WithNoTimeout for that). Use WithTimeout to override the budget explicitly.
 // Returns an error if ctx is nil.
 func WithContext(ctx context.Context) RequestOption {
 	return RequestOptionFunc(func(r RequestMutator) error {

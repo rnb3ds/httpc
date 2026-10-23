@@ -70,7 +70,9 @@ type validatingDialer struct {
 
 // newValidatingDialer builds the dialer from the owning adapter's config.
 // No net.Dialer.Timeout: the engine owns the deadline budget through the
-// request context (the same choice as WithTimeoutSeconds(0) in transport.go).
+// request context (the same choice as WithTimeoutSeconds(0) in transport.go)
+// — DialContext compensates with contextlessDialTimeout for the one caller
+// that arrives without a context deadline (see below).
 func newValidatingDialer(cfg Config, localAddr *net.TCPAddr) *validatingDialer {
 	return &validatingDialer{
 		exemptNets:      cfg.ExemptNets,
@@ -87,8 +89,23 @@ func (d *validatingDialer) Dial(network, addr string) (net.Conn, error) {
 
 // DialContext validates addr and dials a validated IP literal. The context
 // is the fork request's context, so a per-request AllowPrivateIPs override
-// (WithAllowPrivateIPs) reaches here exactly as it reaches the pre-flight.
+// (WithAllowPrivateIPs) reaches here exactly as it reaches the pre-flight —
+// with one structural exception: tls-client dials HTTP/2 REPLACEMENT
+// connections (second and later connections to one address) through its
+// legacy context-less DialTLS hook with context.Background(), where the
+// override is invisible and validation fails CLOSED (an override-permitted
+// private target errors instead of dialing). Fixing that needs an
+// upstream context-carrying hook; the compensating deadline below at least
+// bounds those dials (see contextlessDialTimeout in proxydial.go).
 func (d *validatingDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	// Context-less H2 replacement dials carry no deadline; without a bound
+	// the TCP dial (and the uTLS handshake above it) hangs forever on an
+	// unreachable target. Apply the default only when the context has none.
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, contextlessDialTimeout)
+		defer cancel()
+	}
 	allowPrivateIPs := d.allowPrivateIPs
 	if override, ok := connection.AllowPrivateIPsOverrideFromContext(ctx); ok {
 		allowPrivateIPs = override

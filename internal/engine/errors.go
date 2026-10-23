@@ -88,6 +88,19 @@ type ClientError struct {
 	Attempts   int
 	StatusCode int    // HTTP status code if applicable
 	Host       string // Host for circuit breaker errors
+	// ProxyURL is the URL of the proxy that was selected for the final attempt
+	// of this request — the same transport-recorded source that populates
+	// RequestMeta.ProxyURL on success (Result.Meta.ProxyURL). The transport's
+	// Proxy callback runs before dialing, so even proxy dial failures carry
+	// the proxy that was about to be used. Populated on errors returned from
+	// Client request methods when a proxy (a single Connection.ProxyURL or a
+	// proxy pool entry) is configured; empty for direct connections, for
+	// errors raised before dispatch (validation, callback failures), and
+	// under EnableSystemProxy (dynamic detection is not recorded, mirroring
+	// RequestMeta.ProxyURL). Redacted form (proxy password masked), safe to
+	// log. With rotation each retry attempt may use a different proxy; this
+	// field reports the last attempt's proxy.
+	ProxyURL string
 	// urlSanitized indicates that URL has already been passed through
 	// validation.SanitizeURL (e.g., by classifyErrorWithSanitizedURL) and
 	// needs no further redaction in Error(). User-constructed ClientError
@@ -413,17 +426,20 @@ func redactedCauseMessage(err error) string {
 
 // redactURLInError replaces any occurrence of rawURL inside err's message with
 // its sanitized form, so a wrapping error cannot carry credentials or
-// sensitive query values up the error chain into logs. This mirrors
-// validation.redactErrorURL's approach. When rawURL has nothing to sanitize,
-// or the message does not quote it, the original error is returned unchanged,
-// preserving its type for errors.Is/As; otherwise a new error is built from
-// the scrubbed message.
+// sensitive query values up the error chain into logs. Escaped (%q)
+// occurrences are matched too — net/url renders *url.Error with %q, so a URL
+// containing a character %q escapes (", \, control characters) reaches the
+// message in escaped form and a plain substring match would miss it (see
+// validation.RedactURLInMessage). When rawURL has nothing to sanitize, or the
+// message does not quote it in either form, the original error is returned
+// unchanged, preserving its type for errors.Is/As; otherwise a new error is
+// built from the scrubbed message.
 func redactURLInError(err error, rawURL string) error {
-	sanitized := validation.SanitizeURL(rawURL)
-	if sanitized == rawURL || !strings.Contains(err.Error(), rawURL) {
+	msg, changed := validation.RedactURLInMessage(err.Error(), rawURL)
+	if !changed {
 		return err
 	}
-	return errors.New(strings.ReplaceAll(err.Error(), rawURL, sanitized))
+	return errors.New(msg)
 }
 
 // classifyErrorWithSanitizedURL classifies an error using a pre-sanitized URL.

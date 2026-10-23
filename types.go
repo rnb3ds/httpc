@@ -3,6 +3,7 @@ package httpc
 import (
 	"crypto/tls"
 	"fmt"
+	"math"
 	"net"
 	"net/http/cookiejar"
 	"strconv"
@@ -506,6 +507,20 @@ type RequestDefaults struct {
 //	cfg.Connection.ProxyURL = "http://proxy:8080"
 //	client, err := httpc.New(cfg)
 type Config struct {
+	// ⚠️ Always start from DefaultConfig() (or a preset: SecureConfig,
+	// PerformanceConfig, MinimalConfig, TestingConfig) and change fields —
+	// never from a hand-built struct literal. Every bool documented
+	// "Default: true" (Security.ValidateURL, Security.ValidateHeaders,
+	// Security.StrictContentLength, Security.FollowRedirects,
+	// Connection.EnableHTTP2, and the Security.MaxResponseBodySize cap of
+	// 5MB) is true ONLY in those constructors: a struct literal's zero value
+	// is false/0, ValidateConfig cannot distinguish "deliberately off" from
+	// "never set", and a literal that sets only e.g. Retry.BackoffFactor
+	// passes validation with URL pre-validation (including the SSRF host
+	// pre-check), header validation, strict Content-Length, redirects,
+	// HTTP/2, and the response-size cap ALL silently disabled. New prints a
+	// one-time [CONFIG WARNING] when it detects that exact all-off signature.
+
 	// Timeouts configures request, dial, TLS-handshake, response-header, and
 	// idle-connection timeouts.
 	Timeouts TimeoutConfig
@@ -930,6 +945,13 @@ func ValidateConfig(cfg *Config) error {
 	}
 	if cfg.Retry.Delay < 0 || cfg.Retry.Delay > maxTimeout {
 		return fmt.Errorf("%w: Retry.Delay must be 0-%v, got %v", ErrInvalidRetry, maxTimeout, cfg.Retry.Delay)
+	}
+	// NaN escapes both range comparisons (every NaN comparison is false) and
+	// would collapse retry backoff to ~zero from the second attempt on —
+	// silently losing thundering-herd protection. ±Inf is caught by the
+	// range check itself.
+	if math.IsNaN(cfg.Retry.BackoffFactor) {
+		return fmt.Errorf("%w: Retry.BackoffFactor must be %.1f-%.1f, got NaN", ErrInvalidRetry, minBackoffFactor, maxBackoffFactor)
 	}
 	if cfg.Retry.BackoffFactor < minBackoffFactor || cfg.Retry.BackoffFactor > maxBackoffFactor {
 		return fmt.Errorf("%w: Retry.BackoffFactor must be %.1f-%.1f, got %.1f", ErrInvalidRetry, minBackoffFactor, maxBackoffFactor, cfg.Retry.BackoffFactor)
