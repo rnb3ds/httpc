@@ -71,8 +71,12 @@ type entry struct {
 	url  *url.URL // parsed proxy URL returned by Select
 	host string   // canonical dial address (host:port, default port appended); the key for ReportFailure/ReportSuccess
 
-	failures  atomic.Int64 // consecutive failure count; reset to 0 on success
-	openUntil atomic.Int64 // unix-nano timestamp until which the circuit is open; 0 = closed
+	failures atomic.Int64 // consecutive failure count; reset to 0 on success
+	// openUntil is the moment until which the circuit is open; nil = closed.
+	// A *time.Time (not a UnixNano int64) so the comparison runs on the
+	// MONOTONIC reading: a wall-clock NTP step previously stretched or
+	// shortened every open circuit by the size of the step.
+	openUntil atomic.Pointer[time.Time]
 }
 
 // Pool is a concurrency-safe, rotating proxy pool with passive circuit breaking.
@@ -165,7 +169,7 @@ func New(cfg Config) (*Pool, error) {
 // The request parameter is accepted to satisfy the http.Transport.Proxy
 // signature; it is not used in the current implementation.
 func (p *Pool) Select(_ *http.Request) (*url.URL, error) {
-	now := time.Now().UnixNano()
+	now := time.Now()
 
 	if p.strategy == StrategyRandom {
 		return p.selectRandom(now), nil
@@ -179,19 +183,19 @@ func (p *Pool) Select(_ *http.Request) (*url.URL, error) {
 // fallback rather than failing outright. start must already be normalized
 // to [0, n). Single implementation for the scan+fallback logic so
 // selectRoundRobin, selectRandom and SelectIndex cannot drift.
-func (p *Pool) selectFrom(start, n int, now int64) *url.URL {
+func (p *Pool) selectFrom(start, n int, now time.Time) *url.URL {
 	var fallback *entry
-	var fallbackOpenUntil int64
+	var fallbackOpenUntil time.Time
 
 	for i := 0; i < n; i++ {
 		e := p.entries[(start+i)%n]
 		ou := e.openUntil.Load()
-		if ou <= now {
+		if ou == nil || !now.Before(*ou) {
 			return e.url
 		}
-		if fallback == nil || ou < fallbackOpenUntil {
+		if fallback == nil || ou.Before(fallbackOpenUntil) {
 			fallback = e
-			fallbackOpenUntil = ou
+			fallbackOpenUntil = *ou
 		}
 	}
 	return fallback.url
@@ -205,7 +209,7 @@ func (p *Pool) selectFrom(start, n int, now int64) *url.URL {
 // platforms int(uint64) truncates and can sign-extend negative, and a single
 // "if start < 0 { start += n }" cannot recover from values far below -n —
 // index-out-of-range after 2^31 selections on a long-lived process.
-func (p *Pool) selectRoundRobin(now int64) *url.URL {
+func (p *Pool) selectRoundRobin(now time.Time) *url.URL {
 	n := len(p.entries)
 	// Add(1)-1 = the pre-increment value: the first call returns index 0,
 	// preserving the historical sequence. The modulo happens BEFORE the int
@@ -217,7 +221,7 @@ func (p *Pool) selectRoundRobin(now int64) *url.URL {
 // selectRandom probes from a random entry point, returning the first healthy
 // one. If every circuit is open it falls back to the entry closest to
 // recovery.
-func (p *Pool) selectRandom(now int64) *url.URL {
+func (p *Pool) selectRandom(now time.Time) *url.URL {
 	n := len(p.entries)
 
 	// Random start + sequential scan. Bounded random probing (n draws with
@@ -264,7 +268,7 @@ func (p *Pool) NextIndex() int {
 // DIFFERENT proxy than attempt N-1, even when redirect chains consume extra
 // Select calls and would otherwise desynchronize the round-robin cursor.
 func (p *Pool) SelectIndex(attempt int) *url.URL {
-	now := time.Now().UnixNano()
+	now := time.Now()
 
 	n := len(p.entries)
 	start := attempt % n
@@ -305,8 +309,10 @@ func (p *Pool) ReportFailure(host string) {
 		// cooldown from its own timestamp — the documented contract is a
 		// fixed Cooldown window from the opening failure, and under sustained
 		// fallback traffic re-arming would defer recovery indefinitely.
-		if now := time.Now().UnixNano(); now >= e.openUntil.Load() {
-			e.openUntil.Store(time.Now().Add(p.cooldown).UnixNano())
+		now := time.Now()
+		if ou := e.openUntil.Load(); ou == nil || !now.Before(*ou) {
+			t := now.Add(p.cooldown)
+			e.openUntil.Store(&t)
 		}
 	}
 }
@@ -321,7 +327,7 @@ func (p *Pool) ReportSuccess(host string) {
 	p.reportMu.Lock()
 	defer p.reportMu.Unlock()
 	e.failures.Store(0)
-	e.openUntil.Store(0)
+	e.openUntil.Store(nil)
 }
 
 // Hosts returns the canonical host:port dial address of every proxy in the

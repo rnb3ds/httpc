@@ -159,6 +159,17 @@ func newTransport(config *Config, pool *connection.PoolManager) (*transport, err
 	// transport — and HTTP/2 pool — per proxy); otherwise it is the shared
 	// transport above. t.transport keeps pointing at the shared transport for
 	// CloseIdleConnections compatibility and tests.
+	//
+	// INVARIANT — never set Timeout on this Client (pinned by
+	// TestHTTPClientNoTimeoutInvariant): a non-zero deadline makes the
+	// stdlib's Client.send FORK the request (shallow copy sharing our pooled
+	// http.Header map), and the fork flows back as resp.Request; the engine
+	// then transfers that shared map into the Result while the deferred
+	// putHTTPHeader recycles the original — the same pooled map is handed to
+	// two owners and the next Build poisons the previous Result's headers.
+	// The request deadline is owned by the engine's timeout budget
+	// (wrapCtxIfFarther), not by the stdlib Client. The other stdlib fork
+	// trigger (req.URL.User) is neutralized in Build (parsed.User = nil).
 	httpClient := &http.Client{
 		Transport: pool.GetRoundTripper(),
 	}
@@ -184,6 +195,7 @@ func newTransport(config *Config, pool *connection.PoolManager) (*transport, err
 			CertPinner:            config.CertificatePinner,
 			DisableSessionTickets: config.TLSFingerprintDisableSessionTickets,
 			Pool:                  pool,
+			DNSLookup:             pool.DoHLookup(),
 		})
 		httpClient.Transport = t.fingerprintAdapter
 	}

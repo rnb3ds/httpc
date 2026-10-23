@@ -347,8 +347,8 @@ func TestCircuitBreaker(t *testing.T) {
 				pool.ReportFailure("proxy1.example.com:8080")
 
 				e := pool.byHost["proxy1.example.com:8080"]
-				if ou := e.openUntil.Load(); ou != 0 {
-					t.Errorf("below threshold: openUntil = %d, want 0 (closed)", ou)
+				if ou := e.openUntil.Load(); ou != nil {
+					t.Errorf("below threshold: openUntil = %v, want nil (closed)", ou)
 				}
 				if f := e.failures.Load(); f != 2 {
 					t.Errorf("failures = %d, want 2", f)
@@ -370,8 +370,8 @@ func TestCircuitBreaker(t *testing.T) {
 				pool.ReportSuccess("proxy1.example.com:8080")
 
 				e := pool.byHost["proxy1.example.com:8080"]
-				if ou := e.openUntil.Load(); ou != 0 {
-					t.Errorf("after ReportSuccess, openUntil = %d, want 0", ou)
+				if ou := e.openUntil.Load(); ou != nil {
+					t.Errorf("after ReportSuccess, openUntil = %v, want nil", ou)
 				}
 				if f := e.failures.Load(); f != 0 {
 					t.Errorf("after ReportSuccess, failures = %d, want 0", f)
@@ -397,8 +397,8 @@ func TestCircuitBreaker(t *testing.T) {
 				if f := e.failures.Load(); f != 1 {
 					t.Errorf("failures = %d, want 1 (success reset count)", f)
 				}
-				if ou := e.openUntil.Load(); ou != 0 {
-					t.Errorf("openUntil = %d, want 0 (circuit closed)", ou)
+				if ou := e.openUntil.Load(); ou != nil {
+					t.Errorf("openUntil = %v, want nil (circuit closed)", ou)
 				}
 			},
 		},
@@ -636,7 +636,7 @@ func TestPortlessProxyCanonicalKeys(t *testing.T) {
 	if e == nil {
 		t.Fatal("byHost missing canonical key socks-proxy.example.com:1080")
 	}
-	if ou := e.openUntil.Load(); ou == 0 {
+	if ou := e.openUntil.Load(); ou == nil {
 		t.Error("portless socks proxy was not circuit-broken after canonical ReportFailure (openUntil = 0)")
 	}
 }
@@ -696,7 +696,7 @@ func TestSelect_Concurrent(t *testing.T) {
 	if f := e1.failures.Load(); f != goroutines {
 		t.Errorf("proxy1 failures = %d, want %d (one report per goroutine)", f, goroutines)
 	}
-	if ou := e1.openUntil.Load(); ou == 0 {
+	if ou := e1.openUntil.Load(); ou == nil {
 		t.Error("proxy1 circuit should have opened (threshold=2, 100 failures reported)")
 	}
 
@@ -707,8 +707,8 @@ func TestSelect_Concurrent(t *testing.T) {
 	if f := e2.failures.Load(); f != 0 {
 		t.Errorf("proxy2 failures = %d, want 0 (100 successes reset the streak)", f)
 	}
-	if ou := e2.openUntil.Load(); ou != 0 {
-		t.Errorf("proxy2 openUntil = %d, want 0 (never opened)", ou)
+	if ou := e2.openUntil.Load(); ou != nil {
+		t.Errorf("proxy2 openUntil = %v, want nil (never opened)", ou)
 	}
 }
 
@@ -768,7 +768,7 @@ func TestReportFailureWhileOpenDoesNotExtend(t *testing.T) {
 	pool.ReportFailure(host) // opens the circuit
 	e := pool.byHost[host]
 	opened := e.openUntil.Load()
-	if opened == 0 {
+	if opened == nil {
 		t.Fatal("first failure at threshold 1 should open the circuit")
 	}
 
@@ -777,7 +777,7 @@ func TestReportFailureWhileOpenDoesNotExtend(t *testing.T) {
 		pool.ReportFailure(host)
 	}
 	if got := e.openUntil.Load(); got != opened {
-		t.Errorf("failure while open re-armed the cooldown: openUntil %d → %d, want unchanged", opened, got)
+		t.Errorf("failure while open re-armed the cooldown: openUntil %v → %v, want unchanged", opened, got)
 	}
 
 	// After a success the circuit closes; the NEXT failure (a fresh streak)
@@ -785,12 +785,12 @@ func TestReportFailureWhileOpenDoesNotExtend(t *testing.T) {
 	// now+cooldown, which on a coarse clock can equal the previous window's
 	// nanosecond value — a semantically identical fresh Store, not a re-arm.
 	pool.ReportSuccess(host)
-	if got := e.openUntil.Load(); got != 0 {
-		t.Fatalf("ReportSuccess should close the circuit, openUntil = %d", got)
+	if got := e.openUntil.Load(); got != nil {
+		t.Fatalf("ReportSuccess should close the circuit, openUntil = %v", got)
 	}
 	pool.ReportFailure(host)
-	if reopened := e.openUntil.Load(); reopened == 0 {
-		t.Error("fresh failure after a success should re-open the circuit, openUntil = 0")
+	if reopened := e.openUntil.Load(); reopened == nil {
+		t.Error("fresh failure after a success should re-open the circuit, openUntil = nil")
 	}
 }
 
@@ -831,7 +831,7 @@ func TestReportConcurrentNoTornState(t *testing.T) {
 	if f := e.failures.Load(); f != 0 {
 		t.Errorf("after completed ReportSuccess, failures = %d, want 0", f)
 	}
-	if ou := e.openUntil.Load(); ou != 0 {
-		t.Errorf("after completed ReportSuccess, openUntil = %d, want 0 (torn report pair survived)", ou)
+	if ou := e.openUntil.Load(); ou != nil {
+		t.Errorf("after completed ReportSuccess, openUntil = %v, want nil (torn report pair survived)", ou)
 	}
 }

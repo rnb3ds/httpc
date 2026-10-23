@@ -97,42 +97,73 @@ func IsSensitiveQueryParam(name string) bool {
 	return isSensitiveQueryParamCI(name)
 }
 
-// redactSensitiveParams replaces values of sensitive query parameters with [REDACTED].
-// Operates directly on the raw query string to avoid url.Values allocation.
+// redactSensitiveParams replaces values of sensitive query parameters with
+// [REDACTED]. Operates directly on the raw query string to avoid url.Values
+// allocation. ';' is treated as a parameter separator alongside '&': legacy
+// PHP/servlet configurations parse it as one, and a redaction filter that
+// only splits on '&' lets sensitive values ride in ;-separated parameters
+// past it ("?a=1;password=hunter2" stayed verbatim). Separators are preserved
+// as written so non-sensitive values are byte-identical after redaction.
 func redactSensitiveParams(rawQuery string) string {
 	b := getSanitizeBuilder()
 	b.Grow(len(rawQuery) + 64)
 
-	start := 0
-	for start <= len(rawQuery) {
-		// Find the end of this parameter (next & or end of string)
-		end := len(rawQuery)
-		if ampIdx := strings.IndexByte(rawQuery[start:], '&'); ampIdx >= 0 {
-			end = start + ampIdx
+	// ';' counts as a parameter separator for DETECTION (legacy PHP/servlet
+	// configurations parse it as one, so "?a=1;password=hunter2" must not
+	// pass through verbatim) — but once a sensitive key is found inside an
+	// &-delimited segment, the redaction extends to the END of that segment:
+	// a ';' inside a sensitive VALUE ("token=a;b") is indistinguishable from
+	// a separator, and stopping the redaction at it would leak the value's
+	// tail ("token=[REDACTED];b" kept ";b" readable). When the two readings
+	// are ambiguous the redaction over-redacts — a possible non-sensitive
+	// neighbor behind the sensitive key is dropped, which is the safe
+	// direction for a sanitized representation. Segments without any
+	// sensitive key are emitted byte-identical.
+	ampStart := 0
+	for ampStart <= len(rawQuery) {
+		ampEnd := len(rawQuery)
+		ampSep := byte(0)
+		if i := strings.IndexByte(rawQuery[ampStart:], '&'); i >= 0 {
+			ampEnd = ampStart + i
+			ampSep = '&'
 		}
+		segment := rawQuery[ampStart:ampEnd]
 
-		// Split into key=value at the first =
-		param := rawQuery[start:end]
-		if key, _, found := strings.Cut(param, "="); found {
+		// Scan ;-delimited sub-segments for the first sensitive key.
+		semiStart, redacted := 0, false
+		for semiStart <= len(segment) {
+			semiEnd := len(segment)
+			semiSep := byte(0)
+			if i := strings.IndexByte(segment[semiStart:], ';'); i >= 0 {
+				semiEnd = semiStart + i
+				semiSep = ';'
+			}
+			sub := segment[semiStart:semiEnd]
+			key := sub
+			if k, _, found := strings.Cut(sub, "="); found {
+				key = k
+			}
 			if isSensitiveQueryParamDecoded(key) {
+				// Prior sub-segments verbatim (separators included), then the
+				// sensitive key redacted to the end of the &-segment.
+				b.WriteString(rawQuery[ampStart : ampStart+semiStart])
 				b.WriteString(key)
 				b.WriteString("=[REDACTED]")
-			} else {
-				b.WriteString(param)
+				redacted = true
+				break
 			}
-		} else {
-			// Key without value
-			if isSensitiveQueryParamDecoded(param) {
-				b.WriteString(param)
-				b.WriteString("=[REDACTED]")
-			} else {
-				b.WriteString(param)
+			if semiSep == 0 {
+				break
 			}
+			semiStart = semiEnd + 1
+		}
+		if !redacted {
+			b.WriteString(segment)
 		}
 
-		if end < len(rawQuery) {
+		if ampSep != 0 {
 			b.WriteByte('&')
-			start = end + 1
+			ampStart = ampEnd + 1
 		} else {
 			break
 		}
@@ -351,13 +382,14 @@ var sanitizeBuilderPool = sync.Pool{
 // HasSensitiveQueryParams reports whether any parameter key in the raw query
 // string looks sensitive. Parsing is segment-based (&-split, then strip the
 // value after '=') so it matches redactSensitiveParams exactly: a bare key
-// without '=' is still treated as a key.
+// without '=' is still treated as a key. ';' splits segments alongside '&'
+// (see redactSensitiveParams for why legacy separators must count).
 func HasSensitiveQueryParams(query string) bool {
 	for len(query) > 0 {
 		segment := query
-		if ampIdx := strings.IndexByte(query, '&'); ampIdx >= 0 {
-			segment = query[:ampIdx]
-			query = query[ampIdx+1:]
+		if idx := strings.IndexAny(query, "&;"); idx >= 0 {
+			segment = query[:idx]
+			query = query[idx+1:]
 		} else {
 			query = ""
 		}

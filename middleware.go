@@ -201,6 +201,13 @@ const (
 // at construction time, outside every recover safety net, so a nil MiddlewareFunc
 // must degrade to a no-op rather than crash the constructor (and direct Chain
 // users get the same tolerance).
+//
+// Middlewares that WRAP the returned ResponseMutator in their own type should
+// embed or delegate to the underlying *engine.Response: Result.Meta.ProxyURL
+// (proxy attribution) is recovered from a wrapper only when it forwards a
+// ProxyURL() method, which embedding provides for free. A wrapper that hides
+// the underlying response loses that attribution (every other metadata field
+// flows through the ResponseMutator interface and survives any wrapper).
 func Chain(middlewares ...MiddlewareFunc) MiddlewareFunc {
 	return func(final Handler) Handler {
 		for _, mw := range slices.Backward(middlewares) {

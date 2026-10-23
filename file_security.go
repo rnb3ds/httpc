@@ -41,6 +41,10 @@ func getSystemPaths() []string {
 		return []string{
 			"/system/", "/library/", "/applications/",
 			"/usr/", "/bin/", "/sbin/", "/etc/", "/var/",
+			// The canonical symlink targets of /etc and /var: a path that
+			// arrives already resolved (or hand-written) as /private/... must
+			// be gated just like the symlink spelling.
+			"/private/etc/", "/private/var/",
 		}
 	case "linux":
 		fallthrough
@@ -81,8 +85,16 @@ func initNormalizedSystemPaths() {
 			continue
 		}
 		p = filepath.Clean(p)
-		if runtime.GOOS == "windows" {
+		// Windows AND macOS compare case-insensitively: the lists are stored
+		// lowercase, and the default APFS/HFS+ filesystem resolves /Library
+		// and /library identically — a lowercase-only entry list with a
+		// case-SENSITIVE input comparison previously made every macOS entry
+		// but "/" inert ("/Library/x" never matched "/library/"). Linux
+		// filesystems are case-sensitive and keep exact comparison.
+		if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 			p = strings.ToLower(p)
+		}
+		if runtime.GOOS == "windows" {
 			p = strings.ReplaceAll(p, "/", "\\")
 		} else {
 			p = strings.ReplaceAll(p, "\\", "/")
@@ -238,8 +250,10 @@ func isSystemPath(absPath string) bool {
 
 	// Normalize the input path once for comparison
 	pathNorm := absPath
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		pathNorm = strings.ToLower(pathNorm) // see initNormalizedSystemPaths
+	}
 	if runtime.GOOS == "windows" {
-		pathNorm = strings.ToLower(pathNorm)
 		pathNorm = strings.ReplaceAll(pathNorm, "/", "\\")
 	} else {
 		pathNorm = strings.ReplaceAll(pathNorm, "\\", "/")
@@ -315,7 +329,58 @@ func checkWindowsReservedPath(path string) error {
 	if err := rejectAlternateDataStream(path); err != nil {
 		return err
 	}
+	if err := rejectShortNameComponents(path); err != nil {
+		return err
+	}
 	return rejectReservedDeviceName(path)
+}
+
+// rejectShortNameComponents rejects Windows 8.3 short-name aliases in the
+// DIRECTORY portion of the path ("C:\PROGRA~1\evil\x.exe" is an alias of
+// "C:\Program Files"). The system-path and symlink checks compare literal
+// path text, so a short-name alias of a system directory bypasses them. A
+// short name is "prefix~digits" with the whole base at most 8 characters and
+// an extension of at most 3; the FINAL component is exempt — the file being
+// created may legitimately carry such a name, and only directory components
+// can alias an existing directory. Long legitimate names like "notes~2024"
+// do not match (their base exceeds 8 characters).
+func rejectShortNameComponents(path string) error {
+	dir := path[:strings.LastIndexAny(path, `\/`)+1]
+	start := 0
+	for i := 0; i <= len(dir); i++ {
+		if i == len(dir) || dir[i] == '\\' || dir[i] == '/' {
+			if isShortNameComponent(dir[start:i]) {
+				return fmt.Errorf("Windows 8.3 short-name component %q not allowed (aliases defeat path security checks); use the full path", dir[start:i])
+			}
+			start = i + 1
+		}
+	}
+	return nil
+}
+
+// isShortNameComponent reports whether comp looks like a Windows 8.3 alias
+// ("PROGRA~1", "DOCUME~1", "MYFILE~1.TXT"): a base of at most 8 characters
+// containing a '~' followed by digit(s) that end the base, and an extension
+// of at most 3 characters.
+func isShortNameComponent(comp string) bool {
+	if len(comp) == 0 || len(comp) > 12 {
+		return false
+	}
+	base, ext, hasExt := strings.Cut(comp, ".")
+	tilde := strings.IndexByte(base, '~')
+	if tilde <= 0 || tilde == len(base)-1 {
+		return false // no '~', empty prefix (a generated alias always has
+		// one), or nothing after the '~'
+	}
+	if strings.Contains(base[:tilde], "~") {
+		return false
+	}
+	for i := tilde + 1; i < len(base); i++ {
+		if base[i] < '0' || base[i] > '9' {
+			return false
+		}
+	}
+	return len(base) <= 8 && (!hasExt || len(ext) <= 3)
 }
 
 // rejectAlternateDataStream rejects any colon that is not the drive-letter

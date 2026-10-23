@@ -78,7 +78,7 @@ func TestValidateProxiedTarget(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			target := &url.URL{Scheme: "http", Host: tt.host, Path: "/"}
-			err := validateProxiedTarget(context.Background(), target, tt.exemptNets, time.Second)
+			err := validateProxiedTarget(context.Background(), target, tt.exemptNets, time.Second, nil)
 
 			if tt.wantErr {
 				if err == nil {
@@ -134,5 +134,27 @@ func TestSSRFGuardProxyFunc(t *testing.T) {
 	// nil selector wraps to nil — no guard to install.
 	if (&PoolManager{}).ssrfGuardProxyFunc(nil) != nil {
 		t.Error("ssrfGuardProxyFunc(nil) should return nil")
+	}
+}
+
+// TestValidateProxiedTarget_UsesProvidedResolver pins the resolver-consistency
+// fix: the guard must run on the SAME resolver the dial path uses. With DoH
+// enabled, the dial path resolves through DoH while the guard previously
+// always used the system resolver — the two could disagree on what a host
+// resolves to. A stub lookup standing in for the DoH resolver now governs
+// the verdict (an .invalid host is unresolvable by the system resolver and
+// must fail closed without the stub).
+func TestValidateProxiedTarget_UsesProvidedResolver(t *testing.T) {
+	ctx := context.Background()
+	target := &url.URL{Scheme: "https", Host: "unresolvable.invalid", Path: "/x"}
+
+	if err := validateProxiedTarget(ctx, target, nil, 500*time.Millisecond, nil); err == nil {
+		t.Fatal("unresolvable host must fail closed with the system resolver")
+	}
+	stub := func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+	}
+	if err := validateProxiedTarget(ctx, target, nil, 500*time.Millisecond, stub); err != nil {
+		t.Fatalf("provided (DoH-shaped) lookup should govern the verdict: %v", err)
 	}
 }

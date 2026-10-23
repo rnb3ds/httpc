@@ -161,8 +161,12 @@ func getQueryKeys() *[]string {
 }
 
 // putQueryKeys returns a scratch key slice to the pool after clearing the
-// string references (pool hygiene: otherwise the recycled backing array
-// keeps the last request's keys reachable).
+// live string references. clear zeroes len(*kp) slots only: key strings from
+// earlier, larger requests remain reachable in the backing array up to cap
+// (bounded at maxQueryKeys = 64) until overwritten by later use. That bounded
+// residue is accepted — clearing the full cap would touch memory the slice
+// no longer logically owns, and 64 stale string headers are not a leak that
+// grows with traffic.
 func putQueryKeys(kp *[]string) {
 	if kp == nil || cap(*kp) > maxQueryKeys {
 		return // oversized scratch is left for GC

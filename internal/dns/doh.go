@@ -821,14 +821,19 @@ func (r *DoHResolver) fallbackLookup(ctx context.Context, host string, lastErr e
 }
 
 // ClearCache clears the DNS cache.
-// Deletes all entries and atomically resets the counter to zero.
+// Deletes all entries and decrements the size counter once per removed entry.
 //
-// The final recount is approximate under concurrency: an entry admitted
-// between the counting Range and the Store can leave the counter slightly
-// below the true size, so the cache may transiently exceed maxDoHCacheSize by
-// the number of concurrent admissions. The overshoot is bounded by caller
-// concurrency (never unbounded) and self-corrects at the next admission check,
-// which re-reads and evicts.
+// No recount/reconcile pass runs afterwards, deliberately: every counter
+// mutation in this file is PAIRED with exactly one successful map mutation
+// (admission: CAS+1 with a winning LoadOrStore, reverted on exists; every
+// deletion path: -1 only when its LoadAndDelete/CompareAndDelete won the
+// key), so the counter is accurate by construction at all times. A final
+// "recount" Store previously overwrote the accurate value with a count
+// taken while concurrent evictions were still decrementing — resurrecting
+// already-consumed decrements and permanently over-counting the cache (at
+// maxDoHCacheSize every admission then took the evict path, churning fresh
+// entries). Two deleters can never double-decrement: LoadAndDelete and
+// CompareAndDelete are mutually exclusive per key.
 func (r *DoHResolver) ClearCache() {
 	r.cache.Range(func(key, value any) bool {
 		if _, ok := r.cache.LoadAndDelete(key); ok {
@@ -836,16 +841,6 @@ func (r *DoHResolver) ClearCache() {
 		}
 		return true
 	})
-	// Reconcile counter: concurrent eviction may have decremented entries
-	// we already deleted, or new entries may have been inserted during the scan.
-	// Loading the actual count ensures the counter never goes negative.
-	// (See the doc comment above for the bounded under-count race this leaves.)
-	count := int64(0)
-	r.cache.Range(func(_, _ any) bool {
-		count++
-		return true
-	})
-	r.cacheSize.Store(count)
 }
 
 // evictExpiredEntries removes expired cache entries to free space.

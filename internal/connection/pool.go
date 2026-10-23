@@ -494,11 +494,25 @@ func (pm *PoolManager) ssrfGuardProxyFunc(proxyFunc func(*http.Request) (*url.UR
 			return u, nil
 		}
 
-		if err := validateProxiedTarget(req.Context(), req.URL, pm.config.ExemptNets, pm.config.DialTimeout); err != nil {
+		if err := validateProxiedTarget(req.Context(), req.URL, pm.config.ExemptNets, pm.config.DialTimeout, pm.DoHLookup()); err != nil {
 			return nil, err
 		}
 		return u, nil
 	}
+}
+
+// DoHLookup returns the DoH resolver's lookup, or nil (system resolver) when
+// DoH is disabled. Every resolution-based check must use the SAME resolver
+// as the dial path or the layers can disagree on what a hostname resolves to
+// (DoH says public, system DNS says private) and reject requests the dial
+// path would have allowed — or vice versa. Consumers: the standard path's
+// proxied-target SSRF guard and the fingerprint transport (preflight + the
+// validating direct dialer), both fed through Config plumbing.
+func (pm *PoolManager) DoHLookup() func(ctx context.Context, host string) ([]net.IPAddr, error) {
+	if pm.dohResolver == nil {
+		return nil
+	}
+	return pm.dohResolver.LookupIPAddr
 }
 
 // ReportProxyFailure records a connection-level failure against the proxy at
@@ -735,7 +749,12 @@ func (pm *PoolManager) isProxyAddr(address string) bool {
 // dial), but it re-closes the deterministic hostname→private-IP bypass: a
 // hostname whose only resolved addresses are blocked is now rejected before
 // the proxy ever sees it.
-func validateProxiedTarget(ctx context.Context, u *url.URL, exemptNets []*net.IPNet, dialTimeout time.Duration) error {
+// lookup overrides the resolver (nil = system resolver): the caller passes
+// the DoH resolver's lookup when DoH is enabled, so this check and the dial
+// path cannot disagree on what a hostname resolves to (DoH says public,
+// system DNS says private — or vice versa — and the guard rejected requests
+// the dial path would have allowed).
+func validateProxiedTarget(ctx context.Context, u *url.URL, exemptNets []*net.IPNet, dialTimeout time.Duration, lookup func(context.Context, string) ([]net.IPAddr, error)) error {
 	host := u.Hostname()
 	if host == "" {
 		return fmt.Errorf("SSRF protection: empty request host")
@@ -753,7 +772,7 @@ func validateProxiedTarget(ctx context.Context, u *url.URL, exemptNets []*net.IP
 	// the same helper the direct dial path and the fingerprint paths use): one
 	// implementation of the hostname→blocked-IP check, so the proxied path's
 	// policy can never drift from the direct path's.
-	allowed, err := validation.ResolveFilteredIPs(ctx, host, exemptNets, dialTimeout, nil)
+	allowed, err := validation.ResolveFilteredIPs(ctx, host, exemptNets, dialTimeout, lookup)
 	if err != nil {
 		return fmt.Errorf("SSRF protection: DNS resolution failed for %s: %w", host, err)
 	}

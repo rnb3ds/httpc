@@ -45,8 +45,9 @@ func (a *Adapter) preflightSSRF(req *http.Request) error {
 	// Shared SSRF resolve-and-filter rule (validation.ResolveFilteredIPs) —
 	// the same implementation the standard path's dialer and proxied-target
 	// check and the validating dialer below use; dialTimeout 0 keeps the
-	// 10s cap this pre-flight always applied.
-	allowed, err := validation.ResolveFilteredIPs(req.Context(), host, a.cfg.ExemptNets, 0, nil)
+	// 10s cap this pre-flight always applied. DNSLookup (nil = system
+	// resolver) keeps the check on the same resolver the dials use.
+	allowed, err := validation.ResolveFilteredIPs(req.Context(), host, a.cfg.ExemptNets, 0, a.cfg.DNSLookup)
 	if err != nil {
 		return fmt.Errorf("fingerprint: SSRF pre-flight: DNS resolution failed for %s: %w", host, err)
 	}

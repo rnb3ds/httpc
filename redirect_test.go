@@ -672,7 +672,7 @@ func TestRedirect_307ChainReplaysBodyEachHop(t *testing.T) {
 	}
 }
 
-func TestRedirect_307RawReaderNotFollowedWithoutRetries(t *testing.T) {
+func TestRedirect_307ReplayableReaderFollowedWithoutRetries(t *testing.T) {
 	t.Parallel()
 
 	final := newEchoServer(t)
@@ -680,9 +680,14 @@ func TestRedirect_307RawReaderNotFollowedWithoutRetries(t *testing.T) {
 	redirector := newRedirectServer(t, http.StatusTemporaryRedirect, final.URL)
 	defer redirector.Close()
 
-	// testConfig has MaxRetries=0: the fast path passes the io.Reader through
-	// unbuffered, so GetBody cannot be set — matching net/http, the 307 is
-	// returned unfollowed instead of silently dropping the body.
+	// testConfig has MaxRetries=0, so the fast path never buffers the body —
+	// but *strings.Reader is one of the three concrete types net/http itself
+	// makes replayable (http.NewRequest snapshots them for GetBody), and the
+	// engine now snapshots them the same way: the 307 is FOLLOWED with the
+	// body replayed, byte-identical to plain net/http. (Previously these
+	// types fell into the generic non-replayable bucket and the 3xx surfaced
+	// unfollowed — a silent divergence for exactly the stdlib-replayable
+	// readers.)
 	client, err := newTestClient()
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
@@ -694,8 +699,44 @@ func TestRedirect_307RawReaderNotFollowedWithoutRetries(t *testing.T) {
 		t.Fatalf("Request failed: %v", err)
 	}
 
+	if result.StatusCode() != http.StatusOK {
+		t.Fatalf("Expected followed 307 (replayable *strings.Reader), got %d", result.StatusCode())
+	}
+	// A raw-reader body sets no Content-Type (reader passthrough in
+	// auto-detection), so the echo shows an empty third field on both hops.
+	if want := "POST|streaming body|"; result.Body() != want {
+		t.Errorf("Body not replayed on the hop:\n got: %s\nwant: %s", result.Body(), want)
+	}
+	if result.Meta.RedirectCount != 1 {
+		t.Errorf("Expected 1 followed redirect, got %d", result.Meta.RedirectCount)
+	}
+}
+
+func TestRedirect_307GenericReaderNotFollowedWithoutRetries(t *testing.T) {
+	t.Parallel()
+
+	final := newEchoServer(t)
+	defer final.Close()
+	redirector := newRedirectServer(t, http.StatusTemporaryRedirect, final.URL)
+	defer redirector.Close()
+
+	// A GENERIC io.Reader (not one of *strings.Reader / *bytes.Reader /
+	// *bytes.Buffer) cannot be rewound: with MaxRetries=0 nothing buffers it,
+	// so GetBody cannot be set — matching net/http, the 307 is returned
+	// unfollowed instead of silently sending an empty body.
+	client, err := newTestClient()
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	result, err := client.Post(redirector.URL, WithBody(struct{ io.Reader }{strings.NewReader("streaming body")}))
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+
 	if result.StatusCode() != http.StatusTemporaryRedirect {
-		t.Fatalf("Expected unfollowed 307 (no replayable body, MaxRetries=0), got %d", result.StatusCode())
+		t.Fatalf("Expected unfollowed 307 (non-replayable body, MaxRetries=0), got %d", result.StatusCode())
 	}
 	if !result.IsRedirect() {
 		t.Error("Expected IsRedirect() to be true for the returned 307")

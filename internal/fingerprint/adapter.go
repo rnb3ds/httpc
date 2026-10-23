@@ -110,6 +110,13 @@ type Config struct {
 	// Pool is the owning connection PoolManager (may be nil in tests); it
 	// supplies proxy selection and circuit-breaker reporting.
 	Pool *connection.PoolManager
+
+	// DNSLookup overrides the resolver used by the pre-flight SSRF check and
+	// the validating direct dialer (nil = system resolver). The engine passes
+	// PoolManager.DoHLookup() so those checks resolve through the same DoH
+	// resolver the standard dial path uses — otherwise DoH-enabled configs
+	// could have the fingerprint checks disagree with the dials.
+	DNSLookup func(ctx context.Context, host string) ([]net.IPAddr, error)
 }
 
 // Adapter implements http.RoundTripper over the fingerprinted backend.

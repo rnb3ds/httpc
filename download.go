@@ -139,6 +139,13 @@ type DownloadResult struct {
 // options for headers, authentication, query parameters, etc.
 // The download is subject to the client's Security.MaxResponseBodySize
 // (default 10 MB); oversize bodies fail with an error — see DownloadConfig.
+//
+// NOTE on unsolicited 206 responses: a server that answers a plain (no-Range)
+// download with "206 Partial Content" is taken at face value — the partial
+// body is saved and reported as a successful download (deliberate, pinned by
+// TestDownloadUnsolicited206Accepted). A non-conforming or malicious server
+// can therefore silently truncate content; supply DownloadConfig.Checksum to
+// detect it.
 func Download(ctx context.Context, url string, cfg *DownloadConfig, options ...RequestOption) (*DownloadResult, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("download config cannot be nil")

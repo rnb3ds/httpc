@@ -74,11 +74,15 @@ type validatingDialer struct {
 // — DialContext compensates with contextlessDialTimeout for the one caller
 // that arrives without a context deadline (see below).
 func newValidatingDialer(cfg Config, localAddr *net.TCPAddr) *validatingDialer {
+	lookup := cfg.DNSLookup
+	if lookup == nil {
+		lookup = net.DefaultResolver.LookupIPAddr
+	}
 	return &validatingDialer{
 		exemptNets:      cfg.ExemptNets,
 		allowPrivateIPs: cfg.AllowPrivateIPs,
 		tcp:             &net.Dialer{LocalAddr: localAddr},
-		lookupIPAddr:    net.DefaultResolver.LookupIPAddr,
+		lookupIPAddr:    lookup,
 	}
 }
 

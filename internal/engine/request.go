@@ -1035,8 +1035,11 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 	// NewRequest); JSON/multipart bytes live in pooled buffers that are
 	// recycled on body Close — which happens before any redirect hop needs
 	// GetBody — so they are cloned once, and only when redirects are enabled.
-	// Generic io.Reader bodies are left nil (not replayable), matching
-	// net/http's rules; the retry path has already buffered those to []byte.
+	// The three concrete reader types net/http itself makes replayable
+	// (*strings.Reader, *bytes.Reader, *bytes.Buffer) are snapshotted the same
+	// way net/http's NewRequest does; every other io.Reader body is left nil
+	// (not replayable — a consumed stream cannot be rewound), and the retry
+	// path has already buffered those to []byte.
 	var replaySrc any
 
 	if req.Body() != nil {
@@ -1051,6 +1054,16 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 			replaySrc = v
 		case io.Reader:
 			body = v
+			// net/http-replayable concrete types keep 307/308 replay here too
+			// (previously they fell into the generic non-replayable bucket,
+			// so a bodied POST receiving 307/308 surfaced the 3xx unfollowed —
+			// a silent divergence from plain net/http for exactly the reader
+			// types the stdlib replays). The snapshot is taken BEFORE the
+			// limit-reader wrap so GetBody reproduces the same bytes.
+			switch v.(type) {
+			case *strings.Reader, *bytes.Reader, *bytes.Buffer:
+				replaySrc = v
+			}
 			// SECURITY: MaxRequestBodySize must not fail open for streaming
 			// bodies — the pre-send validator can only size known types
 			// (string/[]byte/url.Values/*types.FormData). Wrap in a counting
@@ -1256,6 +1269,26 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 		case []byte:
 			httpReq.GetBody = func() (io.ReadCloser, error) {
 				return io.NopCloser(bytes.NewReader(src)), nil
+			}
+		case *strings.Reader:
+			// net/http's own snapshot semantics (http.NewRequest): a struct
+			// copy of the reader carries its read position, and each GetBody
+			// call replays from that snapshot via a fresh copy.
+			snapshot := *src
+			httpReq.GetBody = func() (io.ReadCloser, error) {
+				r := snapshot
+				return io.NopCloser(&r), nil
+			}
+		case *bytes.Reader:
+			snapshot := *src
+			httpReq.GetBody = func() (io.ReadCloser, error) {
+				r := snapshot
+				return io.NopCloser(&r), nil
+			}
+		case *bytes.Buffer:
+			buf := src.Bytes()
+			httpReq.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(buf)), nil
 			}
 		}
 	}
