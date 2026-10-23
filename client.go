@@ -208,6 +208,25 @@ func newFromConfig(cfg Config) (Client, error) {
 	// disables verification with no warning.
 	insecureVerify := cfg.Security.InsecureSkipVerify ||
 		(cfg.Security.TLSConfig != nil && cfg.Security.TLSConfig.InsecureSkipVerify)
+
+	// Hand-built-Config trap (see the Config struct doc): every bool
+	// documented "Default: true" is true only in DefaultConfig()/presets. The
+	// exact all-off signature below is virtually always accidental — a
+	// struct literal that set only e.g. Retry.BackoffFactor passes
+	// ValidateConfig with URL pre-validation (including the SSRF host
+	// pre-check), header validation, strict Content-Length, redirects,
+	// HTTP/2, and the response-size cap all silently disabled. Warn once;
+	// deliberate all-off users can ignore it.
+	handBuiltZero := !cfg.Security.ValidateURL && !cfg.Security.ValidateHeaders &&
+		!cfg.Security.StrictContentLength && !cfg.Security.FollowRedirects &&
+		!cfg.Connection.EnableHTTP2 && cfg.Security.MaxResponseBodySize == 0
+	if handBuiltZero && !isTestEnvironment() {
+		handBuiltConfigWarnOnce.Do(func() {
+			w := getSecurityWarnOutput()
+			_, _ = fmt.Fprintf(w, "[CONFIG WARNING] hand-built Config detected: URL validation, header validation, strict Content-Length, redirects, HTTP/2 and the response-size cap are ALL off\n") // best-effort warning
+			_, _ = fmt.Fprintf(w, "[CONFIG WARNING] 'Default: true' fields are true only in DefaultConfig()/presets; a struct literal zeroes them — start from DefaultConfig() and change fields\n")  // best-effort warning
+		})
+	}
 	if insecureVerify && !isTestEnvironment() {
 		insecureSkipVerifyWarnOnce.Do(func() {
 			w := getSecurityWarnOutput()

@@ -2,6 +2,7 @@ package validation
 
 import (
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -251,6 +252,35 @@ func SanitizeURL(urlStr string) string {
 // contain '/', '?' or '@'. Everything from the scheme separator up to that '@'
 // is replaced with "***@". Sensitive query parameters are redacted when a query
 // string is present. The result is safe for logging even though it may not be
+// RedactURLInMessage replaces every occurrence of rawURL in msg with its
+// sanitized form, matching BOTH the raw spelling and the strconv.Quote-escaped
+// one. The quote form matters because net/url renders *url.Error (and parse
+// errors) with %q — a URL containing a character %q escapes (", \, control
+// characters) reaches the message in ESCAPED form, so a plain substring match
+// misses it and the credential or sensitive query value the redaction exists
+// to scrub leaks through verbatim (escaped, but readable). Reports whether
+// anything was redacted; msg is returned unchanged when the URL has nothing
+// to sanitize or does not appear in either form.
+//
+// Single implementation shared by validation.redactErrorURL and the engine's
+// redactURLInError so the two cannot drift apart again.
+func RedactURLInMessage(msg, rawURL string) (string, bool) {
+	sanitized := SanitizeURL(rawURL)
+	if sanitized == rawURL {
+		return msg, false
+	}
+	changed := false
+	if strings.Contains(msg, rawURL) {
+		msg = strings.ReplaceAll(msg, rawURL, sanitized)
+		changed = true
+	}
+	if quoted := strconv.Quote(rawURL); strings.Contains(msg, quoted) {
+		msg = strings.ReplaceAll(msg, quoted, strconv.Quote(sanitized))
+		changed = true
+	}
+	return msg, changed
+}
+
 // a parseable URL — diagnostics beat a verbatim credential leak.
 //
 // SEC-001 M-2: an earlier version scanned for the LAST '@' in the string.

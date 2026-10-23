@@ -751,3 +751,87 @@ func TestNextIndex_RandomStrategyHonored(t *testing.T) {
 		}
 	})
 }
+
+// TestReportFailureWhileOpenDoesNotExtend pins the fixed-cooldown contract:
+// a failure that arrives while the circuit is already open (an in-flight dial
+// selected before the circuit opened, or the all-open fallback probing) must
+// not re-arm openUntil from its own timestamp — under sustained fallback
+// traffic, re-arming deferred recovery indefinitely.
+func TestReportFailureWhileOpenDoesNotExtend(t *testing.T) {
+	pool := newTestPool(t, testPoolOpts{
+		proxies:          []string{testProxy1},
+		failureThreshold: 1,
+		cooldown:         time.Hour,
+	})
+	const host = "proxy1.example.com:8080"
+
+	pool.ReportFailure(host) // opens the circuit
+	e := pool.byHost[host]
+	opened := e.openUntil.Load()
+	if opened == 0 {
+		t.Fatal("first failure at threshold 1 should open the circuit")
+	}
+
+	// Late failures from in-flight dials while the circuit is open.
+	for range 3 {
+		pool.ReportFailure(host)
+	}
+	if got := e.openUntil.Load(); got != opened {
+		t.Errorf("failure while open re-armed the cooldown: openUntil %d → %d, want unchanged", opened, got)
+	}
+
+	// After a success the circuit closes; the NEXT failure (a fresh streak)
+	// opens it again. Only non-zero is asserted: the fresh window is
+	// now+cooldown, which on a coarse clock can equal the previous window's
+	// nanosecond value — a semantically identical fresh Store, not a re-arm.
+	pool.ReportSuccess(host)
+	if got := e.openUntil.Load(); got != 0 {
+		t.Fatalf("ReportSuccess should close the circuit, openUntil = %d", got)
+	}
+	pool.ReportFailure(host)
+	if reopened := e.openUntil.Load(); reopened == 0 {
+		t.Error("fresh failure after a success should re-open the circuit, openUntil = 0")
+	}
+}
+
+// TestReportConcurrentNoTornState hammers ReportFailure/ReportSuccess from
+// concurrent goroutines and then asserts the completed-success boundary: a
+// ReportSuccess that has returned must leave the circuit closed (failures=0,
+// openUntil=0). Before the reports were serialized, a concurrent
+// ReportFailure could interleave its two field writes around a success and
+// leave failures=0 with the circuit open — an unobservable-from-dials state
+// that excluded a healthy proxy for a full cooldown. Run under -race in CI.
+func TestReportConcurrentNoTornState(t *testing.T) {
+	pool := newTestPool(t, testPoolOpts{
+		proxies:          []string{testProxy1},
+		failureThreshold: 3,
+		cooldown:         time.Minute,
+	})
+	const host = "proxy1.example.com:8080"
+
+	var wg sync.WaitGroup
+	for w := 0; w < 8; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				if (w+i)%2 == 0 {
+					pool.ReportFailure(host)
+				} else {
+					pool.ReportSuccess(host)
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	// Method-boundary postcondition: the last completed report is a success.
+	pool.ReportSuccess(host)
+	e := pool.byHost[host]
+	if f := e.failures.Load(); f != 0 {
+		t.Errorf("after completed ReportSuccess, failures = %d, want 0", f)
+	}
+	if ou := e.openUntil.Load(); ou != 0 {
+		t.Errorf("after completed ReportSuccess, openUntil = %d, want 0 (torn report pair survived)", ou)
+	}
+}

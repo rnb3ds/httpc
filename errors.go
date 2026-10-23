@@ -11,6 +11,12 @@ import (
 // It provides detailed error information including error type, retryability,
 // and request context.
 //
+// When a proxy is configured (Connection.ProxyURL or a proxy pool), the
+// ProxyURL field reports the proxy that was selected for the final attempt —
+// same source as Result.Meta.ProxyURL on success, redacted (password masked),
+// and populated even for proxy dial failures. Empty for direct connections
+// and pre-dispatch errors (validation, callback failures).
+//
 // Use errors.As to check for ClientError:
 //
 //	var clientErr *httpc.ClientError

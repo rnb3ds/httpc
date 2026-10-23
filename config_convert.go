@@ -77,7 +77,13 @@ func calculateMaxRetryDelay(cfg *Config) time.Duration {
 func calculateMaxRetries(cfg *Config) int {
 	maxRetries := cfg.Retry.MaxRetries
 
-	if (len(cfg.Connection.ProxyRotateOnStatus) > 0 || cfg.Connection.ProxyRotatePerRequest) && len(cfg.Connection.ProxyPool) > 1 {
+	// ProxyURL == "" gates the raise on the pool actually being ACTIVE: with
+	// ProxyURL set the pool is never constructed (single-proxy mode, see
+	// NewPoolManager's precedence), so raising the budget from its length
+	// overrode an explicit Retry.MaxRetries = 0 and blind-retried through the
+	// SAME proxy len(pool)-1 extra times with rotation silently disabled.
+	if (len(cfg.Connection.ProxyRotateOnStatus) > 0 || cfg.Connection.ProxyRotatePerRequest) &&
+		len(cfg.Connection.ProxyPool) > 1 && cfg.Connection.ProxyURL == "" {
 		needed := len(cfg.Connection.ProxyPool) - 1 // retries beyond the initial attempt
 		if needed > maxRetries {
 			if needed > maxRetryAttempts {

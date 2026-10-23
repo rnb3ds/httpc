@@ -2,6 +2,7 @@ package httpc
 
 import (
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -806,4 +807,96 @@ func other(want string, pool map[string]bool) string {
 		}
 	}
 	return want
+}
+
+// deadLoopbackProxy reserves a loopback port and releases it, yielding a proxy
+// URL that is guaranteed to fail dialing with "connection refused" — the
+// standard scaffold for proxy-dial-failure attribution tests.
+func deadLoopbackProxy(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen 127.0.0.1:0 failed: %v", err)
+	}
+	url := "http://" + l.Addr().String()
+	if err := l.Close(); err != nil {
+		t.Fatalf("close listener failed: %v", err)
+	}
+	return url
+}
+
+// TestProxyPool_ClientErrorProxyURL verifies that network-level errors carry
+// the proxy selected for the failed attempt (ClientError.ProxyURL), mirroring
+// the success path's Result.Meta.ProxyURL attribution. The pool points at a
+// dead proxy: the transport's Proxy callback runs before dialing, so even the
+// dial failure must be attributed to the proxy that was about to be used.
+// Covers the no-retry fast path, the retry-exhausted slow path, and the
+// single-proxy (Connection.ProxyURL) mode.
+func TestProxyPool_ClientErrorProxyURL(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer target.Close()
+
+	newClient := func(mutate func(*Config)) Client {
+		cfg := DefaultConfig()
+		cfg.Security.AllowPrivateIPs = true
+		cfg.Timeouts.Request = 5 * time.Second
+		mutate(&cfg)
+		client, err := New(cfg)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+		t.Cleanup(func() { _ = client.Close() })
+		return client
+	}
+
+	assertAttributed := func(t *testing.T, err error, allowed map[string]bool) {
+		t.Helper()
+		if err == nil {
+			t.Fatal("request through a dead proxy should fail")
+		}
+		var clientErr *ClientError
+		if !errors.As(err, &clientErr) {
+			t.Fatalf("error should be *ClientError, got %T: %v", err, err)
+		}
+		if clientErr.ProxyURL == "" {
+			t.Fatalf("ClientError.ProxyURL is empty, want the dead proxy that was selected: %v", err)
+		}
+		if !allowed[clientErr.ProxyURL] {
+			t.Errorf("ClientError.ProxyURL %q is not a configured proxy, want one of %v", clientErr.ProxyURL, allowed)
+		}
+	}
+
+	t.Run("fast path, proxy pool", func(t *testing.T) {
+		dead := deadLoopbackProxy(t)
+		client := newClient(func(cfg *Config) {
+			cfg.Connection.ProxyPool = []string{dead}
+			cfg.Retry.MaxRetries = 0
+		})
+		_, err := client.Get(target.URL)
+		assertAttributed(t, err, map[string]bool{dead: true})
+	})
+
+	t.Run("fast path, single proxy", func(t *testing.T) {
+		dead := deadLoopbackProxy(t)
+		client := newClient(func(cfg *Config) {
+			cfg.Connection.ProxyURL = dead
+			cfg.Retry.MaxRetries = 0
+		})
+		_, err := client.Get(target.URL)
+		assertAttributed(t, err, map[string]bool{dead: true})
+	})
+
+	t.Run("retry exhausted, proxy pool", func(t *testing.T) {
+		dead1, dead2 := deadLoopbackProxy(t), deadLoopbackProxy(t)
+		client := newClient(func(cfg *Config) {
+			cfg.Connection.ProxyPool = []string{dead1, dead2}
+			cfg.Retry.MaxRetries = 2
+		})
+		_, err := client.Get(target.URL)
+		assertAttributed(t, err, map[string]bool{dead1: true, dead2: true})
+		var clientErr *ClientError
+		if errors.As(err, &clientErr) && clientErr.Attempts != 3 {
+			t.Errorf("Attempts = %d, want 3 (initial + 2 retries)", clientErr.Attempts)
+		}
+	})
 }

@@ -56,7 +56,11 @@ type AuditEvent struct {
 	// 0 when the request errored before a response arrived).
 	Attempts int `json:"attempts"`
 	// Error is the request error, if any; marshaled as a string with
-	// sensitive details removed.
+	// sensitive details removed — UNLESS AuditConfig.SanitizeError is false
+	// (an explicit opt-out), in which case the raw error text is carried
+	// verbatim and may embed the full request URL (credentials and sensitive
+	// query values included, as net/http renders them). Sanitize-sensitive
+	// consumers must keep SanitizeError at its default true.
 	Error error `json:"error,omitempty"`
 	// SourceIP is an application-supplied caller identifier, if known.
 	SourceIP string `json:"sourceIP,omitempty"`

@@ -472,3 +472,116 @@ func TestWriteConnect_MalformedReply(t *testing.T) {
 		t.Error("error should describe the malformed reply, not a bare EOF")
 	}
 }
+
+// TestConnectDialer_ContextlessDialBounded pins the compensating deadline for
+// context-less H2 replacement dials: tls-client dials the second and later
+// HTTP/2 connections to one address through its legacy DialTLS hook with
+// context.Background(), so the request deadline and the CONNECT watchdog
+// never reach the dial. A proxy that accepts TCP but never answers CONNECT
+// must fail within contextlessDialTimeout instead of hanging forever.
+func TestConnectDialer_ContextlessDialBounded(t *testing.T) {
+	// Stalling proxy: accepts TCP, never replies to CONNECT.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// Hold the connection open; never write anything.
+			go func(c net.Conn) {
+				buf := make([]byte, 1)
+				for {
+					if _, err := c.Read(buf); err != nil {
+						_ = c.Close()
+						return
+					}
+				}
+			}(conn)
+		}
+	}()
+
+	// Shrink the default so the test is fast (test seam; restored on exit).
+	orig := contextlessDialTimeout
+	contextlessDialTimeout = 300 * time.Millisecond
+	defer func() { contextlessDialTimeout = orig }()
+
+	d := newConnectDialer(url.URL{Scheme: "http", Host: ln.Addr().String()}, nil, false)
+
+	type result struct {
+		conn net.Conn
+		err  error
+	}
+	ch := make(chan result, 1)
+	start := time.Now()
+	go func() {
+		// The context-less shape tls-client's H2 replacement path uses.
+		conn, err := d.DialContext(context.Background(), "tcp", "example.com:443")
+		ch <- result{conn, err}
+	}()
+
+	select {
+	case r := <-ch:
+		elapsed := time.Since(start)
+		if r.err == nil {
+			_ = r.conn.Close()
+			t.Fatal("stalled proxy should not produce a tunnel")
+		}
+		// Bounded: the 300ms compensating deadline fired (allow scheduling
+		// slack), not the 30s TCP dial timeout and not a hang.
+		if elapsed > 5*time.Second {
+			t.Errorf("dial took %v, want the compensating deadline (~300ms)", elapsed)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("context-less dial to a stalled proxy hangs: the compensating deadline never fired")
+	}
+}
+
+// TestConnectDialer_RequestContextStillGoverns pins the complement: when the
+// dial context DOES carry a deadline (the normal request path), the existing
+// machinery — not the compensating default — bounds the exchange, and a
+// tighter context deadline than the default is honored.
+func TestConnectDialer_RequestContextStillGoverns(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				buf := make([]byte, 1)
+				for {
+					if _, err := c.Read(buf); err != nil {
+						_ = c.Close()
+						return
+					}
+				}
+			}(conn)
+		}
+	}()
+
+	orig := contextlessDialTimeout
+	contextlessDialTimeout = time.Hour // compensating default must NOT apply
+	defer func() { contextlessDialTimeout = orig }()
+
+	d := newConnectDialer(url.URL{Scheme: "http", Host: ln.Addr().String()}, nil, false)
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	if _, err := d.DialContext(ctx, "tcp", "example.com:443"); err == nil {
+		t.Fatal("stalled proxy should fail the bounded dial")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("context deadline not honored: dial took %v, want ~250ms", elapsed)
+	}
+}

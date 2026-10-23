@@ -256,6 +256,19 @@ func transferCancelOwnership(resp *Response, overallCancel *context.CancelFunc) 
 	*overallCancel = nil
 }
 
+// attributeProxyURL stamps the proxy selected for the failed attempt onto a
+// classified error, mirroring the success path's resp.SetProxyURL(proxyRec.Last())
+// (see ClientError.ProxyURL). rec may be nil (direct connection, or no proxy
+// configured) — Last() is nil-safe and leaves ProxyURL empty, which the field
+// docs define as "no proxy was used or none was selected". Errors that are not
+// *ClientError (defensive fallbacks) pass through untouched.
+func attributeProxyURL(err error, rec *connection.ProxyRecorder) error {
+	if clientErr, ok := err.(*ClientError); ok {
+		clientErr.ProxyURL = rec.Last()
+	}
+	return err
+}
+
 // effectiveRequestTimeout resolves the per-request timeout budget: an explicit
 // WithTimeout value always wins; without one, NoTimeout suppresses the
 // client-level Config.Timeout; otherwise the client default applies. A
@@ -507,13 +520,13 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 		}
 		resp, err := c.executeRequest(req, true)
 		if err != nil {
-			return nil, classifyError(err, req.URL(), req.Method(), 1)
+			return nil, attributeProxyURL(classifyError(err, req.URL(), req.Method(), 1), proxyRec)
 		}
 		if resp == nil {
 			// Defensive: executeRequest must not return (nil, nil); the slow
 			// path guards the same contract (see its fallback below), and
 			// SetAttempts on a nil resp would panic here.
-			return nil, classifyError(errors.New("no response from transport"), req.URL(), req.Method(), 1)
+			return nil, attributeProxyURL(classifyError(errors.New("no response from transport"), req.URL(), req.Method(), 1), proxyRec)
 		}
 		resp.SetAttempts(1)
 		resp.SetProxyURL(proxyRec.Last())
@@ -678,6 +691,12 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 
 		if err != nil {
 			clientErr := classifyErrorWithSanitizedURL(err, sanitizedURL, reqMethod, attempt+1)
+			// Attribute the selected proxy before storing to lastErr: the
+			// retry-budget/policy-veto returns below and the retry-exhausted
+			// fallback at loop exit all surface this object (classifyError's
+			// already-classified copy branch preserves the field), so a single
+			// assignment covers every error return of the loop.
+			clientErr.ProxyURL = proxyRec.Last()
 			lastErr = clientErr
 
 			// When proxy rotation is active, proxy connection failures are
@@ -720,7 +739,7 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 
 			if sleepErr := c.sleepWithContext(req.Context(), delay); sleepErr != nil {
 				releaseLastResp(&lastResp)
-				return nil, classifyErrorWithSanitizedURL(sleepErr, sanitizedURL, reqMethod, attempt+1)
+				return nil, attributeProxyURL(classifyErrorWithSanitizedURL(sleepErr, sanitizedURL, reqMethod, attempt+1), proxyRec)
 			}
 			continue
 		}
@@ -770,7 +789,7 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 				}
 
 				if sleepErr := c.sleepWithContext(req.Context(), delay); sleepErr != nil {
-					return nil, classifyErrorWithSanitizedURL(sleepErr, sanitizedURL, reqMethod, attempt+1)
+					return nil, attributeProxyURL(classifyErrorWithSanitizedURL(sleepErr, sanitizedURL, reqMethod, attempt+1), proxyRec)
 				}
 				continue
 			}

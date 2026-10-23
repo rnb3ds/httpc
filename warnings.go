@@ -16,6 +16,11 @@ var testingConfigWarnOnce sync.Once
 // Separate from testingConfigWarnOnce so that each warning fires independently.
 var insecureSkipVerifyWarnOnce sync.Once
 
+// handBuiltConfigWarnOnce flags the hand-built-Config zero-value trap once
+// per process (see the Config struct doc in types.go and the detection site
+// in newFromConfig).
+var handBuiltConfigWarnOnce sync.Once
+
 // securityWarnMu protects securityWarnOutput from concurrent read/write.
 var securityWarnMu sync.RWMutex
 

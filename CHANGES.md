@@ -4,6 +4,24 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ---
 
+## v1.7.2 - Proxy tracking, stability fixes, and configuration protection measures (2026-10-24)
+
+### Added
+- `ClientError.ProxyURL` — network-level errors returned from Client request methods now carry the proxy that was selected for the final attempt (same transport-recorded source as `Result.Meta.ProxyURL` on success, redacted). The transport's `Proxy` callback runs before dialing, so proxy **dial failures** are attributed too; retry-exhausted errors report the last attempt's proxy. Empty for direct connections, pre-dispatch errors (validation, callback failures), and `EnableSystemProxy` (dynamic detection is not recorded, mirroring `RequestMeta.ProxyURL`). Applies to both the standard and TLS-fingerprint transports (both feed the same per-request `ProxyRecorder`).
+
+### Fixed
+- TLS-fingerprint dialing: context-less HTTP/2 replacement dials (second and later connections to one address, dialed by tls-client's legacy `DialTLS` hook with `context.Background()`) are now bounded by a 30s compensating deadline — previously the proxy-leg TLS handshake and the CONNECT exchange could hang forever on a proxy that accepts TCP but stalls, and the direct path had no TCP dial timeout at all. Per-request `WithAllowPrivateIPs` overrides remain invisible to those dials (validation fails closed there); fixing that needs an upstream context-carrying hook
+- `Connection.InsecureSkipVerify` is now honored when `Security.TLSConfig` is set (previously silently ignored on the custom-config path while `New`'s warning announced verification was disabled — the opposite of the actual behavior); one-directional: an explicit opt-out is applied, a TLSConfig's own flag is never cleared
+- `calculateMaxRetries` no longer raises the retry budget from a `ProxyPool` that is inert because `ProxyURL` takes precedence — with `ProxyURL` set, `Retry.MaxRetries = 0` used to be overridden to `len(pool)-1` extra retries through the SAME single proxy with rotation silently disabled
+- `ValidateConfig` rejects `Retry.BackoffFactor = NaN` (NaN escapes both range comparisons and collapsed the backoff to ~zero from the second attempt on — silent loss of thundering-herd protection); the engine's backoff clamp is NaN-safe as well
+- `WithBody([]byte{}, BodyAuto)` now errors like the equivalent explicit `BodyBinary` form instead of sending an empty octet-stream body
+
+### Changed
+- `New` prints a one-time `[CONFIG WARNING]` when a hand-built `Config` carries the exact all-off signature (URL validation, header validation, strict Content-Length, redirects, HTTP/2, and the response-size cap all disabled): every bool documented "Default: true" is true only in `DefaultConfig()`/presets, and a struct literal that sets only e.g. `Retry.BackoffFactor` passes validation with all of them silently off. The `Config` struct doc now carries the same warning. Deliberate all-off users can ignore the warning
+- Docs: `WithContext` (a context deadline narrows the client default; the shorter applies — it does not override), `AuditEvent.Error` (raw text when `SanitizeError: false`), and `WithBasicAuth`/`WithBearerToken` (deliberately not captured into session state, unlike the equivalent `WithHeader`) now document their actual behavior
+
+---
+
 ## v1.7.1 - Package-Level Routing Options, Fingerprint SSRF Parity & Audit Hardening (2026-10-23)
 
 ### Added

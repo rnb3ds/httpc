@@ -19,6 +19,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -81,6 +82,17 @@ type Pool struct {
 	byHost  map[string]*entry // host:port -> entry; built once, read-only after
 
 	counter atomic.Uint64 // round-robin cursor
+
+	// reportMu serializes ReportFailure/ReportSuccess. Each report updates
+	// TWO fields (failures + openUntil); without the lock the pair can tear
+	// across a concurrent opposite report — the worst interleaving being
+	// ReportFailure's threshold branch passing, then a concurrent
+	// ReportSuccess resetting both fields, then the failure's openUntil.Store
+	// landing: the entry ends up failures=0 (healthy) with the circuit open,
+	// and since an open entry is never dialed, no success can arrive to clear
+	// it — a healthy proxy is excluded for a full Cooldown. Reports are cold
+	// paths (once per dial outcome), so the mutex is free.
+	reportMu sync.Mutex
 
 	failureThreshold int
 	cooldown         time.Duration
@@ -284,8 +296,18 @@ func (p *Pool) ReportFailure(host string) {
 	if !ok {
 		return
 	}
+	p.reportMu.Lock()
+	defer p.reportMu.Unlock()
 	if e.failures.Add(1) >= int64(p.failureThreshold) {
-		e.openUntil.Store(time.Now().Add(p.cooldown).UnixNano())
+		// A failure that arrives while the circuit is ALREADY open (an
+		// in-flight dial selected before the circuit opened, or the all-open
+		// fallback probing the closest-to-recovery entry) must not re-arm the
+		// cooldown from its own timestamp — the documented contract is a
+		// fixed Cooldown window from the opening failure, and under sustained
+		// fallback traffic re-arming would defer recovery indefinitely.
+		if now := time.Now().UnixNano(); now >= e.openUntil.Load() {
+			e.openUntil.Store(time.Now().Add(p.cooldown).UnixNano())
+		}
 	}
 }
 
@@ -296,6 +318,8 @@ func (p *Pool) ReportSuccess(host string) {
 	if !ok {
 		return
 	}
+	p.reportMu.Lock()
+	defer p.reportMu.Unlock()
 	e.failures.Store(0)
 	e.openUntil.Store(0)
 }

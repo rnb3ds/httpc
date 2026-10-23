@@ -237,7 +237,7 @@ func (dc *DomainClient) targetsFinalURL(result *Result) bool {
 // cannot drift apart on exactly the guarantee that must not diverge.
 func (dc *DomainClient) scopedOptions(fullURL string, options []RequestOption) (allOptions []RequestOption, sessionScoped bool) {
 	if sessionScoped = dc.targetsBaseHost(fullURL); sessionScoped {
-		return dc.prepareSessionOptions(options), true
+		return dc.prepareSessionOptions(fullURL, options), true
 	}
 	return options, false
 }
@@ -283,9 +283,10 @@ func (dc *DomainClient) Download(ctx context.Context, path string, cfg *Download
 // prepareSessionOptions merges session state (headers, cookies) with user-provided options.
 // The read-then-write sequence is intentionally non-atomic: session state is eventually
 // consistent by design. A concurrent request may interleave, but each request captures
-// a consistent snapshot at prepareOptions() time.
-func (dc *DomainClient) prepareSessionOptions(options []RequestOption) []RequestOption {
-	managedOptions := dc.prepareOptions()
+// a consistent snapshot at prepareOptions() time. fullURL scopes cookie replay to the
+// request's path and scheme (see prepareOptions).
+func (dc *DomainClient) prepareSessionOptions(fullURL string, options []RequestOption) []RequestOption {
+	managedOptions := dc.prepareOptions(fullURL)
 	allOptions := append(managedOptions, options...)
 	dc.captureFromOptions(options)
 	return allOptions
@@ -359,10 +360,17 @@ func (dc *DomainClient) buildURL(pathStr string) (string, error) {
 	// Prevent path traversal: ensure result stays within base path scope.
 	// Use path-separator-aware comparison to block prefix collisions
 	// (e.g., base "/a" must not allow escape to "/ab").
-	// Skip check when base path is empty (no scope restriction needed).
-	if dc.parsedURL.Path != "" && dc.parsedURL.Path != "/" {
-		if result.Path != dc.parsedURL.Path &&
-			!strings.HasPrefix(result.Path, dc.parsedURL.Path+"/") {
+	// The scope is compared in CLEANED form: stdpath.Join cleans its output
+	// (a base of "/v1/" joins with "users" into "/v1/users" — the base's
+	// trailing slash does not survive the join), so comparing against the
+	// RAW base path required a "/v1//" prefix that could never match and
+	// rejected every non-empty request path for trailing-slash bases —
+	// the most common REST spelling ("https://api.example.com/v1/").
+	// stdpath.Clean("") is ".": both spellings mean "no path scope" and skip
+	// the check, exactly as the raw empty path did.
+	baseScope := stdpath.Clean(dc.parsedURL.Path)
+	if baseScope != "" && baseScope != "/" && baseScope != "." {
+		if result.Path != baseScope && !strings.HasPrefix(result.Path, baseScope+"/") {
 			return "", fmt.Errorf("path %q escapes base URL scope", pathStr)
 		}
 	}

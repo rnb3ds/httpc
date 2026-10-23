@@ -26,7 +26,9 @@ package fingerprint
 import (
 	"crypto/x509"
 	"fmt"
+	"io"
 	"net/url"
+	"sync"
 	"time"
 
 	ehttp "github.com/bogdanfinn/fhttp"
@@ -148,9 +150,7 @@ func newTransportBackend(cfg Config, proxyURL *url.URL, p *browserProfile, os os
 // boundary.
 func (b *backend) RoundTrip(req *ehttp.Request) (*ehttp.Response, error) {
 	// RoundTripper contract: on error the request body must be closed. The
-	// two early returns below fire before client.Do (which owns body closing
-	// on its own error paths), so close it here — a body backed by an
-	// *os.File would otherwise leak its descriptor for the request's lifetime.
+	// two early returns below fire before client.Do, so they close directly.
 	if req.URL == nil {
 		if req.Body != nil {
 			_ = req.Body.Close() // best-effort: request is being abandoned
@@ -167,7 +167,46 @@ func (b *backend) RoundTrip(req *ehttp.Request) (*ehttp.Response, error) {
 		return nil, fmt.Errorf("fingerprint: invalid URL scheme %q", scheme)
 	}
 
-	return b.client.Do(req)
+	// The body is wrapped so Close runs exactly once across every closer in
+	// the chain: client.Do DOES close the body on errors raised after the
+	// inner transport starts running (anything past the body being sent), but
+	// it does NOT close on errors raised before that (tls-client's
+	// getTransport failures — first-dial connection refused, DNS failure, TLS
+	// verification, cert-pin rejection, SSRF dial-layer rejection, proxy
+	// CONNECT failure: the common transient class), and nothing above this
+	// adapter closes a custom RoundTripper's error returns either. The close
+	// below therefore fires unconditionally on error; the once-guard makes it
+	// a no-op where tls-client already closed, so pooled body readers return
+	// to their pool exactly once and *os.File bodies never double-close.
+	if req.Body != nil {
+		req.Body = &onceCloser{body: req.Body}
+	}
+
+	resp, err := b.client.Do(req)
+	if err != nil {
+		if req.Body != nil {
+			_ = req.Body.Close() // best-effort: request is aborted
+		}
+		return nil, err
+	}
+	return resp, nil
+}
+
+// onceCloser makes an io.ReadCloser's Close idempotent. The fingerprint
+// backend's error handling closes the request body on every client.Do error
+// while tls-client also closes it on its post-send error paths; exactly one
+// Close must reach the underlying reader.
+type onceCloser struct {
+	body io.ReadCloser
+	once sync.Once
+}
+
+func (o *onceCloser) Read(p []byte) (int, error) { return o.body.Read(p) }
+
+func (o *onceCloser) Close() error {
+	var err error
+	o.once.Do(func() { err = o.body.Close() })
+	return err
 }
 
 // CloseIdleConnections releases the backend's idle connections.

@@ -41,6 +41,19 @@ import (
 // carries no deadline of its own.
 const proxyDialTimeout = 30 * time.Second
 
+// contextlessDialTimeout bounds tunnel establishment (and, on the direct
+// path, the dial) when the dial context carries no deadline of its own.
+//
+// The engine normally owns the deadline budget through the request context,
+// but tls-client dials HTTP/2 REPLACEMENT connections — the second and later
+// connections to one address, after GOAWAY, stream exhaustion, or an
+// idle-timeout race — through its legacy context-less DialTLS hook with
+// context.Background(), so the request deadline and the CONNECT watchdog
+// never reach those dials. Without this bound, a proxy that accepts TCP but
+// stalls its TLS handshake or CONNECT reply hangs the replacement dial (and
+// the request riding it) forever.
+var contextlessDialTimeout = 30 * time.Second
+
 // newProxyDialerFactory returns a factory that dials every target through
 // proxyURL. The URL is fixed per backend: the httpc proxy pool rotates by
 // selecting a different backend, never by re-pointing a live one.
@@ -103,6 +116,18 @@ func (d *connectDialer) Dial(network, addr string) (net.Conn, error) {
 // DialContext establishes the tunnel to addr: SOCKS handshake for socks
 // schemes, CONNECT for http/https.
 func (d *connectDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	// Context-less H2 replacement dials (see contextlessDialTimeout) arrive
+	// with context.Background(): the request deadline never reaches the
+	// proxy-leg TLS handshake or the CONNECT watchdog, both of which would
+	// hang forever on a stalled proxy. Give the whole tunnel establishment a
+	// default deadline; every downstream piece (SetDeadline from ctx,
+	// HandshakeContext, the watchdog) then works exactly as it does on the
+	// request-context path.
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, contextlessDialTimeout)
+		defer cancel()
+	}
 	if d.socks != nil {
 		return d.dialSOCKS(ctx, network, addr)
 	}
