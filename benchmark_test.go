@@ -901,3 +901,27 @@ func BenchmarkMiddlewareOverhead(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkResultString measures Result.String() (pooled *bytes.Buffer
+// rebuild). Added with the pool conversion from strings.Builder, whose Reset
+// discards the backing array — the old pool retained only the ~32-byte
+// header, so this benchmark is the before/after anchor for the fix.
+func BenchmarkResultString(b *testing.B) {
+	r := &Result{
+		Response: &ResponseInfo{
+			StatusCode: 200,
+			Status:     "200 OK",
+			Proto:      "HTTP/1.1",
+			Headers: http.Header{
+				"Content-Type": []string{"application/json"},
+				"X-Trace-Id":   []string{"trace-abc-123"},
+			},
+			RawBody: []byte(strings.Repeat("x", 4096)),
+		},
+		Meta: &RequestMeta{Duration: 1500 * time.Millisecond, Attempts: 2},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = r.String()
+	}
+}

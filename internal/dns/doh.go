@@ -383,7 +383,7 @@ func (r *DoHResolver) lookupViaProviders(ctx context.Context, host string) ([]ne
 
 // CacheSize returns the current number of entries in the cache (O(1) via atomic counter).
 // Currently exercised only by tests; admission control reads the atomic directly.
-func (r *DoHResolver) CacheSize() int64 {
+func (r *DoHResolver) cacheLen() int64 {
 	return r.cacheSize.Load()
 }
 
@@ -485,10 +485,18 @@ func (r *DoHResolver) lookupRecordType(ctx context.Context, provider *dohProvide
 	if err != nil {
 		return nil, fmt.Errorf("provider %s: DoH request failed: %w", provider.Name, err)
 	}
+	// read is the budget already consumed by the success-path body read
+	// below; the deferred drain gets only the unread remainder.
+	var read int
 	defer func() {
 		// Best-effort: bounded drain for keep-alive reuse; Close errors are
-		// unactionable on a body already consumed or rejected.
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxDoHResponseSize))
+		// unactionable on a body already consumed or rejected. The budget is
+		// the UNREAD remainder of maxDoHResponseSize — the body read and this
+		// drain previously each applied the full cap, letting a hostile
+		// resolver force ~2× the declared transfer ceiling.
+		if remaining := int64(maxDoHResponseSize) - int64(read); remaining > 0 {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, remaining))
+		}
 		_ = resp.Body.Close()
 	}()
 
@@ -496,10 +504,35 @@ func (r *DoHResolver) lookupRecordType(ctx context.Context, provider *dohProvide
 		return nil, fmt.Errorf("provider %s: DoH request returned status %d", provider.Name, resp.StatusCode)
 	}
 
-	return r.parseResponse(resp, escapedHost)
+	// SECURITY: read the body under the shared size cap (see readDoHBody);
+	// the count feeds the deferred drain's remaining budget either way.
+	body, readErr := readDoHBody(resp)
+	read = len(body)
+	if readErr != nil {
+		return nil, readErr
+	}
+	return r.parseResponseBody(body, resp.Header.Get("Content-Type"), escapedHost)
 }
 
-// parseResponse parses DoH response with size limits to prevent memory exhaustion.
+// readDoHBody reads a DoH response body under the shared size cap; the +1
+// detects oversize. Split out of queryProvider so the cap's boundary
+// behavior (oversize rejection, mid-read transport errors) is directly
+// testable. On error the partially-read body is still returned so callers
+// can account for the budget already consumed.
+func readDoHBody(resp *http.Response) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDoHResponseSize+1))
+	if err != nil {
+		return body, fmt.Errorf("read response body failed: %w", err)
+	}
+	if len(body) > maxDoHResponseSize {
+		return body, fmt.Errorf("DoH response exceeds maximum size limit (%d bytes)", maxDoHResponseSize)
+	}
+	return body, nil
+}
+
+// parseResponseBody parses an already-read, size-checked DoH body. The size
+// cap and the body read live in the caller (queryProvider) so the read and
+// the keep-alive drain share one budget.
 //
 // The parser is selected by the response Content-Type, not by provider name. Every
 // request sends "Accept: application/dns-json", but a provider may answer with
@@ -510,20 +543,8 @@ func (r *DoHResolver) lookupRecordType(ctx context.Context, provider *dohProvide
 // wire format even when it served JSON for the requested Accept header). When the
 // Content-Type is missing or unrecognized we try JSON (matching the Accept header)
 // and fall back to wire format, so a misconfigured server still resolves.
-func (r *DoHResolver) parseResponse(resp *http.Response, host string) ([]net.IPAddr, error) {
-	// SECURITY: Limit response body size to prevent memory exhaustion attacks
-	limitedReader := io.LimitReader(resp.Body, maxDoHResponseSize+1)
-	body, err := io.ReadAll(limitedReader)
-	if err != nil {
-		return nil, fmt.Errorf("read response body failed: %w", err)
-	}
-
-	// SECURITY: Check if response exceeded size limit
-	if len(body) > maxDoHResponseSize {
-		return nil, fmt.Errorf("DoH response exceeds maximum size limit (%d bytes)", maxDoHResponseSize)
-	}
-
-	switch dohMediaType(resp.Header.Get("Content-Type")) {
+func (r *DoHResolver) parseResponseBody(body []byte, contentType, host string) ([]net.IPAddr, error) {
+	switch dohMediaType(contentType) {
 	case "application/dns-json", "application/json":
 		return r.parseJSONResponse(body, host)
 	case "application/dns-message", "application/dns-wire":
@@ -821,14 +842,19 @@ func (r *DoHResolver) fallbackLookup(ctx context.Context, host string, lastErr e
 }
 
 // ClearCache clears the DNS cache.
-// Deletes all entries and atomically resets the counter to zero.
+// Deletes all entries and decrements the size counter once per removed entry.
 //
-// The final recount is approximate under concurrency: an entry admitted
-// between the counting Range and the Store can leave the counter slightly
-// below the true size, so the cache may transiently exceed maxDoHCacheSize by
-// the number of concurrent admissions. The overshoot is bounded by caller
-// concurrency (never unbounded) and self-corrects at the next admission check,
-// which re-reads and evicts.
+// No recount/reconcile pass runs afterwards, deliberately: every counter
+// mutation in this file is PAIRED with exactly one successful map mutation
+// (admission: CAS+1 with a winning LoadOrStore, reverted on exists; every
+// deletion path: -1 only when its LoadAndDelete/CompareAndDelete won the
+// key), so the counter is accurate by construction at all times. A final
+// "recount" Store previously overwrote the accurate value with a count
+// taken while concurrent evictions were still decrementing — resurrecting
+// already-consumed decrements and permanently over-counting the cache (at
+// maxDoHCacheSize every admission then took the evict path, churning fresh
+// entries). Two deleters can never double-decrement: LoadAndDelete and
+// CompareAndDelete are mutually exclusive per key.
 func (r *DoHResolver) ClearCache() {
 	r.cache.Range(func(key, value any) bool {
 		if _, ok := r.cache.LoadAndDelete(key); ok {
@@ -836,16 +862,6 @@ func (r *DoHResolver) ClearCache() {
 		}
 		return true
 	})
-	// Reconcile counter: concurrent eviction may have decremented entries
-	// we already deleted, or new entries may have been inserted during the scan.
-	// Loading the actual count ensures the counter never goes negative.
-	// (See the doc comment above for the bounded under-count race this leaves.)
-	count := int64(0)
-	r.cache.Range(func(_, _ any) bool {
-		count++
-		return true
-	})
-	r.cacheSize.Store(count)
 }
 
 // evictExpiredEntries removes expired cache entries to free space.
@@ -895,7 +911,7 @@ func (r *DoHResolver) evictOldestEntry() {
 // SetCacheTTL sets the cache TTL duration.
 // Thread-safe: can be called concurrently with other operations.
 // Currently exercised only by tests; construction uses the Config field.
-func (r *DoHResolver) SetCacheTTL(ttl time.Duration) {
+func (r *DoHResolver) setCacheTTL(ttl time.Duration) {
 	r.cacheTTL.Store(int64(ttl))
 	r.ClearCache()
 }
@@ -903,7 +919,7 @@ func (r *DoHResolver) SetCacheTTL(ttl time.Duration) {
 // GetCacheTTL returns the current cache TTL duration.
 // Thread-safe: can be called concurrently with other operations.
 // Currently exercised only by tests; lookups read the atomic directly.
-func (r *DoHResolver) GetCacheTTL() time.Duration {
+func (r *DoHResolver) getCacheTTL() time.Duration {
 	return time.Duration(r.cacheTTL.Load())
 }
 

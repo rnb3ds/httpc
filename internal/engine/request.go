@@ -13,6 +13,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -188,6 +189,12 @@ type Request struct {
 	// An explicit per-request timeout (WithTimeout) still applies; a deadline
 	// on the caller's context is always respected.
 	noTimeout bool
+	// bodyFromRawReader marks a body that arrived as a raw io.Reader and was
+	// buffered to []byte for retry safety: Build keeps the raw-reader
+	// Content-Type contract (no automatic Content-Type) instead of the
+	// []byte branch's octet-stream, so the wire is identical with retries
+	// enabled or disabled. Reset with the struct on pool return.
+	bodyFromRawReader bool
 }
 
 // Compile-time interface check
@@ -431,11 +438,14 @@ var bytesReaderPool = sync.Pool{
 	New: func() any { return &bytes.Reader{} },
 }
 
-// stringBuilderPool reduces allocations for strings.Builder used in escapeQuotes
+// stringBuilderPool reduces buffer allocations in escapeQuotes. It pools
+// *bytes.Buffer — NOT strings.Builder (whose Reset discards the backing
+// array, retaining only the ~32-byte header); the result is COPIED out
+// (strings.Clone) before the Put — bytes.Buffer's String aliases the live
+// buffer, which the next pool user overwrites.
 var stringBuilderPool = sync.Pool{
 	New: func() any {
-		sb := &strings.Builder{}
-		return sb
+		return &bytes.Buffer{}
 	},
 }
 
@@ -1035,8 +1045,11 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 	// NewRequest); JSON/multipart bytes live in pooled buffers that are
 	// recycled on body Close — which happens before any redirect hop needs
 	// GetBody — so they are cloned once, and only when redirects are enabled.
-	// Generic io.Reader bodies are left nil (not replayable), matching
-	// net/http's rules; the retry path has already buffered those to []byte.
+	// The three concrete reader types net/http itself makes replayable
+	// (*strings.Reader, *bytes.Reader, *bytes.Buffer) are snapshotted the same
+	// way net/http's NewRequest does; every other io.Reader body is left nil
+	// (not replayable — a consumed stream cannot be rewound), and the retry
+	// path has already buffered those to []byte.
 	var replaySrc any
 
 	if req.Body() != nil {
@@ -1048,9 +1061,29 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 		case []byte:
 			body = getPooledBytesReader(v)
 			contentType = "application/octet-stream"
+			if req.bodyFromRawReader {
+				// Buffered from a raw io.Reader for retry safety: keep the
+				// raw-reader contract — no automatic Content-Type (the
+				// facade deliberately leaves raw readers to the caller) —
+				// so enabling retries does not change the wire.
+				contentType = ""
+			}
 			replaySrc = v
 		case io.Reader:
+			if isNilReader(v) {
+				return nil, fmt.Errorf("request body is a nil io.Reader (%T)", v)
+			}
 			body = v
+			// net/http-replayable concrete types keep 307/308 replay here too
+			// (previously they fell into the generic non-replayable bucket,
+			// so a bodied POST receiving 307/308 surfaced the 3xx unfollowed —
+			// a silent divergence from plain net/http for exactly the reader
+			// types the stdlib replays). The snapshot is taken BEFORE the
+			// limit-reader wrap so GetBody reproduces the same bytes.
+			switch v.(type) {
+			case *strings.Reader, *bytes.Reader, *bytes.Buffer:
+				replaySrc = v
+			}
 			// SECURITY: MaxRequestBodySize must not fail open for streaming
 			// bodies — the pre-send validator can only size known types
 			// (string/[]byte/url.Values/*types.FormData). Wrap in a counting
@@ -1257,6 +1290,26 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 			httpReq.GetBody = func() (io.ReadCloser, error) {
 				return io.NopCloser(bytes.NewReader(src)), nil
 			}
+		case *strings.Reader:
+			// net/http's own snapshot semantics (http.NewRequest): a struct
+			// copy of the reader carries its read position, and each GetBody
+			// call replays from that snapshot via a fresh copy.
+			snapshot := *src
+			httpReq.GetBody = func() (io.ReadCloser, error) {
+				r := snapshot
+				return io.NopCloser(&r), nil
+			}
+		case *bytes.Reader:
+			snapshot := *src
+			httpReq.GetBody = func() (io.ReadCloser, error) {
+				r := snapshot
+				return io.NopCloser(&r), nil
+			}
+		case *bytes.Buffer:
+			buf := src.Bytes()
+			httpReq.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(buf)), nil
+			}
 		}
 	}
 
@@ -1374,9 +1427,9 @@ func (p *requestProcessor) Build(req *Request) (*http.Request, error) {
 // case after ValidateCookie) incur zero intermediate allocations.
 func buildCookieHeader(cookies []http.Cookie) string {
 	sb := getQueryBuilder()
-	// Pre-grow to the estimated size so the builder's backing array is allocated
-	// once instead of growing incrementally. strings.Builder.Reset() nils the
-	// internal buffer, so pooled builders always start empty.
+	// Pre-grow to the estimated size so the buffer's backing array is
+	// allocated (or reused from the pool) once instead of growing
+	// incrementally.
 	sb.Grow(len(cookies) * 32)
 	for i := range cookies {
 		if sb.Len() > 0 {
@@ -1386,54 +1439,81 @@ func buildCookieHeader(cookies []http.Cookie) string {
 		sb.WriteByte('=')
 		sb.WriteString(sanitizeCookieValue(cookies[i].Value))
 	}
-	result := sb.String()
+	result := strings.Clone(sb.String()) // copy: the buffer is pooled and reused
 	putQueryBuilder(sb)
 	return result
 }
 
-// sanitizeCookieName removes CR and LF from a cookie name, matching the
-// behavior of net/http.sanitizeCookieName to prevent header injection.
-// Fast path: returns the original string when no escaping is needed.
+// sanitizeCookieName sanitizes a cookie name for the Cookie request header,
+// matching net/http.sanitizeCookieName: \n and \r are REPLACED with "-"
+// (net/http replaces, it does not delete) so the header stays one line.
+// Fast path: returns the original string when the name is clean.
 func sanitizeCookieName(name string) string {
 	for i := 0; i < len(name); i++ {
 		if name[i] == '\n' || name[i] == '\r' {
-			return strings.NewReplacer("\n", "", "\r", "").Replace(name)
+			return strings.NewReplacer("\n", "-", "\r", "-").Replace(name)
 		}
 	}
 	return name
 }
 
-// sanitizeCookieValue escapes bytes that are invalid in a Cookie request-header
-// value, matching net/http.sanitizeCookieValue. Valid bytes (printable ASCII
-// except '"', ';', '\\') are passed through; invalid bytes are octal-escaped.
-// Fast path: returns the original string when no escaping is needed.
+// sanitizeCookieValue sanitizes a cookie value for the Cookie request header,
+// matching net/http.sanitizeCookieValue: bytes invalid in a cookie value are
+// DROPPED (net/http drops them with a warning; the former octal \ooo escaping
+// here was pre-RFC-6265 stdlib behavior and produced values strict servers
+// mis-parse), and a value containing a space or comma is wrapped in double
+// quotes — RFC 6265's quoted-string form, which an unquoted space violates.
+// Fast path: returns the original string when the value is clean and needs
+// no quoting.
 func sanitizeCookieValue(v string) string {
 	for i := 0; i < len(v); i++ {
 		if !validCookieValueByte(v[i]) {
 			return sanitizeCookieValueSlow(v, i)
 		}
 	}
+	if strings.ContainsAny(v, " ,") {
+		return `"` + v + `"`
+	}
 	return v
 }
 
 func sanitizeCookieValueSlow(v string, start int) string {
-	var b strings.Builder
-	b.Grow(len(v))
-	b.WriteString(v[:start])
-	const octalDigits = "01234567"
+	b := make([]byte, 0, len(v))
+	b = append(b, v[:start]...)
 	for i := start; i < len(v); i++ {
-		c := v[i]
-		if validCookieValueByte(c) {
-			b.WriteByte(c)
-		} else {
-			// Octal escape: \ooo (3 digits), matching net/http behavior.
-			b.WriteByte('\\')
-			b.WriteByte(octalDigits[c>>6])
-			b.WriteByte(octalDigits[(c>>3)&7])
-			b.WriteByte(octalDigits[c&7])
+		if c := v[i]; validCookieValueByte(c) {
+			b = append(b, c)
 		}
+		// Invalid bytes are dropped, matching net/http's sanitizeOrWarn.
 	}
-	return b.String()
+	s := string(b)
+	if strings.ContainsAny(s, " ,") {
+		return `"` + s + `"`
+	}
+	return s
+}
+
+// isNilReader reports whether r is a typed-nil io.Reader — a nil concrete
+// pointer stored in the interface, e.g. (*bytes.Reader)(nil). Reading from
+// such a value panics, and on the fast path the first dereference happens
+// inside net/http's writeLoop goroutine, where the panic kills the process;
+// the retry path panics in io.ReadAll on the caller's stack. Rejecting at
+// Build/buffer time surfaces a normal request error instead, mirroring the
+// typed-nil *FormData guard in WithBody's BodyMultipart branch.
+func isNilReader(r io.Reader) bool {
+	if r == nil {
+		return true
+	}
+	switch v := r.(type) {
+	case *strings.Reader:
+		return v == nil
+	case *bytes.Reader:
+		return v == nil
+	case *bytes.Buffer:
+		return v == nil
+	}
+	rv := reflect.ValueOf(r)
+	return (rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Func) && rv.IsNil()
 }
 
 // validCookieValueByte reports whether b is a valid byte in a Cookie
@@ -1447,11 +1527,27 @@ func validCookieValueByte(b byte) bool {
 func (p *requestProcessor) setContentLength(req *http.Request, body io.Reader) {
 	if v, ok := body.(*pooledBody); ok {
 		req.ContentLength = int64(v.Len())
+		return
+	}
+	// net/http parity (http.NewRequest): the three concrete reader types
+	// carry a knowable length, so send Content-Length instead of
+	// Transfer-Encoding: chunked — servers, proxies, and request-signing
+	// schemes that reject (or sign over) chunked uploads expect the stdlib's
+	// wire shape. The bodyLimitReader wrap (MaxRequestBodySize) hides the
+	// concrete type and with it the authoritative length; those requests
+	// stay chunked.
+	switch v := body.(type) {
+	case *strings.Reader:
+		req.ContentLength = int64(v.Len())
+	case *bytes.Reader:
+		req.ContentLength = int64(v.Len())
+	case *bytes.Buffer:
+		req.ContentLength = int64(v.Len())
 	}
 }
 
 // escapeQuotes escapes backslashes and double quotes in filenames per RFC 7578.
-// Optimized to use pooled strings.Builder for better performance.
+// Optimized to use a pooled buffer (see stringBuilderPool).
 func escapeQuotes(s string) string {
 	// Fast path: no escapes needed - use direct byte scanning
 	var hasEscape bool
@@ -1465,10 +1561,10 @@ func escapeQuotes(s string) string {
 		return s
 	}
 
-	// Slow path: build escaped string using pooled builder
-	sb, ok := stringBuilderPool.Get().(*strings.Builder)
+	// Slow path: build escaped string using the pooled buffer
+	sb, ok := stringBuilderPool.Get().(*bytes.Buffer)
 	if !ok || sb == nil {
-		sb = &strings.Builder{}
+		sb = &bytes.Buffer{}
 	}
 	sb.Reset()
 	sb.Grow(len(s) + len(s)/10) // Pre-allocate ~10% extra for escapes
@@ -1484,8 +1580,9 @@ func escapeQuotes(s string) string {
 		}
 	}
 
-	result := sb.String()
-	// Discard oversized builders so a malicious multipart filename (user-controlled,
+	// Copy before pooling: bytes.Buffer's String aliases the live buffer.
+	result := strings.Clone(sb.String())
+	// Discard oversized buffers so a malicious multipart filename (user-controlled,
 	// full of escape chars) can't grow the pooled backing array and bloat memory.
 	// Mirrors putQueryBuilder's cap guard.
 	if sb.Cap() <= 4096 {

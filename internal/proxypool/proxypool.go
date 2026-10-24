@@ -71,15 +71,19 @@ type entry struct {
 	url  *url.URL // parsed proxy URL returned by Select
 	host string   // canonical dial address (host:port, default port appended); the key for ReportFailure/ReportSuccess
 
-	failures  atomic.Int64 // consecutive failure count; reset to 0 on success
-	openUntil atomic.Int64 // unix-nano timestamp until which the circuit is open; 0 = closed
+	failures atomic.Int64 // consecutive failure count; reset to 0 on success
+	// openUntil is the moment until which the circuit is open; nil = closed.
+	// A *time.Time (not a UnixNano int64) so the comparison runs on the
+	// MONOTONIC reading: a wall-clock NTP step previously stretched or
+	// shortened every open circuit by the size of the step.
+	openUntil atomic.Pointer[time.Time]
 }
 
 // Pool is a concurrency-safe, rotating proxy pool with passive circuit breaking.
 // It is safe for concurrent use by multiple goroutines. Create one with New.
 type Pool struct {
 	entries []*entry
-	byHost  map[string]*entry // host:port -> entry; built once, read-only after
+	byHost  map[string][]*entry // host:port -> entries (credential variants share a key); built once, read-only after
 
 	counter atomic.Uint64 // round-robin cursor
 
@@ -118,7 +122,8 @@ func New(cfg Config) (*Pool, error) {
 	}
 
 	entries := make([]*entry, 0, len(cfg.Proxies))
-	byHost := make(map[string]*entry, len(cfg.Proxies))
+	byHost := make(map[string][]*entry, len(cfg.Proxies))
+	seen := make(map[string]bool, len(cfg.Proxies))
 
 	for _, raw := range cfg.Proxies {
 		u, err := validation.ValidateProxyURL(raw)
@@ -134,14 +139,27 @@ func New(cfg Config) (*Pool, error) {
 		// circuit breaking silently never fires (e.g. "socks5://p" dials
 		// "p:1080" but was previously keyed as "p").
 		host := validation.CanonicalProxyAddr(u)
-		// Collapse duplicates by host:port — the same proxy listed twice would
-		// skew round-robin distribution and double-count failures.
-		if _, exists := byHost[host]; exists {
+		// DEDUP key: host:port PLUS credentials — entries differing only in
+		// user:pass are distinct configured proxies (per-user egress
+		// credentials rotating through one gateway are a real pattern) and
+		// must not collapse; the same entry listed verbatim twice would skew
+		// round-robin distribution. The circuit-breaker key stays
+		// host:port-only (byHost): ReportFailure/ReportSuccess apply to EVERY
+		// variant of a gateway, since the dial outcome is the gateway's, not
+		// the credential's. Known limit: the failure COUNT is per entry, so a
+		// threshold-straddling mix across variants opens each a bit later
+		// than a same-variant streak would.
+		ident := host
+		if u.User != nil {
+			ident += "|" + u.User.String()
+		}
+		if seen[ident] {
 			continue
 		}
+		seen[ident] = true
 		e := &entry{url: u, host: host}
 		entries = append(entries, e)
-		byHost[host] = e
+		byHost[host] = append(byHost[host], e)
 	}
 
 	if len(entries) == 0 {
@@ -165,7 +183,7 @@ func New(cfg Config) (*Pool, error) {
 // The request parameter is accepted to satisfy the http.Transport.Proxy
 // signature; it is not used in the current implementation.
 func (p *Pool) Select(_ *http.Request) (*url.URL, error) {
-	now := time.Now().UnixNano()
+	now := time.Now()
 
 	if p.strategy == StrategyRandom {
 		return p.selectRandom(now), nil
@@ -179,19 +197,19 @@ func (p *Pool) Select(_ *http.Request) (*url.URL, error) {
 // fallback rather than failing outright. start must already be normalized
 // to [0, n). Single implementation for the scan+fallback logic so
 // selectRoundRobin, selectRandom and SelectIndex cannot drift.
-func (p *Pool) selectFrom(start, n int, now int64) *url.URL {
+func (p *Pool) selectFrom(start, n int, now time.Time) *url.URL {
 	var fallback *entry
-	var fallbackOpenUntil int64
+	var fallbackOpenUntil time.Time
 
 	for i := 0; i < n; i++ {
 		e := p.entries[(start+i)%n]
 		ou := e.openUntil.Load()
-		if ou <= now {
+		if ou == nil || !now.Before(*ou) {
 			return e.url
 		}
-		if fallback == nil || ou < fallbackOpenUntil {
+		if fallback == nil || ou.Before(fallbackOpenUntil) {
 			fallback = e
-			fallbackOpenUntil = ou
+			fallbackOpenUntil = *ou
 		}
 	}
 	return fallback.url
@@ -205,7 +223,7 @@ func (p *Pool) selectFrom(start, n int, now int64) *url.URL {
 // platforms int(uint64) truncates and can sign-extend negative, and a single
 // "if start < 0 { start += n }" cannot recover from values far below -n —
 // index-out-of-range after 2^31 selections on a long-lived process.
-func (p *Pool) selectRoundRobin(now int64) *url.URL {
+func (p *Pool) selectRoundRobin(now time.Time) *url.URL {
 	n := len(p.entries)
 	// Add(1)-1 = the pre-increment value: the first call returns index 0,
 	// preserving the historical sequence. The modulo happens BEFORE the int
@@ -217,7 +235,7 @@ func (p *Pool) selectRoundRobin(now int64) *url.URL {
 // selectRandom probes from a random entry point, returning the first healthy
 // one. If every circuit is open it falls back to the entry closest to
 // recovery.
-func (p *Pool) selectRandom(now int64) *url.URL {
+func (p *Pool) selectRandom(now time.Time) *url.URL {
 	n := len(p.entries)
 
 	// Random start + sequential scan. Bounded random probing (n draws with
@@ -264,7 +282,7 @@ func (p *Pool) NextIndex() int {
 // DIFFERENT proxy than attempt N-1, even when redirect chains consume extra
 // Select calls and would otherwise desynchronize the round-robin cursor.
 func (p *Pool) SelectIndex(attempt int) *url.URL {
-	now := time.Now().UnixNano()
+	now := time.Now()
 
 	n := len(p.entries)
 	start := attempt % n
@@ -292,21 +310,21 @@ func (p *Pool) SelectIndex(attempt int) *url.URL {
 // (e.g. 403) are target-specific and must NOT circuit-break a proxy; they are
 // handled by retrying with a fresh Select (see Connection.ProxyRotateOnStatus).
 func (p *Pool) ReportFailure(host string) {
-	e, ok := p.byHost[host]
-	if !ok {
-		return
-	}
 	p.reportMu.Lock()
 	defer p.reportMu.Unlock()
-	if e.failures.Add(1) >= int64(p.failureThreshold) {
-		// A failure that arrives while the circuit is ALREADY open (an
-		// in-flight dial selected before the circuit opened, or the all-open
-		// fallback probing the closest-to-recovery entry) must not re-arm the
-		// cooldown from its own timestamp — the documented contract is a
-		// fixed Cooldown window from the opening failure, and under sustained
-		// fallback traffic re-arming would defer recovery indefinitely.
-		if now := time.Now().UnixNano(); now >= e.openUntil.Load() {
-			e.openUntil.Store(time.Now().Add(p.cooldown).UnixNano())
+	for _, e := range p.byHost[host] {
+		if e.failures.Add(1) >= int64(p.failureThreshold) {
+			// A failure that arrives while the circuit is ALREADY open (an
+			// in-flight dial selected before the circuit opened, or the all-open
+			// fallback probing the closest-to-recovery entry) must not re-arm the
+			// cooldown from its own timestamp — the documented contract is a
+			// fixed Cooldown window from the opening failure, and under sustained
+			// fallback traffic re-arming would defer recovery indefinitely.
+			now := time.Now()
+			if ou := e.openUntil.Load(); ou == nil || !now.Before(*ou) {
+				t := now.Add(p.cooldown)
+				e.openUntil.Store(&t)
+			}
 		}
 	}
 }
@@ -314,14 +332,12 @@ func (p *Pool) ReportFailure(host string) {
 // ReportSuccess resets a proxy's failure count and closes its circuit, marking
 // it healthy for immediate reuse.
 func (p *Pool) ReportSuccess(host string) {
-	e, ok := p.byHost[host]
-	if !ok {
-		return
-	}
 	p.reportMu.Lock()
 	defer p.reportMu.Unlock()
-	e.failures.Store(0)
-	e.openUntil.Store(0)
+	for _, e := range p.byHost[host] {
+		e.failures.Store(0)
+		e.openUntil.Store(nil)
+	}
 }
 
 // Hosts returns the canonical host:port dial address of every proxy in the

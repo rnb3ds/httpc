@@ -4,6 +4,31 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ---
 
+## v1.7.3 - Audit Hardening, net/http Parity & Robustness Fixes (2026-10-25)
+
+### Added
+- Internal only: `PresetNames()` preset-registry enumeration plus a full-coverage TLS-fingerprint verification dev tool (all 22 presets gated on exact JA4, HTTP/2 Akamai hash, ALPN, User-Agent coherence, and a zero-network registry-sync check)
+
+### Fixed
+- Audit events: the `error` field is pinned by test to serialize exactly once, as a string — the `json:"-"` tag makes the guarantee explicit (never an object)
+- Audit-middleware error sanitization preserves `errors.Is`/`errors.As` classification while redacting embedded raw URLs (was: blanket `[sanitized]` replacement)
+- Reader bodies (`*strings.Reader`, `*bytes.Reader`, `*bytes.Buffer`) now send `Content-Length` exactly like `http.NewRequest` — previously always `Transfer-Encoding: chunked` (streaming bodies intentionally stay chunked)
+- An unsolicited `206` that declares a `Content-Range` total is now honored — short bodies fail loudly and the temp file is removed, instead of being saved as a successful download
+- Session capture of `WithHeaderMap` is deterministic for mixed-case duplicate keys (sorted visit order, matching what the request sent — was Go map random order)
+- The TLS-fingerprint proxy circuit breaker counts only proxy-leg failures (dial/TLS/CONNECT/SOCKS handshake, wrapped in a `proxyLegError` sentinel) — three target-site timeouts no longer open a healthy proxy's circuit
+- `NO_PROXY` is now honored when the proxy comes from platform detection (Windows registry / macOS `networksetup`), not only from `HTTP(S)_PROXY`
+- The SSRF split→validate→candidate-join sequence has a single owner (`ValidatedCandidates`) shared by the standard, DoH, and TLS-fingerprint dial paths — three hand-synced copies removed
+- A portless dial address now fails closed (`must be host:port`) instead of silently assuming port 443 (production dial paths always pass host:port)
+
+### Changed
+- Linux download denylist gains the system-owned `/var` subtrees (`/var/lib`, `/var/log`, `/var/spool`, `/var/cache`, `/var/db`); `/usr/local` and `/var/tmp` deliberately remain allowed; pinned per-GOOS by test
+- `WithBody` rejects out-of-range `BodyKind` values (e.g. `BodyKind(42)`) instead of silently treating them as `BodyAuto`
+- Godoc accuracy pass: zero-value semantics of `WithMaxRetries`/`WithMaxRedirects`/`WithTimeout`, `ResumeDownload`'s computed Range offset replacing a caller-supplied header, `WithFile` bare-filenames-only, `ErrInvalidMiddleware`'s actual scope, the response-cap figure corrected 5MB→10MB, and a repaired `RedactURLInMessage` doc splice
+- `AuditMiddleware`'s example demonstrates `json.Marshal` (the `Format` field is a reserved no-op, no longer initialized by `DefaultAuditConfig`); `TimeoutMiddleware`'s streaming rejection documented as per-request
+- Capture caveats documented on `WithHeader`/`WithHeaderMap`/`WithUserAgent`/`WithCookies`/`WithCookieMap`/`WithCookieString` (DomainClient persists them into the session; a custom `RequestOptionFunc` is the one-shot escape hatch)
+
+---
+
 ## v1.7.2 - Proxy tracking, stability fixes, and configuration protection measures (2026-10-24)
 
 ### Added
@@ -18,7 +43,17 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ### Changed
 - `New` prints a one-time `[CONFIG WARNING]` when a hand-built `Config` carries the exact all-off signature (URL validation, header validation, strict Content-Length, redirects, HTTP/2, and the response-size cap all disabled): every bool documented "Default: true" is true only in `DefaultConfig()`/presets, and a struct literal that sets only e.g. `Retry.BackoffFactor` passes validation with all of them silently off. The `Config` struct doc now carries the same warning. Deliberate all-off users can ignore the warning
-- Docs: `WithContext` (a context deadline narrows the client default; the shorter applies — it does not override), `AuditEvent.Error` (raw text when `SanitizeError: false`), and `WithBasicAuth`/`WithBearerToken` (deliberately not captured into session state, unlike the equivalent `WithHeader`) now document their actual behavior
+- **307/308 redirect parity**: `WithBody` over the three concrete reader types net/http itself makes replayable (`*strings.Reader`, `*bytes.Reader`, `*bytes.Buffer`) now gets `GetBody` (snapshotted exactly like `http.NewRequest`), so a bodied POST receiving 307/308 is FOLLOWED with the body replayed — previously these types fell into the generic non-replayable io.Reader bucket and the 3xx surfaced unfollowed, a silent divergence from plain net/http. Generic `io.Reader` bodies remain non-replayable (a consumed stream cannot be rewound)
+- Docs: `WithContext` (a context deadline narrows the client default; the shorter applies — it does not override), `AuditEvent.Error` (raw text when `SanitizeError: false`), `WithBasicAuth`/`WithBearerToken` (deliberately not captured into session state, unlike the equivalent `WithHeader`), and `Download` (an unsolicited 206 on a no-Range download is accepted as complete — deliberate, detect truncation with `Checksum`) now document their actual behavior
+- URL redaction treats `;` as a query-parameter separator for DETECTION (legacy PHP/servlet configurations parse it as one): sensitive values riding in `;`-separated parameters (`?a=1;password=hunter2`) are redacted too. Once a sensitive key is found inside an `&`-segment the redaction extends to the segment END — a `;` inside a sensitive VALUE (`token=a;b`) is indistinguishable from a separator, and stopping at it would leak the value's tail; when ambiguous the redaction over-redacts (a possible non-sensitive neighbor behind the sensitive key is dropped). Non-sensitive queries are byte-identical after redaction
+- Middleware response wrappers that embed or delegate to the underlying `*engine.Response` now keep `Result.Meta.ProxyURL` (proxy attribution); an opaque wrapper still loses it, as documented in `Chain`
+- The proxied-target SSRF guard resolves through the DoH resolver when DoH is enabled (previously always the system resolver, so the guard and the dial path could disagree on what a hostname resolves to); the TLS-fingerprint path now shares the same resolver — `PoolManager.DoHLookup()` feeds `fingerprint.Config.DNSLookup`, used by BOTH the fingerprint pre-flight and the validating direct dialer (which was hardcoded to the system resolver)
+- Proxy-pool circuit cooldowns are stored as monotonic `time.Time` (previously wall-clock `UnixNano`: an NTP backward step stretched every open circuit by the size of the step)
+- `DoHResolver.ClearCache` no longer runs a final counter "reconcile": every `cacheSize` mutation is paired with exactly one successful map mutation, so the counter is accurate by construction — the recount `Store` could overwrite the accurate value mid-race and permanently over-count the cache (at capacity, every admission then took the evict path, churning fresh entries)
+- macOS system-path guard is no longer inert: entries and input are compared case-insensitively (APFS resolves `/Library` and `/library` identically), and `/private/etc` + `/private/var` (the canonical symlink targets of `/etc` and `/var`) are gated like their symlink spellings
+- Windows download/upload paths reject 8.3 short-name aliases (`C:\PROGRA~1\…`) in DIRECTORY components — the literal-text system-path and symlink checks cannot see through an alias. The final (file) component is exempt, and long legitimate names (`notes~2024`) do not match (base > 8)
+- `putQueryKeys`' doc now matches its behavior (clears `len` slots; stale strings from earlier larger requests remain reachable in the bounded backing array until overwritten)
+- The `http.Client` inside the engine transport is pinned by `TestHTTPClientNoTimeoutInvariant` and an INVARIANT comment: setting a Timeout would make the stdlib fork the request and share the pooled header map with the Result-bound fork — request deadlines are owned by the engine budget
 
 ---
 

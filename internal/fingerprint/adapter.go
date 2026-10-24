@@ -67,8 +67,6 @@ import (
 
 	ehttp "github.com/bogdanfinn/fhttp"
 
-	utls "github.com/bogdanfinn/utls"
-
 	"github.com/cybergodev/httpc/internal/connection"
 	"github.com/cybergodev/httpc/internal/types"
 )
@@ -110,6 +108,13 @@ type Config struct {
 	// Pool is the owning connection PoolManager (may be nil in tests); it
 	// supplies proxy selection and circuit-breaker reporting.
 	Pool *connection.PoolManager
+
+	// DNSLookup overrides the resolver used by the pre-flight SSRF check and
+	// the validating direct dialer (nil = system resolver). The engine passes
+	// PoolManager.DoHLookup() so those checks resolve through the same DoH
+	// resolver the standard dial path uses — otherwise DoH-enabled configs
+	// could have the fingerprint checks disagree with the dials.
+	DNSLookup func(ctx context.Context, host string) ([]net.IPAddr, error)
 }
 
 // Adapter implements http.RoundTripper over the fingerprinted backend.
@@ -217,10 +222,14 @@ func (a *Adapter) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	forkResp, err := b.RoundTrip(forkReq)
 
-	// Circuit-breaker reporting for the selected proxy: connection-class
-	// failures count against the proxy; completed exchanges count for it.
+	// Circuit-breaker reporting for the selected proxy: only proxy-leg
+	// failures (establishing the tunnel — see proxyLegError) count against
+	// the proxy; completed exchanges — and target-leg failures, where the
+	// proxy did its job — count for it. This mirrors the standard path's
+	// documented scope (proxypool.ReportFailure observes first-hop dial
+	// outcomes ONLY).
 	if proxy != nil {
-		if isConnectionFailure(err) {
+		if isProxyLegFailure(err) {
 			a.reportProxy(proxy, false)
 		} else {
 			a.reportProxy(proxy, true)
@@ -376,33 +385,24 @@ func (a *Adapter) backendFor(proxy *url.URL) (*backend, error) {
 	return b, nil
 }
 
-// isConnectionFailure reports whether err is a transport-level failure worth
-// counting against the proxy circuit breaker. The transport exposes no typed
-// sentinels, so classification is structural: net.Error (which url.Error and
-// timeouts satisfy) and net.OpError count; caller cancellations and
-// request-level errors do not.
-//
-// TLS verification failures need their own arm for a second reason: the
-// handshake runs on uTLS, so the error is uTLS's CertificateVerificationError,
-// NOT crypto/tls's (the types are distinct even though both print alike). On
-// the transport path such an error arrives wrapped in a *url.Error, which
-// satisfies net.Error and would already classify — the explicit arm keeps the
-// classification correct if it ever surfaces unwrapped.
-func isConnectionFailure(err error) bool {
+// isProxyLegFailure reports whether err occurred while establishing the
+// proxy leg — dial/TLS/CONNECT/SOCKS handshake; connectDialer.DialContext
+// wraps every establishment error in proxyLegError, however the transport
+// wraps it further. Only these count against the proxy's circuit, mirroring
+// the standard path's scope (proxypool.ReportFailure observes first-hop dial
+// outcomes ONLY). Target-leg failures — a slow origin timing out through an
+// established tunnel, a broken target certificate, errors while reading the
+// response — report success for the proxy, and caller cancellation is never
+// the proxy's fault.
+func isProxyLegFailure(err error) bool {
 	if err == nil {
 		return false
 	}
 	if errors.Is(err, context.Canceled) {
 		return false
 	}
-	var netErr net.Error
-	if errors.As(err, &netErr) {
-		// Covers *net.OpError and *url.Error: both implement net.Error, so
-		// separate errors.As arms for them were unreachable.
-		return true
-	}
-	var certErr *utls.CertificateVerificationError
-	return errors.As(err, &certErr)
+	var ple *proxyLegError
+	return errors.As(err, &ple)
 }
 
 // CloseIdleConnections closes every backend's idle connections (base and

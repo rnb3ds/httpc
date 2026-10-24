@@ -1,6 +1,9 @@
 package fingerprint
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // profileSpec describes one surf impersonation target: a browser family and
 // an optional operating-system flavour. An empty OS means the desktop
@@ -76,4 +79,18 @@ func ResolvePresetName(v string) (string, bool) {
 		return name, true
 	}
 	return "", false
+}
+
+// PresetNames returns the sorted names of every registered preset. It is the
+// enumeration counterpart of ResolvePresetName: callers that must cover the
+// whole vocabulary (validation hints, debug tooling, coverage gates) iterate
+// this list instead of hard-coding names that silently drift as the registry
+// grows.
+func PresetNames() []string {
+	names := make([]string, 0, len(presets))
+	for name := range presets {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
 }

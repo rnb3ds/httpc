@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
@@ -116,11 +117,16 @@ type ClientError struct {
 	causeMsg string
 }
 
-// errorBuilderPool reduces allocations for strings.Builder in ClientError.Error()
+// errorBuilderPool reduces buffer allocations in ClientError.Error(). It
+// pools *bytes.Buffer — NOT strings.Builder: strings.Builder.Reset discards
+// the backing array (buf = nil), so pooling it retains nothing but the
+// ~32-byte header and every reuse regrows from zero; bytes.Buffer.Reset
+// keeps the backing slice. The result is COPIED out (string(b.Bytes()))
+// before the Put — bytes.Buffer's String aliases the live buffer, which the
+// next pool user overwrites.
 var errorBuilderPool = sync.Pool{
 	New: func() any {
-		sb := &strings.Builder{}
-		return sb
+		return &bytes.Buffer{}
 	},
 }
 
@@ -129,9 +135,9 @@ var errorBuilderPool = sync.Pool{
 // the cause and attempt count when present.
 func (e *ClientError) Error() string {
 	// Estimate capacity: method (~8) + URL (~64) + message (~64) + cause (~64) + overhead
-	b, _ := errorBuilderPool.Get().(*strings.Builder)
+	b, _ := errorBuilderPool.Get().(*bytes.Buffer)
 	if b == nil {
-		b = &strings.Builder{}
+		b = &bytes.Buffer{}
 	}
 	b.Reset()
 	b.Grow(220)
@@ -173,7 +179,9 @@ func (e *ClientError) Error() string {
 		b.WriteByte(')')
 	}
 
-	result := b.String()
+	// Clone before pooling: bytes.Buffer.String aliases the live buffer,
+	// which the next pool user overwrites.
+	result := strings.Clone(b.String())
 	if b.Cap() <= 1024 {
 		errorBuilderPool.Put(b)
 	}
@@ -183,15 +191,6 @@ func (e *ClientError) Error() string {
 // Unwrap returns the underlying cause error, supporting errors.Is and errors.As.
 func (e *ClientError) Unwrap() error {
 	return e.Cause
-}
-
-// WithType returns a copy of the error with the specified type set.
-// Currently exercised only by tests.
-func (e *ClientError) WithType(t ErrorType) *ClientError {
-	cp := &ClientError{}
-	*cp = *e
-	cp.Type = t
-	return cp
 }
 
 // IsRetryable determines if the error is retryable based on its type and cause.

@@ -167,20 +167,10 @@ func getWindowsProxySettings() (proxyServer, proxyOverride string, proxyEnable b
 	return proxyServer, proxyOverride, proxyEnable, nil
 }
 
-// parseWindowsProxyString parses a Windows proxy server string and returns
-// the preferred single proxy URL (https entry over http, regardless of
-// registry ordering) — its historical contract, pinned by tests. Routing
-// that distinguishes schemes uses parseWindowsProxyRoutes instead.
-// Format can be:
-// - "server:port" (single proxy for all protocols)
-// - "http=server:port;https=server:port;ftp=server:port" (per-protocol)
-func parseWindowsProxyString(proxyStr string) (*url.URL, error) {
-	routes, err := parseWindowsProxyRoutes(proxyStr)
-	if err != nil {
-		return nil, err
-	}
-	return routes.httpsURL, nil
-}
+// (parseWindowsProxyString — a single-URL wrapper over parseWindowsProxyRoutes
+// kept alive only by tests — was removed as production-dead; its historical
+// https-preferred selection contract lives on in the table test in
+// proxy_windows_test.go, which asserts routes.httpsURL directly.)
 
 // windowsProxyRoutes holds the per-scheme proxy URLs parsed from the
 // registry ProxyServer value.

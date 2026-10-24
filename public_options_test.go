@@ -3,6 +3,7 @@ package httpc
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -253,5 +254,29 @@ func TestWithSecureCookie_HappyPath(t *testing.T) {
 	}
 	if received != "s3cret" {
 		t.Errorf("server received cookie value %q, want %q", received, "s3cret")
+	}
+}
+
+// TestWithBodyInvalidKindRejected pins that an out-of-range BodyKind errors
+// instead of silently falling into BodyAuto detection (BodyKind is an
+// untyped int enum; a computed BodyKind(42) previously sent the body with an
+// unintended Content-Type).
+func TestWithBodyInvalidKindRejected(t *testing.T) {
+	for _, kind := range []BodyKind{BodyKind(42), BodyKind(-1), BodyKind(6)} {
+		err := WithBody([]byte("x"), kind).apply(engine.AcquireRequest())
+		if err == nil || !strings.Contains(err.Error(), "invalid body kind") {
+			t.Errorf("WithBody(kind %d) = %v, want invalid-body-kind error", kind, err)
+		}
+	}
+	// Boundary kinds stay RANGE-valid: with a []byte input the
+	// type-mismatched kinds (XML/Form/Multipart) still fail with their own
+	// input errors — never the kind-range error.
+	for _, kind := range []BodyKind{BodyAuto, BodyJSON, BodyXML, BodyForm, BodyBinary, BodyMultipart} {
+		req := engine.AcquireRequest()
+		err := WithBody([]byte("x"), kind).apply(req)
+		engine.ReleaseRequest(req)
+		if err != nil && strings.Contains(err.Error(), "invalid body kind") {
+			t.Errorf("WithBody(kind %d) = %v; boundary kinds must not be range-rejected", kind, err)
+		}
 	}
 }

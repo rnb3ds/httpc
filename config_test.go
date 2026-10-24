@@ -827,3 +827,39 @@ func TestWarnTestingConfigInProduction(t *testing.T) {
 		t.Error("expected SSRF warning")
 	}
 }
+
+// TestValidateConfig_TLSEffectivePair pins the effective-pair check: a
+// hand-built Config with only ONE TLS bound set passes the raw min/max
+// comparison but can still yield an inverted pair once defaults are filled
+// (0 → min TLS 1.2 / max TLS 1.3) — that must fail at construction, not at
+// handshake time.
+func TestValidateConfig_TLSEffectivePair(t *testing.T) {
+	t.Run("max below defaulted min", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Security.MinTLSVersion = 0
+		cfg.Security.MaxTLSVersion = tls.VersionTLS11
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "effective TLS 1.1") {
+			t.Errorf("Validate = %v, want effective-pair error naming TLS 1.1", err)
+		}
+	})
+	t.Run("min-only stays coherent (defaulted max is the ceiling)", func(t *testing.T) {
+		// Only the max side can invert the pair: the defaulted max (1.3) is
+		// the highest version constant, so any explicit min is ≤ it. Setting
+		// min=1.3 alone yields the coherent (1.3, 1.3).
+		cfg := DefaultConfig()
+		cfg.Security.MinTLSVersion = tls.VersionTLS13
+		cfg.Security.MaxTLSVersion = 0
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate = %v, want nil for min=TLS1.3 with defaulted max", err)
+		}
+	})
+	t.Run("explicit valid pair still passes", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Security.MinTLSVersion = tls.VersionTLS12
+		cfg.Security.MaxTLSVersion = tls.VersionTLS12
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate = %v, want nil for an explicit coherent pair", err)
+		}
+	})
+}

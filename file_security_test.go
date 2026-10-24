@@ -3,6 +3,7 @@ package httpc
 import (
 	"path/filepath"
 	"runtime"
+	"slices"
 	"testing"
 )
 
@@ -88,6 +89,39 @@ func TestPrepareFilePath_WindowsReserved(t *testing.T) {
 		_, err := prepareFilePath(p)
 		if err == nil {
 			t.Errorf("prepareFilePath(%q) = nil error, want rejection", p)
+		}
+	}
+}
+
+// TestSystemPathsPerGOOS pins the per-platform system-path denylists. The
+// lists are deliberately asymmetric: darwin blocks /usr and /var wholesale
+// (both SIP-protected — user writes there fail anyway), while linux blocks
+// the system-OWNED subtrees under /var individually and keeps /usr/local and
+// /var/tmp open (user-writable by FHS design). A future edit that drops or
+// widens an entry must update this pin consciously.
+func TestSystemPathsPerGOOS(t *testing.T) {
+	paths := getSystemPaths()
+	if len(paths) == 0 {
+		t.Fatal("getSystemPaths returned no entries")
+	}
+	mustContain := map[string][]string{
+		"windows": {"c:\\windows\\"},
+		"darwin":  {"/system/", "/usr/", "/var/"},
+		"linux":   {"/etc/", "/usr/bin/", "/var/lib/", "/var/log/", "/var/run/", "/var/spool/"},
+	}[runtime.GOOS]
+	if mustContain == nil {
+		t.Skipf("no denylist pin for GOOS=%s", runtime.GOOS)
+	}
+	for _, want := range mustContain {
+		if !slices.Contains(paths, want) {
+			t.Errorf("GOOS=%s denylist missing %q: %v", runtime.GOOS, want, paths)
+		}
+	}
+	if runtime.GOOS == "linux" {
+		for _, open := range []string{"/usr/local/", "/var/tmp/"} {
+			if slices.Contains(paths, open) {
+				t.Errorf("linux denylist must not block the user-writable %q", open)
+			}
 		}
 	}
 }

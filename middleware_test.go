@@ -2,6 +2,7 @@ package httpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -333,8 +334,8 @@ func TestMiddleware_DefaultConfigs(t *testing.T) {
 			if config == nil {
 				t.Fatal("expected non-nil config")
 			}
-			if config.Format != "text" {
-				t.Errorf("expected format 'text', got: %s", config.Format)
+			if config.Format != "" {
+				t.Errorf("Format must stay zero (reserved, no effect — not initialized by DefaultAuditConfig), got: %s", config.Format)
 			}
 			if config.IncludeHeaders {
 				t.Error("expected IncludeHeaders to be false")
@@ -1169,6 +1170,113 @@ func TestAuditEventMarshalJSON(t *testing.T) {
 	}
 	if !strings.Contains(jsonStr, "test error") {
 		t.Error("expected JSON to contain error")
+	}
+
+	// The error must be serialized exactly once, as the STRING "error"
+	// field (MarshalJSON's ErrorStr carries the json:"error" tag) — never
+	// as a serialized error OBJECT: AuditEvent.Error's tag is json:"-", so
+	// the alias-promoted field cannot surface the exported error graph
+	// (engine.ClientError wraps *url.Error; on the SanitizeError=false path
+	// that graph embeds the raw request URL). Before the tag was hardened
+	// this held only through encoding/json's depth dominance over the
+	// promoted field; these assertions pin the contract outright.
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal round-trip: %v", err)
+	}
+	got, ok := decoded["error"]
+	if !ok {
+		t.Fatalf("marshaled AuditEvent must contain an %q field, got: %s", "error", jsonStr)
+	}
+	if s, isStr := got.(string); !isStr || s != "test error" {
+		t.Errorf(`"error" = %#v; want the string "test error"`, got)
+	}
+
+	// A nil error must omit the field entirely (omitempty).
+	event.Error = nil
+	data, err = event.MarshalJSON()
+	if err != nil {
+		t.Fatalf("failed to marshal nil-error event: %v", err)
+	}
+	decoded = nil
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal nil-error event: %v", err)
+	}
+	if _, ok := decoded["error"]; ok {
+		t.Error(`nil-error event must not contain an "error" field`)
+	}
+}
+
+// TestAuditMiddleware_SanitizeErrorKeepsClassification: with the default
+// SanitizeError=true the audited error must carry a redacted MESSAGE but
+// still unwrap to the original, so compliance logs stay classifiable via
+// errors.Is/As. Regression guard for the former blanket "[sanitized]"
+// replacement, which destroyed all classification.
+func TestAuditMiddleware_SanitizeErrorKeepsClassification(t *testing.T) {
+	var captured AuditEvent
+	cfg := DefaultAuditConfig() // SanitizeError: true
+	cfg.OnAudit = func(event AuditEvent) { captured = event }
+
+	sentinel := errors.New("connection refused")
+	rawURL := "http://user:secretpw@127.0.0.1:1/x?token=secret-value"
+	handler := AuditMiddleware(cfg)(func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
+		return nil, fmt.Errorf("Get %q: %w", rawURL, sentinel)
+	})
+
+	engineReq := engine.AcquireRequest()
+	defer engine.ReleaseRequest(engineReq)
+	engineReq.SetMethod("GET")
+	engineReq.SetURL(rawURL)
+
+	if _, err := handler(context.Background(), engineReq); !errors.Is(err, sentinel) {
+		t.Fatalf("handler error = %v; want the sentinel to propagate", err)
+	}
+
+	if captured.Error == nil {
+		t.Fatal("expected error to be captured")
+	}
+	if !errors.Is(captured.Error, sentinel) {
+		t.Errorf("errors.Is(audited, sentinel) = false; sanitization must keep classification: %v", captured.Error)
+	}
+	if msg := captured.Error.Error(); strings.Contains(msg, "secretpw") {
+		t.Errorf("audited error message leaks credentials: %q", msg)
+	}
+	if strings.Contains(captured.URL, "secretpw") {
+		t.Errorf("event.URL leaks credentials: %q", captured.URL)
+	}
+}
+
+// TestLoggingMiddleware_DisabledIsIdentity: LogFunc == nil
+// (DefaultLoggingConfig's state, documented as "logging disabled") must
+// short-circuit to the identity handler like AuditMiddleware's nil callback —
+// not run the full per-request body against a no-op sink. Observable: the
+// request's sanitized-URL cache stays unset, so no URL parse/redact work
+// happened on the disabled path.
+func TestLoggingMiddleware_DisabledIsIdentity(t *testing.T) {
+	var nextCalled bool
+	next := func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
+		nextCalled = true
+		return &mockResponse{statusCode: 200}, nil
+	}
+	handler := LoggingMiddleware(DefaultLoggingConfig())(next)
+
+	engineReq := engine.AcquireRequest()
+	defer engine.ReleaseRequest(engineReq)
+	engineReq.SetMethod("GET")
+	engineReq.SetURL("http://user:pw@example.com/x")
+
+	resp, err := handler(context.Background(), engineReq)
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	if !nextCalled {
+		t.Fatal("identity handler must still call next")
+	}
+	if resp == nil {
+		t.Fatal("response must pass through")
+	}
+	if s := engineReq.SanitizedURL(); s != "" {
+		t.Errorf("disabled logging must not compute a sanitized URL, got %q", s)
 	}
 }
 

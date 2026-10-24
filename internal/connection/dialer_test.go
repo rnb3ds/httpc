@@ -585,12 +585,14 @@ func TestResolveAndValidateAddress(t *testing.T) {
 			wantErr: false,
 			want:    "8.8.8.8:443",
 		},
-		// Public IP without port (bare IP early return path)
+		// Public IP without port: fails closed. The former fallback assumed
+		// port 443 and even returned the portless address as the candidate,
+		// which the dialer itself would then reject; the shared
+		// ValidatedCandidates sequence errors up front instead.
 		{
 			name:    "Public IP without port",
 			address: "8.8.8.8",
-			wantErr: false,
-			want:    "8.8.8.8",
+			wantErr: true,
 		},
 		// Private IPs are rejected
 		{
@@ -777,14 +779,17 @@ func TestResolveAndValidateAddress_CoverageGaps(t *testing.T) {
 		}
 	})
 
-	t.Run("SplitHostPort failure fallback port", func(t *testing.T) {
+	t.Run("portless address fails closed", func(t *testing.T) {
 		pm, err := NewPoolManager(nil)
 		if err != nil {
 			t.Fatalf("NewPoolManager: %v", err)
 		}
 		defer func() { _ = pm.Close() }()
 
-		// Address without port → SplitHostPort fails → port defaults to "443".
+		// Address without port → SplitHostPort fails → error. The former
+		// fallback silently assumed port 443 (dialing the wrong service for
+		// any non-TLS target); the shared ValidatedCandidates sequence fails
+		// closed instead.
 		_, err = pm.resolveAndValidateAddress(context.Background(), "localhost")
 		if err == nil {
 			t.Error("Expected error for localhost without port")

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/cybergodev/httpc/internal/engine"
 )
@@ -59,6 +61,11 @@ type DownloadConfig struct {
 	// Overwrite allows overwriting an existing file at FilePath.
 	Overwrite bool
 	// ResumeDownload attempts to resume a previously interrupted download.
+	// When a partial file exists, the library sends
+	// "Range: bytes=<local-size>-" — the computed offset REPLACES any
+	// caller-supplied Range header (options apply in order and this one is
+	// appended last), so passing WithHeader("Range", ...) together with
+	// ResumeDownload has no effect on the wire.
 	ResumeDownload bool
 	// Checksum is the expected hex-encoded checksum of the downloaded file.
 	// When set, the file is verified after download completes. A mismatch
@@ -139,6 +146,13 @@ type DownloadResult struct {
 // options for headers, authentication, query parameters, etc.
 // The download is subject to the client's Security.MaxResponseBodySize
 // (default 10 MB); oversize bodies fail with an error — see DownloadConfig.
+//
+// NOTE on unsolicited 206 responses: a server that answers a plain (no-Range)
+// download with "206 Partial Content" is taken at face value — the partial
+// body is saved and reported as a successful download (deliberate, pinned by
+// TestDownloadUnsolicited206Accepted). A non-conforming or malicious server
+// can therefore silently truncate content; supply DownloadConfig.Checksum to
+// detect it.
 func Download(ctx context.Context, url string, cfg *DownloadConfig, options ...RequestOption) (*DownloadResult, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("download config cannot be nil")
@@ -165,9 +179,13 @@ func (c *clientImpl) Download(ctx context.Context, url string, cfg *DownloadConf
 // not grow the map unboundedly.
 var downloadLocks sync.Map // map[string]*sync.Mutex
 
-// acquireDownloadLock tries to claim the download slot for path. ok is false
-// when a download to the same path is already running in this process, in
-// which case no lock is held and release is nil.
+// acquireDownloadLock tries to claim the download slot for path — and, for
+// fresh downloads' benefit, its predictable "<path>.httpc-tmp" sibling: a
+// download to file.bin WRITES file.bin.httpc-tmp, so a concurrent download
+// (or SaveToFile) whose destination is literally file.bin.httpc-tmp would
+// otherwise O_TRUNC/rename that same path under the first writer's feet
+// while holding a different lock key. ok is false when either slot is taken,
+// in which case no lock is held and release is nil.
 func acquireDownloadLock(path string) (release func(), ok bool) {
 	key, err := filepath.Abs(path)
 	if err != nil {
@@ -179,20 +197,45 @@ func acquireDownloadLock(path string) (release func(), ok bool) {
 		// different locks and bypass the serialization.
 		key = strings.ToLower(key)
 	}
-	v, _ := downloadLocks.LoadOrStore(key, &sync.Mutex{})
-	mu := v.(*sync.Mutex)
-	if !mu.TryLock() {
-		return nil, false
+	// The suffix has no path separators, so appending it to the normalized
+	// key equals the normalized key of the sibling path.
+	keys := [2]string{key, key + downloadTmpSuffix}
+
+	var held [2]*sync.Mutex
+	for i, k := range keys {
+		v, _ := downloadLocks.LoadOrStore(k, &sync.Mutex{})
+		mu := v.(*sync.Mutex)
+		if !mu.TryLock() {
+			for j := 0; j < i; j++ { // release what was already claimed
+				held[j].Unlock()
+				downloadLocks.CompareAndDelete(keys[j], held[j])
+			}
+			return nil, false
+		}
+		held[i] = mu
 	}
 	return func() {
-		mu.Unlock()
-		// Best-effort entry cleanup: if another goroutine LoadOrStore'd this
-		// same entry while the lock was held, CompareAndDelete fails and that
-		// goroutine keeps using it — a later acquirer then creates a fresh
-		// entry, degrading (only for that pair) to the pre-lock behavior. It
-		// can never block or deadlock.
-		downloadLocks.CompareAndDelete(key, mu)
+		for i, mu := range held {
+			mu.Unlock()
+			// Best-effort entry cleanup: if another goroutine LoadOrStore'd
+			// this same entry while the lock was held, CompareAndDelete fails
+			// and that goroutine keeps using it — a later acquirer then
+			// creates a fresh entry, degrading (only for that pair) to the
+			// pre-lock behavior. It can never block or deadlock.
+			downloadLocks.CompareAndDelete(keys[i], mu)
+		}
 	}, true
+}
+
+// validateChecksumAlgorithm rejects unsupported checksum algorithms up front.
+// Called from downloadFile (before any network I/O) and from
+// writeDownloadBody (before touching the destination file — a configuration
+// error must not truncate an existing one).
+func validateChecksumAlgorithm(opts *DownloadConfig) error {
+	if opts.ChecksumAlgorithm != "" && opts.ChecksumAlgorithm != ChecksumSHA256 {
+		return fmt.Errorf("unsupported checksum algorithm: %s", opts.ChecksumAlgorithm)
+	}
+	return nil
 }
 
 func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *DownloadConfig, options ...RequestOption) (result *DownloadResult, err error) {
@@ -211,6 +254,14 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 	}
 	if opts.FilePath == "" {
 		return nil, ErrEmptyFilePath
+	}
+	// A configuration error must fail before the network round-trip: the
+	// algorithm check also lives in writeDownloadBody (guarding the file it
+	// is about to touch for direct callers), but rejecting here means a
+	// typo'd ChecksumAlgorithm costs no request. One implementation, two
+	// gates — see validateChecksumAlgorithm.
+	if err := validateChecksumAlgorithm(opts); err != nil {
+		return nil, err
 	}
 
 	// Serialize downloads to the same destination path within this process:
@@ -301,6 +352,20 @@ func (c *clientImpl) downloadFile(ctx context.Context, url string, opts *Downloa
 			return nil, err
 		}
 		contentRangeTotal = total
+	} else if df.statusCode == http.StatusPartialContent {
+		// Unsolicited 206 on a plain (no-Range) download: the body is taken
+		// at face value UNLESS the server itself declares a Content-Range
+		// total ("bytes 0-N/total") — then the declaration is honored so the
+		// existing short-body check in writeDownloadBody can catch
+		// declared-total truncation instead of saving it as a success. A
+		// missing, malformed, non-zero-start, or "*"-total Content-Range
+		// keeps the documented take-at-face-value behavior (Checksum
+		// remains the detector there). Pinned by
+		// TestDownloadUnsolicited206Accepted and
+		// TestDownloadUnsolicited206DeclaredTotalTruncated.
+		if total, err := validateResumeContentRange(df.responseHeaders, 0); err == nil {
+			contentRangeTotal = total
+		}
 	}
 
 	// Validate response status
@@ -433,7 +498,10 @@ func handleDownloadStatus(statusCode int, bodyReader io.Reader, resumeOffset int
 			if len(preview) > 0 {
 				bodyPreview = string(preview)
 				if len(bodyPreview) > 200 {
-					bodyPreview = bodyPreview[:200] + "..."
+					// Cut at a rune boundary: server error pages are
+					// routinely UTF-8, and a mid-rune cut renders as
+					// mojibake in the error string this becomes.
+					bodyPreview = truncateAtRuneBoundary(bodyPreview, 200) + "..."
 				}
 			}
 			drainBody(bodyReader)
@@ -493,6 +561,36 @@ type downloadWriteParams struct {
 	contentRangeTotal int64
 }
 
+// atomicTempFile opens the predictable "<dst>.httpc-tmp" sibling for an
+// atomic replace: the symlink defense runs against the exact name being
+// opened (O_CREATE|O_TRUNC would follow a symlink planted at that name), with
+// the shared filePermissions. The single implementation for
+// writeDownloadBody's fresh-download path and Result.SaveToFile — the ladder
+// was previously maintained as two hand-synced copies and had already
+// drifted once.
+func atomicTempFile(dst string) (*os.File, string, error) {
+	tmpPath := dst + downloadTmpSuffix
+	if err := rejectSymlink(tmpPath); err != nil {
+		return nil, "", err
+	}
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, filePermissions)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to open file: %w", err)
+	}
+	return f, tmpPath, nil
+}
+
+// finalizeAtomicReplace renames the verified temp sibling into its final
+// location, removing the temp file when the rename fails. Shared by the
+// download and SaveToFile ladders.
+func finalizeAtomicReplace(tmpPath, dst string) error {
+	if err := os.Rename(tmpPath, dst); err != nil {
+		_ = os.Remove(tmpPath) // best-effort cleanup
+		return fmt.Errorf("failed to finalize %s: %w", dst, err)
+	}
+	return nil
+}
+
 // writeDownloadBody streams the response body to a file and returns download statistics.
 //
 // SECURITY: non-resumed downloads write to a "<path>.httpc-tmp" sibling and are
@@ -511,9 +609,10 @@ func writeDownloadBody(p downloadWriteParams) (*DownloadResult, error) {
 	// A configuration error must not truncate (O_TRUNC) an existing file.
 	// Unconditional in Checksum: a typo'd algorithm with no Checksum set
 	// previously passed silently, leaving the caller believing a checksum
-	// would be verified.
-	if opts.ChecksumAlgorithm != "" && opts.ChecksumAlgorithm != ChecksumSHA256 {
-		return nil, fmt.Errorf("unsupported checksum algorithm: %s", opts.ChecksumAlgorithm)
+	// would be verified. (downloadFile already ran this check before the
+	// request; this gate protects direct writeDownloadBody callers.)
+	if err := validateChecksumAlgorithm(opts); err != nil {
+		return nil, err
 	}
 
 	// Seed the checksum BEFORE opening the destination for writing: an error
@@ -545,26 +644,17 @@ func writeDownloadBody(p downloadWriteParams) (*DownloadResult, error) {
 	// after checksum verification below. Cleanup paths remove the temp file,
 	// leaving the destination (if any) untouched.
 	writePath := filePath
-	if !resumed {
-		writePath = filePath + downloadTmpSuffix
-		// SECURITY: mirror prepareFilePath's destination check on the temp
-		// sibling. The name is fully predictable and O_CREATE|O_TRUNC follows
-		// a symlink: a planted "<dest>.httpc-tmp -> elsewhere" would truncate
-		// whatever it points at, then rename the link onto the destination.
-		if err := rejectSymlink(writePath); err != nil {
-			return nil, err
-		}
-	}
-
 	var file *os.File
 	var err error
 	if resumed {
 		file, err = os.OpenFile(writePath, os.O_WRONLY|os.O_APPEND, filePermissions)
 	} else {
-		file, err = os.OpenFile(writePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, filePermissions)
+		// Shared ladder with Result.SaveToFile (symlink defense + open
+		// flags in one place — see atomicTempFile).
+		file, writePath, err = atomicTempFile(filePath)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to open file: %w", err)
+		return nil, err
 	}
 	// Panic safety net: io.Copy below drives the caller's ProgressCallback
 	// (user code that may panic); the explicit Close calls on the error paths
@@ -687,9 +777,8 @@ func writeDownloadBody(p downloadWriteParams) (*DownloadResult, error) {
 
 	// Atomically move the verified temp file into its final location.
 	if !resumed {
-		if renameErr := os.Rename(writePath, filePath); renameErr != nil {
-			_ = os.Remove(writePath) // best-effort cleanup
-			return nil, fmt.Errorf("failed to finalize download %s: %w", filePath, renameErr)
+		if err := finalizeAtomicReplace(writePath, filePath); err != nil {
+			return nil, err
 		}
 	}
 
@@ -733,9 +822,35 @@ type progressWriter struct {
 func downloadTotalSize(contentLength, resumeOffset int64, resumed bool) int64 {
 	total := contentLength
 	if resumed && total > 0 {
+		// Content-Length is attacker-controlled: clamp before the addition
+		// so a hostile value cannot wrap the reported total negative.
+		// Cosmetic only — the size-limit arithmetic uses safe comparisons —
+		// but progress reporting must not go nonsensical.
+		if total > math.MaxInt64-resumeOffset {
+			return math.MaxInt64
+		}
 		total += resumeOffset
 	}
 	return total
+}
+
+// truncateAtRuneBoundary cuts s to at most max bytes without splitting a
+// multi-byte UTF-8 rune: the result lands in error strings and logs, where a
+// split rune renders as mojibake.
+func truncateAtRuneBoundary(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if len(s) <= max {
+		return s
+	}
+	// Back off to the nearest rune start; a rune is at most utf8.UTFMax
+	// bytes, so the loop is bounded.
+	end := max
+	for end > 0 && end > max-utf8.UTFMax && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	return s[:end]
 }
 
 const progressInterval = 200 * time.Millisecond

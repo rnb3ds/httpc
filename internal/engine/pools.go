@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -103,27 +105,32 @@ func CloneHeader(src http.Header) http.Header {
 // Read-only: never appended to or mutated.
 var zeroStringSlice = []string{}
 
-// queryBuilderPool reduces allocations for building query strings
+// queryBuilderPool reduces buffer allocations for building query strings and
+// cookie headers. It pools *bytes.Buffer — NOT strings.Builder (whose Reset
+// discards the backing array, so a pooled strings.Builder retains only its
+// ~32-byte header and every reuse regrows from zero); bytes.Buffer.Reset
+// keeps the backing slice. Callers must extract the result with
+// strings.Clone before the Put — bytes.Buffer's String aliases the live
+// buffer, which the next pool user overwrites.
 var queryBuilderPool = sync.Pool{
 	New: func() any {
-		sb := &strings.Builder{}
-		return sb
+		return &bytes.Buffer{}
 	},
 }
 
-// getQueryBuilder retrieves a strings.Builder from the pool for query building.
-func getQueryBuilder() *strings.Builder {
-	sb, ok := queryBuilderPool.Get().(*strings.Builder)
+// getQueryBuilder retrieves a buffer from the pool for query building.
+func getQueryBuilder() *bytes.Buffer {
+	sb, ok := queryBuilderPool.Get().(*bytes.Buffer)
 	if !ok || sb == nil {
-		return &strings.Builder{}
+		return &bytes.Buffer{}
 	}
 	sb.Reset()
 	return sb
 }
 
-// putQueryBuilder returns a strings.Builder to the pool.
-// Builders with large capacity are discarded to prevent memory bloat.
-func putQueryBuilder(sb *strings.Builder) {
+// putQueryBuilder returns a buffer to the pool.
+// Buffers with large capacity are discarded to prevent memory bloat.
+func putQueryBuilder(sb *bytes.Buffer) {
 	if sb == nil || sb.Cap() > 4096 {
 		return
 	}
@@ -161,8 +168,12 @@ func getQueryKeys() *[]string {
 }
 
 // putQueryKeys returns a scratch key slice to the pool after clearing the
-// string references (pool hygiene: otherwise the recycled backing array
-// keeps the last request's keys reachable).
+// live string references. clear zeroes len(*kp) slots only: key strings from
+// earlier, larger requests remain reachable in the backing array up to cap
+// (bounded at maxQueryKeys = 64) until overwritten by later use. That bounded
+// residue is accepted — clearing the full cap would touch memory the slice
+// no longer logically owns, and 64 stale string headers are not a leak that
+// grows with traffic.
 func putQueryKeys(kp *[]string) {
 	if kp == nil || cap(*kp) > maxQueryKeys {
 		return // oversized scratch is left for GC
@@ -188,15 +199,31 @@ func shouldEscape(c byte) bool {
 // in capacity calculation (len(s)*3) and excessive memory allocation.
 const maxQueryEscapeSize = 10 * 1024 * 1024 // 10MB
 
+// appendStringWriter is the sink AppendQueryEscape appends to — satisfied by
+// both *strings.Builder and *bytes.Buffer, the two writer types the engine
+// and the facade build query/form strings with.
+type appendStringWriter interface {
+	io.Writer
+	io.StringWriter
+	io.ByteWriter
+}
+
 // AppendQueryEscape appends the URL-query-escaped form of s directly to b.
-// Writing straight into the builder avoids the intermediate escaped string
+// Writing straight into the writer avoids the intermediate escaped string
 // allocation that b.WriteString(QueryEscape(s)) would incur whenever s
 // contains characters that need escaping. Inputs with no escapable bytes are
 // written verbatim after a single scan. Uses the RFC 3986 unreserved set —
 // note this differs from url.QueryEscape for the space character (%20 here,
 // '+' in the stdlib form encoding), which servers decode identically. Very
 // large inputs fall back to the standard library.
-func AppendQueryEscape(b *strings.Builder, s string) {
+func AppendQueryEscape(b appendStringWriter, s string) {
+	// NOTE: every appendStringWriter implementation (*strings.Builder,
+	// *bytes.Buffer) is memory-backed and cannot fail, so the write errors
+	// below are explicitly discarded — errcheck requires the discard to be
+	// visible now that the receiver is an interface rather than the concrete
+	// (previously special-cased) *strings.Builder. Discards are inline (no
+	// closures) to keep this hot path allocation-free.
+
 	// SECURITY: delegate very large inputs to the standard library to avoid the
 	// per-byte loop cost and keep parity with QueryEscape's overflow guard.
 	// url.QueryEscape encodes space as '+', which would silently switch the
@@ -204,7 +231,7 @@ func AppendQueryEscape(b *strings.Builder, s string) {
 	// (QueryEscape emits '+' only for spaces; a literal '+' arrives here as
 	// %2B, so the replacement cannot corrupt real content).
 	if len(s) > maxQueryEscapeSize {
-		b.WriteString(strings.ReplaceAll(url.QueryEscape(s), "+", "%20"))
+		_, _ = b.WriteString(strings.ReplaceAll(url.QueryEscape(s), "+", "%20"))
 		return
 	}
 
@@ -217,22 +244,22 @@ func AppendQueryEscape(b *strings.Builder, s string) {
 		}
 	}
 	if firstEscape < 0 {
-		b.WriteString(s) // nothing to escape — single bulk write
+		_, _ = b.WriteString(s) // nothing to escape — single bulk write
 		return
 	}
 
 	// Slow path: write the leading verbatim run, then escape the remainder.
-	b.WriteString(s[:firstEscape])
+	_, _ = b.WriteString(s[:firstEscape])
 	const hex = "0123456789ABCDEF"
 	for i := firstEscape; i < len(s); i++ {
 		c := s[i]
 		if !shouldEscape(c) {
-			b.WriteByte(c)
+			_ = b.WriteByte(c)
 			continue
 		}
-		b.WriteByte('%')
-		b.WriteByte(hex[c>>4])
-		b.WriteByte(hex[c&0x0F])
+		_ = b.WriteByte('%')
+		_ = b.WriteByte(hex[c>>4])
+		_ = b.WriteByte(hex[c&0x0F])
 	}
 }
 
@@ -271,7 +298,7 @@ func appendQueryParams(existingQuery string, params map[string]any) string {
 			sb.WriteByte('=')
 			writeQueryParamValue(sb, value, numBuf[:0])
 		}
-		result := sb.String()
+		result := strings.Clone(sb.String()) // copy: the buffer is pooled and reused
 		putQueryBuilder(sb)
 		return result
 	}
@@ -303,7 +330,7 @@ func appendQueryParams(existingQuery string, params map[string]any) string {
 	}
 	putQueryKeys(kp)
 
-	result := sb.String()
+	result := strings.Clone(sb.String()) // copy: the buffer is pooled and reused
 	putQueryBuilder(sb)
 	return result
 }
@@ -319,7 +346,7 @@ func appendQueryParams(existingQuery string, params map[string]any) string {
 // FormatQueryParam (request.go, inspection/doc path) and the facade's
 // queryValueLength (public_options.go). query_param_parity_test.go guards
 // the drift; when adding a type, add it to all three.
-func writeQueryParamValue(sb *strings.Builder, value any, numBuf []byte) {
+func writeQueryParamValue(sb appendStringWriter, value any, numBuf []byte) {
 	if value == nil {
 		return
 	}
@@ -329,26 +356,26 @@ func writeQueryParamValue(sb *strings.Builder, value any, numBuf []byte) {
 			AppendQueryEscape(sb, v)
 		}
 	case int:
-		sb.Write(strconv.AppendInt(numBuf, int64(v), 10))
+		_, _ = sb.Write(strconv.AppendInt(numBuf, int64(v), 10)) // memory-backed: cannot fail
 	case int64:
-		sb.Write(strconv.AppendInt(numBuf, v, 10))
+		_, _ = sb.Write(strconv.AppendInt(numBuf, v, 10)) // memory-backed: cannot fail
 	case int32:
-		sb.Write(strconv.AppendInt(numBuf, int64(v), 10))
+		_, _ = sb.Write(strconv.AppendInt(numBuf, int64(v), 10)) // memory-backed: cannot fail
 	case uint:
-		sb.Write(strconv.AppendUint(numBuf, uint64(v), 10))
+		_, _ = sb.Write(strconv.AppendUint(numBuf, uint64(v), 10)) // memory-backed: cannot fail
 	case uint64:
-		sb.Write(strconv.AppendUint(numBuf, v, 10))
+		_, _ = sb.Write(strconv.AppendUint(numBuf, v, 10)) // memory-backed: cannot fail
 	case uint32:
-		sb.Write(strconv.AppendUint(numBuf, uint64(v), 10))
+		_, _ = sb.Write(strconv.AppendUint(numBuf, uint64(v), 10)) // memory-backed: cannot fail
 	case float64:
-		sb.Write(strconv.AppendFloat(numBuf, v, 'f', -1, 64))
+		_, _ = sb.Write(strconv.AppendFloat(numBuf, v, 'f', -1, 64)) // memory-backed: cannot fail
 	case float32:
-		sb.Write(strconv.AppendFloat(numBuf, float64(v), 'f', -1, 32))
+		_, _ = sb.Write(strconv.AppendFloat(numBuf, float64(v), 'f', -1, 32)) // memory-backed: cannot fail
 	case bool:
 		if v {
-			sb.WriteString("true")
+			_, _ = sb.WriteString("true") // memory-backed: cannot fail
 		} else {
-			sb.WriteString("false")
+			_, _ = sb.WriteString("false") // memory-backed: cannot fail
 		}
 	default:
 		if s, ok := value.(fmt.Stringer); ok {

@@ -1046,6 +1046,16 @@ func convertResponseToResult(resp ResponseMutator) *Result {
 		b.meta.ProxyURL = engineResp.ProxyURL()
 	} else {
 		result.Response.Headers = cloneHeaders(resp.Headers())
+		// Middleware-wrapped responses keep their proxy attribution when the
+		// wrapper forwards it: embedding or delegating to the underlying
+		// *engine.Response satisfies this assertion for free. A wrapper that
+		// hides the underlying response loses Meta.ProxyURL (documented in the
+		// middleware package docs) — previously even a forwarding wrapper
+		// lost it, because the attribution was reachable only via the
+		// concrete type assertion above.
+		if p, ok := resp.(interface{ ProxyURL() string }); ok {
+			b.meta.ProxyURL = p.ProxyURL()
+		}
 	}
 	result.Response.RawBody = resp.RawBody()
 	if len(result.Response.RawBody) > 0 {

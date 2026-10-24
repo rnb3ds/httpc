@@ -243,3 +243,26 @@ func TestDirectAdapterValidatingDialerEndToEnd(t *testing.T) {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
 }
+
+// TestValidatingDialer_ConfigDNSLookupSeeded pins the DoH-consistency wiring:
+// fingerprint.Config.DNSLookup (fed from PoolManager.DoHLookup by the engine)
+// is what the validating dialer resolves through — previously the dialer was
+// hardcoded to the system resolver, so a DoH-enabled config had the
+// fingerprint checks resolve differently than the standard dial path.
+func TestValidatingDialer_ConfigDNSLookupSeeded(t *testing.T) {
+	calls := 0
+	// The stub resolves to a LOOPBACK address: the lookup itself is the
+	// behavior under test, and a loopback result is rejected by the SSRF
+	// validation immediately after — fast and hermetic, no network dial.
+	lookup := func(ctx context.Context, host string) ([]net.IPAddr, error) {
+		calls++
+		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+	}
+	d := newValidatingDialer(Config{DNSLookup: lookup}, nil)
+	if _, err := d.DialContext(context.Background(), "tcp", "example.com:443"); err == nil {
+		t.Fatal("loopback resolution should be rejected by SSRF validation (fast failure)")
+	}
+	if calls != 1 {
+		t.Errorf("Config.DNSLookup was not used (calls = %d, want 1): the dialer must resolve through the injected lookup", calls)
+	}
+}

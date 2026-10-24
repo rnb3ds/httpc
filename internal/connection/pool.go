@@ -169,7 +169,7 @@ type Config struct {
 // share of dial attempts the pool admitted (the old implementation mixed the
 // live-connection gauge with the monotonic rejection counter, making the rate
 // drift and jitter).
-type metrics struct {
+type Metrics struct {
 	ActiveConnections   int64
 	TotalConnections    int64
 	RejectedConnections int64
@@ -494,11 +494,25 @@ func (pm *PoolManager) ssrfGuardProxyFunc(proxyFunc func(*http.Request) (*url.UR
 			return u, nil
 		}
 
-		if err := validateProxiedTarget(req.Context(), req.URL, pm.config.ExemptNets, pm.config.DialTimeout); err != nil {
+		if err := validateProxiedTarget(req.Context(), req.URL, pm.config.ExemptNets, pm.config.DialTimeout, pm.DoHLookup()); err != nil {
 			return nil, err
 		}
 		return u, nil
 	}
+}
+
+// DoHLookup returns the DoH resolver's lookup, or nil (system resolver) when
+// DoH is disabled. Every resolution-based check must use the SAME resolver
+// as the dial path or the layers can disagree on what a hostname resolves to
+// (DoH says public, system DNS says private) and reject requests the dial
+// path would have allowed — or vice versa. Consumers: the standard path's
+// proxied-target SSRF guard and the fingerprint transport (preflight + the
+// validating direct dialer), both fed through Config plumbing.
+func (pm *PoolManager) DoHLookup() func(ctx context.Context, host string) ([]net.IPAddr, error) {
+	if pm.dohResolver == nil {
+		return nil
+	}
+	return pm.dohResolver.LookupIPAddr
 }
 
 // ReportProxyFailure records a connection-level failure against the proxy at
@@ -576,36 +590,35 @@ func (pm *PoolManager) createDialer() func(context.Context, string, string) (net
 
 		// If DoH is enabled, resolve the address using DoH and dial the IP directly
 		if pm.dohResolver != nil {
-			host, port, err := net.SplitHostPort(address)
-			if err != nil {
-				host = address
-				port = "443"
+			if allowPrivateIPs {
+				// Validation disabled by policy: resolve via DoH (so the dial
+				// path and the proxied-target pre-check agree on the answer)
+				// but skip the SSRF filter; dial every resolved literal.
+				host, port, err := net.SplitHostPort(address)
+				if err != nil {
+					pm.releaseConnSlot()
+					return nil, fmt.Errorf("DoH dial: address %q must be host:port: %w", address, err)
+				}
+				ips, err := pm.dohResolver.LookupIPAddr(ctx, host)
+				if err != nil {
+					pm.releaseConnSlot()
+					return nil, fmt.Errorf("DoH DNS resolution failed: %w", err)
+				}
+				candidates := make([]string, len(ips))
+				for i, addr := range ips {
+					candidates[i] = net.JoinHostPort(addr.IP.String(), port)
+				}
+				return pm.dialCandidates(ctx, dialer, network, candidates)
 			}
-
-			// Use DoH resolver for DNS lookup
-			ips, err := pm.dohResolver.LookupIPAddr(ctx, host)
+			// Validating branch: the shared SSRF sequence with the DoH
+			// resolver as the lookup — one implementation with the standard
+			// path below and the fingerprint dialer (validation.
+			// ValidatedCandidates). The "DoH %w" wrap keeps resolution
+			// failures identifiable as DoH-sourced.
+			candidates, err := validation.ValidatedCandidates(ctx, address, pm.config.ExemptNets, pm.config.DialTimeout, pm.dohResolver.LookupIPAddr)
 			if err != nil {
 				pm.releaseConnSlot()
-				return nil, fmt.Errorf("DoH DNS resolution failed: %w", err)
-			}
-
-			// SSRF protection: filter to allowed IPs (supports Split-Horizon DNS)
-			resolvedIPs := make([]net.IP, len(ips))
-			for i, addr := range ips {
-				resolvedIPs[i] = addr.IP
-			}
-			if !allowPrivateIPs {
-				allowedIPs := validation.FilterAllowedIPs(resolvedIPs, pm.config.ExemptNets)
-				if len(allowedIPs) == 0 {
-					pm.releaseConnSlot()
-					return nil, fmt.Errorf("SSRF protection: domain resolves only to blocked addresses")
-				}
-				resolvedIPs = allowedIPs
-			}
-
-			candidates := make([]string, len(resolvedIPs))
-			for i, ip := range resolvedIPs {
-				candidates[i] = net.JoinHostPort(ip.String(), port)
+				return nil, fmt.Errorf("DoH %w", err)
 			}
 			return pm.dialCandidates(ctx, dialer, network, candidates)
 		}
@@ -673,49 +686,20 @@ func (pm *PoolManager) dialCandidates(ctx context.Context, dialer *net.Dialer, n
 	}, nil
 }
 
-// resolveAndValidateAddress resolves the given address and validates all resulting IPs
-// against SSRF protection rules. It returns validated "ip:port" candidates that should
-// be dialed directly to prevent DNS rebinding TOCTOU attacks; callers may try each
-// candidate in turn (IPv6 → IPv4 failover) since all of them passed validation.
+// resolveAndValidateAddress resolves the given address and validates all
+// resulting IPs against SSRF protection rules via the shared sequence
+// (validation.ValidatedCandidates — the same helper the DoH branch above and
+// the fingerprint validating dialer use), returning validated "ip:port"
+// candidates to dial directly, preventing DNS-rebinding TOCTOU attacks.
+// Kept as a thin method for the dialer tests.
 //
-// SECURITY: By resolving DNS once and dialing a validated IP directly (instead of
-// the original hostname), we eliminate the window where an attacker-controlled DNS
-// server could return a different (private) IP on the second resolution.
+// SECURITY: By resolving DNS once and dialing a validated IP directly
+// (instead of the original hostname), we eliminate the window where an
+// attacker-controlled DNS server could return a different (private) IP on
+// the second resolution. Note the shared helper's fail-closed port rule: a
+// portless address errors instead of silently assuming 443.
 func (pm *PoolManager) resolveAndValidateAddress(ctx context.Context, address string) ([]string, error) {
-	host, port, err := net.SplitHostPort(address)
-	if err != nil {
-		host = address
-		port = "443"
-	}
-
-	// If the address is already an IP, validate it directly
-	if ip := net.ParseIP(host); ip != nil {
-		if err := validation.ValidateIPWithExemptions(ip, pm.config.ExemptNets); err != nil {
-			return nil, err
-		}
-		return []string{address}, nil
-	}
-
-	// For domain names, resolve and filter to allowed IPs via the shared
-	// SSRF resolve-and-filter rule (validation.ResolveFilteredIPs — the same
-	// helper the proxied-target check and the fingerprint paths use). The
-	// timeout derives from the caller's context and DialTimeout inside the
-	// helper, so request cancellation aborts the lookup promptly.
-	allowedIPs, err := validation.ResolveFilteredIPs(ctx, host, pm.config.ExemptNets, pm.config.DialTimeout, nil)
-	if err != nil {
-		return nil, fmt.Errorf("DNS resolution failed for SSRF validation of %s: %w", host, err)
-	}
-	if len(allowedIPs) == 0 {
-		return nil, fmt.Errorf("domain %s resolves only to blocked addresses", host)
-	}
-
-	// Return every allowed IP for direct dialing to prevent DNS rebinding:
-	// callers dial the validated IP literals (never the hostname).
-	addrs := make([]string, 0, len(allowedIPs))
-	for _, ip := range allowedIPs {
-		addrs = append(addrs, net.JoinHostPort(ip.String(), port))
-	}
-	return addrs, nil
+	return validation.ValidatedCandidates(ctx, address, pm.config.ExemptNets, pm.config.DialTimeout, nil)
 }
 
 func (pm *PoolManager) isProxyAddr(address string) bool {
@@ -735,7 +719,12 @@ func (pm *PoolManager) isProxyAddr(address string) bool {
 // dial), but it re-closes the deterministic hostname→private-IP bypass: a
 // hostname whose only resolved addresses are blocked is now rejected before
 // the proxy ever sees it.
-func validateProxiedTarget(ctx context.Context, u *url.URL, exemptNets []*net.IPNet, dialTimeout time.Duration) error {
+// lookup overrides the resolver (nil = system resolver): the caller passes
+// the DoH resolver's lookup when DoH is enabled, so this check and the dial
+// path cannot disagree on what a hostname resolves to (DoH says public,
+// system DNS says private — or vice versa — and the guard rejected requests
+// the dial path would have allowed).
+func validateProxiedTarget(ctx context.Context, u *url.URL, exemptNets []*net.IPNet, dialTimeout time.Duration, lookup func(context.Context, string) ([]net.IPAddr, error)) error {
 	host := u.Hostname()
 	if host == "" {
 		return fmt.Errorf("SSRF protection: empty request host")
@@ -753,7 +742,7 @@ func validateProxiedTarget(ctx context.Context, u *url.URL, exemptNets []*net.IP
 	// the same helper the direct dial path and the fingerprint paths use): one
 	// implementation of the hostname→blocked-IP check, so the proxied path's
 	// policy can never drift from the direct path's.
-	allowed, err := validation.ResolveFilteredIPs(ctx, host, exemptNets, dialTimeout, nil)
+	allowed, err := validation.ResolveFilteredIPs(ctx, host, exemptNets, dialTimeout, lookup)
 	if err != nil {
 		return fmt.Errorf("SSRF protection: DNS resolution failed for %s: %w", host, err)
 	}
@@ -927,9 +916,10 @@ func (pm *PoolManager) HasProxy() bool {
 
 // GetMetrics returns a snapshot of current connection pool statistics,
 // including active, total, and rejected connection counts and the connection
-// hit rate. Currently exercised only by tests; reserved as the basis of a
-// future public metrics API.
-func (pm *PoolManager) GetMetrics() metrics {
+// hit rate. The returned Metrics type is exported so a future public metrics
+// API can name it (an exported method returning an unexported type is a dead
+// end — consumers cannot spell the return type).
+func (pm *PoolManager) GetMetrics() Metrics {
 	accepted := pm.acceptedConns.Load()
 	rejected := pm.rejectedConns.Load()
 	active := pm.activeConns.Load()
@@ -938,7 +928,7 @@ func (pm *PoolManager) GetMetrics() metrics {
 		hitRate = float64(accepted) / float64(accepted+rejected)
 	}
 
-	return metrics{
+	return Metrics{
 		ActiveConnections:   active,
 		TotalConnections:    accepted,
 		RejectedConnections: rejected,

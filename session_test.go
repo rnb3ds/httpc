@@ -159,6 +159,38 @@ func TestSessionManagerZeroValue(t *testing.T) {
 	}
 }
 
+// TestSessionManager_CaptureMixedCasingDeterministic pins the capture
+// invariant: when one request's options supply the same header under
+// multiple casings, the session persists the LAST OPTION's value —
+// deterministic, independent of Go's randomized map iteration, and matching
+// what the request actually sent (the engine canonicalizes keys and later
+// options win). Capture previously keyed the raw spelling and wrote in map
+// order, so a mixed-casing request could permanently persist a value the
+// request never sent.
+func TestSessionManager_CaptureMixedCasingDeterministic(t *testing.T) {
+	s, err := NewSessionManager(DefaultSessionConfig())
+	if err != nil {
+		t.Fatalf("NewSessionManager: %v", err)
+	}
+
+	s.captureFromOptions([]RequestOption{
+		WithHeader("X-Case", "first"),
+		WithHeaderMap(map[string]string{"x-case": "map-value", "X-Other": "v"}),
+		WithHeader("X-CASE", "last"),
+	})
+
+	got := s.GetHeaders()
+	if v := got["X-Case"]; v != "last" {
+		t.Errorf(`session["X-Case"] = %q, want the last option's value "last"`, v)
+	}
+	if v := got["X-Other"]; v != "v" {
+		t.Errorf(`session["X-Other"] = %q, want "v"`, v)
+	}
+	if len(got) != 2 {
+		t.Errorf("session headers = %v, want exactly 2 canonical entries", got)
+	}
+}
+
 // (TestSessionManager_SetCookieSecurity and TestSessionManager_SecurityValidation_SetCookieSecurity
 // were folded into TestSessionManager_CookieSecurityValidation below — all three
 // tested the same contract: the effective cookie-security policy (however it was

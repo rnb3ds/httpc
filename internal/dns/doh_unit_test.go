@@ -243,12 +243,12 @@ func TestDoHResolver_CacheExpiration(t *testing.T) {
 	}
 }
 
-func TestDoHResolver_CacheSize(t *testing.T) {
+func TestDoHResolver_cacheLen(t *testing.T) {
 	resolver := NewDoHResolver(nil, 5*time.Minute)
 	defer func() { _ = resolver.Close() }()
 
 	// Initial cache size should be 0
-	if size := resolver.CacheSize(); size != 0 {
+	if size := resolver.cacheLen(); size != 0 {
 		t.Errorf("Initial cache size = %d, want 0", size)
 	}
 
@@ -268,18 +268,18 @@ func TestDoHResolver_CacheSize(t *testing.T) {
 		resolver.cacheSize.Add(1)
 	}
 
-	if size := resolver.CacheSize(); size != int64(len(hosts)) {
+	if size := resolver.cacheLen(); size != int64(len(hosts)) {
 		t.Errorf("Cache size after seeding %d hosts = %d", len(hosts), size)
 	}
 
 	// Clear cache and verify counter resets
 	resolver.ClearCache()
-	if resolver.CacheSize() != 0 {
-		t.Errorf("Cache size after clear = %d, want 0", resolver.CacheSize())
+	if resolver.cacheLen() != 0 {
+		t.Errorf("Cache size after clear = %d, want 0", resolver.cacheLen())
 	}
 }
 
-func TestDoHResolver_SetCacheTTL(t *testing.T) {
+func TestDoHResolver_setCacheTTL(t *testing.T) {
 	resolver := NewDoHResolver(nil, 5*time.Minute)
 
 	// Seed one entry directly (no network).
@@ -290,10 +290,10 @@ func TestDoHResolver_SetCacheTTL(t *testing.T) {
 	resolver.cacheSize.Add(1)
 
 	// Change TTL (this clears cache)
-	resolver.SetCacheTTL(1 * time.Minute)
+	resolver.setCacheTTL(1 * time.Minute)
 
 	// Cache should be cleared
-	if size := resolver.CacheSize(); size != 0 {
+	if size := resolver.cacheLen(); size != 0 {
 		t.Errorf("Cache size after SetCacheTTL = %d, want 0", size)
 	}
 }
@@ -473,20 +473,20 @@ func TestDoHResolver_Close(t *testing.T) {
 	})
 }
 
-func TestDoHResolver_GetCacheTTL(t *testing.T) {
+func TestDoHResolver_getCacheTTL(t *testing.T) {
 	resolver := NewDoHResolver(nil, 5*time.Minute)
 
 	// Get default TTL
-	ttl := resolver.GetCacheTTL()
+	ttl := resolver.getCacheTTL()
 	if ttl != 5*time.Minute {
 		t.Errorf("GetCacheTTL() = %v, want %v", ttl, 5*time.Minute)
 	}
 
 	// Set new TTL
-	resolver.SetCacheTTL(10 * time.Minute)
+	resolver.setCacheTTL(10 * time.Minute)
 
 	// Verify TTL was changed
-	ttl = resolver.GetCacheTTL()
+	ttl = resolver.getCacheTTL()
 	if ttl != 10*time.Minute {
 		t.Errorf("GetCacheTTL() after SetCacheTTL = %v, want %v", ttl, 10*time.Minute)
 	}
@@ -919,7 +919,7 @@ func TestDoHResolver_EvictExpiredEntries(t *testing.T) {
 	}
 
 	// Verify counter reflects only fresh entries
-	if size := r.CacheSize(); size != int64(len(fresh)) {
+	if size := r.cacheLen(); size != int64(len(fresh)) {
 		t.Errorf("expected cache size %d, got %d", len(fresh), size)
 	}
 }
@@ -945,7 +945,7 @@ func TestDoHResolver_CacheFullTriggersEviction(t *testing.T) {
 	// should clear them all
 	r.evictExpiredEntries()
 
-	if size := r.CacheSize(); size != 0 {
+	if size := r.cacheLen(); size != 0 {
 		t.Errorf("expected cache size 0 after all expired, got %d", size)
 	}
 }
@@ -994,7 +994,7 @@ func TestDoHResolver_EvictOldestEntry(t *testing.T) {
 		}
 	}
 
-	if size := r.CacheSize(); size != int64(len(entries)-1) {
+	if size := r.cacheLen(); size != int64(len(entries)-1) {
 		t.Errorf("cache size = %d, want %d", size, len(entries)-1)
 	}
 }
@@ -1007,7 +1007,7 @@ func TestDoHResolver_EvictOldestEntry_EmptyCache(t *testing.T) {
 
 	r.evictOldestEntry() // must not panic
 
-	if size := r.CacheSize(); size != 0 {
+	if size := r.cacheLen(); size != 0 {
 		t.Errorf("expected cache size 0, got %d", size)
 	}
 }
@@ -1090,14 +1090,9 @@ func TestDoH_parseResponse_DispatchByContentType(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resp := &http.Response{
-				Header: http.Header{},
-				Body:   io.NopCloser(bytes.NewReader(tt.body)),
-			}
-			resp.Header.Set("Content-Type", tt.contentType)
-			ips, err := r.parseResponse(resp, "example.com")
+			ips, err := r.parseResponseBody(tt.body, tt.contentType, "example.com")
 			if err != nil {
-				t.Fatalf("parseResponse error: %v", err)
+				t.Fatalf("parseResponseBody error: %v", err)
 			}
 			if len(ips) != 1 || ips[0].IP.String() != tt.wantIP {
 				t.Errorf("got %v, want single IP %s", ips, tt.wantIP)
@@ -1106,9 +1101,10 @@ func TestDoH_parseResponse_DispatchByContentType(t *testing.T) {
 	}
 }
 
-// TestDoH_parseResponse_Boundaries covers the hardening branches of
-// parseResponse: the response-size ceiling, mid-read transport errors, and the
-// combined parser-failure error for an unknown Content-Type.
+// TestDoH_parseResponse_Boundaries covers the hardening branches of the
+// body read: the response-size ceiling and mid-read transport errors
+// (readDoHBody), plus the combined parser-failure error for an unknown
+// Content-Type (parseResponseBody).
 func TestDoH_parseResponse_Boundaries(t *testing.T) {
 	r := &DoHResolver{}
 
@@ -1118,7 +1114,7 @@ func TestDoH_parseResponse_Boundaries(t *testing.T) {
 			Header: http.Header{},
 			Body:   io.NopCloser(bytes.NewReader(oversize)),
 		}
-		_, err := r.parseResponse(resp, "example.com")
+		_, err := readDoHBody(resp)
 		if err == nil {
 			t.Fatal("expected size-limit error, got nil")
 		}
@@ -1133,7 +1129,7 @@ func TestDoH_parseResponse_Boundaries(t *testing.T) {
 			Body:   io.NopCloser(errReader{errors.New("connection reset")}),
 		}
 		resp.Header.Set("Content-Type", "application/dns-json")
-		_, err := r.parseResponse(resp, "example.com")
+		_, err := readDoHBody(resp)
 		if err == nil {
 			t.Fatal("expected read error, got nil")
 		}
@@ -1144,12 +1140,7 @@ func TestDoH_parseResponse_Boundaries(t *testing.T) {
 
 	t.Run("unknown content-type with both parsers failing reports both", func(t *testing.T) {
 		// Valid neither as JSON nor as DNS wire format.
-		resp := &http.Response{
-			Header: http.Header{},
-			Body:   io.NopCloser(bytes.NewReader([]byte("not-a-dns-response"))),
-		}
-		resp.Header.Set("Content-Type", "application/octet-stream")
-		_, err := r.parseResponse(resp, "example.com")
+		_, err := r.parseResponseBody([]byte("not-a-dns-response"), "application/octet-stream", "example.com")
 		if err == nil {
 			t.Fatal("expected combined parser error, got nil")
 		}
@@ -1173,14 +1164,9 @@ func (e errReader) Read([]byte) (int, error) { return 0, e.err }
 func TestDoH_parseResponse_CloudflareJSONNotForcedToWire(t *testing.T) {
 	jsonBody := []byte(`{"Status":0,"Answer":[{"name":"example.com","type":1,"data":"5.6.7.8"}]}`)
 	r := &DoHResolver{}
-	resp := &http.Response{
-		Header: http.Header{},
-		Body:   io.NopCloser(bytes.NewReader(jsonBody)),
-	}
-	resp.Header.Set("Content-Type", "application/dns-json")
-	ips, err := r.parseResponse(resp, "example.com")
+	ips, err := r.parseResponseBody(jsonBody, "application/dns-json", "example.com")
 	if err != nil {
-		t.Fatalf("parseResponse error: %v", err)
+		t.Fatalf("parseResponseBody error: %v", err)
 	}
 	if len(ips) != 1 || ips[0].IP.String() != "5.6.7.8" {
 		t.Errorf("cloudflare-named JSON response mis-dispatched: got %v, want 5.6.7.8", ips)
@@ -1549,4 +1535,48 @@ func TestLookupDedup_WaiterRetriesAfterLeaderCancel(t *testing.T) {
 			t.Errorf("healthy waiter failed after leader cancellation: %v", err)
 		}
 	}
+}
+
+// TestConcurrentResolverCache hammers the cache size/TTL/clear operations
+// concurrently (run with -race): the TTL field's atomic access and the cache
+// map must stay race-free. Migrated from the root package's
+// concurrency_test.go together with the unexporting of the test-only
+// accessors (setCacheTTL was the race this coverage pinned).
+func TestConcurrentResolverCache(t *testing.T) {
+	// nil selects defaultDoHProviders(); this test exercises concurrent cache
+	// and TTL operations only, so no provider is ever queried.
+	resolver := NewDoHResolver(nil, 5*time.Minute)
+
+	const numGoroutines = 50
+	const opsPerGoroutine = 20
+
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < opsPerGoroutine; j++ {
+				// Cache size access (atomic)
+				_ = resolver.cacheLen()
+
+				// TTL read (atomic)
+				_ = resolver.getCacheTTL()
+
+				// Cache clearing
+				if j%10 == 0 {
+					resolver.ClearCache()
+				}
+
+				// TTL setting (atomic — this was the race condition we fixed)
+				if j%5 == 0 {
+					resolver.setCacheTTL(time.Minute)
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	t.Logf("Final cache size: %d", resolver.cacheLen())
 }

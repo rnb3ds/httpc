@@ -96,9 +96,11 @@ var (
 	// MaxResponseBodySize and MaxDecompressedBodySize must be within allowed ranges.
 	ErrInvalidSecurity = errors.New("invalid security configuration")
 
-	// ErrInvalidMiddleware is returned when middleware configuration is invalid.
-	// Defaults.UserAgent must not exceed the length limit and must not contain
-	// control characters.
+	// ErrInvalidMiddleware is returned when Defaults.UserAgent is invalid:
+	// it must not exceed the length limit (512) and must not contain control
+	// characters. The name is historical — despite "middleware", it never
+	// fires for Config.Middleware misconfiguration; match on it only after
+	// setting Config.Defaults.UserAgent.
 	ErrInvalidMiddleware = errors.New("invalid middleware configuration")
 
 	// ErrEmptyFilePath is returned when file path is empty.

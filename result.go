@@ -1,6 +1,7 @@
 package httpc
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,13 +12,16 @@ import (
 	"time"
 )
 
-// resultBuilderPool reduces allocations for strings.Builder used in Result.String().
-// A separate pool exists in engine/request.go for engine-internal use; kept
-// separate to avoid cross-package pool contention.
+// resultBuilderPool reduces buffer allocations in Result.String(). It pools
+// *bytes.Buffer — NOT strings.Builder: strings.Builder.Reset discards the
+// backing array (buf = nil), so a pooled strings.Builder retains nothing but
+// its ~32-byte header and every reuse regrows from zero; bytes.Buffer.Reset
+// keeps the backing slice, so reused buffers skip the regrow. The result is
+// COPIED out (string(b.Bytes())) before the Put — bytes.Buffer's String
+// aliases the live buffer, which the next pool user overwrites.
 var resultBuilderPool = sync.Pool{
 	New: func() any {
-		sb := &strings.Builder{}
-		return sb
+		return &bytes.Buffer{}
 	},
 }
 
@@ -296,10 +300,10 @@ func (r *Result) String() string {
 		estimatedSize += 32 // "Body: [N bytes omitted]"
 	}
 
-	// Use pooled strings.Builder to reduce allocations
-	b, ok := resultBuilderPool.Get().(*strings.Builder)
+	// Use the pooled buffer (see resultBuilderPool for why bytes.Buffer).
+	b, ok := resultBuilderPool.Get().(*bytes.Buffer)
 	if !ok || b == nil {
-		b = &strings.Builder{}
+		b = &bytes.Buffer{}
 	}
 	b.Reset()
 	b.Grow(estimatedSize)
@@ -359,7 +363,9 @@ func (r *Result) String() string {
 
 	b.WriteByte('}')
 
-	result := b.String()
+	// Clone before pooling: bytes.Buffer.String aliases the live buffer,
+	// which the next pool user overwrites.
+	result := strings.Clone(b.String())
 	// Guard against retaining an oversized backing array in the pool — matches
 	// the cap guards on formBuilderPool and errorBuilderPool.
 	if b.Cap() <= maxResultBuilderCap {
@@ -404,21 +410,16 @@ func (r *Result) SaveToFile(filePath string) error {
 	}
 	defer release()
 
-	tmpPath := validatedPath + downloadTmpSuffix
-	// SECURITY: mirror prepareFilePath's destination check on the temp
-	// sibling — os.WriteFile's O_CREATE|O_TRUNC follows a symlink planted at
-	// this predictable name.
-	if err := rejectSymlink(tmpPath); err != nil {
-		return err
+	// Shared ladder with writeDownloadBody's fresh-download path (see
+	// atomicTempFile): the symlink defense and open flags live in one place.
+	f, tmpPath, err := atomicTempFile(validatedPath)
+	if err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
 	}
 	// Write via an explicit handle + Sync rather than os.WriteFile: matching
 	// writeDownloadBody's crash-consistency posture, the rename below must
 	// not publish content that a power loss could still lose. os.WriteFile
 	// never fsyncs.
-	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, filePermissions)
-	if err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
-	}
 	if _, err := f.Write(r.Response.RawBody); err != nil {
 		_ = f.Close() // best-effort cleanup of a partial write
 		_ = os.Remove(tmpPath)
@@ -433,10 +434,5 @@ func (r *Result) SaveToFile(filePath string) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("failed to close file: %w", err)
 	}
-	if err := os.Rename(tmpPath, validatedPath); err != nil {
-		_ = os.Remove(tmpPath) // best-effort cleanup
-		return fmt.Errorf("failed to finalize file: %w", err)
-	}
-
-	return nil
+	return finalizeAtomicReplace(tmpPath, validatedPath)
 }

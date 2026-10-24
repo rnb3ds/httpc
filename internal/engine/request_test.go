@@ -250,18 +250,21 @@ func TestRequest_AccessorRoundTrip(t *testing.T) {
 // Cookie header sanitization (request.go)
 // ---------------------------------------------------------------------------
 
-// TestSanitizeCookieNameValue pins the Cookie header-injection defenses:
-// CR/LF stripped from names, and invalid value bytes (quote, semicolon,
-// backslash, control, non-ASCII) octal-escaped exactly like net/http.
+// TestSanitizeCookieNameValue pins the Cookie header-injection defenses and
+// net/http parity: CR/LF in names are REPLACED with "-" (net/http replaces,
+// it does not delete), invalid value bytes are DROPPED, and a value
+// containing a space or comma is double-quoted \u2014 RFC 6265's quoted-string
+// form. (The former table pinned octal \ooo escaping, pre-RFC-6265 stdlib
+// behavior that modern net/http no longer performs.)
 func TestSanitizeCookieNameValue(t *testing.T) {
 	t.Run("sanitizeCookieName", func(t *testing.T) {
 		tests := []struct {
 			name, in, want string
 		}{
 			{"clean name passthrough", "session", "session"},
-			{"strip LF", "bad\nname", "badname"},
-			{"strip CR", "bad\rname", "badname"},
-			{"strip both", "a\r\nb", "ab"},
+			{"LF replaced", "bad\nname", "bad-name"},
+			{"CR replaced", "bad\rname", "bad-name"},
+			{"both replaced", "a\r\nb", "a--b"},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
@@ -277,13 +280,16 @@ func TestSanitizeCookieNameValue(t *testing.T) {
 			name, in, want string
 		}{
 			{"clean value passthrough (fast path)", "abc123", "abc123"},
-			{"printable specials excepted stay clean", "a:b/c?d#e", "a:b/c?d#e"},
-			{"quote escaped", "a\"b", "a\\042b"},
-			{"semicolon escaped", "a;b", "a\\073b"},
-			{"backslash escaped", "a\\b", "a\\134b"},
-			{"control byte escaped", "a\x01b", "a\\001b"},
-			{"non-ASCII escaped as UTF-8 byte pair (slow path)", "a\u00e4b", "a\\303\\244b"},
-			{"invalid at start", "\x00x", "\\000x"},
+			{"printable specials stay clean", "a:b/c?d#e", "a:b/c?d#e"},
+			{"quote dropped", "a\"b", "ab"},
+			{"semicolon dropped", "a;b", "ab"},
+			{"backslash dropped", "a\\b", "ab"},
+			{"control byte dropped", "a\x01b", "ab"},
+			{"non-ASCII dropped as UTF-8 byte pair (slow path)", "a\u00e4b", "ab"},
+			{"invalid at start", "\x00x", "x"},
+			{"space value quoted", "a b", `"a b"`},
+			{"comma value quoted", "a,b", `"a,b"`},
+			{"drop then quote", "a b;c", `"a bc"`},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {

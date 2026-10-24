@@ -578,13 +578,16 @@ func (s *SessionManager) captureFromOptions(options []RequestOption) {
 			if headers == nil {
 				headers = make(map[string]string)
 			}
-			headers[o.key] = o.value
+			headers[http.CanonicalHeaderKey(o.key)] = o.value
 		case *headerMapOption:
 			if headers == nil {
 				headers = make(map[string]string, len(o.headers))
 			}
-			for k, v := range o.headers {
-				headers[k] = v
+			// Sorted order (same rule as SetHeaders): a map carrying the
+			// same header under multiple casings resolves to the later key
+			// in sort order, independent of Go's randomized map iteration.
+			for _, k := range sortedKeys(o.headers) {
+				headers[http.CanonicalHeaderKey(k)] = o.headers[k]
 			}
 		default:
 			// Unrecognized option: cannot extract statically, skip.
@@ -611,6 +614,11 @@ func (s *SessionManager) captureFromOptions(options []RequestOption) {
 	}
 	s.storeCookies(cookiePtrs)
 
+	// Keys arrive already canonicalized (see the extraction loop above), so
+	// distinct entries cannot collide here; the write order is therefore
+	// irrelevant. The later-option-wins result matches what the request
+	// actually sent: the engine's SetHeader canonicalizes too, and options
+	// apply in order with the last write winning deterministically.
 	for key, value := range headers {
 		if err := validation.ValidateHeaderKeyValue(key, value); err != nil {
 			continue

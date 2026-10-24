@@ -1,6 +1,9 @@
 package fingerprint
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestResolvePresetName(t *testing.T) {
 	tests := []struct {
@@ -62,5 +65,26 @@ func TestResolvePresetName(t *testing.T) {
 				t.Errorf("ResolvePresetName(%q) = %q, want %q", tc.input, name, tc.wantName)
 			}
 		})
+	}
+}
+
+// TestPresetNames pins the registry size and the PresetNames/ResolvePresetName
+// round-trip. The count is deliberate over-pinning: the preset vocabulary is
+// small and every entry is a conscious decision, so a size change must update
+// this pin — and the failure message points at the baseline table in
+// dev_test/tls_fingerprint_verify_all.go, which must gain/lose the same rows.
+func TestPresetNames(t *testing.T) {
+	names := PresetNames()
+	if !slices.IsSorted(names) {
+		t.Errorf("PresetNames not sorted: %v", names)
+	}
+	if len(names) != 22 {
+		t.Errorf("registry has %d presets, want 22 — if a preset was added/removed, update this pin and dev_test/tls_fingerprint_verify_all.go presetCases in the same change: %v",
+			len(names), names)
+	}
+	for _, n := range names {
+		if resolved, ok := ResolvePresetName(n); !ok || resolved != n {
+			t.Errorf("ResolvePresetName(%q) = (%q, %v), want (%q, true)", n, resolved, ok, n)
+		}
 	}
 }

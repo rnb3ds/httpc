@@ -575,6 +575,12 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 	// SECURITY: Cap at maxRetryBodySize to prevent OOM from large streams.
 	if req.body != nil {
 		if r, ok := req.body.(io.Reader); ok {
+			// A typed-nil reader ((*bytes.Reader)(nil)) would panic in
+			// io.ReadAll below; Build rejects it on the fast path — reject
+			// here too so both paths fail as a request error (see isNilReader).
+			if isNilReader(r) {
+				return nil, classifyError(fmt.Errorf("request body is a nil io.Reader (%T)", req.body), req.URL(), req.Method(), 0)
+			}
 			// Fail fast on an already-cancelled context BEFORE buffering up to
 			// 100MB: ctx cancellation does not interrupt reading a caller
 			// supplied source (e.g. a file), and the request can only fail
@@ -612,6 +618,7 @@ func (c *Client) executeWithRetry(req *Request) (*Response, error) {
 			// close the original so it cannot leak (see closeBodyReader).
 			closeBodyReader(r)
 			req.body = buf
+			req.bodyFromRawReader = true
 		}
 	}
 

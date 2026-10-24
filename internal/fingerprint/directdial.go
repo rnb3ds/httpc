@@ -74,11 +74,15 @@ type validatingDialer struct {
 // — DialContext compensates with contextlessDialTimeout for the one caller
 // that arrives without a context deadline (see below).
 func newValidatingDialer(cfg Config, localAddr *net.TCPAddr) *validatingDialer {
+	lookup := cfg.DNSLookup
+	if lookup == nil {
+		lookup = net.DefaultResolver.LookupIPAddr
+	}
 	return &validatingDialer{
 		exemptNets:      cfg.ExemptNets,
 		allowPrivateIPs: cfg.AllowPrivateIPs,
 		tcp:             &net.Dialer{LocalAddr: localAddr},
-		lookupIPAddr:    net.DefaultResolver.LookupIPAddr,
+		lookupIPAddr:    lookup,
 	}
 }
 
@@ -123,39 +127,17 @@ func (d *validatingDialer) DialContext(ctx context.Context, network, addr string
 	return d.dialCandidates(ctx, network, candidates)
 }
 
-// resolveAndValidate turns "host:port" into validated "ip:port" candidates.
-// IP literals validate directly (no DNS, no window). Hostnames resolve once
-// under a capped timeout and filter to allowed records — split-horizon DNS
-// keeps working: a domain with both public and private records yields its
-// public records only, and a domain whose records are all blocked fails.
+// resolveAndValidate turns "host:port" into validated "ip:port" candidates
+// via the shared SSRF sequence (validation.ValidatedCandidates — one
+// implementation with the standard pool and its DoH branch; IP literals
+// validate directly with no DNS window, hostnames resolve once and filter to
+// allowed records so split-horizon DNS keeps working). This wrapper adds the
+// fingerprint prefix; dialTimeout 0 keeps the shared 10s DNS cap, and the
+// lookup seam preserves the test override.
 func (d *validatingDialer) resolveAndValidate(ctx context.Context, addr string) ([]string, error) {
-	host, port, err := net.SplitHostPort(addr)
+	candidates, err := validation.ValidatedCandidates(ctx, addr, d.exemptNets, 0, d.lookupIPAddr)
 	if err != nil {
-		return nil, fmt.Errorf("fingerprint: SSRF dial validation: %w", err)
-	}
-
-	if ip := net.ParseIP(host); ip != nil {
-		if err := validation.ValidateIPWithExemptions(ip, d.exemptNets); err != nil {
-			return nil, fmt.Errorf("fingerprint: SSRF protection: %w", err)
-		}
-		return []string{addr}, nil
-	}
-
-	// Resolve-and-filter via the shared SSRF rule (validation.ResolveFilteredIPs,
-	// the same implementation the standard path and the pre-flight use);
-	// dialTimeout 0 keeps the 10s cap, and the lookup seam preserves the
-	// test override.
-	allowed, err := validation.ResolveFilteredIPs(ctx, host, d.exemptNets, 0, d.lookupIPAddr)
-	if err != nil {
-		return nil, fmt.Errorf("fingerprint: SSRF dial validation: DNS resolution failed for %s: %w", host, err)
-	}
-	if len(allowed) == 0 {
-		return nil, fmt.Errorf("fingerprint: SSRF protection: domain %s resolves only to blocked addresses", host)
-	}
-
-	candidates := make([]string, len(allowed))
-	for i, ip := range allowed {
-		candidates[i] = net.JoinHostPort(ip.String(), port)
+		return nil, fmt.Errorf("fingerprint: SSRF protection: %w", err)
 	}
 	return candidates, nil
 }
