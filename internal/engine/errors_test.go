@@ -471,22 +471,6 @@ func TestClientError_Code(t *testing.T) {
 	}
 }
 
-// TestClientError_WithType validates the WithType method returns a copy.
-// (Moved from coverage_test.go during its dissolution.)
-func TestClientError_WithType(t *testing.T) {
-	err := &ClientError{Type: ErrorTypeNetwork}
-	result := err.WithType(ErrorTypeTimeout)
-	if result == err {
-		t.Error("WithType should return a new copy, not the same pointer")
-	}
-	if err.Type != ErrorTypeNetwork {
-		t.Errorf("Original should be unmodified, got %v", err.Type)
-	}
-	if result.Type != ErrorTypeTimeout {
-		t.Errorf("Expected ErrorTypeTimeout, got %v", result.Type)
-	}
-}
-
 // TestExtractStatusCode_EdgeCases tests edge-case inputs for extractStatusCode.
 func TestExtractStatusCode_EdgeCases(t *testing.T) {
 	tests := []struct {

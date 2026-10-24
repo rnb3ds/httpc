@@ -14,8 +14,6 @@ import (
 
 	"github.com/cybergodev/httpc"
 	"github.com/cybergodev/httpc/internal/connection"
-	"github.com/cybergodev/httpc/internal/dns"
-	"github.com/cybergodev/httpc/internal/security"
 	"github.com/cybergodev/httpc/internal/validation"
 )
 
@@ -214,46 +212,6 @@ func TestConcurrentSessionManagerWithCookieSecurity(t *testing.T) {
 		atomic.LoadInt64(&successCount), atomic.LoadInt64(&securityChangeCount))
 }
 
-// TestConcurrentDoHResolverCache tests concurrent DNS cache access.
-func TestConcurrentDoHResolverCache(t *testing.T) {
-	// nil selects defaultDoHProviders(); this test exercises concurrent cache
-	// and TTL operations only, so no provider is ever queried.
-	resolver := dns.NewDoHResolver(nil, 5*time.Minute)
-
-	const numGoroutines = 50
-	const opsPerGoroutine = 20
-
-	var wg sync.WaitGroup
-	wg.Add(numGoroutines)
-
-	for i := 0; i < numGoroutines; i++ {
-		go func(id int) {
-			defer wg.Done()
-			for j := 0; j < opsPerGoroutine; j++ {
-				// Test cache size access (atomic)
-				_ = resolver.CacheSize()
-
-				// Test TTL read (atomic)
-				_ = resolver.GetCacheTTL()
-
-				// Test cache clearing
-				if j%10 == 0 {
-					resolver.ClearCache()
-				}
-
-				// Test TTL setting (atomic - this was the race condition we fixed)
-				if j%5 == 0 {
-					resolver.SetCacheTTL(time.Minute)
-				}
-			}
-		}(i)
-	}
-
-	wg.Wait()
-
-	t.Logf("Final cache size: %d", resolver.CacheSize())
-}
-
 // TestConcurrentConnectionPool tests concurrent connection pool operations.
 func TestConcurrentConnectionPool(t *testing.T) {
 	cfg := connection.DefaultConfig()
@@ -295,52 +253,6 @@ func TestConcurrentConnectionPool(t *testing.T) {
 	t.Logf("Final pool metrics: Active=%d, Total=%d, Rejected=%d, HitRate=%.2f",
 		metrics.ActiveConnections, metrics.TotalConnections,
 		metrics.RejectedConnections, metrics.ConnectionHitRate)
-}
-
-// TestConcurrentDomainWhitelist tests concurrent domain whitelist operations.
-func TestConcurrentDomainWhitelist(t *testing.T) {
-	dw := security.NewDomainWhitelist("example.com", "*.trusted.org")
-
-	const numGoroutines = 50
-	const opsPerGoroutine = 100
-
-	var wg sync.WaitGroup
-	wg.Add(numGoroutines)
-
-	var allowedCount int64
-	var deniedCount int64
-
-	for i := 0; i < numGoroutines; i++ {
-		go func(id int) {
-			defer wg.Done()
-			for j := 0; j < opsPerGoroutine; j++ {
-				// Concurrent Add operations
-				domain := fmt.Sprintf("domain-%d-%d.com", id, j)
-				dw.Add(domain)
-
-				// Concurrent IsAllowed checks
-				if dw.IsAllowed(domain) {
-					atomic.AddInt64(&allowedCount, 1)
-				} else {
-					atomic.AddInt64(&deniedCount, 1)
-				}
-
-				// Concurrent Domains read
-				exact, wildcards := dw.Domains()
-				_ = exact
-				_ = wildcards
-
-				// Concurrent Remove operations
-				if j%10 == 0 {
-					dw.Remove(domain)
-				}
-			}
-		}(i)
-	}
-
-	wg.Wait()
-
-	t.Logf("Domain whitelist test: %d allowed, %d denied", allowedCount, deniedCount)
 }
 
 // TestConcurrentDefaultClient tests concurrent access to the default client.

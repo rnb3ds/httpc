@@ -83,7 +83,7 @@ type entry struct {
 // It is safe for concurrent use by multiple goroutines. Create one with New.
 type Pool struct {
 	entries []*entry
-	byHost  map[string]*entry // host:port -> entry; built once, read-only after
+	byHost  map[string][]*entry // host:port -> entries (credential variants share a key); built once, read-only after
 
 	counter atomic.Uint64 // round-robin cursor
 
@@ -122,7 +122,8 @@ func New(cfg Config) (*Pool, error) {
 	}
 
 	entries := make([]*entry, 0, len(cfg.Proxies))
-	byHost := make(map[string]*entry, len(cfg.Proxies))
+	byHost := make(map[string][]*entry, len(cfg.Proxies))
+	seen := make(map[string]bool, len(cfg.Proxies))
 
 	for _, raw := range cfg.Proxies {
 		u, err := validation.ValidateProxyURL(raw)
@@ -138,14 +139,27 @@ func New(cfg Config) (*Pool, error) {
 		// circuit breaking silently never fires (e.g. "socks5://p" dials
 		// "p:1080" but was previously keyed as "p").
 		host := validation.CanonicalProxyAddr(u)
-		// Collapse duplicates by host:port — the same proxy listed twice would
-		// skew round-robin distribution and double-count failures.
-		if _, exists := byHost[host]; exists {
+		// DEDUP key: host:port PLUS credentials — entries differing only in
+		// user:pass are distinct configured proxies (per-user egress
+		// credentials rotating through one gateway are a real pattern) and
+		// must not collapse; the same entry listed verbatim twice would skew
+		// round-robin distribution. The circuit-breaker key stays
+		// host:port-only (byHost): ReportFailure/ReportSuccess apply to EVERY
+		// variant of a gateway, since the dial outcome is the gateway's, not
+		// the credential's. Known limit: the failure COUNT is per entry, so a
+		// threshold-straddling mix across variants opens each a bit later
+		// than a same-variant streak would.
+		ident := host
+		if u.User != nil {
+			ident += "|" + u.User.String()
+		}
+		if seen[ident] {
 			continue
 		}
+		seen[ident] = true
 		e := &entry{url: u, host: host}
 		entries = append(entries, e)
-		byHost[host] = e
+		byHost[host] = append(byHost[host], e)
 	}
 
 	if len(entries) == 0 {
@@ -296,23 +310,21 @@ func (p *Pool) SelectIndex(attempt int) *url.URL {
 // (e.g. 403) are target-specific and must NOT circuit-break a proxy; they are
 // handled by retrying with a fresh Select (see Connection.ProxyRotateOnStatus).
 func (p *Pool) ReportFailure(host string) {
-	e, ok := p.byHost[host]
-	if !ok {
-		return
-	}
 	p.reportMu.Lock()
 	defer p.reportMu.Unlock()
-	if e.failures.Add(1) >= int64(p.failureThreshold) {
-		// A failure that arrives while the circuit is ALREADY open (an
-		// in-flight dial selected before the circuit opened, or the all-open
-		// fallback probing the closest-to-recovery entry) must not re-arm the
-		// cooldown from its own timestamp — the documented contract is a
-		// fixed Cooldown window from the opening failure, and under sustained
-		// fallback traffic re-arming would defer recovery indefinitely.
-		now := time.Now()
-		if ou := e.openUntil.Load(); ou == nil || !now.Before(*ou) {
-			t := now.Add(p.cooldown)
-			e.openUntil.Store(&t)
+	for _, e := range p.byHost[host] {
+		if e.failures.Add(1) >= int64(p.failureThreshold) {
+			// A failure that arrives while the circuit is ALREADY open (an
+			// in-flight dial selected before the circuit opened, or the all-open
+			// fallback probing the closest-to-recovery entry) must not re-arm the
+			// cooldown from its own timestamp — the documented contract is a
+			// fixed Cooldown window from the opening failure, and under sustained
+			// fallback traffic re-arming would defer recovery indefinitely.
+			now := time.Now()
+			if ou := e.openUntil.Load(); ou == nil || !now.Before(*ou) {
+				t := now.Add(p.cooldown)
+				e.openUntil.Store(&t)
+			}
 		}
 	}
 }
@@ -320,14 +332,12 @@ func (p *Pool) ReportFailure(host string) {
 // ReportSuccess resets a proxy's failure count and closes its circuit, marking
 // it healthy for immediate reuse.
 func (p *Pool) ReportSuccess(host string) {
-	e, ok := p.byHost[host]
-	if !ok {
-		return
-	}
 	p.reportMu.Lock()
 	defer p.reportMu.Unlock()
-	e.failures.Store(0)
-	e.openUntil.Store(nil)
+	for _, e := range p.byHost[host] {
+		e.failures.Store(0)
+		e.openUntil.Store(nil)
+	}
 }
 
 // Hosts returns the canonical host:port dial address of every proxy in the

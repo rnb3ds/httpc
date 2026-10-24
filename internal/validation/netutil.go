@@ -184,6 +184,50 @@ func ResolveFilteredIPs(ctx context.Context, host string, exemptNets []*net.IPNe
 	return FilterAllowedIPs(ips, exemptNets), nil
 }
 
+// ValidatedCandidates turns "host:port" into SSRF-validated "ip:port" dial
+// candidates: an IP literal validates directly (no DNS, no rebinding
+// window); a hostname resolves once through the shared resolve-and-filter
+// rule (ResolveFilteredIPs) and every allowed address becomes a candidate so
+// callers can fail over IPv6→IPv4. Single owner of the split → validate →
+// candidate-join sequence the standard dialer, its DoH variant, and the
+// fingerprint validating dialer previously maintained as three hand-synced
+// copies — copies that had already drifted (the pool assumed port 443 for
+// addresses without a port; the fingerprint path failed closed).
+//
+// Fail-closed: an address without a port is an error. Guessing a port would
+// dial the wrong service; both httpc dial paths receive host:port from the
+// transport, so a portless address is a caller bug worth an error, not a
+// silent 443 that dials the wrong port for any non-TLS target.
+//
+// Error shapes (callers add their own prefixes): a policy-rejected IP
+// returns ValidateIPWithExemptions's error verbatim; a DNS failure is
+// wrapped as "DNS resolution failed for <host>"; an empty allowed set
+// reports the shared "resolves only to blocked addresses" message.
+func ValidatedCandidates(ctx context.Context, addr string, exemptNets []*net.IPNet, dialTimeout time.Duration, lookup func(context.Context, string) ([]net.IPAddr, error)) ([]string, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("SSRF dial validation: address %q must be host:port: %w", addr, err)
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if err := ValidateIPWithExemptions(ip, exemptNets); err != nil {
+			return nil, err
+		}
+		return []string{addr}, nil
+	}
+	allowed, err := ResolveFilteredIPs(ctx, host, exemptNets, dialTimeout, lookup)
+	if err != nil {
+		return nil, fmt.Errorf("DNS resolution failed for %s: %w", host, err)
+	}
+	if len(allowed) == 0 {
+		return nil, fmt.Errorf("domain %s resolves only to blocked addresses", host)
+	}
+	candidates := make([]string, 0, len(allowed))
+	for _, ip := range allowed {
+		candidates = append(candidates, net.JoinHostPort(ip.String(), port))
+	}
+	return candidates, nil
+}
+
 // FilterAllowedIPs filters a list of IPs to only those allowed under SSRF rules.
 // Private/reserved IPs are excluded unless they match an exempt CIDR range.
 // Returns nil slice when no IPs are allowed.

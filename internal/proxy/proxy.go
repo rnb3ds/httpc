@@ -38,8 +38,17 @@ func (d *Detector) detect() func(*http.Request) (*url.URL, error) {
 		return envProxy
 	}
 
-	// Platform-specific detection
-	return d.detectPlatform()
+	// Platform-specific detection (Windows registry, macOS networksetup).
+	// NO_PROXY applies to a platform-sourced proxy as well: without this the
+	// two detection paths of the same Detector disagree — the common
+	// enterprise combination of "proxy from the OS + NO_PROXY for the
+	// intranet" silently sent intranet URLs to the corporate proxy, because
+	// only the environment path honored NO_PROXY.
+	platform := d.detectPlatform()
+	if platform == nil {
+		return nil
+	}
+	return applyNoProxy(platform, getEnvAny("NO_PROXY", "no_proxy"))
 }
 
 // detectFromEnvironment checks environment variables for proxy settings.
@@ -85,21 +94,13 @@ func (d *Detector) detectFromEnvironment() func(*http.Request) (*url.URL, error)
 		}
 
 		// Check NO_PROXY exclusions. The port must follow net/http's
-		// canonicalAddr semantics: httpproxy compares entries against
-		// host:port with the scheme's default port filled in
+		// canonicalAddr semantics (see canonicalPort): httpproxy compares
+		// entries against host:port with the scheme's default port filled in
 		// ("https://example.com/" is "example.com:443"), so
 		// NO_PROXY="example.com:443" must exempt it — the raw
 		// req.URL.Port() is "" for implicit ports and never matches a
 		// ported entry, diverging from net/http.
-		port := req.URL.Port()
-		if port == "" {
-			if req.URL.Scheme == "https" {
-				port = "443"
-			} else {
-				port = "80"
-			}
-		}
-		if noProxy != "" && !shouldUseProxy(host, port, noProxy) {
+		if noProxy != "" && !shouldUseProxy(host, canonicalPort(req), noProxy) {
 			return nil, nil
 		}
 
@@ -145,6 +146,44 @@ func getEnvAny(names ...string) string {
 		}
 	}
 	return ""
+}
+
+// canonicalPort returns the request's port with the scheme's default filled
+// in ("" → 443 for https, 80 otherwise), matching net/http's canonicalAddr:
+// httpproxy compares NO_PROXY entries against host:port in that form, so
+// NO_PROXY="example.com:443" must exempt https://example.com/ whose raw
+// req.URL.Port() is "".
+func canonicalPort(req *http.Request) string {
+	if port := req.URL.Port(); port != "" {
+		return port
+	}
+	if req.URL.Scheme == "https" {
+		return "443"
+	}
+	return "80"
+}
+
+// applyNoProxy wraps a platform-detected proxy function (Windows registry,
+// macOS networksetup) so NO_PROXY is honored exactly as on the
+// environment-variable path: the shared shouldUseProxy rule with canonical
+// port semantics. A noProxy of "" returns fn unchanged (zero per-request
+// overhead). Platform bypass outcomes (loopback, ProxyOverride /
+// bypass-domains) and detection errors pass through untouched — NO_PROXY can
+// only make an outcome more direct, never less.
+func applyNoProxy(fn func(*http.Request) (*url.URL, error), noProxy string) func(*http.Request) (*url.URL, error) {
+	if noProxy == "" {
+		return fn
+	}
+	return func(req *http.Request) (*url.URL, error) {
+		u, err := fn(req)
+		if err != nil || u == nil {
+			return u, err
+		}
+		if !shouldUseProxy(req.URL.Hostname(), canonicalPort(req), noProxy) {
+			return nil, nil
+		}
+		return u, nil
+	}
 }
 
 // isLoopbackRequest reports whether the request targets localhost or a

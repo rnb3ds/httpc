@@ -10,6 +10,11 @@ import (
 // TestParseWindowsProxyString verifies parsing of Windows proxy server strings
 // in both simple host:port and per-protocol formats, including protocol priority
 // and URL verification.
+// TestParseWindowsProxyString pins the historical single-URL contract
+// (the https entry serves as the preferred URL) against
+// parseWindowsProxyRoutes — the production routing entry point. The
+// parseWindowsProxyString wrapper this table originally drove was
+// production-dead and removed; its .httpsURL selection lives on here.
 func TestParseWindowsProxyString(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -122,7 +127,11 @@ func TestParseWindowsProxyString(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := parseWindowsProxyString(tt.input)
+			routes, err := parseWindowsProxyRoutes(tt.input)
+			var result *url.URL
+			if err == nil && routes != nil {
+				result = routes.httpsURL
+			}
 
 			if tt.wantErr {
 				if err == nil {

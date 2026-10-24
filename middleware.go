@@ -55,13 +55,23 @@ type AuditEvent struct {
 	// Attempts is the number of requests sent (1 when no retry occurred;
 	// 0 when the request errored before a response arrived).
 	Attempts int `json:"attempts"`
-	// Error is the request error, if any; marshaled as a string with
-	// sensitive details removed — UNLESS AuditConfig.SanitizeError is false
-	// (an explicit opt-out), in which case the raw error text is carried
-	// verbatim and may embed the full request URL (credentials and sensitive
-	// query values included, as net/http renders them). Sanitize-sensitive
-	// consumers must keep SanitizeError at its default true.
-	Error error `json:"error,omitempty"`
+	// Error is the request error, if any; marshaled by MarshalJSON as the
+	// STRING "error" field (its ErrorStr aux field carries the json:"error"
+	// tag), with sensitive details removed — UNLESS AuditConfig.
+	// SanitizeError is false (an explicit opt-out), in which case the raw
+	// error text is carried verbatim and may embed the full request URL
+	// (credentials and sensitive query values included, as net/http renders
+	// them). Sanitize-sensitive consumers must keep SanitizeError at its
+	// default true.
+	//
+	// The tag is json:"-": the error VALUE must never be serialized
+	// structurally. MarshalJSON re-marshals through an alias that promotes
+	// this field; the aux struct's same-named string field dominates it by
+	// depth today, but the "-" makes that guarantee independent of tag
+	// refactors — a structurally serialized error graph (engine.ClientError
+	// wraps *url.Error; both have exported fields) would put the raw
+	// request URL into compliance JSON.
+	Error error `json:"-"`
 	// SourceIP is an application-supplied caller identifier, if known.
 	SourceIP string `json:"sourceIP,omitempty"`
 	// UserID is an application-supplied user identifier, if known.
@@ -101,10 +111,12 @@ type AuditConfig struct {
 	// If nil, the middleware is a no-op.
 	OnAudit func(event AuditEvent)
 
-	// Format is a reserved field with no current effect: audit events are
-	// delivered as the structured AuditEvent value via OnAudit, and the
-	// rendering (text, JSON, ...) is entirely the callback's choice. Setting
-	// "text" or "json" here does nothing.
+	// Format is a reserved field with no effect — audit events are delivered
+	// as the structured AuditEvent value via OnAudit, and the rendering
+	// (text, JSON, ...) is entirely the callback's choice (json.Marshal an
+	// AuditEvent for JSON lines). It is deliberately NOT initialized by
+	// DefaultAuditConfig so no configuration suggests behavior that does not
+	// exist.
 	Format string
 
 	// IncludeHeaders includes request/response headers in the audit log
@@ -119,13 +131,11 @@ type AuditConfig struct {
 
 // DefaultAuditConfig returns an AuditConfig with default settings.
 //
-//	Format:         "text"
 //	IncludeHeaders: false
 //	MaskHeaders:    sensitive header names (Authorization, Cookie, etc.)
 //	SanitizeError:  true
 func DefaultAuditConfig() *AuditConfig {
 	return &AuditConfig{
-		Format:         "text",
 		IncludeHeaders: false,
 		// Clone the shared default list: handing out the package-level slice
 		// would let one caller's in-place mutation change every subsequently
@@ -229,7 +239,13 @@ func LoggingMiddleware(config *LoggingConfig) MiddlewareFunc {
 	}
 	log := config.LogFunc
 	if log == nil {
-		log = func(string, ...any) {}
+		// Logging disabled (DefaultLoggingConfig's state): return the
+		// identity middleware, exactly like AuditMiddleware does for a nil
+		// callback — instead of installing a no-op logger and still paying
+		// per-request URL sanitization (getOrComputeSanitizedURL) and error
+		// redaction for output nobody consumes. MetricsMiddleware guards the
+		// same way inside its per-request body.
+		return func(next Handler) Handler { return next }
 	}
 	return func(next Handler) Handler {
 		return func(ctx context.Context, req RequestMutator) (ResponseMutator, error) {
@@ -375,9 +391,11 @@ func TimeoutMiddleware(config *TimeoutMiddlewareConfig) MiddlewareFunc {
 
 			// Streaming responses outlive this middleware's handler call:
 			// defer cancel() fires as soon as headers arrive and aborts the
-			// body stream mid-read. Reject loudly at configuration time
-			// instead of letting the request fail with a misleading
-			// "context canceled" on the first body byte.
+			// body stream mid-read. StreamBody is a per-request property the
+			// factory cannot see, so the rejection runs here — on the first
+			// (and every) request carrying WithStreamBody/Download — instead
+			// of letting it fail with a misleading "context canceled" on the
+			// first body byte.
 			if req.StreamBody() {
 				return nil, fmt.Errorf("TimeoutMiddleware is incompatible with streaming responses (WithStreamBody/Download): its context is canceled before the body stream is consumed; use WithTimeout instead")
 			}
@@ -555,9 +573,13 @@ func sanitizeCallbackError(err error, rawURL, sanitizedURL string) error {
 //
 //	cfg := httpc.DefaultAuditConfig()
 //	cfg.OnAudit = func(event httpc.AuditEvent) {
-//	    log.Printf("[AUDIT] %v", event)
+//	    // JSON-lines sink: the callback owns the rendering (AuditConfig.
+//	    // Format is reserved and has no effect).
+//	    data, err := json.Marshal(event)
+//	    if err == nil {
+//	        log.Printf("[AUDIT] %s", data)
+//	    }
 //	}
-//	cfg.Format = "json"
 //	cfg.IncludeHeaders = true
 //	auditMiddleware := httpc.AuditMiddleware(cfg)
 func AuditMiddleware(config *AuditConfig) MiddlewareFunc {
@@ -584,11 +606,17 @@ func AuditMiddleware(config *AuditConfig) MiddlewareFunc {
 			resp, err := next(ctx, req)
 			duration := time.Since(start)
 
+			// rawURL feeds error sanitization below (an error message that
+			// embeds the RAW URL must be redacted with the same SanitizeURL
+			// pass); sanitizedURL is the redacted form reported on the event.
+			rawURL := req.URL()
+			sanitizedURL := getOrComputeSanitizedURL(req)
+
 			// Build audit event with sanitized URL
 			event := AuditEvent{
 				Timestamp: start,
 				Method:    req.Method(),
-				URL:       getOrComputeSanitizedURL(req),
+				URL:       sanitizedURL,
 				Duration:  duration,
 				Error:     err,
 			}
@@ -621,9 +649,14 @@ func AuditMiddleware(config *AuditConfig) MiddlewareFunc {
 				}
 			}
 
-			// Sanitize error if configured
+			// Sanitize error if configured. sanitizeCallbackError redacts the
+			// embedded raw URL (if any) while keeping the error identity via
+			// Unwrap, so compliance logs still classify failures
+			// (errors.Is/As) — the same rule LoggingMiddleware and
+			// MetricsMiddleware apply. The blanket "[sanitized]" replacement
+			// this replaces destroyed all classification.
 			if sanitizeError && event.Error != nil {
-				event.Error = fmt.Errorf("[sanitized]")
+				event.Error = sanitizeCallbackError(event.Error, rawURL, sanitizedURL)
 			}
 
 			cb(event)

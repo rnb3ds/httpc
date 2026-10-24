@@ -1,6 +1,9 @@
 package security
 
 import (
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -62,7 +65,7 @@ func TestNewDomainWhitelist(t *testing.T) {
 				t.Fatal("expected non-nil whitelist")
 			}
 
-			exact, wildcards := wl.Domains()
+			exact, wildcards := wl.domains()
 			if len(exact) != tt.wantLen {
 				t.Errorf("exact matches = %d, want %d", len(exact), tt.wantLen)
 			}
@@ -133,19 +136,19 @@ func TestDomainWhitelist_Add(t *testing.T) {
 	wl := NewDomainWhitelist("example.com")
 
 	// Add exact domain
-	wl.Add("newdomain.com")
+	wl.add("newdomain.com")
 	if !wl.IsAllowed("newdomain.com") {
 		t.Error("expected newdomain.com to be allowed after Add")
 	}
 
 	// Add wildcard domain
-	wl.Add("*.wildcard.org")
+	wl.add("*.wildcard.org")
 	if !wl.IsAllowed("sub.wildcard.org") {
 		t.Error("expected sub.wildcard.org to be allowed after Add")
 	}
 
 	// Add empty string (should be ignored)
-	wl.Add("")
+	wl.add("")
 	if wl.IsAllowed("") {
 		t.Error("empty string should not be allowed")
 	}
@@ -155,20 +158,20 @@ func TestDomainWhitelist_Remove(t *testing.T) {
 	wl := NewDomainWhitelist("example.com", "*.test.org")
 
 	// Remove exact domain
-	wl.Remove("example.com")
+	wl.remove("example.com")
 	if wl.IsAllowed("example.com") {
 		t.Error("expected example.com to be removed")
 	}
 
 	// Remove wildcard domain
-	wl.Remove("*.test.org")
+	wl.remove("*.test.org")
 	if wl.IsAllowed("sub.test.org") {
 		t.Error("expected sub.test.org to be removed")
 	}
 
 	// Verify other domains still work
-	wl.Add("other.com")
-	wl.Remove("nonexistent.com")
+	wl.add("other.com")
+	wl.remove("nonexistent.com")
 	if !wl.IsAllowed("other.com") {
 		t.Error("expected other.com to still be allowed")
 	}
@@ -183,8 +186,8 @@ func TestDomainWhitelist_Concurrency(t *testing.T) {
 	// Writer goroutine
 	go func() {
 		for i := 0; i < 100; i++ {
-			wl.Add("test.com")
-			wl.Remove("test.com")
+			wl.add("test.com")
+			wl.remove("test.com")
 		}
 		done <- true
 	}()
@@ -313,7 +316,7 @@ func BenchmarkDomainWhitelist_Add(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		wl.Add("newdomain.com")
+		wl.add("newdomain.com")
 	}
 }
 
@@ -329,7 +332,7 @@ func BenchmarkDomainWhitelist_Remove(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		wl.Remove(domains[i%len(domains)])
+		wl.remove(domains[i%len(domains)])
 	}
 }
 
@@ -396,26 +399,26 @@ func TestDomainWhitelist_BoundaryConditions(t *testing.T) {
 func TestDomainWhitelist_AddRemoveEdges(t *testing.T) {
 	t.Run("nil receiver is a no-op", func(t *testing.T) {
 		var w *DomainWhitelist
-		w.Add("example.com")    // must not panic
-		w.Remove("example.com") // must not panic
+		w.add("example.com")    // must not panic
+		w.remove("example.com") // must not panic
 	})
 
 	t.Run("empty and whitespace domains are ignored", func(t *testing.T) {
 		w := NewDomainWhitelist()
-		w.Add("")
-		w.Add("   ")
-		exact, _ := w.Domains()
+		w.add("")
+		w.add("   ")
+		exact, _ := w.domains()
 		if len(exact) != 0 {
 			t.Errorf("empty/whitespace Add stored something: %v", exact)
 		}
-		w.Remove("") // must not panic
+		w.remove("") // must not panic
 	})
 
 	t.Run("wildcard add is deduplicated", func(t *testing.T) {
 		w := NewDomainWhitelist()
-		w.Add("*.example.com")
-		w.Add("*.example.com") // second add must be a no-op
-		_, wildcards := w.Domains()
+		w.add("*.example.com")
+		w.add("*.example.com") // second add must be a no-op
+		_, wildcards := w.domains()
 		if len(wildcards) != 1 || wildcards[0] != ".example.com" {
 			t.Errorf("wildcards = %v, want single [.example.com]", wildcards)
 		}
@@ -423,8 +426,8 @@ func TestDomainWhitelist_AddRemoveEdges(t *testing.T) {
 
 	t.Run("bare dot wildcard is ignored", func(t *testing.T) {
 		w := NewDomainWhitelist()
-		w.Add("*.") // pattern "." has len 1 → not stored
-		_, wildcards := w.Domains()
+		w.add("*.") // pattern "." has len 1 → not stored
+		_, wildcards := w.domains()
 		if len(wildcards) != 0 {
 			t.Errorf("degenerate wildcard stored: %v", wildcards)
 		}
@@ -432,10 +435,10 @@ func TestDomainWhitelist_AddRemoveEdges(t *testing.T) {
 
 	t.Run("wildcard remove", func(t *testing.T) {
 		w := NewDomainWhitelist()
-		w.Add("*.example.com")
-		w.Add("*.other.com")
-		w.Remove("*.example.com")
-		_, wildcards := w.Domains()
+		w.add("*.example.com")
+		w.add("*.other.com")
+		w.remove("*.example.com")
+		_, wildcards := w.domains()
 		if len(wildcards) != 1 || wildcards[0] != ".other.com" {
 			t.Errorf("wildcards after remove = %v, want [.other.com]", wildcards)
 		}
@@ -443,11 +446,60 @@ func TestDomainWhitelist_AddRemoveEdges(t *testing.T) {
 
 	t.Run("exact remove of absent domain is a no-op", func(t *testing.T) {
 		w := NewDomainWhitelist()
-		w.Add("example.com")
-		w.Remove("absent.com")
-		exact, _ := w.Domains()
+		w.add("example.com")
+		w.remove("absent.com")
+		exact, _ := w.domains()
 		if len(exact) != 1 {
 			t.Errorf("exact = %v, want [example.com]", exact)
 		}
 	})
+}
+
+// TestConcurrentDomainWhitelist hammers add/remove/domains/IsAllowed
+// concurrently (run with -race): the whitelist's mutex discipline must keep
+// the sets consistent and every operation race-free. Migrated from the root
+// package's concurrency_test.go together with the unexporting of the
+// test-only mutators.
+func TestConcurrentDomainWhitelist(t *testing.T) {
+	dw := NewDomainWhitelist("example.com", "*.trusted.org")
+
+	const numGoroutines = 50
+	const opsPerGoroutine = 100
+
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+
+	var allowedCount int64
+	var deniedCount int64
+
+	for i := 0; i < numGoroutines; i++ {
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < opsPerGoroutine; j++ {
+				// Concurrent add operations
+				domain := fmt.Sprintf("domain-%d-%d.com", id, j)
+				dw.add(domain)
+
+				// Concurrent IsAllowed checks
+				if dw.IsAllowed(domain) {
+					atomic.AddInt64(&allowedCount, 1)
+				} else {
+					atomic.AddInt64(&deniedCount, 1)
+				}
+
+				// Concurrent domains read
+				exact, wildcards := dw.domains()
+				_ = exact
+				_ = wildcards
+
+				// Concurrent remove operations
+				if j%10 == 0 {
+					dw.remove(domain)
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	t.Logf("Domain whitelist test: %d allowed, %d denied", allowedCount, deniedCount)
 }

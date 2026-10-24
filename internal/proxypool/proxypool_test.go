@@ -91,13 +91,14 @@ func TestNew(t *testing.T) {
 			wantLen: 4,
 		},
 		{
-			name: "deduplicates by host",
+			name: "deduplicates by identity (host:port + credentials)",
 			proxies: []string{
 				"http://127.0.0.1:8080",
-				"http://user:pass@127.0.0.1:8080", // same host:port, different creds
+				"http://user:pass@127.0.0.1:8080", // same host:port, different creds: DISTINCT (per-user egress credentials)
 				"http://127.0.0.1:8081",           // different port
+				"http://127.0.0.1:8080",           // verbatim duplicate of the first: collapses
 			},
-			wantLen: 2,
+			wantLen: 3,
 		},
 	}
 
@@ -346,7 +347,7 @@ func TestCircuitBreaker(t *testing.T) {
 				pool.ReportFailure("proxy1.example.com:8080")
 				pool.ReportFailure("proxy1.example.com:8080")
 
-				e := pool.byHost["proxy1.example.com:8080"]
+				e := pool.byHost["proxy1.example.com:8080"][0]
 				if ou := e.openUntil.Load(); ou != nil {
 					t.Errorf("below threshold: openUntil = %v, want nil (closed)", ou)
 				}
@@ -369,7 +370,7 @@ func TestCircuitBreaker(t *testing.T) {
 				pool.ReportFailure("proxy1.example.com:8080")
 				pool.ReportSuccess("proxy1.example.com:8080")
 
-				e := pool.byHost["proxy1.example.com:8080"]
+				e := pool.byHost["proxy1.example.com:8080"][0]
 				if ou := e.openUntil.Load(); ou != nil {
 					t.Errorf("after ReportSuccess, openUntil = %v, want nil", ou)
 				}
@@ -393,7 +394,7 @@ func TestCircuitBreaker(t *testing.T) {
 				pool.ReportSuccess("proxy1.example.com:8080")
 				pool.ReportFailure("proxy1.example.com:8080")
 
-				e := pool.byHost["proxy1.example.com:8080"]
+				e := pool.byHost["proxy1.example.com:8080"][0]
 				if f := e.failures.Load(); f != 1 {
 					t.Errorf("failures = %d, want 1 (success reset count)", f)
 				}
@@ -632,11 +633,11 @@ func TestPortlessProxyCanonicalKeys(t *testing.T) {
 	// circuit state directly — selecting an index would trivially return the
 	// earlier healthy http proxy regardless.
 	pool.ReportFailure("socks-proxy.example.com:1080")
-	e := pool.byHost["socks-proxy.example.com:1080"]
-	if e == nil {
+	entryList := pool.byHost["socks-proxy.example.com:1080"]
+	if len(entryList) == 0 {
 		t.Fatal("byHost missing canonical key socks-proxy.example.com:1080")
 	}
-	if ou := e.openUntil.Load(); ou == nil {
+	if ou := entryList[0].openUntil.Load(); ou == nil {
 		t.Error("portless socks proxy was not circuit-broken after canonical ReportFailure (openUntil = 0)")
 	}
 }
@@ -689,7 +690,7 @@ func TestSelect_Concurrent(t *testing.T) {
 	}
 
 	// Deterministic post-state of the two reported hosts.
-	e1 := pool.byHost["proxy1.example.com:8080"]
+	e1 := pool.byHost["proxy1.example.com:8080"][0]
 	if e1 == nil {
 		t.Fatal("byHost missing proxy1.example.com:8080")
 	}
@@ -700,7 +701,7 @@ func TestSelect_Concurrent(t *testing.T) {
 		t.Error("proxy1 circuit should have opened (threshold=2, 100 failures reported)")
 	}
 
-	e2 := pool.byHost["proxy2.example.com:8080"]
+	e2 := pool.byHost["proxy2.example.com:8080"][0]
 	if e2 == nil {
 		t.Fatal("byHost missing proxy2.example.com:8080")
 	}
@@ -766,7 +767,7 @@ func TestReportFailureWhileOpenDoesNotExtend(t *testing.T) {
 	const host = "proxy1.example.com:8080"
 
 	pool.ReportFailure(host) // opens the circuit
-	e := pool.byHost[host]
+	e := pool.byHost[host][0]
 	opened := e.openUntil.Load()
 	if opened == nil {
 		t.Fatal("first failure at threshold 1 should open the circuit")
@@ -827,11 +828,40 @@ func TestReportConcurrentNoTornState(t *testing.T) {
 
 	// Method-boundary postcondition: the last completed report is a success.
 	pool.ReportSuccess(host)
-	e := pool.byHost[host]
+	e := pool.byHost[host][0]
 	if f := e.failures.Load(); f != 0 {
 		t.Errorf("after completed ReportSuccess, failures = %d, want 0", f)
 	}
 	if ou := e.openUntil.Load(); ou != nil {
 		t.Errorf("after completed ReportSuccess, openUntil = %v, want nil (torn report pair survived)", ou)
+	}
+}
+
+// TestNewPoolCredentialVariantsDistinct pins the dedup rule: entries are
+// collapsed only when host:port AND credentials match. Entries differing
+// only in user:pass are distinct configured proxies (per-user egress
+// credentials through one gateway are a real rotation pattern) and were
+// previously silently collapsed; the circuit-breaker key stays host:port, so
+// the variants share one byHost bucket.
+func TestNewPoolCredentialVariantsDistinct(t *testing.T) {
+	pool, err := New(Config{
+		Proxies: []string{
+			"http://u:pass1@gw.example.com:8080",
+			"http://u:pass2@gw.example.com:8080", // same gateway, other creds: distinct
+			"http://gw.example.com:8080",         // no creds: distinct again
+			"http://u:pass1@gw.example.com:8080", // verbatim duplicate: collapses
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := pool.Len(); got != 3 {
+		t.Errorf("pool.Len() = %d, want 3 (credential variants distinct, verbatim dup collapsed)", got)
+	}
+	if buckets := len(pool.byHost); buckets != 1 {
+		t.Errorf("len(byHost) = %d, want 1 shared host bucket for all variants", buckets)
+	}
+	if variants := len(pool.byHost["gw.example.com:8080"]); variants != 3 {
+		t.Errorf("byHost bucket holds %d entries, want 3", variants)
 	}
 }

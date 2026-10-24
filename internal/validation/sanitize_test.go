@@ -216,9 +216,9 @@ func TestIsSensitiveQueryParam(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := IsSensitiveQueryParam(tt.param)
+			result := isSensitiveQueryParam(tt.param)
 			if result != tt.expected {
-				t.Errorf("IsSensitiveQueryParam(%q) = %v, want %v", tt.param, result, tt.expected)
+				t.Errorf("isSensitiveQueryParam(%q) = %v, want %v", tt.param, result, tt.expected)
 			}
 		})
 	}

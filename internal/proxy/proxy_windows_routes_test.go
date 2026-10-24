@@ -53,16 +53,11 @@ func TestParseWindowsProxyRoutes_PerProtocol(t *testing.T) {
 	}
 }
 
-// parseWindowsProxyString keeps its historical https-preferred contract.
-func TestParseWindowsProxyString_StillPrefersHTTPS(t *testing.T) {
-	u, err := parseWindowsProxyString("http=proxy-http:8080;https=proxy-https:8443")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if u.Host != "proxy-https:8443" {
-		t.Errorf("host = %q, want proxy-https:8443 (https preferred)", u.Host)
-	}
-}
+// (TestParseWindowsProxyString_StillPrefersHTTPS was removed with the
+// production-dead parseWindowsProxyString wrapper: per-scheme routing —
+// https traffic to the https entry — is pinned by the per-protocol cases in
+// TestParseWindowsProxyRoutes above, and the table in proxy_windows_test.go
+// carries the https-URL selection.)
 
 func TestWindowsProxyBypass(t *testing.T) {
 	entries := parseProxyOverride("<local>; *.corp.example.com ;intranet.example.com;")

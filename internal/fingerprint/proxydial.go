@@ -54,6 +54,19 @@ const proxyDialTimeout = 30 * time.Second
 // the request riding it) forever.
 var contextlessDialTimeout = 30 * time.Second
 
+// proxyLegError marks a failure that occurred while establishing the proxy
+// leg — TCP/TLS dial to the proxy, the CONNECT exchange, or the SOCKS
+// handshake — i.e. before any target traffic existed. The adapter's circuit
+// breaker counts ONLY these against the proxy (see isProxyLegFailure),
+// mirroring the standard path's scope (proxypool.ReportFailure observes
+// first-hop dial outcomes ONLY): a slow or failing TARGET behind a healthy
+// proxy must not open the proxy's circuit. The message is the wrapped error
+// verbatim so error strings (and their tests) are unchanged.
+type proxyLegError struct{ err error }
+
+func (e *proxyLegError) Error() string { return e.err.Error() }
+func (e *proxyLegError) Unwrap() error { return e.err }
+
 // newProxyDialerFactory returns a factory that dials every target through
 // proxyURL. The URL is fixed per backend: the httpc proxy pool rotates by
 // selecting a different backend, never by re-pointing a live one.
@@ -129,9 +142,17 @@ func (d *connectDialer) DialContext(ctx context.Context, network, addr string) (
 		defer cancel()
 	}
 	if d.socks != nil {
-		return d.dialSOCKS(ctx, network, addr)
+		conn, err := d.dialSOCKS(ctx, network, addr)
+		if err != nil {
+			return nil, &proxyLegError{err: err}
+		}
+		return conn, nil
 	}
-	return d.dialConnect(ctx, network, addr)
+	conn, err := d.dialConnect(ctx, network, addr)
+	if err != nil {
+		return nil, &proxyLegError{err: err}
+	}
+	return conn, nil
 }
 
 // dialSOCKS tunnels through a SOCKS proxy. The dialer is built per dial (no

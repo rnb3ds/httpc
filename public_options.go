@@ -1,6 +1,7 @@
 package httpc
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -9,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -224,6 +224,18 @@ func WithSystemProxy() RequestOption {
 // WithHeader sets a single HTTP header on the request.
 // Returns ErrInvalidHeader if the key or value contains invalid characters
 // (CRLF injection prevention).
+//
+// DomainClient capture: on a DomainClient this header IS captured into
+// SessionManager state before the request runs (captureFromOptions
+// recognizes the named header option) and persists for every subsequent
+// request on that client — even if this request fails. To send a header once
+// without persisting it, use a custom option (custom options are never
+// captured):
+//
+//	httpc.RequestOptionFunc(func(r httpc.RequestMutator) error {
+//	    r.SetHeader("Range", "bytes=0-1023")
+//	    return nil
+//	})
 func WithHeader(key, value string) RequestOption {
 	return &headerOption{key: key, value: value}
 }
@@ -231,12 +243,22 @@ func WithHeader(key, value string) RequestOption {
 // WithHeaderMap sets multiple headers from a map.
 // Returns ErrInvalidHeader if any key or value contains invalid characters
 // (CRLF injection prevention).
+//
+// DomainClient capture: like WithHeader, every entry here IS captured into
+// SessionManager state on a DomainClient and persists for subsequent
+// requests; see WithHeader for the one-shot (custom-option) escape hatch.
 func WithHeaderMap(headers map[string]string) RequestOption {
 	return &headerMapOption{headers: headers}
 }
 
 // WithUserAgent sets the User-Agent header.
 // This is kept as a convenience function since it's commonly used.
+//
+// DomainClient capture: this is a WithHeader passthrough, so on a
+// DomainClient the value IS captured into the session and pins the UA for
+// every subsequent request on that client — one probe request with
+// WithUserAgent("probe/1.0") permanently changes the client's UA. See
+// WithHeader for the one-shot escape hatch.
 func WithUserAgent(userAgent string) RequestOption {
 	return WithHeader("User-Agent", userAgent)
 }
@@ -409,18 +431,18 @@ func queryValueLength(v any) int {
 // Content-Type header instead.
 // Returns an error if data is nil or cannot be encoded.
 func WithJSON(data any) RequestOption {
-	return RequestOptionFunc(func(r RequestMutator) error {
-		if data == nil {
+	if data == nil {
+		// Keep the format-specific nil message; delegating to WithBody would
+		// surface its generic "request body cannot be nil" instead.
+		return RequestOptionFunc(func(RequestMutator) error {
 			return fmt.Errorf("JSON data cannot be nil")
-		}
-		v, err := encodeExplicitBody(data, json.Marshal)
-		if err != nil {
-			return fmt.Errorf("JSON encode failed: %w", err)
-		}
-		r.SetBody(v)
-		r.SetHeader("Content-Type", "application/json")
-		return nil
-	})
+		})
+	}
+	// Delegate the encode→SetBody→SetHeader sequence to WithBody's BodyJSON
+	// branch: one implementation for both entry points (the applyFormBody
+	// pattern — the former copy here had already drifted from WithBody's
+	// nil error message).
+	return WithBody(data, BodyJSON)
 }
 
 // WithXML sets the request body as XML and sets Content-Type to application/xml.
@@ -428,18 +450,14 @@ func WithJSON(data any) RequestOption {
 // The value is XML-encoded regardless of input type (see encodeExplicitBody).
 // Returns an error if data is nil or cannot be encoded.
 func WithXML(data any) RequestOption {
-	return RequestOptionFunc(func(r RequestMutator) error {
-		if data == nil {
+	if data == nil {
+		// Keep the format-specific nil message; see WithJSON.
+		return RequestOptionFunc(func(RequestMutator) error {
 			return fmt.Errorf("XML data cannot be nil")
-		}
-		v, err := encodeExplicitBody(data, xml.Marshal)
-		if err != nil {
-			return fmt.Errorf("XML encode failed: %w", err)
-		}
-		r.SetBody(v)
-		r.SetHeader("Content-Type", "application/xml")
-		return nil
-	})
+		})
+	}
+	// Delegate to WithBody's BodyXML branch; see WithJSON.
+	return WithBody(data, BodyXML)
 }
 
 // encodeExplicitBody enforces the documented "forces JSON/XML encoding
@@ -499,6 +517,14 @@ func WithBody(data any, kind ...BodyKind) RequestOption {
 		if len(kind) > 0 {
 			bodyKind = kind[0]
 		}
+		// Reject out-of-range kinds instead of silently treating them as
+		// BodyAuto (BodyKind is an untyped int enum; a computed value like
+		// BodyKind(42) would otherwise send an unintended Content-Type).
+		// Every other numeric option in this file range-checks; this one
+		// previously did not.
+		if bodyKind != BodyAuto && (bodyKind < BodyJSON || bodyKind > BodyMultipart) {
+			return fmt.Errorf("invalid body kind: %d", bodyKind)
+		}
 
 		switch bodyKind {
 		case BodyJSON:
@@ -552,9 +578,14 @@ func WithBody(data any, kind ...BodyKind) RequestOption {
 	})
 }
 
-// formBuilderPool reduces allocations for building form-encoded strings.
+// formBuilderPool reduces buffer allocations for building form-encoded
+// strings. It pools *bytes.Buffer — NOT strings.Builder (whose Reset
+// discards the backing array, retaining only the ~32-byte header);
+// bytes.Buffer.Reset keeps the backing slice. The result is COPIED out
+// (string(sb.Bytes())) before the Put — bytes.Buffer's String aliases the
+// live buffer, which the next pool user overwrites.
 var formBuilderPool = sync.Pool{
-	New: func() any { return &strings.Builder{} },
+	New: func() any { return &bytes.Buffer{} },
 }
 
 // encodeFormFields encodes a map[string]string to url-encoded form string.
@@ -577,9 +608,9 @@ func encodeFormFields(data map[string]string) string {
 	}
 	slices.Sort(keys)
 
-	sb, ok := formBuilderPool.Get().(*strings.Builder)
+	sb, ok := formBuilderPool.Get().(*bytes.Buffer)
 	if !ok || sb == nil {
-		sb = &strings.Builder{}
+		sb = &bytes.Buffer{}
 	}
 	sb.Reset()
 	sb.Grow(len(data) * 32)
@@ -593,7 +624,9 @@ func encodeFormFields(data map[string]string) string {
 		engine.AppendQueryEscape(sb, data[k])
 	}
 
-	result := sb.String()
+	// Clone before pooling: bytes.Buffer.String aliases the live buffer,
+	// which the next pool user overwrites.
+	result := strings.Clone(sb.String())
 	if sb.Cap() <= 4096 {
 		formBuilderPool.Put(sb)
 	}
@@ -663,12 +696,11 @@ func setAutoDetectedBody(r RequestMutator, data any) (string, error) {
 		r.SetBody(v)
 		return "text/plain; charset=utf-8", nil
 	case []byte:
-		// Empty and nil are rejected together, matching convertToBinary's
-		// gate for the explicit BodyBinary kind — the same degenerate input
-		// must not be gated differently per code path (previously the auto
-		// path sent an empty octet-stream body while BodyBinary errored).
-		if len(v) == 0 {
-			return "", fmt.Errorf("binary data cannot be empty")
+		// Empty and nil are rejected by the shared gate (convertToBinary) —
+		// one owner of "binary data cannot be empty", previously three
+		// hand-synced copies (here, WithBinary, and BodyBinary's branch).
+		if _, err := convertToBinary(v); err != nil {
+			return "", err
 		}
 		r.SetBody(v)
 		return "application/octet-stream", nil
@@ -846,8 +878,9 @@ func WithFormData(data *FormData) RequestOption {
 // The merge mutates the request's existing *FormData in place — see the
 // WithFormData doc for why a FormData value must not be shared across
 // concurrent requests.
-// Returns an error if fieldName or filename is empty, contains invalid characters,
-// or resolves to an invalid path (e.g., ".." or ".").
+// Only bare filenames are accepted: field names and filenames containing
+// path separators or traversal sequences ("..") are rejected outright (not
+// resolved); the lone exception also rejected is ".".
 func WithFile(fieldName, filename string, content []byte) RequestOption {
 	return RequestOptionFunc(func(r RequestMutator) error {
 		if fieldName == "" {
@@ -863,10 +896,13 @@ func WithFile(fieldName, filename string, content []byte) RequestOption {
 			return fmt.Errorf("invalid filename: %w", err)
 		}
 
-		cleanFilename := filepath.Base(filename)
-		if cleanFilename == "." || cleanFilename == ".." || cleanFilename == "" {
-			return fmt.Errorf("invalid filename")
+		// ValidateFieldName has already rejected separators and ".."
+		// components, so the filename is a bare name here; the only surviving
+		// degenerate is the current-directory spelling.
+		if filename == "." {
+			return fmt.Errorf("invalid filename: %q", filename)
 		}
+		cleanFilename := filename
 
 		// Merge into an existing FormData body so multiple WithFile options
 		// upload together; any other body type is replaced as before.
@@ -931,6 +967,11 @@ func WithContext(ctx context.Context) RequestOption {
 
 // WithMaxRetries sets the maximum number of retry attempts for this request.
 // Returns ErrInvalidRetry if maxRetries is negative or exceeds 10.
+//
+// Zero-value semantics across the numeric options differ by design: 0 here
+// DISABLES retries for the request (overriding the client default), while
+// WithMaxRedirects(0) is a silent no-op (the engine reads 0 as "unset") and
+// WithTimeout(0) is an error — check each option's doc before relying on 0.
 //
 // Note: retrying follows the client's idempotency policy — non-idempotent
 // methods (POST, PATCH, custom) are not retried unless the client sets
@@ -1072,12 +1113,13 @@ func WithMaxRedirects(maxRedirects int) RequestOption {
 }
 
 // WithBinary sets binary data as the request body with an optional content type.
-// Returns an error if data is empty (nil or zero length — matching
-// WithBody(BodyBinary)) or the content type contains invalid characters.
+// Returns an error if data is empty (nil or zero length — the shared
+// convertToBinary gate, matching WithBody(BodyBinary)) or the content type
+// contains invalid characters.
 func WithBinary(data []byte, contentType ...string) RequestOption {
 	return RequestOptionFunc(func(r RequestMutator) error {
-		if len(data) == 0 {
-			return fmt.Errorf("binary data cannot be empty")
+		if _, err := convertToBinary(data); err != nil {
+			return err
 		}
 
 		ct := "application/octet-stream"
@@ -1113,6 +1155,12 @@ func ensureCookieCapacity(existing []http.Cookie, additional int) []http.Cookie 
 // characters, or invalid characters). The error message includes the
 // cookie name that failed.
 //
+// DomainClient capture: on a DomainClient these cookies ARE captured into
+// SessionManager state before the request runs and persist for subsequent
+// requests (response cookies update them further). See WithHeader for the
+// one-shot escape hatch (a custom RequestOptionFunc calling SetCookies is
+// never captured).
+//
 // Example:
 //
 //	// Single cookie
@@ -1146,6 +1194,9 @@ func WithCookies(cookies []http.Cookie) RequestOption {
 // Returns an error if any cookie name or value fails validation. The error
 // message includes the cookie name that failed.
 //
+// DomainClient capture: like WithCookies, these cookies ARE captured into
+// the session on a DomainClient and persist for subsequent requests.
+//
 // Example:
 //
 //	cookies := map[string]string{
@@ -1177,6 +1228,9 @@ func WithCookieMap(cookies map[string]string) RequestOption {
 // WithCookieString adds cookies from a raw Cookie header string to the request.
 // Returns an error if the cookie string is malformed (missing '=' separator,
 // empty name) or if any parsed cookie fails validation.
+//
+// DomainClient capture: like WithCookies, these cookies ARE captured into
+// the session on a DomainClient and persist for subsequent requests.
 func WithCookieString(cookieString string) RequestOption {
 	if cookieString == "" {
 		return RequestOptionFunc(func(RequestMutator) error { return nil }) // no-op, see WithCookies

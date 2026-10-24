@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net"
@@ -93,37 +94,61 @@ func TestAdapterCloseWithProxies(t *testing.T) {
 	}
 }
 
-// TestIsConnectionFailure pins the proxy circuit-breaker error classifier:
-// structural transport failures (net.Error, net.OpError, TLS verification
-// errors — approximating the previous backend's ErrProxy/ErrConnection/
-// ErrTimeout/ErrTLS sentinels) count against a proxy; nil, caller
-// cancellations, and request-level errors must not.
-func TestIsConnectionFailure(t *testing.T) {
+// TestIsProxyLegFailure pins the proxy circuit-breaker error classifier:
+// ONLY tunnel-establishment failures (proxyLegError, however deeply the
+// transport wraps them) count against a proxy; nil, caller cancellations,
+// and — the regression this guards — target-leg failures (origin timeouts
+// and TLS verification errors through an established tunnel, which the old
+// wholesale net.Error classification counted) must not.
+func TestIsProxyLegFailure(t *testing.T) {
+	dialErr := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
 	tests := []struct {
 		name string
 		err  error
 		want bool
 	}{
 		{"nil is not a failure", nil, false},
-		{"dns (net.Error)", &net.DNSError{Err: "no such host", Name: "example.com"}, true},
-		{"op error", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("refused")}, true},
+		{"proxy-leg dial failure", &proxyLegError{err: dialErr}, true},
+		{"wrapped proxy-leg failure", fmt.Errorf("RoundTrip: %w", &proxyLegError{err: dialErr}), true},
 		{
-			"url-wrapped timeout (net.Error via url.Error)",
-			&url.Error{Op: "Get", URL: "https://example.com/", Err: context.DeadlineExceeded},
+			"url-wrapped proxy-leg failure",
+			&url.Error{Op: "Post", URL: "https://example.com/", Err: &proxyLegError{err: dialErr}},
 			true,
 		},
-		// The handshake runs on uTLS, so this is uTLS's type — crypto/tls's
-		// CertificateVerificationError is a distinct type that never appears on
-		// this path (it is not net.Error and would classify as false).
-		{"utls verification error", &utls.CertificateVerificationError{Err: errors.New("x509: unknown authority")}, true},
-		{"url-wrapped utls verification error", &url.Error{Op: "Get", URL: "https://example.com/", Err: &utls.CertificateVerificationError{Err: errors.New("x509: unknown authority")}}, true},
+		{
+			"proxy-leg dns failure",
+			&proxyLegError{err: &net.DNSError{Err: "no such host", Name: "proxy.example.com"}},
+			true,
+		},
+		// Target-leg failures through a healthy proxy: the proxy did its
+		// job, so these report SUCCESS — previously both rows opened the
+		// proxy's circuit after the failure threshold.
+		{
+			"target read timeout (net.Error, no proxy-leg mark)",
+			&net.OpError{Op: "read", Net: "tcp", Err: context.DeadlineExceeded},
+			false,
+		},
+		{
+			"url-wrapped target timeout",
+			&url.Error{Op: "Get", URL: "https://example.com/", Err: context.DeadlineExceeded},
+			false,
+		},
+		// uTLS's type, not crypto/tls's: the fingerprint handshake runs on
+		// uTLS, so a broken TARGET certificate surfaces this way.
+		{"utls target verification error", &utls.CertificateVerificationError{Err: errors.New("x509: unknown authority")}, false},
+		{
+			"url-wrapped utls target verification error",
+			&url.Error{Op: "Get", URL: "https://example.com/", Err: &utls.CertificateVerificationError{Err: errors.New("x509: unknown authority")}},
+			false,
+		},
 		{"context canceled by caller", context.Canceled, false},
+		{"context canceled under proxy-leg wrap", &proxyLegError{err: context.Canceled}, false},
 		{"arbitrary request error", errors.New("bad request"), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isConnectionFailure(tt.err); got != tt.want {
-				t.Errorf("isConnectionFailure(%v) = %v, want %v", tt.err, got, tt.want)
+			if got := isProxyLegFailure(tt.err); got != tt.want {
+				t.Errorf("isProxyLegFailure(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
 	}

@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"bytes"
 	"net/url"
 	"strconv"
 	"strings"
@@ -93,7 +94,7 @@ func isSensitiveQueryParamDecoded(name string) bool {
 // Currently exercised only by tests; the redaction paths use the
 // case-insensitive and percent-decoding variants directly. Retained as the
 // package's simple exported probe.
-func IsSensitiveQueryParam(name string) bool {
+func isSensitiveQueryParam(name string) bool {
 	return isSensitiveQueryParamCI(name)
 }
 
@@ -169,7 +170,7 @@ func redactSensitiveParams(rawQuery string) string {
 		}
 	}
 
-	result := b.String()
+	result := strings.Clone(b.String()) // copy: the buffer is pooled and reused
 	putSanitizeBuilder(b)
 	return result
 }
@@ -270,7 +271,7 @@ func SanitizeURL(urlStr string) string {
 		b.WriteByte('?')
 		b.WriteString(parsedURL.RawQuery)
 	}
-	result := b.String()
+	result := strings.Clone(b.String()) // copy: the buffer is pooled and reused
 	putSanitizeBuilder(b)
 	return result
 }
@@ -283,35 +284,6 @@ func SanitizeURL(urlStr string) string {
 // contain '/', '?' or '@'. Everything from the scheme separator up to that '@'
 // is replaced with "***@". Sensitive query parameters are redacted when a query
 // string is present. The result is safe for logging even though it may not be
-// RedactURLInMessage replaces every occurrence of rawURL in msg with its
-// sanitized form, matching BOTH the raw spelling and the strconv.Quote-escaped
-// one. The quote form matters because net/url renders *url.Error (and parse
-// errors) with %q — a URL containing a character %q escapes (", \, control
-// characters) reaches the message in ESCAPED form, so a plain substring match
-// misses it and the credential or sensitive query value the redaction exists
-// to scrub leaks through verbatim (escaped, but readable). Reports whether
-// anything was redacted; msg is returned unchanged when the URL has nothing
-// to sanitize or does not appear in either form.
-//
-// Single implementation shared by validation.redactErrorURL and the engine's
-// redactURLInError so the two cannot drift apart again.
-func RedactURLInMessage(msg, rawURL string) (string, bool) {
-	sanitized := SanitizeURL(rawURL)
-	if sanitized == rawURL {
-		return msg, false
-	}
-	changed := false
-	if strings.Contains(msg, rawURL) {
-		msg = strings.ReplaceAll(msg, rawURL, sanitized)
-		changed = true
-	}
-	if quoted := strconv.Quote(rawURL); strings.Contains(msg, quoted) {
-		msg = strings.ReplaceAll(msg, quoted, strconv.Quote(sanitized))
-		changed = true
-	}
-	return msg, changed
-}
-
 // a parseable URL — diagnostics beat a verbatim credential leak.
 //
 // SEC-001 M-2: an earlier version scanned for the LAST '@' in the string.
@@ -369,10 +341,44 @@ func redactUnparseableURL(s string) string {
 	return redacted
 }
 
-// sanitizeBuilderPool reduces allocations for strings.Builder in SanitizeURL.
+// RedactURLInMessage replaces every occurrence of rawURL in msg with its
+// sanitized form, matching BOTH the raw spelling and the strconv.Quote-escaped
+// one. The quote form matters because net/url renders *url.Error (and parse
+// errors) with %q — a URL containing a character %q escapes (", \, control
+// characters) reaches the message in ESCAPED form, so a plain substring match
+// misses it and the credential or sensitive query value the redaction exists
+// to scrub leaks through verbatim (escaped, but readable). Reports whether
+// anything was redacted; msg is returned unchanged when the URL has nothing
+// to sanitize or does not appear in either form.
+//
+// Single implementation shared by validation.redactErrorURL and the engine's
+// redactURLInError so the two cannot drift apart again.
+func RedactURLInMessage(msg, rawURL string) (string, bool) {
+	sanitized := SanitizeURL(rawURL)
+	if sanitized == rawURL {
+		return msg, false
+	}
+	changed := false
+	if strings.Contains(msg, rawURL) {
+		msg = strings.ReplaceAll(msg, rawURL, sanitized)
+		changed = true
+	}
+	if quoted := strconv.Quote(rawURL); strings.Contains(msg, quoted) {
+		msg = strings.ReplaceAll(msg, quoted, strconv.Quote(sanitized))
+		changed = true
+	}
+	return msg, changed
+}
+
+// sanitizeBuilderPool reduces buffer allocations in SanitizeURL and
+// redactSensitiveParams. It pools *bytes.Buffer — NOT strings.Builder (whose
+// Reset discards the backing array, retaining only the ~32-byte header);
+// bytes.Buffer.Reset keeps the backing slice. The result is COPIED out
+// (strings.Clone) before the Put — bytes.Buffer's String aliases the live
+// buffer, which the next pool user overwrites.
 var sanitizeBuilderPool = sync.Pool{
 	New: func() any {
-		return &strings.Builder{}
+		return &bytes.Buffer{}
 	},
 }
 
@@ -404,16 +410,16 @@ func HasSensitiveQueryParams(query string) bool {
 	return false
 }
 
-func getSanitizeBuilder() *strings.Builder {
-	b, ok := sanitizeBuilderPool.Get().(*strings.Builder)
+func getSanitizeBuilder() *bytes.Buffer {
+	b, ok := sanitizeBuilderPool.Get().(*bytes.Buffer)
 	if !ok || b == nil {
-		return &strings.Builder{}
+		return &bytes.Buffer{}
 	}
 	b.Reset()
 	return b
 }
 
-func putSanitizeBuilder(b *strings.Builder) {
+func putSanitizeBuilder(b *bytes.Buffer) {
 	if b == nil || b.Cap() > 2048 {
 		return
 	}

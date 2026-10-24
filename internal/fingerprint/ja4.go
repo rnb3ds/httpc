@@ -93,7 +93,11 @@ const (
 )
 
 func tlsVersionDigits(versions []uint16) int {
-	max := uint16(0x0303)
+	// No floor: a spec advertising only TLS 1.1/1.0 must report 11/10 per
+	// the FoxIO JA4 technical details (version digits come from the highest
+	// supported version). Unreachable with the shipped profiles (all pin
+	// 1.2/1.3) but correct for any future low-version profile.
+	max := uint16(0)
 	for _, v := range versions {
 		if isGREASE16(v) {
 			continue
@@ -105,8 +109,14 @@ func tlsVersionDigits(versions []uint16) int {
 	switch max {
 	case 0x0304:
 		return 13
-	default: // 0x0303 and below
+	case 0x0303:
 		return 12
+	case 0x0302:
+		return 11
+	case 0x0301:
+		return 10
+	default:
+		return 12 // empty or GREASE-only list: report the modern floor
 	}
 }
 

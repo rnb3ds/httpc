@@ -776,7 +776,12 @@ func TestRedirect_307RawReaderFollowedWhenRetriesBufferBody(t *testing.T) {
 		t.Fatalf("Expected status 200 after 307 (body buffered for retries), got %d (body: %s)",
 			result.StatusCode(), result.Body())
 	}
-	want := "POST|streaming body|application/octet-stream"
+	// Raw-reader contract: no automatic Content-Type, IDENTICAL with retries
+	// enabled or disabled. The buffered-to-[]byte body used to gain
+	// "application/octet-stream" purely because retries were on — an
+	// undocumented self-inconsistency (setAutoDetectedBody deliberately sets
+	// no Content-Type for raw readers).
+	want := "POST|streaming body|"
 	if result.Body() != want {
 		t.Errorf("Buffered stream body not preserved across 307:\n got: %s\nwant: %s", result.Body(), want)
 	}

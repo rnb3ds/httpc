@@ -1,6 +1,7 @@
 package httpc
 
 import (
+	"bytes"
 	"crypto/tls"
 	"fmt"
 	"math"
@@ -513,7 +514,7 @@ type Config struct {
 	// "Default: true" (Security.ValidateURL, Security.ValidateHeaders,
 	// Security.StrictContentLength, Security.FollowRedirects,
 	// Connection.EnableHTTP2, and the Security.MaxResponseBodySize cap of
-	// 5MB) is true ONLY in those constructors: a struct literal's zero value
+	// 10MB) is true ONLY in those constructors: a struct literal's zero value
 	// is false/0, ValidateConfig cannot distinguish "deliberately off" from
 	// "never set", and a literal that sets only e.g. Retry.BackoffFactor
 	// passes validation with URL pre-validation (including the SSRF host
@@ -891,6 +892,14 @@ func ValidateConfig(cfg *Config) error {
 			return fmt.Errorf("%w: Security.MinTLSVersion (%d) must not exceed MaxTLSVersion (%d)", ErrInvalidSecurity, cfg.Security.MinTLSVersion, cfg.Security.MaxTLSVersion)
 		}
 	}
+	// Validate the EFFECTIVE pair too: resolveTLSVersions fills the defaults
+	// (0 → min TLS 1.2 / max TLS 1.3), so a hand-built Config with only one
+	// bound set (e.g. MaxTLSVersion = TLS 1.1) passes the raw comparison
+	// above yet yields min > max — which would otherwise surface as a
+	// confusing handshake-time failure instead of a construction-time error.
+	if minV, maxV := resolveTLSVersions(cfg); minV > maxV {
+		return fmt.Errorf("%w: Security.MinTLSVersion (effective %s) must not exceed MaxTLSVersion (effective %s)", ErrInvalidSecurity, tls.VersionName(minV), tls.VersionName(maxV))
+	}
 	// Reject values outside the tls.VersionTLS* constant range; crypto/tls
 	// would otherwise fail only at handshake time with a confusing error.
 	// Extend the bounds when Go defines new TLS versions.
@@ -1006,9 +1015,9 @@ func (c *Config) String() string {
 		return "Config{<nil>}"
 	}
 
-	b, ok := configBuilderPool.Get().(*strings.Builder)
+	b, ok := configBuilderPool.Get().(*bytes.Buffer)
 	if !ok || b == nil {
-		b = &strings.Builder{}
+		b = &bytes.Buffer{}
 	}
 	b.Reset()
 	b.Grow(512)
@@ -1072,7 +1081,9 @@ func (c *Config) String() string {
 	b.WriteString(ua)
 
 	b.WriteString("}}")
-	result := b.String()
+	// Clone before pooling: bytes.Buffer.String aliases the live buffer,
+	// which the next pool user overwrites.
+	result := strings.Clone(b.String())
 	// Guard against retaining an oversized backing array in the pool — matches
 	// the cap guards on resultBuilderPool, formBuilderPool, and errorBuilderPool.
 	if b.Cap() <= maxConfigBuilderCap {
@@ -1085,10 +1096,15 @@ func (c *Config) String() string {
 // mirroring the cap guards on resultBuilderPool / formBuilderPool.
 const maxConfigBuilderCap = 1024
 
-// configBuilderPool reduces allocations for strings.Builder in Config.String().
+// configBuilderPool reduces buffer allocations in Config.String(). It pools
+// *bytes.Buffer — NOT strings.Builder (whose Reset discards the backing
+// array, retaining only the ~32-byte header); bytes.Buffer.Reset keeps the
+// backing slice, so reused buffers skip the regrow. The result is COPIED
+// out (string(b.Bytes())) before the Put — bytes.Buffer's String aliases
+// the live buffer, which the next pool user overwrites.
 var configBuilderPool = sync.Pool{
 	New: func() any {
-		return &strings.Builder{}
+		return &bytes.Buffer{}
 	},
 }
 

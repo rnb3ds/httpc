@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // ============================================================================
@@ -1116,8 +1118,8 @@ func TestWriteDownloadBody_OpenFileFailure(t *testing.T) {
 		contentLength: 5,
 		downloadStart: time.Now(),
 	})
-	if err == nil || !strings.Contains(err.Error(), "failed to finalize download") {
-		t.Errorf("expected 'failed to finalize download' error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "failed to finalize") {
+		t.Errorf("expected 'failed to finalize' error (shared finalizeAtomicReplace ladder), got %v", err)
 	}
 	// The temp sibling must not linger after the failed rename.
 	if _, statErr := os.Stat(dir + downloadTmpSuffix); !os.IsNotExist(statErr) {
@@ -1752,5 +1754,209 @@ func TestDownload_ResumeShortBodyDetected(t *testing.T) {
 	}
 	if len(got) != 8 {
 		t.Errorf("file = %d bytes after failed resume, want 8 (prefix preserved)", len(got))
+	}
+}
+
+// TestDownloadUnsolicited206Accepted pins the documented face-value rule for
+// unsolicited 206 responses on plain (no-Range) downloads: a server that
+// answers with "206 Partial Content" and NO Content-Range declaration is
+// taken at face value — the partial body is saved and reported as a
+// successful download. DownloadConfig.Checksum is the documented detector
+// for this class of server. (A DECLARED total, by contrast, is honored — see
+// TestDownloadUnsolicited206DeclaredTotalTruncated.)
+func TestDownloadUnsolicited206Accepted(t *testing.T) {
+	body := []byte("partial-bytes")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") != "" {
+			t.Errorf("plain download must not send Range, got %q", r.Header.Get("Range"))
+		}
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		w.WriteHeader(http.StatusPartialContent) // unsolicited: no Range was sent
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.Security.AllowPrivateIPs = true
+	client, err := New(config)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	filePath := filepath.Join(t.TempDir(), "unsolicited.bin")
+	result, err := client.Download(context.Background(), server.URL, &DownloadConfig{FilePath: filePath})
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+	if result.StatusCode != http.StatusPartialContent {
+		t.Errorf("status = %d, want 206", result.StatusCode)
+	}
+	if result.BytesWritten != int64(len(body)) {
+		t.Errorf("bytes written = %d, want %d", result.BytesWritten, len(body))
+	}
+	got, readErr := os.ReadFile(filePath)
+	if readErr != nil || string(got) != string(body) {
+		t.Errorf("file = %q, %v; want the partial body verbatim", got, readErr)
+	}
+}
+
+// TestDownloadUnsolicited206DeclaredTotalTruncated: when an unsolicited 206
+// DOES declare a Content-Range total, the declaration is honored — a short
+// body fails loudly (and cleans up the temp sibling) instead of being
+// renamed into place as a successful download.
+func TestDownloadUnsolicited206DeclaredTotalTruncated(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Declares bytes 0-9/100 but delivers only 10 bytes.
+		w.Header().Set("Content-Range", "bytes 0-9/100")
+		w.Header().Set("Content-Length", "10")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte("0123456789"))
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.Security.AllowPrivateIPs = true
+	client, err := New(config)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	filePath := filepath.Join(t.TempDir(), "truncated.bin")
+	_, err = client.Download(context.Background(), server.URL, &DownloadConfig{FilePath: filePath})
+	if err == nil {
+		t.Fatal("expected short-body error, got nil")
+	}
+	if !strings.Contains(err.Error(), "declared 100 total") {
+		t.Errorf("error should name the declared total, got: %v", err)
+	}
+	// Neither the destination nor the temp sibling may survive.
+	if _, statErr := os.Stat(filePath); statErr == nil {
+		t.Error("destination file must not exist after a truncated download")
+	}
+	if _, statErr := os.Stat(filePath + downloadTmpSuffix); statErr == nil {
+		t.Error("temp sibling must be removed after a truncated download")
+	}
+}
+
+// TestDownload_InvalidAlgorithmFailsBeforeRequest pins the up-front checksum
+// gate: a configuration error must cost no network round-trip (the request
+// below would hang the test if issued — the handler blocks until the test
+// body finishes).
+func TestDownload_InvalidAlgorithmFailsBeforeRequest(t *testing.T) {
+	requested := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	config := DefaultConfig()
+	config.Security.AllowPrivateIPs = true
+	client, err := New(config)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	filePath := filepath.Join(t.TempDir(), "x.bin")
+	_, err = client.Download(context.Background(), server.URL, &DownloadConfig{
+		FilePath:          filePath,
+		ChecksumAlgorithm: "md5",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported checksum algorithm") {
+		t.Fatalf("error = %v, want unsupported-algorithm rejection", err)
+	}
+	select {
+	case <-requested:
+		t.Error("invalid algorithm must fail BEFORE the HTTP request is issued")
+	default:
+	}
+}
+
+// TestAcquireDownloadLockTempSibling pins the dual-key lock: a download to
+// file.bin writes file.bin.httpc-tmp, so a concurrent download whose
+// destination IS file.bin.httpc-tmp must be rejected — previously the two
+// held different lock keys and could O_TRUNC each other's writes.
+func TestAcquireDownloadLockTempSibling(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "file.bin")
+	sibling := dest + downloadTmpSuffix
+
+	releaseA, ok := acquireDownloadLock(dest)
+	if !ok {
+		t.Fatal("first acquire(dest) failed")
+	}
+
+	// The sibling-as-destination must conflict in BOTH directions.
+	if _, ok := acquireDownloadLock(sibling); ok {
+		t.Error("acquire(sibling) succeeded while a download to dest (which writes the sibling) holds the lock")
+	}
+	releaseA()
+
+	releaseB, ok := acquireDownloadLock(sibling)
+	if !ok {
+		t.Fatal("acquire(sibling) failed after release")
+	}
+	if _, ok := acquireDownloadLock(dest); ok {
+		t.Error("acquire(dest) succeeded while the sibling-holding download owns dest's temp sibling")
+	}
+	releaseB()
+}
+
+// TestTruncateAtRuneBoundary pins the preview-cut rule: never split a
+// multi-byte UTF-8 rune (a split rune renders as mojibake in the error
+// string the preview becomes).
+func TestTruncateAtRuneBoundary(t *testing.T) {
+	tests := []struct {
+		name, in string
+		max      int
+		want     string
+	}{
+		{"short passthrough", "abc", 10, "abc"},
+		{"exact length", "abc", 3, "abc"},
+		{"ascii cut", "abcdef", 3, "abc"},
+		{"cut lands between runes", "ééé", 4, "éé"},
+		{"cut lands mid-rune backs off", "ééé", 3, "é"},
+		{"mid-rune at start of boundary", "aééé", 2, "a"},
+		{"zero max", "abc", 0, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := truncateAtRuneBoundary(tt.in, tt.max); got != tt.want {
+				t.Errorf("truncateAtRuneBoundary(%q, %d) = %q, want %q", tt.in, tt.max, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHandleDownloadStatus_UTF8PreviewValidUTF8: the 500-body preview in the
+// error string must stay valid UTF-8 after truncation.
+func TestHandleDownloadStatus_UTF8PreviewValidUTF8(t *testing.T) {
+	// 150 two-byte runes = 300 bytes: the 200-byte cut lands mid-rune without
+	// the boundary backoff.
+	body := strings.Repeat("é", 150)
+	err := handleDownloadStatus(500, strings.NewReader(body), 0)
+	if err == nil {
+		t.Fatal("expected status error")
+	}
+	if !utf8.ValidString(err.Error()) {
+		t.Errorf("error string is not valid UTF-8 after truncation: %q", err.Error())
+	}
+}
+
+// TestDownloadTotalSize_ClampsOverflow: a hostile Content-Length plus the
+// resume offset must clamp instead of wrapping the progress total negative.
+func TestDownloadTotalSize_ClampsOverflow(t *testing.T) {
+	if got := downloadTotalSize(math.MaxInt64-100, 200, true); got != math.MaxInt64 {
+		t.Errorf("downloadTotalSize(MaxInt64-100, 200, true) = %d, want MaxInt64 clamp", got)
+	}
+	// The normal arithmetic is unchanged.
+	if got := downloadTotalSize(100, 40, true); got != 140 {
+		t.Errorf("downloadTotalSize(100, 40, true) = %d, want 140", got)
+	}
+	if got := downloadTotalSize(-1, 40, true); got != -1 {
+		t.Errorf("downloadTotalSize(-1, 40, true) = %d, want -1 (chunked)", got)
 	}
 }

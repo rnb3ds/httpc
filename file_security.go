@@ -49,12 +49,18 @@ func getSystemPaths() []string {
 	case "linux":
 		fallthrough
 	default:
+		// Deliberately narrower than darwin's wholesale "/usr/" and "/var/":
+		// on Linux, /usr/local and /var/tmp (often TMPDIR) are user-writable
+		// by design, and blocking them would break legitimate downloads. The
+		// system-OWNED subtrees under /var are listed individually instead.
+		// Pinned per GOOS by TestSystemPathsPerGOOS.
 		return []string{
 			"/etc/", "/sys/", "/proc/", "/dev/", "/boot/",
 			"/root/",
 			"/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/",
 			"/lib/", "/lib32/", "/lib64/", "/usr/lib/", "/usr/lib32/", "/usr/lib64/",
 			"/run/", "/var/run/", "/sys/fs/",
+			"/var/lib/", "/var/log/", "/var/spool/", "/var/cache/", "/var/db/",
 		}
 	}
 }
@@ -350,7 +356,7 @@ func rejectShortNameComponents(path string) error {
 	for i := 0; i <= len(dir); i++ {
 		if i == len(dir) || dir[i] == '\\' || dir[i] == '/' {
 			if isShortNameComponent(dir[start:i]) {
-				return fmt.Errorf("Windows 8.3 short-name component %q not allowed (aliases defeat path security checks); use the full path", dir[start:i])
+				return fmt.Errorf("windows 8.3 short-name component %q not allowed (aliases defeat path security checks); use the full path", dir[start:i])
 			}
 			start = i + 1
 		}

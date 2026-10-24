@@ -4,6 +4,31 @@ All notable changes to the cybergodev/httpc library will be documented in this f
 
 ---
 
+## v1.7.3 - Audit Hardening, net/http Parity & Robustness Fixes (2026-10-25)
+
+### Added
+- Internal only: `PresetNames()` preset-registry enumeration plus a full-coverage TLS-fingerprint verification dev tool (all 22 presets gated on exact JA4, HTTP/2 Akamai hash, ALPN, User-Agent coherence, and a zero-network registry-sync check)
+
+### Fixed
+- Audit events: the `error` field is pinned by test to serialize exactly once, as a string — the `json:"-"` tag makes the guarantee explicit (never an object)
+- Audit-middleware error sanitization preserves `errors.Is`/`errors.As` classification while redacting embedded raw URLs (was: blanket `[sanitized]` replacement)
+- Reader bodies (`*strings.Reader`, `*bytes.Reader`, `*bytes.Buffer`) now send `Content-Length` exactly like `http.NewRequest` — previously always `Transfer-Encoding: chunked` (streaming bodies intentionally stay chunked)
+- An unsolicited `206` that declares a `Content-Range` total is now honored — short bodies fail loudly and the temp file is removed, instead of being saved as a successful download
+- Session capture of `WithHeaderMap` is deterministic for mixed-case duplicate keys (sorted visit order, matching what the request sent — was Go map random order)
+- The TLS-fingerprint proxy circuit breaker counts only proxy-leg failures (dial/TLS/CONNECT/SOCKS handshake, wrapped in a `proxyLegError` sentinel) — three target-site timeouts no longer open a healthy proxy's circuit
+- `NO_PROXY` is now honored when the proxy comes from platform detection (Windows registry / macOS `networksetup`), not only from `HTTP(S)_PROXY`
+- The SSRF split→validate→candidate-join sequence has a single owner (`ValidatedCandidates`) shared by the standard, DoH, and TLS-fingerprint dial paths — three hand-synced copies removed
+- A portless dial address now fails closed (`must be host:port`) instead of silently assuming port 443 (production dial paths always pass host:port)
+
+### Changed
+- Linux download denylist gains the system-owned `/var` subtrees (`/var/lib`, `/var/log`, `/var/spool`, `/var/cache`, `/var/db`); `/usr/local` and `/var/tmp` deliberately remain allowed; pinned per-GOOS by test
+- `WithBody` rejects out-of-range `BodyKind` values (e.g. `BodyKind(42)`) instead of silently treating them as `BodyAuto`
+- Godoc accuracy pass: zero-value semantics of `WithMaxRetries`/`WithMaxRedirects`/`WithTimeout`, `ResumeDownload`'s computed Range offset replacing a caller-supplied header, `WithFile` bare-filenames-only, `ErrInvalidMiddleware`'s actual scope, the response-cap figure corrected 5MB→10MB, and a repaired `RedactURLInMessage` doc splice
+- `AuditMiddleware`'s example demonstrates `json.Marshal` (the `Format` field is a reserved no-op, no longer initialized by `DefaultAuditConfig`); `TimeoutMiddleware`'s streaming rejection documented as per-request
+- Capture caveats documented on `WithHeader`/`WithHeaderMap`/`WithUserAgent`/`WithCookies`/`WithCookieMap`/`WithCookieString` (DomainClient persists them into the session; a custom `RequestOptionFunc` is the one-shot escape hatch)
+
+---
+
 ## v1.7.2 - Proxy tracking, stability fixes, and configuration protection measures (2026-10-24)
 
 ### Added

@@ -448,7 +448,7 @@ HTTPC defines sentinel errors for specific failure conditions:
 | `httpc.ErrInvalidRetry` | Retry configuration invalid |
 | `httpc.ErrInvalidConnection` | Connection configuration invalid |
 | `httpc.ErrInvalidSecurity` | Security configuration invalid |
-| `httpc.ErrInvalidMiddleware` | Middleware configuration invalid |
+| `httpc.ErrInvalidMiddleware` | `Defaults.UserAgent` invalid (too long or control characters; name is historical — never fires for middleware misconfiguration) |
 | `httpc.ErrEmptyFilePath` | Download file path is empty |
 | `httpc.ErrFileExists` | File already exists (overwrite not enabled) |
 | `httpc.ErrResponseBodyEmpty` | Response body is empty |
